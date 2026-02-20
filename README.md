@@ -89,6 +89,46 @@ Build & run workflow:
 - `pnpm build` -> compile TS and copy renderer assets to `dist`
 - `pnpm dev` / `pnpm start` -> run Electron using `dist/main/main.js`
 
+## Build Packaging
+
+```bash
+pnpm run package:mac
+pnpm run package:win
+pnpm run package:linux
+```
+
+Artifacts are generated under `release/`.
+
+## Auto Update
+
+- Auto update is integrated via `electron-updater` (GitHub Releases channel).
+- In packaged app:
+  - checks automatically after startup, then on interval
+  - supports manual `Check Updates` from overview quick actions
+  - prompts for download and restart install
+- In dev mode (unpackaged), updater state shows unsupported.
+
+## CI/CD Release Workflow
+
+- Workflow: `.github/workflows/release.yml`
+- Behavior:
+  - auto bump patch version
+  - create git tag
+  - build artifacts for macOS / Windows / Linux
+  - publish GitHub Release with generated artifacts
+
+## macOS Notice (Unsigned Build)
+
+Current macOS artifacts are unsigned. If macOS blocks first launch:
+
+1. Right click app in Finder and choose `Open`, or
+2. Run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Service Manager.app"
+open -a "Service Manager"
+```
+
 ## Notes / Current Limits
 
 - SSH command execution now uses `ssh2` directly (not shelling out to system `ssh`).

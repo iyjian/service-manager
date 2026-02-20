@@ -18,11 +18,13 @@ import type {
   ServiceDraft,
   ServiceStatus,
   TunnelStatusChange,
+  UpdateState,
 } from '../shared/types';
 import { ServiceStore } from './store';
 import { checkServiceStatus, getServiceLogs, startService, stopService } from './serviceRuntime';
 import { PortForwardManager } from './portForwardManager';
 import { TunnelManager, type ForwardRuntimeConfig } from './tunnelManager';
+import { AppUpdater } from './updater';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -42,6 +44,9 @@ const IPC_CHANNELS = {
   forwardStatusChanged: 'forward:status',
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
+  getUpdateState: 'updater:get-state',
+  checkUpdates: 'updater:check',
+  updateState: 'updater:state',
 } as const;
 
 interface SshEndpointDraft {
@@ -67,6 +72,7 @@ const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
+const updater = new AppUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
 
 function getStore(): ServiceStore {
   if (!store) {
@@ -814,6 +820,14 @@ function registerIpcHandlers(): void {
     }
     await shell.openExternal(parsed.toString());
   });
+
+  ipcMain.handle(IPC_CHANNELS.getUpdateState, async () => {
+    return updater.getState();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.checkUpdates, async () => {
+    return updater.checkForUpdates('manual');
+  });
 }
 
 function wireForwardStatusBroadcast(): void {
@@ -832,6 +846,14 @@ function wireForwardStatusBroadcast(): void {
   });
 }
 
+function wireUpdaterBroadcast(): void {
+  updater.on('state-changed', (state: UpdateState) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC_CHANNELS.updateState, state);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   const filePath = path.join(app.getPath('userData'), 'service-manager.json');
   store = new ServiceStore(filePath);
@@ -841,9 +863,11 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers();
   wireForwardStatusBroadcast();
+  wireUpdaterBroadcast();
   for (const host of hosts) {
     await autoStartHostRules(host);
   }
+  updater.start();
   createWindow();
 
   app.on('activate', () => {
@@ -860,5 +884,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  updater.stop();
   void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll()]);
 });

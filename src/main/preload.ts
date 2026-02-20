@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { HostDraft, ServiceApi, ServiceStatusChange, TunnelStatusChange } from '../shared/types';
+import type { HostDraft, ServiceApi, ServiceStatusChange, TunnelStatusChange, UpdateState } from '../shared/types';
 
 const api: ServiceApi = {
   listHosts: () => ipcRenderer.invoke('host:list'),
@@ -24,6 +24,8 @@ const api: ServiceApi = {
   getServiceLogs: (hostId: string, serviceId: string) =>
     ipcRenderer.invoke('service:logs', { hostId, serviceId }),
   importPrivateKey: () => ipcRenderer.invoke('auth:import-private-key'),
+  getUpdateState: () => ipcRenderer.invoke('updater:get-state'),
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, change: ServiceStatusChange): void => {
@@ -39,6 +41,13 @@ const api: ServiceApi = {
     };
     ipcRenderer.on('forward:status', wrapped);
     return () => ipcRenderer.removeListener('forward:status', wrapped);
+  },
+  onUpdateStateChanged: (listener: (state: UpdateState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: UpdateState): void => {
+      listener(state);
+    };
+    ipcRenderer.on('updater:state', wrapped);
+    return () => ipcRenderer.removeListener('updater:state', wrapped);
   },
 };
 

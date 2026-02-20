@@ -114,6 +114,27 @@ export interface ConfigTransferResult {
   serviceCount: number;
 }
 
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'up-to-date'
+  | 'unsupported'
+  | 'error';
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  availableVersion?: string;
+  downloadedVersion?: string;
+  progressPercent?: number;
+  trigger: 'auto' | 'manual';
+  message?: string;
+  rawMessage?: string;
+}
+
 export interface ServiceStatusChange {
   hostId: string;
   serviceId: string;
@@ -153,7 +174,10 @@ export interface ServiceApi {
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
   exportConfig: () => Promise<ConfigTransferResult | null>;
   importConfig: () => Promise<ConfigTransferResult | null>;
+  getUpdateState: () => Promise<UpdateState>;
+  checkForUpdates: () => Promise<UpdateState>;
   openExternal: (url: string) => Promise<void>;
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;
+  onUpdateStateChanged: (listener: (state: UpdateState) => void) => () => void;
 }

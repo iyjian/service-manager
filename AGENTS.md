@@ -45,16 +45,20 @@ Build a desktop Electron application to manage services on remote servers throug
 6. Host edit page structure must follow same hierarchy:
    - Forwarding Rules section
    - Services section
-8. Overview cards must keep tunnel/service metrics explicit and separate:
+7. Overview cards must keep tunnel/service metrics explicit and separate:
    - tunnel: running / stopped / errors
    - service: running / stopped / errors
    - layout should remain compact enough to stay one-line in default window width
-9. Config import/export must be available from home page quick actions:
+8. Config import/export must be available from home page quick actions:
    - export current hosts/rules/services to JSON
    - import JSON and replace current config
    - imported IDs must be normalized for uniqueness
-10. Host private key auth supports key content input and key file import.
+9. Host private key auth supports key content input and key file import.
    - private key import dialog should default to `~/.ssh` when available.
+10. Release and update pipeline:
+   - GitHub Actions release workflow must build macOS / Windows / Linux artifacts and publish release
+   - app must support auto update (`electron-updater`) with state broadcast to renderer
+   - README must include unsigned macOS install guidance
 
 ## Alignment Requirement (with `ssh-tunnel-manager`)
 

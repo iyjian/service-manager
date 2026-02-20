@@ -8,6 +8,7 @@ import type {
   ServiceLogsResult,
   ServiceStatus,
   TunnelStatus,
+  UpdateState,
 } from '../shared/types';
 
 function requireElement<T extends Element>(selector: string): T {
@@ -56,6 +57,8 @@ const messageElement = requireElement<HTMLParagraphElement>('#message');
 const addHostButton = requireElement<HTMLButtonElement>('#qa-add-host-btn');
 const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-btn');
 const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
+const checkUpdatesButton = requireElement<HTMLButtonElement>('#qa-check-updates-btn');
+const updateStatusHintElement = requireElement<HTMLParagraphElement>('#update-status-hint');
 const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
 const statHostsElement = requireElement<HTMLElement>('#stat-hosts');
 const statForwardsElement = requireElement<HTMLElement>('#stat-forwards');
@@ -81,6 +84,63 @@ let activeLogTarget: { hostId: string; serviceId: string } | null = null;
 let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
+
+function renderUpdateState(state: UpdateState): void {
+  updateStatusHintElement.classList.remove(
+    'hidden',
+    'update-status-info',
+    'update-status-success',
+    'update-status-error'
+  );
+
+  if (state.status === 'idle') {
+    updateStatusHintElement.classList.add('hidden');
+    updateStatusHintElement.textContent = '';
+    return;
+  }
+
+  const fallbackMessage = (() => {
+    if (state.status === 'checking') {
+      return 'Checking for updates...';
+    }
+    if (state.status === 'available') {
+      return `Update ${state.availableVersion ?? ''} is available.`;
+    }
+    if (state.status === 'downloading') {
+      const progress = typeof state.progressPercent === 'number'
+        ? ` (${Math.round(state.progressPercent)}%)`
+        : '';
+      return `Downloading update ${state.availableVersion ?? ''}${progress}`;
+    }
+    if (state.status === 'downloaded') {
+      return `Update ${state.downloadedVersion ?? state.availableVersion ?? ''} downloaded. Restart to install.`;
+    }
+    if (state.status === 'up-to-date') {
+      return `You're up to date (${state.currentVersion}).`;
+    }
+    if (state.status === 'unsupported') {
+      return `Version ${state.currentVersion}. Auto update works in packaged builds only.`;
+    }
+    if (state.status === 'error') {
+      return state.rawMessage ? `Update error: ${state.rawMessage}` : 'Update check failed.';
+    }
+    return `Version ${state.currentVersion}`;
+  })();
+
+  updateStatusHintElement.textContent = state.message ?? fallbackMessage;
+
+  if (state.status === 'error') {
+    updateStatusHintElement.classList.add('update-status-error');
+    return;
+  }
+
+  if (state.status === 'up-to-date' || state.status === 'downloaded') {
+    updateStatusHintElement.classList.add('update-status-success');
+    return;
+  }
+
+  updateStatusHintElement.classList.add('update-status-info');
+}
 
 function setMessage(text: string, level: 'default' | 'success' | 'error' = 'default'): void {
   messageElement.classList.remove('message-default', 'message-success', 'message-error');
@@ -813,6 +873,15 @@ exportConfigButton.addEventListener('click', async () => {
   }
 });
 
+checkUpdatesButton.addEventListener('click', async () => {
+  try {
+    const state = await window.serviceApi.checkForUpdates();
+    renderUpdateState(state);
+  } catch (error) {
+    setMessage((error as Error).message, 'error');
+  }
+});
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
@@ -874,10 +943,19 @@ window.serviceApi.onForwardStatusChanged((change) => {
   render();
 });
 
+window.serviceApi.onUpdateStateChanged((state) => {
+  renderUpdateState(state);
+});
+
 (async function init() {
   resetForm();
   await loadHosts();
   await refreshAllServices(true);
+  try {
+    renderUpdateState(await window.serviceApi.getUpdateState());
+  } catch {
+    // no-op
+  }
   startStatusAutoRefresh();
   setMessage('Ready.');
 })();
