@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { Client, type ClientChannel } from 'ssh2';
+import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
 import type { HostConfig, ServiceConfig, ServiceLogsResult, ServiceStatus } from '../shared/types';
 
 interface SshResult {
@@ -17,55 +17,159 @@ export interface StartResult {
   error?: string;
 }
 
-async function buildConnectionConfig(host: HostConfig): Promise<{
-  host: string;
-  port: number;
-  username: string;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
-}> {
-  if (host.authType === 'password') {
-    return {
-      host: host.sshHost,
-      port: host.sshPort,
-      username: host.username,
-      password: host.password,
-    };
-  }
+async function resolvePrivateKey(host: HostConfig): Promise<string | undefined> {
+  if (host.privateKey?.trim()) return host.privateKey;
+  if (!host.privateKeyPath) return undefined;
+  return fs.readFile(host.privateKeyPath, 'utf8');
+}
 
-  const privateKey = host.privateKey?.trim()
-    ? host.privateKey
-    : host.privateKeyPath
-      ? await fs.readFile(host.privateKeyPath, 'utf8')
-      : undefined;
-
-  if (!privateKey) {
-    throw new Error('Private key is required for private key authentication.');
-  }
-
-  return {
+async function buildTargetConnectConfig(host: HostConfig): Promise<ConnectConfig> {
+  const base: ConnectConfig = {
     host: host.sshHost,
     port: host.sshPort,
     username: host.username,
-    privateKey,
-    passphrase: host.passphrase,
+    readyTimeout: 10000,
+    keepaliveInterval: 5000,
+    keepaliveCountMax: 2,
   };
+
+  if (host.authType === 'password') {
+    base.password = host.password;
+    return base;
+  }
+
+  const privateKey = await resolvePrivateKey(host);
+  if (!privateKey) {
+    throw new Error('Private key is required for private key authentication.');
+  }
+  base.privateKey = privateKey;
+  if (host.passphrase) {
+    base.passphrase = host.passphrase;
+  }
+  return base;
+}
+
+function buildJumpConnectConfig(host: HostConfig): ConnectConfig | undefined {
+  if (!host.jumpHost) return undefined;
+
+  const base: ConnectConfig = {
+    host: host.jumpHost.sshHost,
+    port: host.jumpHost.sshPort,
+    username: host.jumpHost.username,
+    readyTimeout: 10000,
+    keepaliveInterval: 5000,
+    keepaliveCountMax: 2,
+  };
+
+  if (host.jumpHost.authType === 'password') {
+    base.password = host.jumpHost.password;
+    return base;
+  }
+
+  if (!host.jumpHost.privateKey?.trim()) {
+    throw new Error('Jump host private key is required for private key auth.');
+  }
+
+  base.privateKey = host.jumpHost.privateKey;
+  if (host.jumpHost.passphrase) {
+    base.passphrase = host.jumpHost.passphrase;
+  }
+  return base;
+}
+
+function connectClient(client: Client, connectConfig: ConnectConfig): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const onReady = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const onError = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const onClose = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('SSH connection closed before ready.'));
+    };
+
+    const cleanup = (): void => {
+      client.off('ready', onReady);
+      client.off('error', onError);
+      client.off('close', onClose);
+    };
+
+    client.once('ready', onReady);
+    client.once('error', onError);
+    client.on('close', onClose);
+    client.connect(connectConfig);
+  });
+}
+
+async function connectTargetClient(host: HostConfig): Promise<{ targetClient: Client; jumpClient?: Client }> {
+  const targetClient = new Client();
+  const targetConfig = await buildTargetConnectConfig(host);
+  const jumpConfig = buildJumpConnectConfig(host);
+
+  if (!jumpConfig) {
+    await connectClient(targetClient, targetConfig);
+    return { targetClient };
+  }
+
+  const jumpClient = new Client();
+  await connectClient(jumpClient, jumpConfig);
+
+  const sock = await new Promise<ConnectConfig['sock']>((resolve, reject) => {
+    jumpClient.forwardOut('127.0.0.1', 0, host.sshHost, host.sshPort, (error, stream) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stream);
+    });
+  });
+
+  await connectClient(targetClient, {
+    ...targetConfig,
+    sock,
+  });
+
+  return { targetClient, jumpClient };
 }
 
 export async function runSsh(host: HostConfig, command: string): Promise<SshResult> {
-  const config = await buildConnectionConfig(host);
-
   return new Promise<SshResult>((resolve) => {
-    const client = new Client();
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let targetClient: Client | undefined;
+    let jumpClient: Client | undefined;
 
     const settle = (result: SshResult): void => {
       if (settled) return;
       settled = true;
-      client.end();
+      if (timer) {
+        clearTimeout(timer);
+      }
+      try {
+        targetClient?.end();
+      } catch {
+        // no-op
+      }
+      try {
+        jumpClient?.end();
+      } catch {
+        // no-op
+      }
       resolve(result);
     };
 
@@ -78,11 +182,14 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
       });
     }, 20000);
 
-    client
-      .on('ready', () => {
-        client.exec(command, (execError: Error | undefined, stream: ClientChannel) => {
+    void (async () => {
+      try {
+        const connected = await connectTargetClient(host);
+        targetClient = connected.targetClient;
+        jumpClient = connected.jumpClient;
+
+        targetClient.exec(command, (execError: Error | undefined, stream: ClientChannel) => {
           if (execError) {
-            clearTimeout(timer);
             settle({
               ok: false,
               stdout,
@@ -94,7 +201,6 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
 
           stream
             .on('close', (code?: number) => {
-              clearTimeout(timer);
               settle({
                 ok: (code ?? 0) === 0,
                 stdout,
@@ -110,22 +216,15 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
             stderr += data.toString();
           });
         });
-      })
-      .on('error', (error: Error) => {
-        clearTimeout(timer);
+      } catch (error) {
         settle({
           ok: false,
           stdout,
-          stderr: error.message || 'SSH connection failed',
+          stderr: error instanceof Error ? error.message : String(error),
           code: -1,
         });
-      })
-      .connect({
-        ...config,
-        readyTimeout: 10000,
-        keepaliveInterval: 5000,
-        keepaliveCountMax: 2,
-      });
+      }
+    })();
   });
 }
 
@@ -134,7 +233,7 @@ function safeFileFragment(raw: string): string {
 }
 
 function shellQuoteSingle(raw: string): string {
-  return `'${raw.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${raw.replace(/'/g, `'"'"'`)}'`;
 }
 
 export async function startService(host: HostConfig, service: ServiceConfig): Promise<StartResult> {
@@ -165,7 +264,6 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
     };
   }
 
-  // Some commands (like yarn start:dev) need warm-up time before binding ports.
   for (let i = 0; i < 15; i += 1) {
     const pidByPortRet = await runSsh(
       host,
@@ -204,8 +302,6 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
     ok: false,
     error: `Process failed to become running within 15s.\nstdout:\n${earlyStdout?.stdout || '(empty)'}\nstderr:\n${earlyStderr?.stdout || earlyStderr?.stderr || '(empty)'}\nenv-stdout:\n${envDiag.stdout || '(empty)'}\nenv-stderr:\n${envDiag.stderr || '(empty)'}`,
   };
-
-  return { ok: true, pid, stdoutPath, stderrPath };
 }
 
 export async function stopService(host: HostConfig, service: ServiceConfig): Promise<{ ok: boolean; error?: string }> {

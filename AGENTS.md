@@ -7,6 +7,7 @@ Build a desktop Electron application to manage services on remote servers throug
 ## Current Product Scope
 
 1. Host management with SSH connection configuration.
+   - Jump Host is configured directly inside Add/Edit Host form.
 2. Service management under each host:
    - start command
    - exposed port
@@ -17,6 +18,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - auto-start flag
    - runtime start/stop/delete in list
    - tunnel status with reconnect countdown on error
+   - supports jump-host chain when host has jump configured
 4. Service status and runtime state:
    - save PID on start
    - PID-alive means running; missing/dead PID means stopped
@@ -47,7 +49,11 @@ Build a desktop Electron application to manage services on remote servers throug
    - tunnel: running / stopped / errors
    - service: running / stopped / errors
    - layout should remain compact enough to stay one-line in default window width
-9. Host private key auth supports key content input and key file import.
+9. Config import/export must be available from home page quick actions:
+   - export current hosts/rules/services to JSON
+   - import JSON and replace current config
+   - imported IDs must be normalized for uniqueness
+10. Host private key auth supports key content input and key file import.
    - private key import dialog should default to `~/.ssh` when available.
 
 ## Alignment Requirement (with `ssh-tunnel-manager`)

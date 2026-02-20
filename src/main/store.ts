@@ -43,6 +43,11 @@ export class ServiceStore {
     await this.persist();
   }
 
+  async replaceHosts(hosts: HostConfig[]): Promise<void> {
+    this.hosts = hosts.map((host) => this.cloneHost(host));
+    await this.persist();
+  }
+
   async removeHost(id: string): Promise<void> {
     this.hosts = this.hosts.filter((item) => item.id !== id);
     await this.persist();
@@ -102,6 +107,17 @@ export class ServiceStore {
       privateKey: input.privateKey,
       passphrase: input.passphrase,
       privateKeyPath: input.privateKeyPath,
+      jumpHost: input.jumpHost
+        ? {
+            sshHost: input.jumpHost.sshHost,
+            sshPort: Number(input.jumpHost.sshPort || 22),
+            username: input.jumpHost.username,
+            authType: input.jumpHost.authType === 'password' ? 'password' : 'privateKey',
+            password: input.jumpHost.password,
+            privateKey: input.jumpHost.privateKey,
+            passphrase: input.jumpHost.passphrase,
+          }
+        : undefined,
       forwards: Array.isArray(input.forwards)
         ? input.forwards
             .map((forward) => this.normalizeForward(forward))
@@ -175,6 +191,7 @@ export class ServiceStore {
   private cloneHost(host: HostConfig): HostConfig {
     return {
       ...host,
+      jumpHost: host.jumpHost ? { ...host.jumpHost } : undefined,
       forwards: host.forwards.map((forward) => ({ ...forward })),
       services: host.services.map((service) => ({ ...service })),
     };

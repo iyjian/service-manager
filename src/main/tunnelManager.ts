@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import { Client, type ConnectConfig } from 'ssh2';
-import type { AuthType, TunnelStatusChange } from '../shared/types';
+import type { JumpHostConfig, TunnelStatusChange, AuthType } from '../shared/types';
 
 export interface ForwardRuntimeConfig {
   id: string;
@@ -12,6 +12,7 @@ export interface ForwardRuntimeConfig {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  jumpHost?: JumpHostConfig;
   localHost: string;
   localPort: number;
   remoteHost: string;
@@ -19,11 +20,17 @@ export interface ForwardRuntimeConfig {
 }
 
 interface RunningTunnel {
-  client: Client;
+  targetClient: Client;
+  jumpClient?: Client;
   server: net.Server;
 }
 
-type StartStage = 'local-port-precheck' | 'target-connect' | 'local-listen';
+type StartStage =
+  | 'local-port-precheck'
+  | 'jump-connect'
+  | 'jump-forward'
+  | 'target-connect'
+  | 'local-listen';
 
 const RECONNECT_DELAY_MS = 5000;
 
@@ -50,14 +57,20 @@ export class TunnelManager extends EventEmitter {
   }
 
   async start(config: ForwardRuntimeConfig): Promise<void> {
-    this.configs.set(config.id, { ...config });
+    this.configs.set(config.id, {
+      ...config,
+      jumpHost: config.jumpHost ? { ...config.jumpHost } : undefined,
+    });
     this.clearReconnectTimer(config.id);
 
-    if (this.running.has(config.id)) return;
+    if (this.running.has(config.id)) {
+      return;
+    }
 
     this.updateStatus({ forwardId: config.id, status: 'starting' });
 
-    const client = new Client();
+    const targetClient = new Client();
+    let jumpClient: Client | undefined;
     let server: net.Server | undefined;
 
     try {
@@ -67,49 +80,89 @@ export class TunnelManager extends EventEmitter {
         throw this.buildStartError('local-port-precheck', config, error);
       }
 
-      try {
-        await this.connectClient(client, this.toConnectConfig(config));
-      } catch (error) {
-        throw this.buildStartError('target-connect', config, error);
+      const targetConnectConfig = this.toConnectConfig({
+        sshHost: config.sshHost,
+        sshPort: config.sshPort,
+        username: config.username,
+        authType: config.authType,
+        password: config.password,
+        privateKey: config.privateKey,
+        passphrase: config.passphrase,
+      });
+
+      if (config.jumpHost) {
+        jumpClient = new Client();
+        try {
+          await this.connectClient(jumpClient, this.toConnectConfig(config.jumpHost));
+        } catch (error) {
+          throw this.buildStartError('jump-connect', config, error);
+        }
+        try {
+          targetConnectConfig.sock = await this.forwardThroughJump(
+            jumpClient,
+            config.sshHost,
+            config.sshPort
+          );
+        } catch (error) {
+          throw this.buildStartError('jump-forward', config, error);
+        }
       }
 
       try {
-        server = await this.createLocalServer(config, client);
+        await this.connectClient(targetClient, targetConnectConfig);
+      } catch (error) {
+        throw this.buildStartError('target-connect', config, error);
+      }
+      try {
+        server = await this.createLocalServer(config, targetClient);
       } catch (error) {
         throw this.buildStartError('local-listen', config, error);
       }
 
-      this.running.set(config.id, { client, server });
-      this.bindRuntimeHandlers(config.id, client, server);
+      this.running.set(config.id, { targetClient, jumpClient, server });
+      this.bindRuntimeHandlers(config.id, targetClient, jumpClient, server);
       this.updateStatus({ forwardId: config.id, status: 'running' });
     } catch (error) {
       this.safeCloseServer(server);
-      this.safeEndClient(client);
+      this.safeEndClient(targetClient);
+      this.safeEndClient(jumpClient);
       this.cleanup(config.id, { keepStatus: true });
-      const message = error instanceof Error ? error.message : String(error);
-      this.markErrorAndScheduleReconnect(config.id, message);
-      throw new Error(message);
+      const semanticMessage = error instanceof Error ? error.message : String(error);
+      this.markErrorAndScheduleReconnect(config.id, semanticMessage);
+      throw new Error(semanticMessage);
     }
   }
 
   async stop(id: string): Promise<void> {
     this.clearReconnectTimer(id);
+
     if (!this.running.has(id)) {
       this.updateStatus({ forwardId: id, status: 'stopped' });
       return;
     }
+
     this.updateStatus({ forwardId: id, status: 'stopping' });
     this.cleanup(id, { keepStatus: true });
     this.updateStatus({ forwardId: id, status: 'stopped' });
   }
 
   async stopAll(): Promise<void> {
-    for (const id of this.reconnectTimers.keys()) this.clearReconnectTimer(id);
+    for (const id of this.reconnectTimers.keys()) {
+      this.clearReconnectTimer(id);
+    }
     await Promise.all([...this.running.keys()].map((id) => this.stop(id)));
   }
 
-  private toConnectConfig(config: ForwardRuntimeConfig): ConnectConfig {
-    const ret: ConnectConfig = {
+  private toConnectConfig(config: {
+    sshHost: string;
+    sshPort: number;
+    username: string;
+    authType: AuthType;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+  }): ConnectConfig {
+    const connectConfig: ConnectConfig = {
       host: config.sshHost,
       port: config.sshPort,
       username: config.username,
@@ -117,41 +170,56 @@ export class TunnelManager extends EventEmitter {
       keepaliveCountMax: 6,
       readyTimeout: 20000,
     };
+
     if (config.authType === 'password') {
-      ret.password = config.password ?? '';
+      connectConfig.password = config.password ?? '';
     } else {
-      ret.privateKey = config.privateKey ?? '';
-      if (config.passphrase) ret.passphrase = config.passphrase;
+      connectConfig.privateKey = config.privateKey ?? '';
+      if (config.passphrase) {
+        connectConfig.passphrase = config.passphrase;
+      }
     }
-    return ret;
+
+    return connectConfig;
   }
 
   private connectClient(client: Client, connectConfig: ConnectConfig): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
+
       const onReady = (): void => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         cleanup();
         resolve();
       };
+
       const onError = (error: Error): void => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         cleanup();
         reject(error);
       };
+
       const onClose = (): void => {
-        if (settled) return;
+        if (settled) {
+          return;
+        }
         settled = true;
         cleanup();
         reject(new Error('SSH connection closed before ready.'));
       };
+
       const cleanup = (): void => {
         client.off('ready', onReady);
         client.off('error', onError);
         client.off('close', onClose);
       };
+
       client.once('ready', onReady);
       client.once('error', onError);
       client.on('close', onClose);
@@ -159,22 +227,47 @@ export class TunnelManager extends EventEmitter {
     });
   }
 
-  private createLocalServer(config: ForwardRuntimeConfig, client: Client): Promise<net.Server> {
+  private forwardThroughJump(
+    jumpClient: Client,
+    targetHost: string,
+    targetPort: number
+  ): Promise<ConnectConfig['sock']> {
+    return new Promise((resolve, reject) => {
+      jumpClient.forwardOut('127.0.0.1', 0, targetHost, targetPort, (error, stream) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stream);
+      });
+    });
+  }
+
+  private createLocalServer(config: ForwardRuntimeConfig, targetClient: Client): Promise<net.Server> {
     const server = net.createServer((socket) => {
-      client.forwardOut(
+      targetClient.forwardOut(
         socket.localAddress ?? '127.0.0.1',
         socket.localPort ?? 0,
         config.remoteHost,
         config.remotePort,
-        (error, stream) => {
-          if (error) {
-            socket.once('error', () => undefined);
+        (forwardError, stream) => {
+          if (forwardError) {
+            socket.once('error', () => {
+              // no-op
+            });
             socket.destroy();
             return;
           }
+
           socket.pipe(stream).pipe(socket);
-          stream.on('error', () => socket.destroy());
-          socket.on('error', () => stream.destroy());
+
+          stream.on('error', () => {
+            socket.destroy();
+          });
+
+          socket.on('error', () => {
+            stream.destroy();
+          });
         }
       );
     });
@@ -184,14 +277,17 @@ export class TunnelManager extends EventEmitter {
         cleanup();
         resolve(server);
       };
+
       const onError = (error: Error): void => {
         cleanup();
         reject(error);
       };
+
       const cleanup = (): void => {
         server.off('listening', onListening);
         server.off('error', onError);
       };
+
       server.once('listening', onListening);
       server.once('error', onError);
       server.listen(config.localPort, config.localHost);
@@ -200,21 +296,25 @@ export class TunnelManager extends EventEmitter {
 
   private assertLocalEndpointAvailable(localHost: string, localPort: number): Promise<void> {
     const probe = net.createServer();
+
     return new Promise((resolve, reject) => {
       const onError = (error: Error): void => {
         cleanup();
         reject(error);
       };
+
       const onListening = (): void => {
         probe.close(() => {
           cleanup();
           resolve();
         });
       };
+
       const cleanup = (): void => {
         probe.off('error', onError);
         probe.off('listening', onListening);
       };
+
       probe.once('error', onError);
       probe.once('listening', onListening);
       probe.listen(localPort, localHost);
@@ -224,101 +324,251 @@ export class TunnelManager extends EventEmitter {
   private buildStartError(stage: StartStage, config: ForwardRuntimeConfig, error: unknown): Error {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const code = this.getErrorCode(error);
+
     if (stage === 'local-port-precheck' || stage === 'local-listen') {
       if (code === 'EADDRINUSE') {
-        return new Error(`Local port ${config.localPort} on ${config.localHost} is already in use.`);
+        return new Error(
+          `Local port ${config.localPort} on ${config.localHost} is already in use. Please choose another local port.`
+        );
       }
       if (code === 'EACCES') {
-        return new Error(`Permission denied when binding ${config.localHost}:${config.localPort}.`);
+        return new Error(
+          `Permission denied when binding ${config.localHost}:${config.localPort}. Try another local port or run with proper permissions.`
+        );
       }
-      return new Error(`Failed to bind local listener on ${config.localHost}:${config.localPort}: ${rawMessage}`);
+      return new Error(
+        `Failed to bind local listener on ${config.localHost}:${config.localPort}: ${rawMessage}`
+      );
     }
-    return new Error(`Unable to connect SSH ${config.sshHost}:${config.sshPort}. ${rawMessage}`);
+
+    if (stage === 'jump-connect') {
+      return new Error(this.buildSshConnectionErrorMessage({
+        kind: 'jump',
+        config,
+        rawMessage,
+        code,
+      }));
+    }
+
+    if (stage === 'jump-forward') {
+      return new Error(
+        `Connected to jump host, but failed to open channel to target ${config.sshHost}:${config.sshPort}: ${rawMessage}`
+      );
+    }
+
+    return new Error(this.buildSshConnectionErrorMessage({
+      kind: 'target',
+      config,
+      rawMessage,
+      code,
+    }));
+  }
+
+  private buildSshConnectionErrorMessage(options: {
+    kind: 'target' | 'jump';
+    config: ForwardRuntimeConfig;
+    rawMessage: string;
+    code?: string;
+  }): string {
+    const { kind, config, rawMessage, code } = options;
+    const host = kind === 'jump' ? config.jumpHost?.sshHost ?? config.sshHost : config.sshHost;
+    const port = kind === 'jump' ? config.jumpHost?.sshPort ?? config.sshPort : config.sshPort;
+    const username = kind === 'jump' ? config.jumpHost?.username ?? config.username : config.username;
+    const endpoint = `${host}:${port}`;
+
+    const prefix = kind === 'jump'
+      ? `Unable to connect to jump host ${endpoint} as ${username}.`
+      : config.jumpHost
+        ? `Unable to connect to target SSH host ${endpoint} via jump host ${config.jumpHost.sshHost}:${config.jumpHost.sshPort}.`
+        : `Unable to connect to target SSH host ${endpoint}.`;
+
+    const hint = this.buildSshConnectionHint({ host, port, code, rawMessage, username });
+    if (hint) {
+      return `${prefix} ${hint}`;
+    }
+
+    return `${prefix} ${rawMessage}`;
+  }
+
+  private buildSshConnectionHint(options: {
+    host: string;
+    port: number;
+    rawMessage: string;
+    code?: string;
+    username: string;
+  }): string | undefined {
+    const { host, port, rawMessage, code, username } = options;
+    const normalized = rawMessage.toLowerCase();
+
+    if (code === 'ENOTFOUND') {
+      return `DNS lookup failed for "${host}". Please check the host value.`;
+    }
+    if (code === 'ECONNREFUSED') {
+      return `Connection was refused. Make sure an SSH server is listening on port ${port}.`;
+    }
+    if (code === 'ETIMEDOUT') {
+      return 'Connection timed out. Check network reachability and firewall rules.';
+    }
+    if (code === 'ECONNRESET') {
+      return 'Connection was reset by peer during SSH negotiation.';
+    }
+    if (normalized.includes('all configured authentication methods failed')) {
+      return `Authentication failed for ${username}. Verify auth method, username, and credentials.`;
+    }
+    if (normalized.includes('cannot parse privatekey')) {
+      return 'Private key format is invalid or unsupported.';
+    }
+    if (normalized.includes('encrypted private openssh key detected, but no passphrase given')) {
+      return 'Private key is encrypted and requires a passphrase.';
+    }
+
+    return undefined;
   }
 
   private getErrorCode(error: unknown): string | undefined {
-    if (!error || typeof error !== 'object') return undefined;
+    if (!error || typeof error !== 'object') {
+      return undefined;
+    }
     const code = (error as NodeJS.ErrnoException).code;
     return typeof code === 'string' ? code : undefined;
   }
 
-  private bindRuntimeHandlers(id: string, client: Client, server: net.Server): void {
+  private bindRuntimeHandlers(
+    id: string,
+    targetClient: Client,
+    jumpClient: Client | undefined,
+    server: net.Server
+  ): void {
     const handleRuntimeError = (prefix: string, error: Error): void => {
-      if (!this.running.has(id)) return;
+      if (!this.running.has(id)) {
+        return;
+      }
       this.cleanup(id, { keepStatus: true });
       this.markErrorAndScheduleReconnect(id, `${prefix}: ${error.message}`);
     };
 
-    server.on('error', (error) => handleRuntimeError('Local listener error', error as Error));
-    client.on('error', (error) => handleRuntimeError('SSH error', error));
-    client.on('close', () => {
-      if (!this.running.has(id)) return;
+    server.on('error', (error) => {
+      handleRuntimeError('Local listener error', error as Error);
+    });
+
+    targetClient.on('error', (error) => {
+      handleRuntimeError('SSH error', error);
+    });
+
+    targetClient.on('close', () => {
+      if (!this.running.has(id)) {
+        return;
+      }
       this.cleanup(id, { keepStatus: true });
       this.markErrorAndScheduleReconnect(id, 'SSH connection closed unexpectedly.');
     });
+
+    if (jumpClient) {
+      jumpClient.on('error', (error) => {
+        handleRuntimeError('Jump SSH error', error);
+      });
+
+      jumpClient.on('close', () => {
+        if (!this.running.has(id)) {
+          return;
+        }
+        this.cleanup(id, { keepStatus: true });
+        this.markErrorAndScheduleReconnect(id, 'Jump SSH connection closed unexpectedly.');
+      });
+    }
   }
 
   private cleanup(id: string, options?: { keepStatus?: boolean }): void {
     const running = this.running.get(id);
-    if (!running) return;
+    if (!running) {
+      return;
+    }
+
     this.running.delete(id);
+
     try {
       running.server.close();
     } catch {
       // no-op
     }
+
     try {
-      running.client.end();
+      running.targetClient.end();
     } catch {
       // no-op
     }
+
+    try {
+      running.jumpClient?.end();
+    } catch {
+      // no-op
+    }
+
     if (!options?.keepStatus) {
       this.updateStatus({ forwardId: id, status: 'stopped' });
     }
   }
 
   private updateStatus(change: Omit<TunnelStatusChange, 'hostId'> & { hostId?: string }): void {
-    const prev = this.statuses.get(change.forwardId);
-    const next: TunnelStatusChange = {
-      hostId: change.hostId ?? prev?.hostId ?? '',
+    const previous = this.statuses.get(change.forwardId);
+    const payload: TunnelStatusChange = {
+      hostId: change.hostId ?? previous?.hostId ?? '',
       forwardId: change.forwardId,
       status: change.status,
       error: change.error,
       reconnectAt: change.reconnectAt,
     };
-    this.statuses.set(change.forwardId, next);
-    this.emit('status-changed', next);
+    this.statuses.set(change.forwardId, payload);
+    this.emit('status-changed', payload);
   }
 
   private markErrorAndScheduleReconnect(id: string, error: string): void {
     const reconnectAt = Date.now() + RECONNECT_DELAY_MS;
-    this.updateStatus({ forwardId: id, status: 'error', error, reconnectAt });
+    this.updateStatus({
+      forwardId: id,
+      status: 'error',
+      error,
+      reconnectAt,
+    });
     this.scheduleReconnect(id, reconnectAt);
   }
 
   private scheduleReconnect(id: string, reconnectAt: number): void {
     const config = this.configs.get(id);
-    if (!config) return;
+    if (!config) {
+      return;
+    }
+
     this.clearReconnectTimer(id);
+
     const delay = Math.max(0, reconnectAt - Date.now());
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(id);
       const current = this.statuses.get(id);
-      if (current?.status === 'stopped' || current?.status === 'stopping') return;
-      void this.start(config).catch(() => undefined);
+      if (current?.status === 'stopped' || current?.status === 'stopping') {
+        return;
+      }
+      void this.start(config).catch(() => {
+        // state updates are emitted by manager
+      });
     }, delay);
+
     this.reconnectTimers.set(id, timer);
   }
 
   private clearReconnectTimer(id: string): void {
     const timer = this.reconnectTimers.get(id);
-    if (!timer) return;
+    if (!timer) {
+      return;
+    }
     clearTimeout(timer);
     this.reconnectTimers.delete(id);
   }
 
   private safeEndClient(client: Client | undefined): void {
-    if (!client) return;
+    if (!client) {
+      return;
+    }
     try {
       client.end();
     } catch {
@@ -327,7 +577,9 @@ export class TunnelManager extends EventEmitter {
   }
 
   private safeCloseServer(server: net.Server | undefined): void {
-    if (!server) return;
+    if (!server) {
+      return;
+    }
     try {
       server.close();
     } catch {

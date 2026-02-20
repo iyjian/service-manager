@@ -1,7 +1,9 @@
 import type {
+  ConfigTransferResult,
   ForwardRuleDraft,
   HostDraft,
   HostView,
+  JumpHostConfig,
   ServiceDraft,
   ServiceLogsResult,
   ServiceStatus,
@@ -32,6 +34,19 @@ const passwordRow = requireElement<HTMLElement>('#password-row');
 const privateKeyRow = requireElement<HTMLElement>('#private-key-row');
 const passphraseRow = requireElement<HTMLElement>('#passphrase-row');
 const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-private-key-btn');
+const useJumpHostInput = requireElement<HTMLInputElement>('#use-jump-host');
+const jumpHostSection = requireElement<HTMLElement>('#jump-host-section');
+const jumpSshHostInput = requireElement<HTMLInputElement>('#jump-ssh-host');
+const jumpSshPortInput = requireElement<HTMLInputElement>('#jump-ssh-port');
+const jumpUsernameInput = requireElement<HTMLInputElement>('#jump-username');
+const jumpAuthTypeSelect = requireElement<HTMLSelectElement>('#jump-auth-type');
+const jumpPasswordInput = requireElement<HTMLInputElement>('#jump-password');
+const jumpPrivateKeyInput = requireElement<HTMLTextAreaElement>('#jump-private-key');
+const jumpPassphraseInput = requireElement<HTMLInputElement>('#jump-passphrase');
+const jumpPasswordRow = requireElement<HTMLElement>('#jump-password-row');
+const jumpPrivateKeyRow = requireElement<HTMLElement>('#jump-private-key-row');
+const jumpPassphraseRow = requireElement<HTMLElement>('#jump-passphrase-row');
+const importJumpPrivateKeyButton = requireElement<HTMLButtonElement>('#import-jump-private-key-btn');
 const forwardEditorList = requireElement<HTMLDivElement>('#forward-editor-list');
 const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
@@ -39,6 +54,8 @@ const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
 const messageElement = requireElement<HTMLParagraphElement>('#message');
 const addHostButton = requireElement<HTMLButtonElement>('#qa-add-host-btn');
+const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-btn');
+const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
 const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
 const statHostsElement = requireElement<HTMLElement>('#stat-hosts');
 const statForwardsElement = requireElement<HTMLElement>('#stat-forwards');
@@ -108,12 +125,45 @@ function toggleAuthFields(): void {
   }
 }
 
+function toggleJumpAuthFields(): void {
+  if (jumpAuthTypeSelect.value === 'password') {
+    jumpPasswordRow.classList.remove('hidden');
+    jumpPrivateKeyRow.classList.add('hidden');
+    jumpPassphraseRow.classList.add('hidden');
+  } else {
+    jumpPasswordRow.classList.add('hidden');
+    jumpPrivateKeyRow.classList.remove('hidden');
+    jumpPassphraseRow.classList.remove('hidden');
+  }
+}
+
+function toggleJumpSection(): void {
+  if (!useJumpHostInput.checked) {
+    jumpHostSection.classList.add('hidden');
+    return;
+  }
+  jumpHostSection.classList.remove('hidden');
+  toggleJumpAuthFields();
+}
+
 function parsePort(raw: string, label: string): number {
   const port = Number(raw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`${label} must be an integer between 1 and 65535`);
   }
   return port;
+}
+
+function getFileName(filePath: string): string {
+  const parts = filePath.split(/[/\\]/);
+  return parts[parts.length - 1] || filePath;
+}
+
+function formatConfigSummary(hostCount: number, ruleCount: number, serviceCount: number): string {
+  const hostLabel = hostCount === 1 ? 'host' : 'hosts';
+  const ruleLabel = ruleCount === 1 ? 'rule' : 'rules';
+  const serviceLabel = serviceCount === 1 ? 'service' : 'services';
+  return `${hostCount} ${hostLabel}, ${ruleCount} ${ruleLabel}, ${serviceCount} ${serviceLabel}`;
 }
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
@@ -205,6 +255,34 @@ function collectForwardsFromEditor(): ForwardRuleDraft[] {
   });
 }
 
+function collectJumpHostDraft(): JumpHostConfig | undefined {
+  if (!useJumpHostInput.checked) {
+    return undefined;
+  }
+
+  const authType = jumpAuthTypeSelect.value === 'password' ? 'password' : 'privateKey';
+  const jumpHost: JumpHostConfig = {
+    sshHost: jumpSshHostInput.value.trim(),
+    sshPort: parsePort(jumpSshPortInput.value, 'Jump SSH Port'),
+    username: jumpUsernameInput.value.trim(),
+    authType,
+    password: jumpPasswordInput.value || undefined,
+    privateKey: jumpPrivateKeyInput.value || undefined,
+    passphrase: jumpPassphraseInput.value || undefined,
+  };
+
+  if (!jumpHost.sshHost) throw new Error('Jump SSH Host is required');
+  if (!jumpHost.username) throw new Error('Jump Username is required');
+  if (authType === 'password' && !jumpHost.password) {
+    throw new Error('Jump Password is required for password auth');
+  }
+  if (authType === 'privateKey' && !jumpHost.privateKey?.trim()) {
+    throw new Error('Jump Private Key is required for private key auth');
+  }
+
+  return jumpHost;
+}
+
 function collectServicesFromEditor(): ServiceDraft[] {
   const rows = Array.from(serviceEditorList.querySelectorAll<HTMLElement>('.forward-row'));
   return rows.map((row) => {
@@ -226,11 +304,20 @@ function resetForm(): void {
   hostIdInput.value = '';
   editingPrivateKeyPath = undefined;
   sshPortInput.value = '22';
+  useJumpHostInput.checked = false;
+  jumpSshHostInput.value = '';
+  jumpSshPortInput.value = '22';
+  jumpUsernameInput.value = '';
+  jumpAuthTypeSelect.value = 'privateKey';
+  jumpPasswordInput.value = '';
+  jumpPrivateKeyInput.value = '';
+  jumpPassphraseInput.value = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
   forwardEditorList.appendChild(createForwardEditorRow());
   serviceEditorList.appendChild(createServiceEditorRow());
   toggleAuthFields();
+  toggleJumpSection();
 }
 
 function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
@@ -246,6 +333,14 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     passwordInput.value = host.password ?? '';
     privateKeyInput.value = host.privateKey ?? '';
     passphraseInput.value = host.passphrase ?? '';
+    useJumpHostInput.checked = Boolean(host.jumpHost);
+    jumpSshHostInput.value = host.jumpHost?.sshHost ?? '';
+    jumpSshPortInput.value = host.jumpHost?.sshPort ? String(host.jumpHost.sshPort) : '22';
+    jumpUsernameInput.value = host.jumpHost?.username ?? '';
+    jumpAuthTypeSelect.value = host.jumpHost?.authType ?? 'privateKey';
+    jumpPasswordInput.value = host.jumpHost?.password ?? '';
+    jumpPrivateKeyInput.value = host.jumpHost?.privateKey ?? '';
+    jumpPassphraseInput.value = host.jumpHost?.passphrase ?? '';
     editingPrivateKeyPath = host.privateKeyPath;
 
     forwardEditorList.innerHTML = '';
@@ -273,6 +368,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   }
 
   toggleAuthFields();
+  toggleJumpSection();
   hostDialog.showModal();
 }
 
@@ -446,7 +542,7 @@ function render(): void {
         <div class="group-head">
           <div>
             <div class="group-title">${host.name}</div>
-            <div class="group-desc">${host.username}@${host.sshHost}:${host.sshPort}</div>
+            <div class="group-desc">${host.username}@${host.sshHost}:${host.sshPort}${host.jumpHost ? ` · via ${host.jumpHost.username}@${host.jumpHost.sshHost}:${host.jumpHost.sshPort}` : ''}</div>
           </div>
           <div class="row-actions">
             <button class="btn btn-secondary btn-sm" data-action="edit-host">Edit Host</button>
@@ -669,6 +765,8 @@ closeHostDialogButton.addEventListener('click', closeHostDialog);
 cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
 authTypeSelect.addEventListener('change', toggleAuthFields);
+useJumpHostInput.addEventListener('change', toggleJumpSection);
+jumpAuthTypeSelect.addEventListener('change', toggleJumpAuthFields);
 closeServiceLogDialogButton.addEventListener('click', () => {
   stopLogAutoRefresh();
   serviceLogDialog.close();
@@ -680,6 +778,39 @@ serviceLogDialog.addEventListener('close', () => {
 window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
   stopStatusAutoRefresh();
+});
+
+importJumpPrivateKeyButton.addEventListener('click', async () => {
+  try {
+    const imported = await window.serviceApi.importPrivateKey();
+    if (!imported) return;
+    jumpPrivateKeyInput.value = imported.content;
+    setMessage(`Imported jump private key from ${imported.path}`, 'success');
+  } catch (error) {
+    setMessage((error as Error).message, 'error');
+  }
+});
+
+importConfigButton.addEventListener('click', async () => {
+  try {
+    const result: ConfigTransferResult | null = await window.serviceApi.importConfig();
+    if (!result) return;
+    await loadHosts();
+    if (hostDialog.open) closeHostDialog();
+    setMessage(`Imported ${formatConfigSummary(result.hostCount, result.ruleCount, result.serviceCount)} from ${getFileName(result.path)}`, 'success');
+  } catch (error) {
+    setMessage((error as Error).message, 'error');
+  }
+});
+
+exportConfigButton.addEventListener('click', async () => {
+  try {
+    const result: ConfigTransferResult | null = await window.serviceApi.exportConfig();
+    if (!result) return;
+    setMessage(`Exported ${formatConfigSummary(result.hostCount, result.ruleCount, result.serviceCount)} to ${getFileName(result.path)}`, 'success');
+  } catch (error) {
+    setMessage((error as Error).message, 'error');
+  }
 });
 
 form.addEventListener('submit', async (event) => {
@@ -697,6 +828,7 @@ form.addEventListener('submit', async (event) => {
       privateKey: privateKeyInput.value || undefined,
       passphrase: passphraseInput.value.trim() || undefined,
       privateKeyPath: editingPrivateKeyPath,
+      jumpHost: collectJumpHostDraft(),
       forwards: collectForwardsFromEditor(),
       services: collectServicesFromEditor(),
     };

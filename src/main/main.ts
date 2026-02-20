@@ -3,12 +3,15 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type {
+  AuthType,
+  ConfigTransferResult,
   ForwardRule,
   ForwardRuleDraft,
   ForwardState,
   HostConfig,
   HostDraft,
   HostView,
+  JumpHostConfig,
   PrivateKeyImportResult,
   ServiceLogsResult,
   ServiceConfig,
@@ -25,6 +28,8 @@ const IPC_CHANNELS = {
   listHosts: 'host:list',
   saveHost: 'host:save',
   deleteHost: 'host:delete',
+  exportConfig: 'config:export',
+  importConfig: 'config:import',
   deleteService: 'service:delete',
   deleteForward: 'forward:delete',
   startService: 'service:start',
@@ -38,6 +43,23 @@ const IPC_CHANNELS = {
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
 } as const;
+
+interface SshEndpointDraft {
+  sshHost: string;
+  sshPort: number | string;
+  username: string;
+  authType: AuthType;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+}
+
+interface ExportedConfigFile {
+  schemaVersion: number;
+  exportedAt: string;
+  app: string;
+  hosts: HostConfig[];
+}
 
 const runtimeStatus = new Map<string, { status: ServiceStatus; pid?: number; error?: string; updatedAt?: string }>();
 const runtimeForwardStatus = new Map<string, { state: ForwardState; error?: string }>();
@@ -173,40 +195,76 @@ function validateServiceDraft(input: ServiceDraft): ServiceConfig {
   return service;
 }
 
-function validateHostDraft(input: HostDraft): HostConfig {
-  const host: HostConfig = {
-    id: input.id?.trim() || randomUUID(),
-    name: input.name.trim(),
+function validateSshEndpoint(
+  input: SshEndpointDraft,
+  scope: 'target' | 'jump',
+  options?: { allowMissingPrivateKey?: boolean }
+): JumpHostConfig {
+  const label = scope === 'target' ? 'Target' : 'Jump host';
+  const endpoint: JumpHostConfig = {
     sshHost: input.sshHost.trim(),
     sshPort: Number(input.sshPort),
     username: input.username.trim(),
     authType: input.authType,
-    password: input.password?.trim() || undefined,
-    privateKey: input.privateKey || undefined,
-    passphrase: input.passphrase?.trim() || undefined,
+    password: input.password,
+    privateKey: input.privateKey,
+    passphrase: input.passphrase,
+  };
+
+  if (!endpoint.sshHost) throw new Error(`${label} SSH host is required.`);
+  if (!endpoint.username) throw new Error(`${label} SSH username is required.`);
+  if (!Number.isInteger(endpoint.sshPort) || endpoint.sshPort < 1 || endpoint.sshPort > 65535) {
+    throw new Error(`${label} SSH port must be an integer in range 1-65535.`);
+  }
+
+  if (endpoint.authType === 'password') {
+    if (!endpoint.password) throw new Error(`${label} password is required for password auth.`);
+    endpoint.privateKey = undefined;
+    endpoint.passphrase = undefined;
+  } else {
+    if (!endpoint.privateKey?.trim() && !options?.allowMissingPrivateKey) {
+      throw new Error(`${label} private key is required for private key auth.`);
+    }
+    endpoint.password = undefined;
+  }
+
+  return endpoint;
+}
+
+function validateHostDraft(input: HostDraft): HostConfig {
+  const target = validateSshEndpoint(
+    {
+      sshHost: input.sshHost,
+      sshPort: input.sshPort,
+      username: input.username,
+      authType: input.authType,
+      password: input.password,
+      privateKey: input.privateKey,
+      passphrase: input.passphrase,
+    },
+    'target',
+    { allowMissingPrivateKey: Boolean(input.privateKeyPath) }
+  );
+
+  const host: HostConfig = {
+    id: input.id?.trim() || randomUUID(),
+    name: input.name.trim(),
+    sshHost: target.sshHost,
+    sshPort: target.sshPort,
+    username: target.username,
+    authType: target.authType,
+    password: target.password,
+    privateKey: target.privateKey,
+    passphrase: target.passphrase,
     privateKeyPath: input.privateKeyPath?.trim() || undefined,
+    jumpHost: input.jumpHost ? validateSshEndpoint(input.jumpHost, 'jump') : undefined,
     forwards: (input.forwards ?? []).map((forward) => validateForwardDraft(forward)),
     services: (input.services ?? []).map((service) => validateServiceDraft(service)),
   };
 
   if (!host.name) throw new Error('Host name is required.');
-  if (!host.sshHost) throw new Error('SSH host is required.');
-  if (!host.username) throw new Error('SSH username is required.');
-  if (!Number.isInteger(host.sshPort) || host.sshPort < 1 || host.sshPort > 65535) {
-    throw new Error('SSH port must be an integer in range 1-65535.');
-  }
-  if (host.authType === 'password' && !host.password) {
-    throw new Error('Password is required when auth type is password.');
-  }
   if (host.authType === 'privateKey' && !host.privateKey?.trim() && !host.privateKeyPath) {
-    throw new Error('Private key is required when auth type is private key.');
-  }
-  if (host.authType === 'password') {
-    host.privateKey = undefined;
-    host.privateKeyPath = undefined;
-    host.passphrase = undefined;
-  } else {
-    host.password = undefined;
+    throw new Error('Target private key is required when auth type is private key.');
   }
 
   return host;
@@ -272,6 +330,13 @@ async function resolveHostPrivateKey(host: HostConfig): Promise<string | undefin
 }
 
 async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<ForwardRuntimeConfig> {
+  const jumpHost = host.jumpHost
+    ? {
+        ...host.jumpHost,
+        privateKey: host.jumpHost.authType === 'privateKey' ? host.jumpHost.privateKey : undefined,
+      }
+    : undefined;
+
   return {
     id: forward.id,
     sshHost: host.sshHost,
@@ -281,6 +346,7 @@ async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<
     password: host.password,
     privateKey: await resolveHostPrivateKey(host),
     passphrase: host.passphrase,
+    jumpHost,
     localHost: forward.localHost,
     localPort: forward.localPort,
     remoteHost: forward.remoteHost,
@@ -314,11 +380,154 @@ async function autoStartHostRules(host: HostConfig): Promise<void> {
   }
 }
 
+function countRules(hosts: HostConfig[]): number {
+  return hosts.reduce((total, host) => total + host.forwards.length, 0);
+}
+
+function countServices(hosts: HostConfig[]): number {
+  return hosts.reduce((total, host) => total + host.services.length, 0);
+}
+
+function parseImportedHostDrafts(data: unknown): HostDraft[] {
+  if (Array.isArray(data)) {
+    return data as HostDraft[];
+  }
+  if (data && typeof data === 'object') {
+    const hosts = (data as { hosts?: unknown }).hosts;
+    if (Array.isArray(hosts)) {
+      return hosts as HostDraft[];
+    }
+  }
+  throw new Error('Invalid config file format. Expected an array of hosts or an object with "hosts".');
+}
+
+function ensureUniqueImportedIds(hosts: HostConfig[]): HostConfig[] {
+  const hostIds = new Set<string>();
+  const forwardIds = new Set<string>();
+  const serviceIdsByHost = new Map<string, Set<string>>();
+
+  return hosts.map((host) => {
+    const nextHostId = host.id && !hostIds.has(host.id) ? host.id : randomUUID();
+    hostIds.add(nextHostId);
+
+    const forwards = host.forwards.map((forward) => {
+      const nextForwardId = forward.id && !forwardIds.has(forward.id) ? forward.id : randomUUID();
+      forwardIds.add(nextForwardId);
+      return { ...forward, id: nextForwardId };
+    });
+
+    const serviceIds = serviceIdsByHost.get(nextHostId) ?? new Set<string>();
+    serviceIdsByHost.set(nextHostId, serviceIds);
+    const services = host.services.map((service) => {
+      const nextServiceId = service.id && !serviceIds.has(service.id) ? service.id : randomUUID();
+      serviceIds.add(nextServiceId);
+      return { ...service, id: nextServiceId };
+    });
+
+    return {
+      ...host,
+      id: nextHostId,
+      forwards,
+      services,
+    };
+  });
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.listHosts, async () => {
     const hosts = getStore().listHosts();
     syncKnownForwards(hosts);
     return toView(hosts);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.exportConfig, async (): Promise<ConfigTransferResult | null> => {
+    const hosts = getStore().listHosts();
+    const suggestedName = `service-manager-config-${new Date().toISOString().slice(0, 10)}.json`;
+    const result = await dialog.showSaveDialog({
+      title: 'Export Service Manager Config',
+      defaultPath: path.join(app.getPath('documents'), suggestedName),
+      filters: [{ name: 'JSON Files', extensions: ['json'] }],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return null;
+    }
+
+    const payload: ExportedConfigFile = {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      app: 'service-manager',
+      hosts,
+    };
+    await fs.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return {
+      path: result.filePath,
+      hostCount: hosts.length,
+      ruleCount: countRules(hosts),
+      serviceCount: countServices(hosts),
+    };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.importConfig, async (): Promise<ConfigTransferResult | null> => {
+    const result = await dialog.showOpenDialog({
+      title: 'Import Service Manager Config',
+      defaultPath: app.getPath('documents'),
+      properties: ['openFile'],
+      filters: [
+        { name: 'JSON Files', extensions: ['json'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    const selectedPath = result.filePaths[0];
+    const raw = await fs.readFile(selectedPath, 'utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('Invalid JSON file.');
+    }
+
+    const importedDrafts = parseImportedHostDrafts(parsed);
+    const validatedHosts = ensureUniqueImportedIds(
+      importedDrafts.map((draft, index) => {
+        try {
+          return validateHostDraft(draft);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Host ${index + 1}: ${message}`);
+        }
+      })
+    );
+
+    const existingHosts = getStore().listHosts();
+    await portForwardManager.stopAll();
+    await tunnelManager.stopAll();
+    for (const host of existingHosts) {
+      for (const forward of host.forwards) {
+        tunnelManager.clearTunnel(forward.id);
+        forwardOwners.delete(forward.id);
+      }
+      for (const service of host.services) {
+        emitForwardStatus(host.id, service.id, 'none');
+      }
+    }
+
+    await getStore().replaceHosts(validatedHosts);
+    syncKnownForwards(validatedHosts);
+    for (const host of validatedHosts) {
+      await autoStartHostRules(host);
+    }
+
+    return {
+      path: selectedPath,
+      hostCount: validatedHosts.length,
+      ruleCount: countRules(validatedHosts),
+      serviceCount: countServices(validatedHosts),
+    };
   });
 
   ipcMain.handle(IPC_CHANNELS.saveHost, async (_event, hostDraft: HostDraft) => {
@@ -627,10 +836,14 @@ app.whenReady().then(async () => {
   const filePath = path.join(app.getPath('userData'), 'service-manager.json');
   store = new ServiceStore(filePath);
   await store.load();
-  syncKnownForwards(store.listHosts());
+  const hosts = store.listHosts();
+  syncKnownForwards(hosts);
 
   registerIpcHandlers();
   wireForwardStatusBroadcast();
+  for (const host of hosts) {
+    await autoStartHostRules(host);
+  }
   createWindow();
 
   app.on('activate', () => {

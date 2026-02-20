@@ -5,6 +5,8 @@ const api: ServiceApi = {
   listHosts: () => ipcRenderer.invoke('host:list'),
   saveHost: (host: HostDraft) => ipcRenderer.invoke('host:save', host),
   deleteHost: (id: string) => ipcRenderer.invoke('host:delete', id),
+  exportConfig: () => ipcRenderer.invoke('config:export'),
+  importConfig: () => ipcRenderer.invoke('config:import'),
   deleteService: (hostId: string, serviceId: string) =>
     ipcRenderer.invoke('service:delete', { hostId, serviceId }),
   deleteForward: (hostId: string, forwardId: string) =>

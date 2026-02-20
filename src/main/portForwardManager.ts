@@ -4,7 +4,8 @@ import { Client, type ConnectConfig } from 'ssh2';
 import type { HostConfig, ServiceConfig } from '../shared/types';
 
 interface RunningForward {
-  client: Client;
+  targetClient: Client;
+  jumpClient?: Client;
   server: net.Server;
   localPort: number;
 }
@@ -26,12 +27,28 @@ export class PortForwardManager {
       await this.stop(id);
     }
 
-    const client = new Client();
+    const targetClient = new Client();
+    let jumpClient: Client | undefined;
+
     const connectConfig = await this.toConnectConfig(host);
-    await this.connectClient(client, connectConfig);
+    if (host.jumpHost) {
+      jumpClient = new Client();
+      await this.connectClient(jumpClient, this.toJumpConnectConfig(host));
+      connectConfig.sock = await new Promise((resolve, reject) => {
+        jumpClient!.forwardOut('127.0.0.1', 0, host.sshHost, host.sshPort, (error, stream) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(stream);
+        });
+      });
+    }
+
+    await this.connectClient(targetClient, connectConfig);
 
     const server = net.createServer((socket) => {
-      client.forwardOut(
+      targetClient.forwardOut(
         socket.localAddress ?? '127.0.0.1',
         socket.localPort ?? 0,
         '127.0.0.1',
@@ -72,12 +89,15 @@ export class PortForwardManager {
       this.stop(id).catch(() => undefined);
     };
 
-    client.on('close', onClose);
-    client.on('error', onClose);
+    targetClient.on('close', onClose);
+    targetClient.on('error', onClose);
+    jumpClient?.on('close', onClose);
+    jumpClient?.on('error', onClose);
     server.on('error', onClose);
 
     this.running.set(id, {
-      client,
+      targetClient,
+      jumpClient,
       server,
       localPort: service.forwardLocalPort,
     });
@@ -100,7 +120,13 @@ export class PortForwardManager {
     });
 
     try {
-      running.client.end();
+      running.targetClient.end();
+    } catch {
+      // no-op
+    }
+
+    try {
+      running.jumpClient?.end();
     } catch {
       // no-op
     }
@@ -146,6 +172,36 @@ export class PortForwardManager {
       config.passphrase = host.passphrase;
     }
 
+    return config;
+  }
+
+  private toJumpConnectConfig(host: HostConfig): ConnectConfig {
+    if (!host.jumpHost) {
+      throw new Error('Jump host config is missing.');
+    }
+
+    const config: ConnectConfig = {
+      host: host.jumpHost.sshHost,
+      port: host.jumpHost.sshPort,
+      username: host.jumpHost.username,
+      keepaliveInterval: 10000,
+      keepaliveCountMax: 6,
+      readyTimeout: 20000,
+    };
+
+    if (host.jumpHost.authType === 'password') {
+      config.password = host.jumpHost.password;
+      return config;
+    }
+
+    if (!host.jumpHost.privateKey?.trim()) {
+      throw new Error('Jump host private key is required for port forward.');
+    }
+
+    config.privateKey = host.jumpHost.privateKey;
+    if (host.jumpHost.passphrase) {
+      config.passphrase = host.jumpHost.passphrase;
+    }
     return config;
   }
 

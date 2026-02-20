@@ -18,6 +18,7 @@ This project is now aligned with the **UI style** and **development approach** o
 ## Core Features
 
 1. Host list with SSH connection settings.
+   - supports optional `Jump Host` configuration directly in Add/Edit Host form (no separate entry page/button)
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
    - `Services` (remote process lifecycle)
@@ -54,6 +55,10 @@ This project is now aligned with the **UI style** and **development approach** o
    - direct paste of key content
    - import key file from local filesystem
    - import dialog defaults to `~/.ssh` directory
+10. Config transfer:
+   - `Import Config` from JSON
+   - `Export Config` to JSON
+   - includes hosts, jump-host settings, forwarding rules, and services
 
 ## Tech Stack
 
@@ -93,6 +98,7 @@ Build & run workflow:
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section
   - Services section
+  - Jump Host section (optional)
 
 ## Change Discipline
 

@@ -22,6 +22,16 @@ export interface ForwardRuleDraft {
   autoStart: boolean;
 }
 
+export interface JumpHostConfig {
+  sshHost: string;
+  sshPort: number;
+  username: string;
+  authType: AuthType;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+}
+
 export interface ServiceConfig {
   id: string;
   name: string;
@@ -44,6 +54,7 @@ export interface HostConfig {
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
+  jumpHost?: JumpHostConfig;
   forwards: ForwardRule[];
   services: ServiceConfig[];
 }
@@ -86,6 +97,7 @@ export interface HostDraft {
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
+  jumpHost?: JumpHostConfig;
   forwards: ForwardRuleDraft[];
   services: ServiceDraft[];
 }
@@ -93,6 +105,13 @@ export interface HostDraft {
 export interface PrivateKeyImportResult {
   path: string;
   content: string;
+}
+
+export interface ConfigTransferResult {
+  path: string;
+  hostCount: number;
+  ruleCount: number;
+  serviceCount: number;
 }
 
 export interface ServiceStatusChange {
@@ -132,6 +151,8 @@ export interface ServiceApi {
   refreshService: (hostId: string, serviceId: string) => Promise<void>;
   getServiceLogs: (hostId: string, serviceId: string) => Promise<ServiceLogsResult>;
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
+  exportConfig: () => Promise<ConfigTransferResult | null>;
+  importConfig: () => Promise<ConfigTransferResult | null>;
   openExternal: (url: string) => Promise<void>;
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;
