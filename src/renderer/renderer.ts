@@ -40,6 +40,7 @@ const overviewHintElement = requireElement<HTMLElement>('#overview-hint');
 const serviceLogDialog = requireElement<HTMLDialogElement>('#service-log-dialog');
 const serviceLogTitle = requireElement<HTMLElement>('#service-log-title');
 const closeServiceLogDialogButton = requireElement<HTMLButtonElement>('#close-service-log-dialog-btn');
+const logAutoScrollInput = requireElement<HTMLInputElement>('#log-auto-scroll');
 const serviceLogTerminal = requireElement<HTMLDivElement>('#service-log-terminal');
 
 let hosts: HostView[] = [];
@@ -104,7 +105,7 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
       <input class="input" data-field="port" type="number" min="1" max="65535" value="${draft?.port ?? ''}" required />
     </label>
     <label class="field field-xs">
-      Forward Local Port
+      Forward Local Port (Optional)
       <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${draft?.forwardLocalPort ?? ''}" />
     </label>
     <button type="button" class="btn btn-danger btn-sm forward-remove">Remove</button>
@@ -215,6 +216,9 @@ async function refreshAllServices(silent = false): Promise<void> {
   try {
     for (const host of hosts) {
       for (const service of host.services) {
+        if (service.status === 'starting' || service.status === 'stopping') {
+          continue;
+        }
         try {
           await window.serviceApi.refreshService(host.id, service.id);
         } catch (error) {
@@ -247,7 +251,9 @@ async function loadServiceLogs(): Promise<void> {
   const logs: ServiceLogsResult = await window.serviceApi.getServiceLogs(activeLogTarget.hostId, activeLogTarget.serviceId);
   const merged = `${logs.stdout || ''}${logs.stderr || ''}`;
   serviceLogTerminal.innerHTML = ansiToHtml(merged);
-  serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+  if (logAutoScrollInput.checked) {
+    serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+  }
 }
 
 function escapeHtml(text: string): string {
@@ -383,7 +389,20 @@ function render(): void {
       row.className = 'data-row';
       const updated = service.updatedAt ? new Date(service.updatedAt).toLocaleString() : '-';
       const pidText = service.pid ? String(service.pid) : '-';
-      const portText = service.forwardLocalPort ? `${service.forwardLocalPort} -> ${service.port}` : `${service.port}`;
+      const portText = (() => {
+        if (!service.forwardLocalPort) {
+          return `<span>${service.port}</span>`;
+        }
+        const base = `${service.forwardLocalPort} -> ${service.port}`;
+        if (service.forwardState === 'ok') {
+          return `<a class="forward-link" href="http://127.0.0.1:${service.forwardLocalPort}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+        }
+        if (service.forwardState === 'error') {
+          const err = (service.forwardError || 'Forward failed').replace(/"/g, '&quot;');
+          return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+        }
+        return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
+      })();
       const startDisabled = canStart(service.status) ? '' : 'disabled';
       const stopDisabled = canStop(service.status) ? '' : 'disabled';
       row.innerHTML = `
@@ -438,6 +457,16 @@ function render(): void {
 
 addHostButton.addEventListener('click', () => {
   openHostDialog('create');
+});
+
+serviceTableBody.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement;
+  const link = target.closest('a.forward-link') as HTMLAnchorElement | null;
+  if (!link) return;
+  event.preventDefault();
+  const url = link.getAttribute('href');
+  if (!url) return;
+  void window.serviceApi.openExternal(url);
 });
 
 addServiceButton.addEventListener('click', () => {
@@ -511,6 +540,8 @@ window.serviceApi.onStatusChanged((change) => {
   service.pid = change.pid;
   service.error = change.error;
   service.updatedAt = change.updatedAt;
+  service.forwardState = change.forwardState;
+  service.forwardError = change.forwardError;
   render();
 
   if (activeLogTarget && activeLogTarget.hostId === change.hostId && activeLogTarget.serviceId === change.serviceId) {

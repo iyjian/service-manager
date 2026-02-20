@@ -22,7 +22,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - service name
    - start command
    - exposed port
-   - forward local port (optional)
+   - forward local port (optional; if empty, no local forwarding is created)
 3. Service status in panel based on saved PID:
    - PID exists and is alive: `running`
    - PID missing or dead: `stopped`
@@ -30,11 +30,13 @@ This project is now aligned with the **UI style** and **development approach** o
 4. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
    - logs are captured as a single combined stream on server side, preserving stdout/stderr ordering like terminal output.
+   - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but scroll position is preserved.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
 5. Service actions in list: `Start`, `Stop`.
    - `Stop` sends `SIGTERM` to the PID's process group on remote host (no stop command config), so process trees (e.g. watch mode) can be stopped together.
    - only `Start` / `Stop` remain in list actions; service delete is handled in host edit form.
    - when service is running and `forward local port` is configured, app auto creates SSH local port forwarding (`127.0.0.1:<local>` -> `remote:exposedPort`); forwarding is closed when service stops.
+   - Port column shows forwarding state: green check for success (with clickable `http://127.0.0.1:<local>` link opened by system default browser), red cross for failure.
 6. Host private key supports both:
    - direct paste of key content
    - import key file from local filesystem

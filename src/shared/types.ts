@@ -1,6 +1,7 @@
 export type AuthType = 'password' | 'privateKey';
 
 export type ServiceStatus = 'running' | 'stopped' | 'starting' | 'stopping' | 'unknown' | 'error';
+export type ForwardState = 'none' | 'ok' | 'error';
 
 export interface ServiceConfig {
   id: string;
@@ -31,6 +32,8 @@ export interface ServiceRuntime extends ServiceConfig {
   status: ServiceStatus;
   error?: string;
   updatedAt?: string;
+  forwardState?: ForwardState;
+  forwardError?: string;
 }
 
 export interface HostView extends Omit<HostConfig, 'services'> {
@@ -71,6 +74,8 @@ export interface ServiceStatusChange {
   pid?: number;
   error?: string;
   updatedAt?: string;
+  forwardState?: ForwardState;
+  forwardError?: string;
 }
 
 export interface ServiceLogsResult {
@@ -88,5 +93,6 @@ export interface ServiceApi {
   refreshService: (hostId: string, serviceId: string) => Promise<void>;
   getServiceLogs: (hostId: string, serviceId: string) => Promise<ServiceLogsResult>;
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
+  openExternal: (url: string) => Promise<void>;
   onStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
 }

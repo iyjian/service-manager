@@ -16,6 +16,7 @@ const api: ServiceApi = {
   getServiceLogs: (hostId: string, serviceId: string) =>
     ipcRenderer.invoke('service:logs', { hostId, serviceId }),
   importPrivateKey: () => ipcRenderer.invoke('auth:import-private-key'),
+  openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   onStatusChanged: (listener: (change: ServiceStatusChange) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, change: ServiceStatusChange): void => {
       listener(change);

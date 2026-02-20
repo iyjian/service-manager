@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type {
+  ForwardState,
   HostConfig,
   HostDraft,
   HostView,
@@ -27,9 +28,11 @@ const IPC_CHANNELS = {
   getServiceLogs: 'service:logs',
   statusChanged: 'service:status',
   importPrivateKey: 'auth:import-private-key',
+  openExternal: 'app:open-external',
 } as const;
 
 const runtimeStatus = new Map<string, { status: ServiceStatus; pid?: number; error?: string; updatedAt?: string }>();
+const runtimeForwardStatus = new Map<string, { state: ForwardState; error?: string }>();
 let store: ServiceStore | null = null;
 const portForwardManager = new PortForwardManager();
 
@@ -79,17 +82,24 @@ function getStatus(
   };
 }
 
+function getForwardStatus(hostId: string, serviceId: string): { state: ForwardState; error?: string } {
+  return runtimeForwardStatus.get(serviceKey(hostId, serviceId)) ?? { state: 'none' };
+}
+
 function toView(hosts: HostConfig[]): HostView[] {
   return hosts.map((host) => ({
     ...host,
     services: host.services.map((service) => {
       const status = getStatus(host.id, service.id, service.pid);
+      const forward = getForwardStatus(host.id, service.id);
       return {
         ...service,
         status: status.status,
         pid: status.pid,
         error: status.error,
         updatedAt: status.updatedAt,
+        forwardState: service.forwardLocalPort ? forward.state : 'none',
+        forwardError: service.forwardLocalPort ? forward.error : undefined,
       };
     }),
   }));
@@ -161,6 +171,7 @@ function validateHostDraft(input: HostDraft): HostConfig {
 }
 
 function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pid?: number, error?: string): void {
+  const forward = getForwardStatus(hostId, serviceId);
   const payload = {
     hostId,
     serviceId,
@@ -168,12 +179,20 @@ function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pi
     pid,
     error,
     updatedAt: new Date().toISOString(),
+    forwardState: forward.state,
+    forwardError: forward.error,
   };
   runtimeStatus.set(serviceKey(hostId, serviceId), payload);
 
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(IPC_CHANNELS.statusChanged, payload);
   }
+}
+
+function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string): void {
+  runtimeForwardStatus.set(serviceKey(hostId, serviceId), { state, error });
+  const current = runtimeStatus.get(serviceKey(hostId, serviceId));
+  emitStatus(hostId, serviceId, current?.status ?? 'unknown', current?.pid, current?.error);
 }
 
 function logRuntimeError(scope: string, error: unknown, context?: Record<string, unknown>): void {
@@ -193,6 +212,9 @@ function registerIpcHandlers(): void {
     const previous = hostDraft.id ? getStore().findHostById(hostDraft.id) : undefined;
     if (previous) {
       await portForwardManager.stopMany(previous.services.map((service) => serviceForwardKey(previous.id, service.id)));
+      for (const service of previous.services) {
+        emitForwardStatus(previous.id, service.id, 'none');
+      }
     }
 
     const host = validateHostDraft(hostDraft);
@@ -200,6 +222,7 @@ function registerIpcHandlers(): void {
 
     for (const service of host.services) {
       if (!service.pid || !service.forwardLocalPort) {
+        emitForwardStatus(host.id, service.id, 'none');
         continue;
       }
       const status = await checkServiceStatus(host, service);
@@ -209,6 +232,7 @@ function registerIpcHandlers(): void {
         }
         try {
           await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+          emitForwardStatus(host.id, service.id, 'ok');
         } catch (error) {
           logRuntimeError('port-forward:start', error, {
             hostId: host.id,
@@ -216,7 +240,10 @@ function registerIpcHandlers(): void {
             localPort: service.forwardLocalPort,
             remotePort: service.port,
           });
+          emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
         }
+      } else {
+        emitForwardStatus(host.id, service.id, 'none');
       }
     }
     await getStore().upsertHost(host);
@@ -227,12 +254,16 @@ function registerIpcHandlers(): void {
     const host = getStore().findHostById(hostId);
     if (host) {
       await portForwardManager.stopMany(host.services.map((service) => serviceForwardKey(host.id, service.id)));
+      for (const service of host.services) {
+        emitForwardStatus(host.id, service.id, 'none');
+      }
     }
     await getStore().removeHost(hostId);
   });
 
   ipcMain.handle(IPC_CHANNELS.deleteService, async (_event, payload: { hostId: string; serviceId: string }) => {
     await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
+    emitForwardStatus(payload.hostId, payload.serviceId, 'none');
     await getStore().removeService(payload.hostId, payload.serviceId);
   });
 
@@ -242,8 +273,13 @@ function registerIpcHandlers(): void {
       if (!host) throw new Error('Host not found.');
       const service = host.services.find((item) => item.id === payload.serviceId);
       if (!service) throw new Error('Service not found.');
+      const currentState = runtimeStatus.get(serviceKey(host.id, service.id));
 
       const result = await checkServiceStatus(host, service);
+      if (currentState?.status === 'starting' && result.status === 'stopped') {
+        emitStatus(host.id, service.id, 'starting', service.pid);
+        return;
+      }
       if (result.status === 'running' && result.pid && result.pid !== service.pid) {
         service.pid = result.pid;
         await getStore().upsertHost(host);
@@ -251,6 +287,7 @@ function registerIpcHandlers(): void {
       if (result.status === 'running' && service.forwardLocalPort) {
         try {
           await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+          emitForwardStatus(host.id, service.id, 'ok');
         } catch (error) {
           logRuntimeError('port-forward:start', error, {
             hostId: host.id,
@@ -258,10 +295,14 @@ function registerIpcHandlers(): void {
             localPort: service.forwardLocalPort,
             remotePort: service.port,
           });
+          emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
         }
+      } else if (!service.forwardLocalPort) {
+        emitForwardStatus(host.id, service.id, 'none');
       }
       if (result.status === 'stopped' && service.pid) {
         await portForwardManager.stop(serviceForwardKey(host.id, service.id));
+        emitForwardStatus(host.id, service.id, 'none');
         service.pid = undefined;
         await getStore().upsertHost(host);
       }
@@ -302,6 +343,7 @@ function registerIpcHandlers(): void {
         if (status.status === 'running' && service.forwardLocalPort) {
           try {
             await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+            emitForwardStatus(host.id, service.id, 'ok');
           } catch (error) {
             logRuntimeError('port-forward:start', error, {
               hostId: host.id,
@@ -309,7 +351,10 @@ function registerIpcHandlers(): void {
               localPort: service.forwardLocalPort,
               remotePort: service.port,
             });
+            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
           }
+        } else if (!service.forwardLocalPort) {
+          emitForwardStatus(host.id, service.id, 'none');
         }
         emitStatus(host.id, service.id, status.status, service.pid, status.error);
       } catch (error) {
@@ -337,6 +382,7 @@ function registerIpcHandlers(): void {
         }
 
         await portForwardManager.stop(serviceForwardKey(host.id, service.id));
+        emitForwardStatus(host.id, service.id, 'none');
         service.pid = undefined;
         await getStore().upsertHost(host);
         emitStatus(host.id, service.id, 'stopped', undefined);
@@ -389,6 +435,19 @@ function registerIpcHandlers(): void {
     const filePath = result.filePaths[0];
     const content = await fs.readFile(filePath, 'utf8');
     return { path: filePath, content };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.openExternal, async (_event, rawUrl: string) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error('Invalid URL.');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only http/https URLs are allowed.');
+    }
+    await shell.openExternal(parsed.toString());
   });
 }
 
