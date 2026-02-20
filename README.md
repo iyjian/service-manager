@@ -116,6 +116,7 @@ Artifacts are generated under `release/`.
   - create git tag
   - build artifacts for macOS / Windows / Linux
   - publish GitHub Release with generated artifacts
+  - inject current repository owner/name into electron-builder publish config during CI build (for updater metadata)
 
 ## macOS Notice (Unsigned Build)
 

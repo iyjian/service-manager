@@ -80,6 +80,19 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Inject release repository for updater
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const repo = process.env.GITHUB_REPOSITORY || '';
+          const [owner, name] = repo.split('/');
+          if (!owner || !name) throw new Error(`Invalid GITHUB_REPOSITORY: ${repo}`);
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          pkg.build = pkg.build || {};
+          pkg.build.publish = [{ provider: 'github', owner, repo: name }];
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
 
@@ -113,6 +126,11 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+
+      - name: Inject release repository for updater
+        shell: pwsh
+        run: |
+          node -e "const fs=require('fs');const repo=process.env.GITHUB_REPOSITORY||'';const [owner,name]=repo.split('/');if(!owner||!name)throw new Error('Invalid GITHUB_REPOSITORY: '+repo);const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));pkg.build=pkg.build||{};pkg.build.publish=[{provider:'github',owner,repo:name}];fs.writeFileSync('package.json',JSON.stringify(pkg,null,2)+'`n');"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
@@ -156,6 +174,19 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+
+      - name: Inject release repository for updater
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const repo = process.env.GITHUB_REPOSITORY || '';
+          const [owner, name] = repo.split('/');
+          if (!owner || !name) throw new Error(`Invalid GITHUB_REPOSITORY: ${repo}`);
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          pkg.build = pkg.build || {};
+          pkg.build.publish = [{ provider: 'github', owner, repo: name }];
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
