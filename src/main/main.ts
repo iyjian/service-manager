@@ -3,6 +3,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type {
+  ForwardRule,
+  ForwardRuleDraft,
   ForwardState,
   HostConfig,
   HostDraft,
@@ -12,29 +14,37 @@ import type {
   ServiceConfig,
   ServiceDraft,
   ServiceStatus,
+  TunnelStatusChange,
 } from '../shared/types';
 import { ServiceStore } from './store';
 import { checkServiceStatus, getServiceLogs, startService, stopService } from './serviceRuntime';
 import { PortForwardManager } from './portForwardManager';
+import { TunnelManager, type ForwardRuntimeConfig } from './tunnelManager';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
   saveHost: 'host:save',
   deleteHost: 'host:delete',
   deleteService: 'service:delete',
+  deleteForward: 'forward:delete',
   startService: 'service:start',
   stopService: 'service:stop',
+  startForward: 'forward:start',
+  stopForward: 'forward:stop',
   refreshService: 'service:refresh',
   getServiceLogs: 'service:logs',
-  statusChanged: 'service:status',
+  serviceStatusChanged: 'service:status',
+  forwardStatusChanged: 'forward:status',
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
 } as const;
 
 const runtimeStatus = new Map<string, { status: ServiceStatus; pid?: number; error?: string; updatedAt?: string }>();
 const runtimeForwardStatus = new Map<string, { state: ForwardState; error?: string }>();
+const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 const portForwardManager = new PortForwardManager();
+const tunnelManager = new TunnelManager();
 
 function getStore(): ServiceStore {
   if (!store) {
@@ -89,6 +99,15 @@ function getForwardStatus(hostId: string, serviceId: string): { state: ForwardSt
 function toView(hosts: HostConfig[]): HostView[] {
   return hosts.map((host) => ({
     ...host,
+    forwards: host.forwards.map((forward) => {
+      const status = tunnelManager.getStatus(forward.id);
+      return {
+        ...forward,
+        status: status.status,
+        error: status.error,
+        reconnectAt: status.reconnectAt,
+      };
+    }),
     services: host.services.map((service) => {
       const status = getStatus(host.id, service.id, service.pid);
       const forward = getForwardStatus(host.id, service.id);
@@ -103,6 +122,28 @@ function toView(hosts: HostConfig[]): HostView[] {
       };
     }),
   }));
+}
+
+function validateForwardDraft(input: ForwardRuleDraft): ForwardRule {
+  const forward: ForwardRule = {
+    id: input.id?.trim() || randomUUID(),
+    localHost: input.localHost.trim(),
+    localPort: Number(input.localPort),
+    remoteHost: input.remoteHost.trim(),
+    remotePort: Number(input.remotePort),
+    autoStart: Boolean(input.autoStart),
+  };
+
+  if (!forward.localHost) throw new Error('Forward local host is required.');
+  if (!forward.remoteHost) throw new Error('Forward remote host is required.');
+  if (!Number.isInteger(forward.localPort) || forward.localPort < 1 || forward.localPort > 65535) {
+    throw new Error('Forward local port must be an integer in range 1-65535.');
+  }
+  if (!Number.isInteger(forward.remotePort) || forward.remotePort < 1 || forward.remotePort > 65535) {
+    throw new Error('Forward remote port must be an integer in range 1-65535.');
+  }
+
+  return forward;
 }
 
 function validateServiceDraft(input: ServiceDraft): ServiceConfig {
@@ -144,6 +185,7 @@ function validateHostDraft(input: HostDraft): HostConfig {
     privateKey: input.privateKey || undefined,
     passphrase: input.passphrase?.trim() || undefined,
     privateKeyPath: input.privateKeyPath?.trim() || undefined,
+    forwards: (input.forwards ?? []).map((forward) => validateForwardDraft(forward)),
     services: (input.services ?? []).map((service) => validateServiceDraft(service)),
   };
 
@@ -185,7 +227,7 @@ function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pi
   runtimeStatus.set(serviceKey(hostId, serviceId), payload);
 
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IPC_CHANNELS.statusChanged, payload);
+    win.webContents.send(IPC_CHANNELS.serviceStatusChanged, payload);
   }
 }
 
@@ -203,22 +245,105 @@ function logRuntimeError(scope: string, error: unknown, context?: Record<string,
   }
 }
 
+function syncKnownForwards(hosts: HostConfig[]): void {
+  const next = new Map<string, string>();
+  for (const host of hosts) {
+    for (const forward of host.forwards) {
+      tunnelManager.setKnownTunnel(forward.id);
+      next.set(forward.id, host.id);
+    }
+  }
+
+  for (const [forwardId] of forwardOwners) {
+    if (!next.has(forwardId)) {
+      forwardOwners.delete(forwardId);
+    }
+  }
+
+  for (const [forwardId, hostId] of next) {
+    forwardOwners.set(forwardId, hostId);
+  }
+}
+
+async function resolveHostPrivateKey(host: HostConfig): Promise<string | undefined> {
+  if (host.privateKey?.trim()) return host.privateKey;
+  if (!host.privateKeyPath) return undefined;
+  return fs.readFile(host.privateKeyPath, 'utf8');
+}
+
+async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<ForwardRuntimeConfig> {
+  return {
+    id: forward.id,
+    sshHost: host.sshHost,
+    sshPort: host.sshPort,
+    username: host.username,
+    authType: host.authType,
+    password: host.password,
+    privateKey: await resolveHostPrivateKey(host),
+    passphrase: host.passphrase,
+    localHost: forward.localHost,
+    localPort: forward.localPort,
+    remoteHost: forward.remoteHost,
+    remotePort: forward.remotePort,
+  };
+}
+
+async function stopAllHostRules(host: HostConfig): Promise<void> {
+  await Promise.all(host.forwards.map((forward) => tunnelManager.stop(forward.id)));
+}
+
+async function clearRemovedRules(previous: HostConfig, next: HostConfig): Promise<void> {
+  const nextIds = new Set(next.forwards.map((item) => item.id));
+  const removed = previous.forwards.filter((item) => !nextIds.has(item.id));
+  for (const forward of removed) {
+    await tunnelManager.stop(forward.id);
+    tunnelManager.clearTunnel(forward.id);
+    forwardOwners.delete(forward.id);
+  }
+}
+
+async function autoStartHostRules(host: HostConfig): Promise<void> {
+  for (const forward of host.forwards) {
+    if (!forward.autoStart) continue;
+    try {
+      const config = await toRuntimeConfig(host, forward);
+      void tunnelManager.start(config).catch(() => undefined);
+    } catch (error) {
+      logRuntimeError('forward:auto-start', error, { hostId: host.id, forwardId: forward.id });
+    }
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.listHosts, async () => {
-    return toView(getStore().listHosts());
+    const hosts = getStore().listHosts();
+    syncKnownForwards(hosts);
+    return toView(hosts);
   });
 
   ipcMain.handle(IPC_CHANNELS.saveHost, async (_event, hostDraft: HostDraft) => {
     const previous = hostDraft.id ? getStore().findHostById(hostDraft.id) : undefined;
     if (previous) {
       await portForwardManager.stopMany(previous.services.map((service) => serviceForwardKey(previous.id, service.id)));
+      await stopAllHostRules(previous);
       for (const service of previous.services) {
         emitForwardStatus(previous.id, service.id, 'none');
       }
     }
 
     const host = validateHostDraft(hostDraft);
+
+    if (previous) {
+      await clearRemovedRules(previous, host);
+    }
+
+    for (const forward of host.forwards) {
+      tunnelManager.setKnownTunnel(forward.id);
+      forwardOwners.set(forward.id, host.id);
+    }
+
     await getStore().upsertHost(host);
+    await autoStartHostRules(host);
 
     for (const service of host.services) {
       if (!service.pid || !service.forwardLocalPort) {
@@ -246,18 +371,25 @@ function registerIpcHandlers(): void {
         emitForwardStatus(host.id, service.id, 'none');
       }
     }
+
     await getStore().upsertHost(host);
     return toView([host])[0];
   });
 
   ipcMain.handle(IPC_CHANNELS.deleteHost, async (_event, hostId: string) => {
     const host = getStore().findHostById(hostId);
-    if (host) {
-      await portForwardManager.stopMany(host.services.map((service) => serviceForwardKey(host.id, service.id)));
-      for (const service of host.services) {
-        emitForwardStatus(host.id, service.id, 'none');
-      }
+    if (!host) return;
+
+    await portForwardManager.stopMany(host.services.map((service) => serviceForwardKey(host.id, service.id)));
+    await stopAllHostRules(host);
+    for (const forward of host.forwards) {
+      tunnelManager.clearTunnel(forward.id);
+      forwardOwners.delete(forward.id);
     }
+    for (const service of host.services) {
+      emitForwardStatus(host.id, service.id, 'none');
+    }
+
     await getStore().removeHost(hostId);
   });
 
@@ -265,6 +397,32 @@ function registerIpcHandlers(): void {
     await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
     emitForwardStatus(payload.hostId, payload.serviceId, 'none');
     await getStore().removeService(payload.hostId, payload.serviceId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.deleteForward, async (_event, payload: { hostId: string; forwardId: string }) => {
+    await tunnelManager.stop(payload.forwardId);
+    tunnelManager.clearTunnel(payload.forwardId);
+    forwardOwners.delete(payload.forwardId);
+    await getStore().removeForward(payload.hostId, payload.forwardId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.startForward, async (_event, payload: { hostId: string; forwardId: string }) => {
+    const host = getStore().findHostById(payload.hostId);
+    if (!host) throw new Error('Host not found.');
+    const forward = host.forwards.find((item) => item.id === payload.forwardId);
+    if (!forward) throw new Error('Forward rule not found.');
+
+    const config = await toRuntimeConfig(host, forward);
+    await tunnelManager.start(config);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.stopForward, async (_event, payload: { hostId: string; forwardId: string }) => {
+    const host = getStore().findHostById(payload.hostId);
+    if (!host) throw new Error('Host not found.');
+    const forward = host.forwards.find((item) => item.id === payload.forwardId);
+    if (!forward) throw new Error('Forward rule not found.');
+
+    await tunnelManager.stop(forward.id);
   });
 
   ipcMain.handle(IPC_CHANNELS.refreshService, async (_event, payload: { hostId: string; serviceId: string }) => {
@@ -423,9 +581,7 @@ function registerIpcHandlers(): void {
       title: 'Import Private Key',
       defaultPath: dialogDefaultPath,
       properties: ['openFile'],
-      filters: [
-        { name: 'All Files', extensions: ['*'] },
-      ],
+      filters: [{ name: 'All Files', extensions: ['*'] }],
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -451,12 +607,30 @@ function registerIpcHandlers(): void {
   });
 }
 
+function wireForwardStatusBroadcast(): void {
+  tunnelManager.on('status-changed', (change: TunnelStatusChange) => {
+    const hostId = forwardOwners.get(change.forwardId) ?? change.hostId;
+    const payload: TunnelStatusChange = {
+      hostId,
+      forwardId: change.forwardId,
+      status: change.status,
+      error: change.error,
+      reconnectAt: change.reconnectAt,
+    };
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC_CHANNELS.forwardStatusChanged, payload);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
   const filePath = path.join(app.getPath('userData'), 'service-manager.json');
   store = new ServiceStore(filePath);
   await store.load();
+  syncKnownForwards(store.listHosts());
 
   registerIpcHandlers();
+  wireForwardStatusBroadcast();
   createWindow();
 
   app.on('activate', () => {
@@ -468,11 +642,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    void portForwardManager.stopAll();
-    app.quit();
+    void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll()]).finally(() => app.quit());
   }
 });
 
 app.on('before-quit', () => {
-  void portForwardManager.stopAll();
+  void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll()]);
 });

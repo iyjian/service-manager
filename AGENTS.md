@@ -11,7 +11,13 @@ Build a desktop Electron application to manage services on remote servers throug
    - start command
    - exposed port
    - optional local forward port
-3. Service status and runtime state:
+3. Forwarding-rule management under each host (same capability model as `ssh-tunnel-manager`):
+   - local host / local port
+   - remote host / remote port
+   - auto-start flag
+   - runtime start/stop/delete in list
+   - tunnel status with reconnect countdown on error
+4. Service status and runtime state:
    - save PID on start
    - PID-alive means running; missing/dead PID means stopped
    - in-progress actions should surface explicit transition states (`starting` / `stopping`) instead of generic unknown
@@ -20,7 +26,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - capture logs as a single merged stream at source to preserve original output order
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
-4. Service actions in panel:
+5. Service actions in panel:
    - start
    - stop
    - status refresh is automatic in background (no per-row refresh button)
@@ -31,7 +37,17 @@ Build a desktop Electron application to manage services on remote servers throug
      - success: green check and clickable `http://127.0.0.1:<localPort>` link (opens via system default browser)
      - failure: red cross indicator (with error hint)
    - when forward local port is empty, treat forwarding as disabled (no forward attempt on start/refresh).
-4. Host private key auth supports key content input and key file import.
+   - Home page structure must be host-centric:
+     - each host is a top-level block
+     - each host contains `Tunnel List` and `Service List`
+6. Host edit page structure must follow same hierarchy:
+   - Forwarding Rules section
+   - Services section
+8. Overview cards must keep tunnel/service metrics explicit and separate:
+   - tunnel: running / stopped / errors
+   - service: running / stopped / errors
+   - layout should remain compact enough to stay one-line in default window width
+9. Host private key auth supports key content input and key file import.
    - private key import dialog should default to `~/.ssh` when available.
 
 ## Alignment Requirement (with `ssh-tunnel-manager`)

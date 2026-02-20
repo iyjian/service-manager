@@ -1,4 +1,12 @@
-import type { HostDraft, HostView, ServiceDraft, ServiceLogsResult, ServiceStatus } from '../shared/types';
+import type {
+  ForwardRuleDraft,
+  HostDraft,
+  HostView,
+  ServiceDraft,
+  ServiceLogsResult,
+  ServiceStatus,
+  TunnelStatus,
+} from '../shared/types';
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -24,17 +32,23 @@ const passwordRow = requireElement<HTMLElement>('#password-row');
 const privateKeyRow = requireElement<HTMLElement>('#private-key-row');
 const passphraseRow = requireElement<HTMLElement>('#passphrase-row');
 const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-private-key-btn');
+const forwardEditorList = requireElement<HTMLDivElement>('#forward-editor-list');
+const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
 const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
 const messageElement = requireElement<HTMLParagraphElement>('#message');
 const addHostButton = requireElement<HTMLButtonElement>('#qa-add-host-btn');
-const serviceTableBody = requireElement<HTMLTableSectionElement>('#service-table-body');
+const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
 const statHostsElement = requireElement<HTMLElement>('#stat-hosts');
+const statForwardsElement = requireElement<HTMLElement>('#stat-forwards');
 const statServicesElement = requireElement<HTMLElement>('#stat-services');
-const statRunningElement = requireElement<HTMLElement>('#stat-running');
-const statStoppedElement = requireElement<HTMLElement>('#stat-stopped');
-const statErrorsElement = requireElement<HTMLElement>('#stat-errors');
+const statTunnelRunningElement = requireElement<HTMLElement>('#stat-tunnel-running');
+const statTunnelStoppedElement = requireElement<HTMLElement>('#stat-tunnel-stopped');
+const statTunnelErrorsElement = requireElement<HTMLElement>('#stat-tunnel-errors');
+const statServiceRunningElement = requireElement<HTMLElement>('#stat-service-running');
+const statServiceStoppedElement = requireElement<HTMLElement>('#stat-service-stopped');
+const statServiceErrorsElement = requireElement<HTMLElement>('#stat-service-errors');
 const overviewHintElement = requireElement<HTMLElement>('#overview-hint');
 
 const serviceLogDialog = requireElement<HTMLDialogElement>('#service-log-dialog');
@@ -59,19 +73,26 @@ function setMessage(text: string, level: 'default' | 'success' | 'error' = 'defa
   messageElement.textContent = text;
 }
 
-function statusClass(status: ServiceStatus): string {
+function statusClass(status: ServiceStatus | TunnelStatus): string {
   if (status === 'running') return 'status-running';
   if (status === 'error') return 'status-error';
   if (status === 'starting' || status === 'stopping') return 'status-transition';
-  if (status === 'unknown') return 'status-transition';
   return 'status-stopped';
 }
 
-function canStart(status: ServiceStatus): boolean {
+function canStartService(status: ServiceStatus): boolean {
   return status === 'stopped' || status === 'error';
 }
 
-function canStop(status: ServiceStatus): boolean {
+function canStopService(status: ServiceStatus): boolean {
+  return status === 'running' || status === 'starting';
+}
+
+function canStartForward(status: TunnelStatus): boolean {
+  return status === 'stopped' || status === 'error';
+}
+
+function canStopForward(status: TunnelStatus): boolean {
   return status === 'running' || status === 'starting';
 }
 
@@ -85,6 +106,49 @@ function toggleAuthFields(): void {
     privateKeyRow.classList.remove('hidden');
     passphraseRow.classList.remove('hidden');
   }
+}
+
+function parsePort(raw: string, label: string): number {
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${label} must be an integer between 1 and 65535`);
+  }
+  return port;
+}
+
+function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'forward-row';
+  row.innerHTML = `
+    <input type="hidden" data-field="id" value="${draft?.id ?? ''}" />
+    <label class="field field-xs forward-local-host">
+      Local Host
+      <input class="input" data-field="localHost" value="${draft?.localHost ?? '127.0.0.1'}" required />
+    </label>
+    <label class="field field-xs forward-local-port">
+      Local Port
+      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${draft?.localPort ?? ''}" required />
+    </label>
+    <label class="field field-xs forward-remote-host">
+      Remote Host
+      <input class="input" data-field="remoteHost" value="${draft?.remoteHost ?? '127.0.0.1'}" required />
+    </label>
+    <label class="field field-xs forward-remote-port">
+      Remote Port
+      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${draft?.remotePort ?? ''}" required />
+    </label>
+    <label class="forward-auto">
+      <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
+      Auto Start
+    </label>
+    <button type="button" class="btn btn-danger btn-sm forward-remove">Delete Rule</button>
+  `;
+
+  row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
+    row.remove();
+  });
+
+  return row;
 }
 
 function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
@@ -118,6 +182,29 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   return row;
 }
 
+function collectForwardsFromEditor(): ForwardRuleDraft[] {
+  const rows = Array.from(forwardEditorList.querySelectorAll<HTMLElement>('.forward-row'));
+  return rows.map((row, index) => {
+    const get = (field: string): string =>
+      row.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
+    const autoStart = row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false;
+
+    const localHost = get('localHost');
+    const remoteHost = get('remoteHost');
+    if (!localHost) throw new Error(`Rule ${index + 1}: Local Host is required`);
+    if (!remoteHost) throw new Error(`Rule ${index + 1}: Remote Host is required`);
+
+    return {
+      id: get('id') || undefined,
+      localHost,
+      localPort: parsePort(get('localPort'), `Rule ${index + 1} Local Port`),
+      remoteHost,
+      remotePort: parsePort(get('remotePort'), `Rule ${index + 1} Remote Port`),
+      autoStart,
+    };
+  });
+}
+
 function collectServicesFromEditor(): ServiceDraft[] {
   const rows = Array.from(serviceEditorList.querySelectorAll<HTMLElement>('.forward-row'));
   return rows.map((row) => {
@@ -139,7 +226,9 @@ function resetForm(): void {
   hostIdInput.value = '';
   editingPrivateKeyPath = undefined;
   sshPortInput.value = '22';
+  forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
+  forwardEditorList.appendChild(createForwardEditorRow());
   serviceEditorList.appendChild(createServiceEditorRow());
   toggleAuthFields();
 }
@@ -158,6 +247,13 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     privateKeyInput.value = host.privateKey ?? '';
     passphraseInput.value = host.passphrase ?? '';
     editingPrivateKeyPath = host.privateKeyPath;
+
+    forwardEditorList.innerHTML = '';
+    for (const forward of host.forwards) {
+      forwardEditorList.appendChild(createForwardEditorRow(forward));
+    }
+    if (host.forwards.length === 0) forwardEditorList.appendChild(createForwardEditorRow());
+
     serviceEditorList.innerHTML = '';
     for (const service of host.services) {
       serviceEditorList.appendChild(
@@ -170,9 +266,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
         })
       );
     }
-    if (host.services.length === 0) {
-      serviceEditorList.appendChild(createServiceEditorRow());
-    }
+    if (host.services.length === 0) serviceEditorList.appendChild(createServiceEditorRow());
   } else {
     hostDialogTitle.textContent = 'Add Host';
     resetForm();
@@ -188,12 +282,18 @@ function closeHostDialog(): void {
 }
 
 function updateOverview(): void {
+  const forwards = hosts.flatMap((host) => host.forwards);
   const services = hosts.flatMap((host) => host.services);
+
   statHostsElement.textContent = String(hosts.length);
+  statForwardsElement.textContent = String(forwards.length);
   statServicesElement.textContent = String(services.length);
-  statRunningElement.textContent = String(services.filter((service) => service.status === 'running').length);
-  statStoppedElement.textContent = String(services.filter((service) => service.status === 'stopped').length);
-  statErrorsElement.textContent = String(services.filter((service) => service.status === 'error').length);
+  statTunnelRunningElement.textContent = String(forwards.filter((item) => item.status === 'running').length);
+  statTunnelStoppedElement.textContent = String(forwards.filter((item) => item.status === 'stopped').length);
+  statTunnelErrorsElement.textContent = String(forwards.filter((item) => item.status === 'error').length);
+  statServiceRunningElement.textContent = String(services.filter((item) => item.status === 'running').length);
+  statServiceStoppedElement.textContent = String(services.filter((item) => item.status === 'stopped').length);
+  statServiceErrorsElement.textContent = String(services.filter((item) => item.status === 'error').length);
   overviewHintElement.classList.toggle('hidden', hosts.length > 0);
 }
 
@@ -202,29 +302,17 @@ async function loadHosts(): Promise<void> {
   render();
 }
 
-async function refreshService(hostId: string, serviceId: string): Promise<void> {
-  try {
-    await window.serviceApi.refreshService(hostId, serviceId);
-  } catch (error) {
-    setMessage((error as Error).message, 'error');
-  }
-}
-
 async function refreshAllServices(silent = false): Promise<void> {
   if (isAutoRefreshing) return;
   isAutoRefreshing = true;
   try {
     for (const host of hosts) {
       for (const service of host.services) {
-        if (service.status === 'starting' || service.status === 'stopping') {
-          continue;
-        }
+        if (service.status === 'starting' || service.status === 'stopping') continue;
         try {
           await window.serviceApi.refreshService(host.id, service.id);
         } catch (error) {
-          if (!silent) {
-            setMessage((error as Error).message, 'error');
-          }
+          if (!silent) setMessage((error as Error).message, 'error');
         }
       }
     }
@@ -335,14 +423,18 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
   serviceLogDialog.showModal();
 }
 
+function formatStatus(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 function render(): void {
   updateOverview();
-  serviceTableBody.innerHTML = '';
+  hostTableBody.innerHTML = '';
 
   if (hosts.length === 0) {
     const row = document.createElement('tr');
-    row.innerHTML = `<td class="table-empty">No hosts or services configured.</td>`;
-    serviceTableBody.appendChild(row);
+    row.innerHTML = `<td class="table-empty">No hosts configured.</td>`;
+    hostTableBody.appendChild(row);
     return;
   }
 
@@ -363,11 +455,95 @@ function render(): void {
         </div>
       </td>
     `;
-    serviceTableBody.appendChild(groupRow);
+    hostTableBody.appendChild(groupRow);
 
-    const header = document.createElement('tr');
-    header.className = 'host-rules-head';
-    header.innerHTML = `
+    const tunnelTitle = document.createElement('tr');
+    tunnelTitle.className = 'host-rules-head';
+    tunnelTitle.innerHTML = '<th colspan="6">Tunnel List</th>';
+    hostTableBody.appendChild(tunnelTitle);
+
+    const tunnelHeader = document.createElement('tr');
+    tunnelHeader.className = 'host-rules-head';
+    tunnelHeader.innerHTML = `
+      <th>Rule</th>
+      <th>Local</th>
+      <th>Remote</th>
+      <th>Auto Start</th>
+      <th>Status</th>
+      <th>Actions</th>
+    `;
+    hostTableBody.appendChild(tunnelHeader);
+
+    if (host.forwards.length === 0) {
+      const empty = document.createElement('tr');
+      empty.className = 'data-row';
+      empty.innerHTML = `<td colspan="6" class="table-empty">No forwarding rules under this host.</td>`;
+      hostTableBody.appendChild(empty);
+    }
+
+    host.forwards.forEach((forward, index) => {
+      const row = document.createElement('tr');
+      row.className = 'data-row';
+      const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
+      const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
+      const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
+        ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
+        : '';
+      row.innerHTML = `
+        <td class="table-cell">#${index + 1}</td>
+        <td class="table-cell">${forward.localHost}:${forward.localPort}</td>
+        <td class="table-cell">${forward.remoteHost}:${forward.remotePort}</td>
+        <td class="table-cell auto-start-cell">${forward.autoStart ? '✓' : '✗'}</td>
+        <td class="table-cell">
+          <span class="status-indicator ${statusClass(forward.status)}" title="${forward.error ?? ''}">
+            <span class="status-dot"></span>
+            <span class="status-label">${formatStatus(forward.status)}</span>
+          </span>
+          ${retry}
+        </td>
+        <td class="table-cell">
+          <div class="row-actions">
+            <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>Start</button>
+            <button class="btn btn-secondary btn-sm" data-action="stop-forward" ${stopDisabled}>Stop</button>
+            <button class="btn btn-danger btn-sm" data-action="delete-forward">Delete</button>
+          </div>
+        </td>
+      `;
+
+      row.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
+        try {
+          await window.serviceApi.startForward(host.id, forward.id);
+        } catch (error) {
+          setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
+        }
+      });
+      row.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
+        try {
+          await window.serviceApi.stopForward(host.id, forward.id);
+        } catch (error) {
+          setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
+        }
+      });
+      row.querySelector<HTMLButtonElement>('[data-action="delete-forward"]')?.addEventListener('click', async () => {
+        try {
+          await window.serviceApi.deleteForward(host.id, forward.id);
+          await loadHosts();
+        } catch (error) {
+          setMessage(`Delete forward failed: ${(error as Error).message}`, 'error');
+        }
+      });
+
+      hostTableBody.appendChild(row);
+    });
+
+    const serviceTitle = document.createElement('tr');
+    serviceTitle.className = 'host-rules-head';
+    serviceTitle.innerHTML = '<th colspan="6">Service List</th>';
+    hostTableBody.appendChild(serviceTitle);
+
+    const serviceHeader = document.createElement('tr');
+    serviceHeader.className = 'host-rules-head';
+    serviceHeader.innerHTML = `
       <th>Service</th>
       <th>Port</th>
       <th>Status</th>
@@ -375,13 +551,13 @@ function render(): void {
       <th>Updated</th>
       <th>Actions</th>
     `;
-    serviceTableBody.appendChild(header);
+    hostTableBody.appendChild(serviceHeader);
 
     if (host.services.length === 0) {
       const empty = document.createElement('tr');
       empty.className = 'data-row';
       empty.innerHTML = `<td colspan="6" class="table-empty">No services under this host.</td>`;
-      serviceTableBody.appendChild(empty);
+      hostTableBody.appendChild(empty);
     }
 
     for (const service of host.services) {
@@ -403,8 +579,8 @@ function render(): void {
         }
         return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
       })();
-      const startDisabled = canStart(service.status) ? '' : 'disabled';
-      const stopDisabled = canStop(service.status) ? '' : 'disabled';
+      const startDisabled = canStartService(service.status) ? '' : 'disabled';
+      const stopDisabled = canStopService(service.status) ? '' : 'disabled';
       row.innerHTML = `
         <td class="table-cell">${service.name}</td>
         <td class="table-cell">${portText}</td>
@@ -442,7 +618,7 @@ function render(): void {
         openServiceLogDialog(host, service.id);
       });
 
-      serviceTableBody.appendChild(row);
+      hostTableBody.appendChild(row);
     }
 
     groupRow.querySelector<HTMLButtonElement>('[data-action="edit-host"]')?.addEventListener('click', () => {
@@ -459,7 +635,7 @@ addHostButton.addEventListener('click', () => {
   openHostDialog('create');
 });
 
-serviceTableBody.addEventListener('click', (event) => {
+hostTableBody.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
   const link = target.closest('a.forward-link') as HTMLAnchorElement | null;
   if (!link) return;
@@ -467,6 +643,10 @@ serviceTableBody.addEventListener('click', (event) => {
   const url = link.getAttribute('href');
   if (!url) return;
   void window.serviceApi.openExternal(url);
+});
+
+addForwardButton.addEventListener('click', () => {
+  forwardEditorList.appendChild(createForwardEditorRow());
 });
 
 addServiceButton.addEventListener('click', () => {
@@ -517,6 +697,7 @@ form.addEventListener('submit', async (event) => {
       privateKey: privateKeyInput.value || undefined,
       passphrase: passphraseInput.value.trim() || undefined,
       privateKeyPath: editingPrivateKeyPath,
+      forwards: collectForwardsFromEditor(),
       services: collectServicesFromEditor(),
     };
 
@@ -529,7 +710,7 @@ form.addEventListener('submit', async (event) => {
   }
 });
 
-window.serviceApi.onStatusChanged((change) => {
+window.serviceApi.onServiceStatusChanged((change) => {
   const host = hosts.find((item) => item.id === change.hostId);
   if (!host) return;
 
@@ -547,6 +728,18 @@ window.serviceApi.onStatusChanged((change) => {
   if (activeLogTarget && activeLogTarget.hostId === change.hostId && activeLogTarget.serviceId === change.serviceId) {
     serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
   }
+});
+
+window.serviceApi.onForwardStatusChanged((change) => {
+  const host = hosts.find((item) => item.id === change.hostId);
+  if (!host) return;
+  const forward = host.forwards.find((item) => item.id === change.forwardId);
+  if (!forward) return;
+
+  forward.status = change.status;
+  forward.error = change.error;
+  forward.reconnectAt = change.reconnectAt;
+  render();
 });
 
 (async function init() {

@@ -19,20 +19,36 @@
             <p id="stat-hosts" class="overview-value">0</p>
           </div>
           <div class="overview-card">
+            <p class="overview-label">Tunnels</p>
+            <p id="stat-forwards" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
             <p class="overview-label">Services</p>
             <p id="stat-services" class="overview-value">0</p>
           </div>
           <div class="overview-card">
-            <p class="overview-label">Running</p>
-            <p id="stat-running" class="overview-value">0</p>
+            <p class="overview-label">Tunnel Running</p>
+            <p id="stat-tunnel-running" class="overview-value">0</p>
           </div>
           <div class="overview-card">
-            <p class="overview-label">Stopped</p>
-            <p id="stat-stopped" class="overview-value">0</p>
+            <p class="overview-label">Tunnel Stopped</p>
+            <p id="stat-tunnel-stopped" class="overview-value">0</p>
           </div>
           <div class="overview-card">
-            <p class="overview-label">Errors</p>
-            <p id="stat-errors" class="overview-value">0</p>
+            <p class="overview-label">Tunnel Errors</p>
+            <p id="stat-tunnel-errors" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Service Running</p>
+            <p id="stat-service-running" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Service Stopped</p>
+            <p id="stat-service-stopped" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Service Errors</p>
+            <p id="stat-service-errors" class="overview-value">0</p>
           </div>
         </div>
 
@@ -41,17 +57,17 @@
         </div>
 
         <p id="overview-hint" class="overview-hint hidden">
-          No hosts yet. Start by creating your first host and service.
+          No hosts yet. Start by creating your first host.
         </p>
       </section>
 
       <section class="card section">
         <div class="section-head">
-          <h2 class="section-title">Service List (Grouped by Host)</h2>
+          <h2 class="section-title">Hosts</h2>
         </div>
         <div class="table-wrap">
           <table>
-            <tbody id="service-table-body"></tbody>
+            <tbody id="host-table-body"></tbody>
           </table>
         </div>
       </section>
@@ -138,6 +154,14 @@
               Passphrase (Optional)
               <input id="passphrase" type="password" class="input" />
             </label>
+          </div>
+
+          <div class="subcard">
+            <div class="subcard-head">
+              <h3 class="subcard-title">Forwarding Rules</h3>
+              <button id="add-forward-btn" type="button" class="btn btn-secondary btn-sm">Add Rule</button>
+            </div>
+            <div id="forward-editor-list" class="forward-list"></div>
           </div>
 
           <div class="subcard">

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { HostConfig, HostDraft, ServiceConfig, ServiceDraft } from '../shared/types';
+import type { ForwardRule, ForwardRuleDraft, HostConfig, HostDraft, ServiceConfig, ServiceDraft } from '../shared/types';
 
 export class ServiceStore {
   private hosts: HostConfig[] = [];
@@ -62,6 +62,20 @@ export class ServiceStore {
     await this.persist();
   }
 
+  async removeForward(hostId: string, forwardId: string): Promise<void> {
+    const index = this.hosts.findIndex((item) => item.id === hostId);
+    if (index < 0) {
+      return;
+    }
+
+    const host = this.hosts[index];
+    this.hosts[index] = {
+      ...host,
+      forwards: host.forwards.filter((forward) => forward.id !== forwardId),
+    };
+    await this.persist();
+  }
+
   private normalize(data: unknown): HostConfig[] {
     if (!Array.isArray(data)) {
       return [];
@@ -88,11 +102,44 @@ export class ServiceStore {
       privateKey: input.privateKey,
       passphrase: input.passphrase,
       privateKeyPath: input.privateKeyPath,
+      forwards: Array.isArray(input.forwards)
+        ? input.forwards
+            .map((forward) => this.normalizeForward(forward))
+            .filter((forward): forward is ForwardRule => forward !== null)
+        : [],
       services: Array.isArray(input.services)
         ? input.services
             .map((service) => this.normalizeService(service))
             .filter((service): service is ServiceConfig => service !== null)
         : [],
+    };
+  }
+
+  private normalizeForward(input: Partial<ForwardRuleDraft>): ForwardRule | null {
+    if (!input.localHost || !input.remoteHost || !input.localPort || !input.remotePort) {
+      return null;
+    }
+
+    const localPort = Number(input.localPort);
+    const remotePort = Number(input.remotePort);
+    if (
+      !Number.isInteger(localPort) ||
+      localPort < 1 ||
+      localPort > 65535 ||
+      !Number.isInteger(remotePort) ||
+      remotePort < 1 ||
+      remotePort > 65535
+    ) {
+      return null;
+    }
+
+    return {
+      id: input.id?.trim() || randomUUID(),
+      localHost: input.localHost.trim(),
+      localPort,
+      remoteHost: input.remoteHost.trim(),
+      remotePort,
+      autoStart: Boolean(input.autoStart),
     };
   }
 
@@ -128,6 +175,7 @@ export class ServiceStore {
   private cloneHost(host: HostConfig): HostConfig {
     return {
       ...host,
+      forwards: host.forwards.map((forward) => ({ ...forward })),
       services: host.services.map((service) => ({ ...service })),
     };
   }
