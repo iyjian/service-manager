@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Service Manager</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="card section">
+        <div class="section-head">
+          <h2 class="section-title">Overview</h2>
+        </div>
+
+        <div class="overview-grid">
+          <div class="overview-card">
+            <p class="overview-label">Hosts</p>
+            <p id="stat-hosts" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Services</p>
+            <p id="stat-services" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Running</p>
+            <p id="stat-running" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Stopped</p>
+            <p id="stat-stopped" class="overview-value">0</p>
+          </div>
+          <div class="overview-card">
+            <p class="overview-label">Errors</p>
+            <p id="stat-errors" class="overview-value">0</p>
+          </div>
+        </div>
+
+        <div class="quick-actions">
+          <button id="qa-add-host-btn" type="button" class="btn btn-primary btn-sm">Add Host</button>
+        </div>
+
+        <p id="overview-hint" class="overview-hint hidden">
+          No hosts yet. Start by creating your first host and service.
+        </p>
+      </section>
+
+      <section class="card section">
+        <div class="section-head">
+          <h2 class="section-title">Service List (Grouped by Host)</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <tbody id="service-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="service-log-dialog" class="host-dialog">
+      <div class="dialog-panel">
+        <div class="dialog-head">
+          <h2 id="service-log-title" class="section-title">Service Logs</h2>
+          <button id="close-service-log-dialog-btn" type="button" class="icon-btn" aria-label="Close">×</button>
+        </div>
+        <div id="service-log-terminal" class="terminal-log"></div>
+      </div>
+    </dialog>
+
+    <dialog id="host-dialog" class="host-dialog">
+      <div class="dialog-panel">
+        <div class="dialog-head">
+          <h2 id="host-dialog-title" class="section-title">Add Host</h2>
+          <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close">×</button>
+        </div>
+
+        <form id="host-form" class="form-stack">
+          <input type="hidden" id="host-id" />
+
+          <div class="form-row">
+            <label class="field field-name field-xs">
+              Name
+              <input id="name" type="text" required class="input" />
+            </label>
+          </div>
+
+          <div class="form-row">
+            <label class="field field-host field-xs">
+              SSH Host
+              <input id="ssh-host" type="text" required class="input" />
+            </label>
+
+            <label class="field field-port field-xs">
+              SSH Port
+              <input id="ssh-port" type="number" min="1" max="65535" value="22" required class="input" />
+            </label>
+
+            <label class="field field-user field-xs">
+              Username
+              <input id="username" type="text" required class="input" />
+            </label>
+          </div>
+
+          <div class="form-row">
+            <label class="field field-auth field-xs">
+              Auth Type
+              <select id="auth-type" class="input">
+                <option value="privateKey">Private Key</option>
+                <option value="password">Password</option>
+              </select>
+            </label>
+
+            <label id="password-row" class="field field-password field-xs hidden">
+              Password
+              <input id="password" type="password" class="input" />
+            </label>
+
+            <div id="private-key-row" class="private-key-wrap">
+              <label class="field field-privatekey field-xs">
+                Private Key
+                <textarea
+                  id="private-key"
+                  rows="1"
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  class="input"
+                ></textarea>
+              </label>
+              <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">
+                Import
+              </button>
+            </div>
+
+            <label id="passphrase-row" class="field field-passphrase field-xs hidden">
+              Passphrase (Optional)
+              <input id="passphrase" type="password" class="input" />
+            </label>
+          </div>
+
+          <div class="subcard">
+            <div class="subcard-head">
+              <h3 class="subcard-title">Services</h3>
+              <button id="add-service-btn" type="button" class="btn btn-secondary btn-sm">Add Service</button>
+            </div>
+            <div id="service-editor-list" class="forward-list"></div>
+          </div>
+
+          <div class="form-actions">
+            <button id="save-host-btn" type="submit" class="btn btn-primary">Save Host</button>
+            <button id="reset-btn" type="button" class="btn btn-secondary">Reset</button>
+            <button id="cancel-host-dialog-btn" type="button" class="btn btn-secondary">Cancel</button>
+          </div>
+        </form>
+
+        <p id="message" class="message message-default"></p>
+      </div>
+    </dialog>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>
