@@ -104,7 +104,7 @@ Artifacts are generated under `release/`.
 - Auto update is integrated via `electron-updater` (GitHub Releases channel).
 - In packaged app:
   - checks automatically after startup, then on interval
-  - supports manual `Check Updates` from overview quick actions
+  - supports manual `Check for Updates...` from app menu (macOS style)
   - prompts for download and restart install
 - In dev mode (unpackaged), updater state shows unsupported.
 

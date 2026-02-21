@@ -53,11 +53,10 @@ const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
 const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
-const messageElement = requireElement<HTMLParagraphElement>('#message');
+const messageElement = document.querySelector<HTMLParagraphElement>('#message');
 const addHostButton = requireElement<HTMLButtonElement>('#qa-add-host-btn');
 const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-btn');
 const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
-const checkUpdatesButton = requireElement<HTMLButtonElement>('#qa-check-updates-btn');
 const updateStatusHintElement = requireElement<HTMLParagraphElement>('#update-status-hint');
 const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
 const statHostsElement = requireElement<HTMLElement>('#stat-hosts');
@@ -143,6 +142,7 @@ function renderUpdateState(state: UpdateState): void {
 }
 
 function setMessage(text: string, level: 'default' | 'success' | 'error' = 'default'): void {
+  if (!messageElement) return;
   messageElement.classList.remove('message-default', 'message-success', 'message-error');
   messageElement.classList.add(
     level === 'success' ? 'message-success' : level === 'error' ? 'message-error' : 'message-default'
@@ -868,15 +868,6 @@ exportConfigButton.addEventListener('click', async () => {
     const result: ConfigTransferResult | null = await window.serviceApi.exportConfig();
     if (!result) return;
     setMessage(`Exported ${formatConfigSummary(result.hostCount, result.ruleCount, result.serviceCount)} to ${getFileName(result.path)}`, 'success');
-  } catch (error) {
-    setMessage((error as Error).message, 'error');
-  }
-});
-
-checkUpdatesButton.addEventListener('click', async () => {
-  try {
-    const state = await window.serviceApi.checkForUpdates();
-    renderUpdateState(state);
   } catch (error) {
     setMessage((error as Error).message, 'error');
   }

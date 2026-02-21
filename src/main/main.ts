@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -73,6 +73,12 @@ let store: ServiceStore | null = null;
 const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
 const updater = new AppUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
+const APP_DISPLAY_NAME = 'Service Manager';
+
+app.setName(APP_DISPLAY_NAME);
+app.setAboutPanelOptions({
+  applicationName: APP_DISPLAY_NAME,
+});
 
 function getStore(): ServiceStore {
   if (!store) {
@@ -104,6 +110,76 @@ function createWindow(): BrowserWindow {
 
   void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   return window;
+}
+
+function applyAppMenu(): void {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: APP_DISPLAY_NAME,
+      submenu: [
+        { role: 'about' },
+        {
+          label: 'Check for Updates...',
+          click: () => {
+            void updater.checkForUpdates('manual');
+          },
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [{ role: 'close' }],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { type: 'separator' }, { role: 'front' }],
+    },
+    {
+      label: 'Help',
+      submenu: [],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function getStatus(
@@ -864,6 +940,7 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
   wireForwardStatusBroadcast();
   wireUpdaterBroadcast();
+  applyAppMenu();
   for (const host of hosts) {
     await autoStartHostRules(host);
   }

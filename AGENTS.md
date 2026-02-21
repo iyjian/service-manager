@@ -58,6 +58,7 @@ Build a desktop Electron application to manage services on remote servers throug
 10. Release and update pipeline:
    - GitHub Actions release workflow must build macOS / Windows / Linux artifacts and publish release
    - app must support auto update (`electron-updater`) with state broadcast to renderer
+   - manual check update entry should be in app menu (`Check for Updates...`), not a dedicated quick-action button
    - README must include unsigned macOS install guidance
 
 ## Alignment Requirement (with `ssh-tunnel-manager`)
