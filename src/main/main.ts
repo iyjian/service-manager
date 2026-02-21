@@ -221,8 +221,8 @@ function toView(hosts: HostConfig[]): HostView[] {
         pid: status.pid,
         error: status.error,
         updatedAt: status.updatedAt,
-        forwardState: service.forwardLocalPort ? forward.state : 'none',
-        forwardError: service.forwardLocalPort ? forward.error : undefined,
+        forwardState: service.forwardLocalPort && service.port > 0 ? forward.state : 'none',
+        forwardError: service.forwardLocalPort && service.port > 0 ? forward.error : undefined,
       };
     }),
   }));
@@ -264,14 +264,17 @@ function validateServiceDraft(input: ServiceDraft): ServiceConfig {
 
   if (!service.name) throw new Error('Service name is required.');
   if (!service.startCommand) throw new Error('Service start command is required.');
-  if (!Number.isInteger(service.port) || service.port < 1 || service.port > 65535) {
-    throw new Error('Service port must be an integer in range 1-65535.');
+  if (!Number.isInteger(service.port) || service.port < 0 || service.port > 65535) {
+    throw new Error('Service port must be an integer in range 0-65535.');
   }
   if (
     service.forwardLocalPort !== undefined &&
     (!Number.isInteger(service.forwardLocalPort) || service.forwardLocalPort < 1 || service.forwardLocalPort > 65535)
   ) {
     throw new Error('Forward local port must be an integer in range 1-65535.');
+  }
+  if (service.port === 0) {
+    service.forwardLocalPort = undefined;
   }
 
   return service;
@@ -350,6 +353,35 @@ function validateHostDraft(input: HostDraft): HostConfig {
   }
 
   return host;
+}
+
+function preserveServiceRuntimeFields(previous: HostConfig | undefined, next: HostConfig): HostConfig {
+  if (!previous) {
+    return next;
+  }
+
+  const previousById = new Map(previous.services.map((service) => [service.id, service]));
+  return {
+    ...next,
+    services: next.services.map((service) => {
+      const old = previousById.get(service.id);
+      if (!old) {
+        return service;
+      }
+
+      const sameRuntimeShape = old.startCommand === service.startCommand && old.port === service.port;
+      if (!sameRuntimeShape) {
+        return service;
+      }
+
+      return {
+        ...service,
+        pid: old.pid,
+        stdoutPath: old.stdoutPath,
+        stderrPath: old.stderrPath,
+      };
+    }),
+  };
 }
 
 function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pid?: number, error?: string): void {
@@ -622,7 +654,8 @@ function registerIpcHandlers(): void {
       }
     }
 
-    const host = validateHostDraft(hostDraft);
+    const validated = validateHostDraft(hostDraft);
+    const host = preserveServiceRuntimeFields(previous, validated);
 
     if (previous) {
       await clearRemovedRules(previous, host);
@@ -637,7 +670,7 @@ function registerIpcHandlers(): void {
     await autoStartHostRules(host);
 
     for (const service of host.services) {
-      if (!service.pid || !service.forwardLocalPort) {
+      if (!service.pid || !service.forwardLocalPort || service.port === 0) {
         emitForwardStatus(host.id, service.id, 'none');
         continue;
       }
@@ -733,7 +766,7 @@ function registerIpcHandlers(): void {
         service.pid = result.pid;
         await getStore().upsertHost(host);
       }
-      if (result.status === 'running' && service.forwardLocalPort) {
+      if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
         try {
           await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
           emitForwardStatus(host.id, service.id, 'ok');
@@ -746,7 +779,7 @@ function registerIpcHandlers(): void {
           });
           emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
         }
-      } else if (!service.forwardLocalPort) {
+      } else if (!service.forwardLocalPort || service.port === 0) {
         emitForwardStatus(host.id, service.id, 'none');
       }
       if (result.status === 'stopped' && service.pid) {
@@ -783,7 +816,7 @@ function registerIpcHandlers(): void {
         service.stdoutPath = ret.stdoutPath;
         service.stderrPath = ret.stderrPath;
         await getStore().upsertHost(host);
-        if (!service.forwardLocalPort) {
+        if (!service.forwardLocalPort || service.port === 0) {
           emitForwardStatus(host.id, service.id, 'none');
         }
         emitStatus(host.id, service.id, 'running', service.pid);

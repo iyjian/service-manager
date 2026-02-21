@@ -29,13 +29,14 @@ This project is now aligned with the **UI style** and **development approach** o
 4. Service fields:
    - service name
    - start command
-   - exposed port
+   - exposed port (`0` means not exposed)
    - forward local port (optional; if empty, no local forwarding is created)
 5. Service status in panel based on saved PID:
    - PID exists and is alive: `running`
    - PID missing or dead: `stopped`
    - while start/stop command is in progress: `starting` / `stopping`
    - start flow returns as soon as PID is captured (logs become available immediately); port-listen/forward checks are handled asynchronously by refresh cycle.
+   - when service `exposed port` is `0`, app skips port listen checks and uses PID-only status checks.
 6. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
    - logs are captured as a single combined stream on server side, preserving stdout/stderr ordering like terminal output.
@@ -51,6 +52,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - `Stop` sends `SIGTERM` to the PID's process group on remote host (no stop command config), so process trees (e.g. watch mode) can be stopped together.
    - only `Start` / `Stop` remain in list actions; service delete is handled in host edit form.
    - when service is running and `forward local port` is configured, app auto creates SSH local port forwarding (`127.0.0.1:<local>` -> `remote:exposedPort`); forwarding is closed when service stops.
+   - when `exposed port` is `0`, forwarding is disabled even if forward local port is filled.
    - Port column shows forwarding state: green check for success (with clickable `http://127.0.0.1:<local>` link opened by system default browser), red cross for failure.
 9. Host private key supports both:
    - direct paste of key content
@@ -136,6 +138,7 @@ open -a "Service Manager"
 - SSH command execution now uses `ssh2` directly (not shelling out to system `ssh`).
 - In `Add/Edit Host`, private key auth includes `Private Key` + optional `Passphrase`, and supports `Import` file action.
 - Start command runs in background and records PID plus stdout/stderr log file paths under `/tmp/service-manager`.
+- log file naming uses `hostname_service_name_pid.log` under `/tmp/service-manager` (e.g. `example_com_lms_api_12345.log`) to reduce multi-user/multi-project collisions.
 - PID is persisted with the service config, and status checks use `kill -0 <pid>`.
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section

@@ -160,12 +160,12 @@ export class ServiceStore {
   }
 
   private normalizeService(input: Partial<ServiceDraft>): ServiceConfig | null {
-    if (!input.name || !input.startCommand || !input.port) {
+    if (!input.name || !input.startCommand || input.port === undefined || input.port === null) {
       return null;
     }
 
     const port = Number(input.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
       return null;
     }
     const forwardLocalPort = input.forwardLocalPort ? Number(input.forwardLocalPort) : undefined;
@@ -181,7 +181,7 @@ export class ServiceStore {
       name: input.name.trim(),
       startCommand: input.startCommand.trim(),
       port,
-      forwardLocalPort,
+      forwardLocalPort: port === 0 ? undefined : forwardLocalPort,
       pid: typeof (input as Partial<ServiceConfig>).pid === 'number' ? (input as Partial<ServiceConfig>).pid : undefined,
       stdoutPath: (input as Partial<ServiceConfig>).stdoutPath,
       stderrPath: (input as Partial<ServiceConfig>).stderrPath,

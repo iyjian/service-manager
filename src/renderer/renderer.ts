@@ -276,7 +276,7 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
     </label>
     <label class="field field-xs">
       Exposed Port
-      <input class="input" data-field="port" type="number" min="1" max="65535" value="${draft?.port ?? ''}" required />
+      <input class="input" data-field="port" type="number" min="0" max="65535" value="${draft?.port ?? ''}" required />
     </label>
     <label class="field field-xs">
       Forward Local Port (Optional)
@@ -722,7 +722,7 @@ function render(): void {
       const updated = service.updatedAt ? new Date(service.updatedAt).toLocaleString() : '-';
       const pidText = service.pid ? String(service.pid) : '-';
       const portText = (() => {
-        if (!service.forwardLocalPort) {
+        if (service.port === 0 || !service.forwardLocalPort) {
           return `<span>${service.port}</span>`;
         }
         const base = `${service.forwardLocalPort} -> ${service.port}`;

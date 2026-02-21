@@ -10,7 +10,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - Jump Host is configured directly inside Add/Edit Host form.
 2. Service management under each host:
    - start command
-   - exposed port
+   - exposed port (`0` means not exposed)
    - optional local forward port
 3. Forwarding-rule management under each host (same capability model as `ssh-tunnel-manager`):
    - local host / local port
@@ -29,6 +29,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
    - start should be non-blocking after PID capture; startup port checks are post-start and must not delay PID/log availability
+   - service log file naming should be `hostname_service_name_pid.log` under `/tmp/service-manager`
 5. Service actions in panel:
    - start
    - stop
@@ -36,6 +37,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - service delete is provided in host edit form (not in list row actions)
    - stop behavior is group kill by PID (`SIGTERM` to process group); no configurable stop command.
    - if local forward port is configured, start/refresh should ensure SSH local port forwarding is active; stop/delete should close forwarding.
+   - if service exposed port is `0`, skip port-listen checks and disable service forwarding.
    - Port column must visualize forward result when forward port is set:
      - success: green check and clickable `http://127.0.0.1:<localPort>` link (opens via system default browser)
      - failure: red cross indicator (with error hint)

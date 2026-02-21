@@ -237,18 +237,20 @@ function shellQuoteSingle(raw: string): string {
 }
 
 export async function startService(host: HostConfig, service: ServiceConfig): Promise<StartResult> {
-  const safeHost = safeFileFragment(host.name || host.sshHost);
+  const safeHost = safeFileFragment(host.sshHost || host.name);
   const safeService = safeFileFragment(service.name);
-  const stdoutPath = `/tmp/service-manager/${safeHost}_${safeService}.log`;
-  const stderrPath = stdoutPath;
+  const tempLogPath = `/tmp/service-manager/${safeHost}_${safeService}_${Date.now()}_tmp.log`;
   const detachedCmd = shellQuoteSingle(service.startCommand);
-  const inner = `mkdir -p /tmp/service-manager && OUT=${shellQuoteSingle(stdoutPath)} && : >"$OUT" && SHELL_BIN="\${SHELL:-/bin/bash}" && setsid "$SHELL_BIN" -ilc ${detachedCmd} >"$OUT" 2>&1 < /dev/null & PID=$! && echo "__PID:$PID"`;
+  const inner = `mkdir -p /tmp/service-manager && OUT_TMP=${shellQuoteSingle(tempLogPath)} && : >"$OUT_TMP" && SHELL_BIN="\${SHELL:-/bin/bash}" && setsid "$SHELL_BIN" -ilc ${detachedCmd} >"$OUT_TMP" 2>&1 < /dev/null & PID=$! && OUT_FINAL=/tmp/service-manager/${safeHost}_${safeService}_\${PID}.log && if [ -n "$OUT_TMP" ] && [ -f "$OUT_TMP" ]; then mv "$OUT_TMP" "$OUT_FINAL"; else OUT_FINAL="$OUT_TMP"; fi && echo "__PID:$PID" && echo "__LOG:$OUT_FINAL"`;
   const wrapped = `bash -lc ${shellQuoteSingle(inner)}`;
   const ret = await runSsh(host, wrapped);
 
   const lines = ret.stdout.split('\n').map((line) => line.trim());
   const pidLine = lines.find((line) => line.startsWith('__PID:'));
+  const logLine = lines.find((line) => line.startsWith('__LOG:'));
   const pid = Number(pidLine?.replace('__PID:', ''));
+  const stdoutPath = logLine?.replace('__LOG:', '').trim() || tempLogPath;
+  const stderrPath = stdoutPath;
 
   if (!ret.ok && (!Number.isInteger(pid) || pid <= 0)) {
     return {
@@ -291,13 +293,15 @@ export async function checkServiceStatus(
   host: HostConfig,
   service: ServiceConfig
 ): Promise<{ status: ServiceStatus; pid?: number; error?: string }> {
-  const pidByPortRet = await runSsh(
-    host,
-    `bash -lc "lsof -tiTCP:${service.port} -sTCP:LISTEN 2>/dev/null | head -n 1"`
-  );
-  const pidByPort = Number(pidByPortRet.stdout.trim());
-  if (Number.isInteger(pidByPort) && pidByPort > 0) {
-    return { status: 'running', pid: pidByPort };
+  if (service.port > 0) {
+    const pidByPortRet = await runSsh(
+      host,
+      `bash -lc "lsof -tiTCP:${service.port} -sTCP:LISTEN 2>/dev/null | head -n 1"`
+    );
+    const pidByPort = Number(pidByPortRet.stdout.trim());
+    if (Number.isInteger(pidByPort) && pidByPort > 0) {
+      return { status: 'running', pid: pidByPort };
+    }
   }
 
   if (!service.pid) {

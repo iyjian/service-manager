@@ -14,7 +14,7 @@ export class PortForwardManager {
   private readonly running = new Map<string, RunningForward>();
 
   async start(id: string, host: HostConfig, service: ServiceConfig): Promise<void> {
-    if (!service.forwardLocalPort) {
+    if (!service.forwardLocalPort || service.port <= 0) {
       return;
     }
 
