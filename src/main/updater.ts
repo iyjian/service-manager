@@ -264,6 +264,15 @@ export class AppUpdater extends EventEmitter {
     if (normalized.includes('cannot find channel')) {
       return 'Update channel metadata is missing.';
     }
+    if (
+      normalized.includes('code signature') ||
+      normalized.includes('did not pass validation') ||
+      rawMessage.includes('代码不含资源')
+    ) {
+      return 'Update check failed: macOS signature validation blocked this update. Run in Terminal:\n' +
+        'xattr -dr com.apple.quarantine "/Applications/Service Manager.app"\n' +
+        'open -a "Service Manager"';
+    }
 
     return `Update check failed: ${rawMessage}`;
   }
