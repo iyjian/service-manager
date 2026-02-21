@@ -264,43 +264,11 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
     };
   }
 
-  for (let i = 0; i < 15; i += 1) {
-    const pidByPortRet = await runSsh(
-      host,
-      `bash -lc "lsof -tiTCP:${service.port} -sTCP:LISTEN 2>/dev/null | head -n 1"`
-    );
-    const pidByPort = Number(pidByPortRet.stdout.trim());
-    if (Number.isInteger(pidByPort) && pidByPort > 0) {
-      return {
-        ok: true,
-        pid: pidByPort,
-        stdoutPath,
-        stderrPath,
-      };
-    }
-
-    const aliveCheck = await runSsh(host, `kill -0 ${pid} >/dev/null 2>&1`);
-    if (aliveCheck.ok) {
-      return {
-        ok: true,
-        pid,
-        stdoutPath,
-        stderrPath,
-      };
-    }
-
-    await runSsh(host, 'sleep 1');
-  }
-
-  const earlyStdout = await runSsh(host, `tail -n 120 ${JSON.stringify(stdoutPath)}`);
-  const earlyStderr = await runSsh(host, `tail -n 120 ${JSON.stringify(stderrPath)}`);
-  const envDiag = await runSsh(
-    host,
-    `bash -ilc 'echo "SHELL=$SHELL"; echo "PATH=$PATH"; command -v yarn || true; command -v node || true; node -v || true; yarn -v || true'`
-  );
   return {
-    ok: false,
-    error: `Process failed to become running within 15s.\nstdout:\n${earlyStdout?.stdout || '(empty)'}\nstderr:\n${earlyStderr?.stdout || earlyStderr?.stderr || '(empty)'}\nenv-stdout:\n${envDiag.stdout || '(empty)'}\nenv-stderr:\n${envDiag.stderr || '(empty)'}`,
+    ok: true,
+    pid,
+    stdoutPath,
+    stderrPath,
   };
 }
 

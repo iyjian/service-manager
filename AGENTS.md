@@ -28,6 +28,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - capture logs as a single merged stream at source to preserve original output order
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
+   - start should be non-blocking after PID capture; startup port checks are post-start and must not delay PID/log availability
 5. Service actions in panel:
    - start
    - stop

@@ -783,29 +783,10 @@ function registerIpcHandlers(): void {
         service.stdoutPath = ret.stdoutPath;
         service.stderrPath = ret.stderrPath;
         await getStore().upsertHost(host);
-
-        const status = await checkServiceStatus(host, service);
-        if (status.pid && status.pid !== service.pid) {
-          service.pid = status.pid;
-          await getStore().upsertHost(host);
-        }
-        if (status.status === 'running' && service.forwardLocalPort) {
-          try {
-            await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-            emitForwardStatus(host.id, service.id, 'ok');
-          } catch (error) {
-            logRuntimeError('port-forward:start', error, {
-              hostId: host.id,
-              serviceId: service.id,
-              localPort: service.forwardLocalPort,
-              remotePort: service.port,
-            });
-            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
-          }
-        } else if (!service.forwardLocalPort) {
+        if (!service.forwardLocalPort) {
           emitForwardStatus(host.id, service.id, 'none');
         }
-        emitStatus(host.id, service.id, status.status, service.pid, status.error);
+        emitStatus(host.id, service.id, 'running', service.pid);
       } catch (error) {
         logRuntimeError('service:start', error, payload);
         throw error;

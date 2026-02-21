@@ -35,6 +35,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - PID exists and is alive: `running`
    - PID missing or dead: `stopped`
    - while start/stop command is in progress: `starting` / `stopping`
+   - start flow returns as soon as PID is captured (logs become available immediately); port-listen/forward checks are handled asynchronously by refresh cycle.
 6. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
    - logs are captured as a single combined stream on server side, preserving stdout/stderr ordering like terminal output.
