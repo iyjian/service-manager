@@ -43,7 +43,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but scroll position is preserved.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
 7. Tunnel list and service list are rendered under each host on home page:
-   - `Tunnel List`: start/stop/delete tunnel rule, status, auto-retry on runtime errors
+   - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - `Service List`: start/stop service, PID/log, runtime forward indicator
    - Overview metrics are split clearly by domain:
      - tunnel running/stopped/errors
@@ -62,6 +62,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - `Import Config` from JSON
    - `Export Config` to JSON
    - includes hosts, jump-host settings, forwarding rules, and services
+11. Destructive deletes (`Delete Host`, `Delete` rule) always prompt for confirmation.
 
 ## Tech Stack
 
@@ -78,6 +79,7 @@ This project is now aligned with the **UI style** and **development approach** o
 - `src/main/preload.ts`: secure renderer bridge
 - `src/renderer/*`: UI and interaction logic
 - `src/shared/types.ts`: shared type contracts
+- `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build
 - `dist/*`: compiled output (generated)
 
 ## Development

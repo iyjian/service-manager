@@ -44,18 +44,21 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
       "category": "Development",
+      "icon": "assets",
       "target": [
         {
           "target": "AppImage",

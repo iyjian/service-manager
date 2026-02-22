@@ -27,6 +27,7 @@ const api: ServiceApi = {
   getUpdateState: () => ipcRenderer.invoke('updater:get-state'),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+  confirmAction: (options) => ipcRenderer.invoke('dialog:confirm', options),
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, change: ServiceStatusChange): void => {
       listener(change);

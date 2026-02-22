@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type {
   AuthType,
   ConfigTransferResult,
+  ConfirmDialogOptions,
   ForwardRule,
   ForwardRuleDraft,
   ForwardState,
@@ -44,6 +45,7 @@ const IPC_CHANNELS = {
   forwardStatusChanged: 'forward:status',
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
+  confirmAction: 'dialog:confirm',
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
@@ -74,6 +76,7 @@ const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
 const updater = new AppUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
 const APP_DISPLAY_NAME = 'Service Manager';
+const APP_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png');
 
 app.setName(APP_DISPLAY_NAME);
 app.setAboutPanelOptions({
@@ -101,6 +104,7 @@ function createWindow(): BrowserWindow {
     height: 720,
     minWidth: 900,
     minHeight: 620,
+    icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -110,6 +114,22 @@ function createWindow(): BrowserWindow {
 
   void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   return window;
+}
+
+function getAppIconImage(): Electron.NativeImage | null {
+  const icon = nativeImage.createFromPath(APP_ICON_PATH);
+  return icon.isEmpty() ? null : icon;
+}
+
+function applyAppIcon(): void {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  const icon = getAppIconImage();
+  if (icon) {
+    app.dock.setIcon(icon);
+  }
 }
 
 function applyAppMenu(): void {
@@ -730,6 +750,27 @@ function registerIpcHandlers(): void {
     await getStore().removeForward(payload.hostId, payload.forwardId);
   });
 
+  ipcMain.handle(IPC_CHANNELS.confirmAction, async (event, options: ConfirmDialogOptions) => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const icon = getAppIconImage();
+    const messageBoxOptions = {
+      type: options.kind ?? 'question',
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+      buttons: [options.cancelLabel ?? 'Cancel', options.confirmLabel ?? 'Confirm'],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+      ...(icon ? { icon } : {}),
+    };
+    const result = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageBoxOptions)
+      : await dialog.showMessageBox(messageBoxOptions);
+
+    return result.response === 1;
+  });
+
   ipcMain.handle(IPC_CHANNELS.startForward, async (_event, payload: { hostId: string; forwardId: string }) => {
     const host = getStore().findHostById(payload.hostId);
     if (!host) throw new Error('Host not found.');
@@ -951,6 +992,7 @@ app.whenReady().then(async () => {
   const hosts = store.listHosts();
   syncKnownForwards(hosts);
 
+  applyAppIcon();
   registerIpcHandlers();
   wireForwardStatusBroadcast();
   wireUpdaterBroadcast();

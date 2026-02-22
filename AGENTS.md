@@ -8,6 +8,7 @@ Build a desktop Electron application to manage services on remote servers throug
 
 1. Host management with SSH connection configuration.
    - Jump Host is configured directly inside Add/Edit Host form.
+   - Deleting a host requires confirmation.
 2. Service management under each host:
    - start command
    - exposed port (`0` means not exposed)
@@ -16,7 +17,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - local host / local port
    - remote host / remote port
    - auto-start flag
-   - runtime start/stop/delete in list
+   - runtime start/stop in list (delete handled in host edit form, with confirmation)
    - tunnel status with reconnect countdown on error
    - supports jump-host chain when host has jump configured
 4. Service status and runtime state:
@@ -63,6 +64,9 @@ Build a desktop Electron application to manage services on remote servers throug
    - app must support auto update (`electron-updater`) with state broadcast to renderer
    - manual check update entry should be in app menu (`Check for Updates...`), not a dedicated quick-action button
    - README must include unsigned macOS install guidance
+11. App icon assets:
+   - base image at `assets/source.png`
+   - generated icons (`assets/icon.*`) are used for runtime window icon and packaging
 
 ## Alignment Requirement (with `ssh-tunnel-manager`)
 

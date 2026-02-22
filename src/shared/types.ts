@@ -135,6 +135,15 @@ export interface UpdateState {
   rawMessage?: string;
 }
 
+export interface ConfirmDialogOptions {
+  title: string;
+  message: string;
+  detail?: string;
+  kind?: 'question' | 'warning';
+  confirmLabel?: string;
+  cancelLabel?: string;
+}
+
 export interface ServiceStatusChange {
   hostId: string;
   serviceId: string;
@@ -177,6 +186,7 @@ export interface ServiceApi {
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdates: () => Promise<UpdateState>;
   openExternal: (url: string) => Promise<void>;
+  confirmAction: (options: ConfirmDialogOptions) => Promise<boolean>;
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;
   onUpdateStateChanged: (listener: (state: UpdateState) => void) => () => void;

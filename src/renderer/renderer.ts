@@ -661,7 +661,6 @@ function render(): void {
           <div class="row-actions">
             <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>Start</button>
             <button class="btn btn-secondary btn-sm" data-action="stop-forward" ${stopDisabled}>Stop</button>
-            <button class="btn btn-danger btn-sm" data-action="delete-forward">Delete</button>
           </div>
         </td>
       `;
@@ -680,15 +679,6 @@ function render(): void {
           setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
         }
       });
-      row.querySelector<HTMLButtonElement>('[data-action="delete-forward"]')?.addEventListener('click', async () => {
-        try {
-          await window.serviceApi.deleteForward(host.id, forward.id);
-          await loadHosts();
-        } catch (error) {
-          setMessage(`Delete forward failed: ${(error as Error).message}`, 'error');
-        }
-      });
-
       hostTableBody.appendChild(row);
     });
 
@@ -781,8 +771,27 @@ function render(): void {
       openHostDialog('edit', host);
     });
     groupRow.querySelector<HTMLButtonElement>('[data-action="delete-host"]')?.addEventListener('click', async () => {
-      await window.serviceApi.deleteHost(host.id);
-      await loadHosts();
+      try {
+        const ok = await window.serviceApi.confirmAction({
+          title: 'Delete Host',
+          message: `Delete host "${host.name}"?`,
+          detail: 'All services and forwarding rules under this host will be deleted.',
+          kind: 'warning',
+          confirmLabel: 'Delete',
+          cancelLabel: 'Cancel',
+        });
+        if (!ok) {
+          return;
+        }
+        await window.serviceApi.deleteHost(host.id);
+        if (hostDialog.open && hostIdInput.value === host.id) {
+          closeHostDialog();
+        }
+        await loadHosts();
+        setMessage(`Host ${host.name} deleted`, 'success');
+      } catch (error) {
+        setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
+      }
     });
   }
 }
