@@ -27,10 +27,11 @@ Build a desktop Electron application to manage services on remote servers throug
    - show PID in service list
    - click PID to view merged terminal-style logs (stdout + stderr), with auto refresh and ANSI color display
    - capture logs as a single merged stream at source to preserve original output order
+   - clicking PID must resolve the current log file directly from the saved service PID using the `safeHost_service_name_pid.log` naming rule, instead of trusting a stale persisted log path
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
    - start should be non-blocking after PID capture; startup port checks are post-start and must not delay PID/log availability
-   - service log file naming should be `hostname_service_name_pid.log` under `/tmp/service-manager`
+   - service log file naming should be `safeHost_service_name_pid.log` under `/tmp/service-manager`, where `safeHost` is derived from sanitized `sshHost` (fallback `host.name`)
    - renderer must catch log open/refresh failures so missing targets or SSH errors do not escape as uncaught promise errors; surfaced failures should remain visible in the page message area
    - dialog open/close paths must be idempotent; repeated clicks must not throw browser `InvalidStateError`
 5. Service actions in panel:

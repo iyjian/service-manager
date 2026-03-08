@@ -232,6 +232,12 @@ function safeFileFragment(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+function buildServiceLogPath(host: HostConfig, service: ServiceConfig, pid: number): string {
+  const safeHost = safeFileFragment(host.sshHost || host.name);
+  const safeService = safeFileFragment(service.name);
+  return `/tmp/service-manager/${safeHost}_${safeService}_${pid}.log`;
+}
+
 function shellQuoteSingle(raw: string): string {
   return `'${raw.replace(/'/g, `'"'"'`)}'`;
 }
@@ -247,10 +253,7 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
 
   const lines = ret.stdout.split('\n').map((line) => line.trim());
   const pidLine = lines.find((line) => line.startsWith('__PID:'));
-  const logLine = lines.find((line) => line.startsWith('__LOG:'));
   const pid = Number(pidLine?.replace('__PID:', ''));
-  const stdoutPath = logLine?.replace('__LOG:', '').trim() || tempLogPath;
-  const stderrPath = stdoutPath;
 
   if (!ret.ok && (!Number.isInteger(pid) || pid <= 0)) {
     return {
@@ -266,11 +269,13 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
     };
   }
 
+  const stdoutPath = buildServiceLogPath(host, service, pid);
+
   return {
     ok: true,
     pid,
     stdoutPath,
-    stderrPath,
+    stderrPath: stdoutPath,
   };
 }
 
@@ -321,23 +326,15 @@ export async function checkServiceStatus(
 }
 
 export async function getServiceLogs(host: HostConfig, service: ServiceConfig): Promise<ServiceLogsResult> {
-  if (!service.pid || !service.stdoutPath || !service.stderrPath) {
+  if (!service.pid) {
     return { stdout: '', stderr: '' };
   }
 
-  if (service.stdoutPath === service.stderrPath) {
-    const mergedRet = await runSsh(host, `tail -n 200 ${JSON.stringify(service.stdoutPath)}`);
-    return {
-      stdout: mergedRet.stdout || (mergedRet.ok ? '' : mergedRet.stderr),
-      stderr: '',
-    };
-  }
-
-  const stdoutRet = await runSsh(host, `tail -n 200 ${JSON.stringify(service.stdoutPath)}`);
-  const stderrRet = await runSsh(host, `tail -n 200 ${JSON.stringify(service.stderrPath)}`);
+  const logPath = buildServiceLogPath(host, service, service.pid);
+  const mergedRet = await runSsh(host, `tail -n 200 ${JSON.stringify(logPath)}`);
 
   return {
-    stdout: stdoutRet.stdout || (stdoutRet.ok ? '' : stdoutRet.stderr),
-    stderr: stderrRet.stdout || (stderrRet.ok ? '' : stderrRet.stderr),
+    stdout: mergedRet.stdout || (mergedRet.ok ? '' : mergedRet.stderr),
+    stderr: '',
   };
 }
