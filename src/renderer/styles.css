@@ -456,7 +456,7 @@ textarea.input {
 }
 
 .host-dialog {
-  width: min(1040px, calc(100vw - 32px));
+  width: min(1180px, calc(100vw - 32px));
   max-height: calc(100vh - 40px);
   padding: 0;
   border: none;
@@ -542,6 +542,33 @@ textarea.input {
   border-radius: var(--radius-md);
   padding: var(--space-3);
   background: var(--color-bg-surface);
+}
+
+.service-editor-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.6fr) minmax(120px, 0.8fr) minmax(200px, 1fr) auto;
+  align-items: end;
+}
+
+.service-name-field,
+.service-port-field,
+.service-forward-port-field {
+  min-width: 0;
+}
+
+.service-command-field {
+  grid-column: 1 / -1;
+}
+
+.service-command-input {
+  min-height: 108px;
+  height: auto;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .forward-local-host,
@@ -871,6 +898,10 @@ td {
   .forward-remote-host,
   .forward-remote-port {
     width: 100%;
+  }
+
+  .service-editor-row {
+    grid-template-columns: 1fr;
   }
 
   .private-key-wrap {

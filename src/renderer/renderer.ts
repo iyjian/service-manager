@@ -344,26 +344,26 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
 
 function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row';
+  row.className = 'forward-row service-editor-row';
   row.innerHTML = `
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <label class="field field-xs forward-local-host">
+    <label class="field field-xs service-name-field">
       Name
       <input class="input" data-field="name" value="${safeValue(draft?.name)}" required />
     </label>
-    <label class="field field-xs">
-      Start Command
-      <input class="input" data-field="startCommand" value="${safeValue(draft?.startCommand)}" required />
-    </label>
-    <label class="field field-xs">
+    <label class="field field-xs service-port-field">
       Exposed Port
       <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" required />
     </label>
-    <label class="field field-xs">
+    <label class="field field-xs service-forward-port-field">
       Forward Local Port (Optional)
       <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
     </label>
     <button type="button" class="btn btn-danger btn-sm forward-remove">Remove</button>
+    <label class="field field-xs service-command-field">
+      Start Command
+      <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /path/to/app && exec yarn start:dev" required>${escapeHtml(draft?.startCommand ?? '')}</textarea>
+    </label>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
@@ -425,10 +425,10 @@ function collectJumpHostDraft(): JumpHostConfig | undefined {
 }
 
 function collectServicesFromEditor(): ServiceDraft[] {
-  const rows = Array.from(serviceEditorList.querySelectorAll<HTMLElement>('.forward-row'));
+  const rows = Array.from(serviceEditorList.querySelectorAll<HTMLElement>('.service-editor-row'));
   return rows.map((row) => {
     const get = (field: string): string =>
-      row.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
+      row.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
 
     return {
       id: get('id') || undefined,

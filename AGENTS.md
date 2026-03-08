@@ -11,6 +11,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - Deleting a host requires confirmation.
 2. Service management under each host:
    - start command
+   - start command editor in host modal must be full-width and multi-line so long shell commands stay practical to edit
    - exposed port (`0` means not exposed)
    - optional local forward port
 3. Forwarding-rule management under each host (same capability model as `ssh-tunnel-manager`):

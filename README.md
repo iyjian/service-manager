@@ -29,6 +29,7 @@ This project is now aligned with the **UI style** and **development approach** o
 4. Service fields:
    - service name
    - start command
+   - start command is edited in a full-width multi-line textarea inside the host dialog, so long shell commands remain readable and editable
    - exposed port (`0` means not exposed)
    - forward local port (optional; if empty, no local forwarding is created)
 5. Service status in panel is managed through remote `systemd --user` transient units:
