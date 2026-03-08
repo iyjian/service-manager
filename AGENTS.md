@@ -22,24 +22,28 @@ Build a desktop Electron application to manage services on remote servers throug
    - supports jump-host chain when host has jump configured
 4. Service status and runtime state:
    - save PID on start
-   - PID-alive means running; missing/dead PID means stopped
+   - service runtime is managed only through remote `systemd --user` transient units created by `systemd-run`
+   - systemd `active` means running; missing/inactive unit means stopped
    - in-progress actions should surface explicit transition states (`starting` / `stopping`) instead of generic unknown
    - show PID in service list
    - click PID to view merged terminal-style logs (stdout + stderr), with auto refresh and ANSI color display
    - capture logs as a single merged stream at source to preserve original output order
-   - clicking PID must resolve the current log file directly from the saved service PID using the `safeHost_service_name_pid.log` naming rule, instead of trusting a stale persisted log path
+   - clicking PID must read `journalctl --user` output for the unit's current invocation, so the panel always shows the logs for the currently managed process instance
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
-   - start should be non-blocking after PID capture; startup port checks are post-start and must not delay PID/log availability
-   - service log file naming should be `safeHost_service_name_pid.log` under `/tmp/service-manager`, where `safeHost` is derived from sanitized `sshHost` (fallback `host.name`)
+   - start should be non-blocking after systemd `MainPID` capture; startup port checks are post-start and must not delay PID/log availability
+   - transient systemd units must remain inspectable after exit/failure; do not use `systemd-run --collect`
    - renderer must catch log open/refresh failures so missing targets or SSH errors do not escape as uncaught promise errors; surfaced failures should remain visible in the page message area
    - dialog open/close paths must be idempotent; repeated clicks must not throw browser `InvalidStateError`
+   - if remote host lacks usable systemd user services, service actions must fail explicitly and tell the user to install/configure systemd instead of falling back to raw background processes
 5. Service actions in panel:
    - start
    - stop
    - status refresh is automatic in background (no per-row refresh button)
    - service delete is provided in host edit form (not in list row actions)
-   - stop behavior is group kill by PID (`SIGTERM` to process group); no configurable stop command.
+   - start behavior is `systemd-run --user` transient unit creation; no raw shell background fallback
+   - managed service commands should be launched through the remote account's login shell so shell-managed runtime PATH initialization remains compatible with manual SSH usage
+   - stop behavior is `systemctl --user stop` on the transient unit; no configurable stop command
    - if local forward port is configured, start/refresh should ensure SSH local port forwarding is active; stop/delete should close forwarding.
    - if service exposed port is `0`, skip port-listen checks and disable service forwarding.
    - Port column must visualize forward result when forward port is set:

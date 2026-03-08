@@ -183,8 +183,6 @@ export class ServiceStore {
       port,
       forwardLocalPort: port === 0 ? undefined : forwardLocalPort,
       pid: typeof (input as Partial<ServiceConfig>).pid === 'number' ? (input as Partial<ServiceConfig>).pid : undefined,
-      stdoutPath: (input as Partial<ServiceConfig>).stdoutPath,
-      stderrPath: (input as Partial<ServiceConfig>).stderrPath,
     };
   }
 

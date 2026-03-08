@@ -39,8 +39,6 @@ export interface ServiceConfig {
   port: number;
   forwardLocalPort?: number;
   pid?: number;
-  stdoutPath?: string;
-  stderrPath?: string;
 }
 
 export interface HostConfig {

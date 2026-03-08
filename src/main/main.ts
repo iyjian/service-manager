@@ -284,8 +284,6 @@ function validateServiceDraft(input: ServiceDraft): ServiceConfig {
     port: Number(input.port),
     forwardLocalPort: input.forwardLocalPort ? Number(input.forwardLocalPort) : undefined,
     pid: undefined,
-    stdoutPath: undefined,
-    stderrPath: undefined,
   };
 
   if (!service.name) throw new Error('Service name is required.');
@@ -403,8 +401,6 @@ function preserveServiceRuntimeFields(previous: HostConfig | undefined, next: Ho
       return {
         ...service,
         pid: old.pid,
-        stdoutPath: old.stdoutPath,
-        stderrPath: old.stderrPath,
       };
     }),
   };
@@ -739,6 +735,9 @@ function registerIpcHandlers(): void {
       }
       const status = await checkServiceStatus(host, service);
       if (status.status === 'running') {
+        if (status.pid) {
+          service.pid = status.pid;
+        }
         try {
           await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
           emitForwardStatus(host.id, service.id, 'ok');
@@ -843,6 +842,10 @@ function registerIpcHandlers(): void {
         emitStatus(host.id, service.id, 'starting', service.pid);
         return;
       }
+      if (result.pid && result.pid !== service.pid) {
+        service.pid = result.pid;
+        await getStore().upsertHost(host);
+      }
       if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
         try {
           await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
@@ -890,8 +893,6 @@ function registerIpcHandlers(): void {
         }
 
         service.pid = ret.pid;
-        service.stdoutPath = ret.stdoutPath;
-        service.stderrPath = ret.stderrPath;
         await getStore().upsertHost(host);
         if (!service.forwardLocalPort || service.port === 0) {
           emitForwardStatus(host.id, service.id, 'none');

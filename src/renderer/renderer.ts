@@ -92,6 +92,14 @@ function toErrorMessage(error: unknown): string {
   return typeof error === 'string' ? error : String(error);
 }
 
+function shouldPromoteServiceError(message: string | undefined): boolean {
+  if (!message) {
+    return false;
+  }
+
+  return /systemd|systemctl --user|systemd-run|journalctl|loginctl|linger/i.test(message);
+}
+
 function logRendererError(scope: string, error: unknown, context?: Record<string, unknown>): void {
   const message = toErrorMessage(error);
   console.error(`[renderer:${scope}] ${message}`, context ?? {});
@@ -1045,6 +1053,10 @@ window.serviceApi.onServiceStatusChanged((change) => {
     service.forwardState = change.forwardState;
     service.forwardError = change.forwardError;
     renderSafely('service-status-changed');
+    const serviceError = change.error;
+    if (change.status === 'error' && serviceError && shouldPromoteServiceError(serviceError)) {
+      setMessage(serviceError, 'error');
+    }
 
     if (activeLogTarget && activeLogTarget.hostId === change.hostId && activeLogTarget.serviceId === change.serviceId) {
       serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;

@@ -31,19 +31,18 @@ This project is now aligned with the **UI style** and **development approach** o
    - start command
    - exposed port (`0` means not exposed)
    - forward local port (optional; if empty, no local forwarding is created)
-5. Service status in panel based on saved PID:
-   - PID exists and is alive: `running`
-   - PID missing or dead: `stopped`
+5. Service status in panel is managed through remote `systemd --user` transient units:
+   - `active` -> `running`
+   - `inactive` or missing unit -> `stopped`
    - while start/stop command is in progress: `starting` / `stopping`
-   - start flow returns as soon as PID is captured (logs become available immediately); port-listen/forward checks are handled asynchronously by refresh cycle.
-   - when service `exposed port` is `0`, app skips port listen checks and uses PID-only status checks.
+   - start flow uses `systemd-run --user` and returns as soon as `MainPID` is available; port-listen/forward checks are handled asynchronously by refresh cycle.
+   - when service `exposed port` is `0`, app skips port listen checks and disables service forwarding.
 6. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
-   - logs are captured as a single combined stream on server side, preserving stdout/stderr ordering like terminal output.
-   - clicking PID now reads the PID-specific file directly from `/tmp/service-manager/<safeHost>_<service>_<pid>.log` derived from the saved service PID, instead of trusting an older persisted log path.
+   - logs are read from `journalctl --user` for the current systemd invocation, so the panel always shows the logs for the unit instance currently managed by the app.
    - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but scroll position is preserved.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
-   - log open/refresh failures are caught in renderer so transient SSH errors or deleted targets do not surface as uncaught promise crashes; the error is shown in the page message bar instead.
+   - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown in the page message bar instead.
 7. Tunnel list and service list are rendered under each host on home page:
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - `Service List`: start/stop service, PID/log, runtime forward indicator
@@ -51,7 +50,9 @@ This project is now aligned with the **UI style** and **development approach** o
      - tunnel running/stopped/errors
      - service running/stopped/errors
 8. Service actions in list: `Start`, `Stop`.
-   - `Stop` sends `SIGTERM` to the PID's process group on remote host (no stop command config), so process trees (e.g. watch mode) can be stopped together.
+   - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
+   - the managed command is launched through the remote account's login shell so user-level PATH/runtime initialization (for example `nvm`, `conda`, shell-managed Node/Yarn installs) is closer to an interactive SSH session.
+   - `Stop` uses `systemctl --user stop` on that transient unit; there is no stop-command config and no legacy PID-group fallback.
    - only `Start` / `Stop` remain in list actions; service delete is handled in host edit form.
    - when service is running and `forward local port` is configured, app auto creates SSH local port forwarding (`127.0.0.1:<local>` -> `remote:exposedPort`); forwarding is closed when service stops.
    - when `exposed port` is `0`, forwarding is disabled even if forward local port is filled.
@@ -141,9 +142,15 @@ open -a "Service Manager"
 
 - SSH command execution now uses `ssh2` directly (not shelling out to system `ssh`).
 - In `Add/Edit Host`, private key auth includes `Private Key` + optional `Passphrase`, and supports `Import` file action.
-- Start command runs in background and records PID plus stdout/stderr log file paths under `/tmp/service-manager`.
-- log file naming uses `safeHost_service_name_pid.log` under `/tmp/service-manager`, where `safeHost` is the sanitized `sshHost` (fallback `host.name`) value; for example `10_0_0_12_lms_api_12345.log`.
-- PID is persisted with the service config, and status checks use `kill -0 <pid>`.
+- Service lifecycle is managed only through `systemd-run --user`, `systemctl --user`, and `journalctl --user`; there is no fallback to raw background shell processes.
+- Service commands are executed through the remote account's detected login shell; this improves compatibility with shell-managed runtimes, but absolute binary paths are still the most stable choice for production services.
+- Transient units are intentionally kept inspectable after exit/failure; the app does not use `systemd-run --collect`, so `systemctl --user status` and `journalctl --user -u <unit>` remain useful for debugging startup failures.
+- Remote hosts must provide working `systemd` user services for the SSH account:
+  - `systemd-run`, `systemctl`, `journalctl`, and `loginctl` must exist
+  - `systemctl --user` must work for that account
+  - lingering must be enabled, for example: `sudo loginctl enable-linger <username>`
+- When those systemd prerequisites are missing, service start/stop/log actions surface an explicit install/configuration error in the UI instead of falling back to raw background processes.
+- The app persists the latest `MainPID` reported by systemd for display and refresh, but start/stop/log ownership is defined by the transient unit, not by a log file path or `kill -0`.
 - Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page message bar, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
 - Main process now logs top-level `uncaughtException` / `unhandledRejection`, renderer-process exits, and IPC broadcast failures to make crash diagnosis visible.
 - `Add/Edit Host` now has hierarchical editing structure:
