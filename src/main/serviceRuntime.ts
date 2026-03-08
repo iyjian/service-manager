@@ -430,6 +430,25 @@ async function waitForSystemdMainPid(
   return latest;
 }
 
+async function waitForSystemdStop(
+  host: HostConfig,
+  service: ServiceConfig,
+  timeoutMs = 5000
+): Promise<SystemdServiceState> {
+  const startedAt = Date.now();
+  let latest: SystemdServiceState = { exists: false };
+
+  while (Date.now() - startedAt < timeoutMs) {
+    latest = await querySystemdServiceState(host, service);
+    if (!latest.exists || latest.activeState === 'inactive' || latest.activeState === 'failed') {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  return latest;
+}
+
 function buildSystemdFailureMessage(host: HostConfig, service: ServiceConfig, state: SystemdServiceState): string {
   const unit = buildSystemdUnitName(host, service);
   const result = state.result || state.subState || state.activeState || 'unknown';
@@ -505,6 +524,15 @@ export async function stopService(host: HostConfig, service: ServiceConfig): Pro
     const ret = await runSsh(host, `bash -lc ${shellQuoteSingle(stopCmd)}`);
     if (!ret.ok) {
       return { ok: false, error: formatCommandFailure(`systemctl stop ${unit}`, ret) };
+    }
+
+    const stoppedState = await waitForSystemdStop(host, service);
+    if (stoppedState.exists && stoppedState.activeState === 'failed') {
+      const resetFailedCmd = `systemctl --user reset-failed ${shellQuoteSingle(unit)}`;
+      const resetRet = await runSsh(host, `bash -lc ${shellQuoteSingle(resetFailedCmd)}`);
+      if (!resetRet.ok) {
+        return { ok: false, error: formatCommandFailure(`systemctl reset-failed ${unit}`, resetRet) };
+      }
     }
 
     return { ok: true };

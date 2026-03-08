@@ -33,6 +33,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
    - start should be non-blocking after systemd `MainPID` capture; startup port checks are post-start and must not delay PID/log availability
    - transient systemd units must remain inspectable after exit/failure; do not use `systemd-run --collect`
+   - intentional `Stop` must settle back to `stopped`; if systemd briefly marks the unit failed because of the termination signal, the app should wait for deactivation and clear that failed state
    - renderer must catch log open/refresh failures so missing targets or SSH errors do not escape as uncaught promise errors; surfaced failures should remain visible in the page message area
    - dialog open/close paths must be idempotent; repeated clicks must not throw browser `InvalidStateError`
    - if remote host lacks usable systemd user services, service actions must fail explicitly and tell the user to install/configure systemd instead of falling back to raw background processes

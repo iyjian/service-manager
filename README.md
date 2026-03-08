@@ -145,6 +145,7 @@ open -a "Service Manager"
 - Service lifecycle is managed only through `systemd-run --user`, `systemctl --user`, and `journalctl --user`; there is no fallback to raw background shell processes.
 - Service commands are executed through the remote account's detected login shell; this improves compatibility with shell-managed runtimes, but absolute binary paths are still the most stable choice for production services.
 - Transient units are intentionally kept inspectable after exit/failure; the app does not use `systemd-run --collect`, so `systemctl --user status` and `journalctl --user -u <unit>` remain useful for debugging startup failures.
+- Manual `Stop` waits for the transient unit to deactivate and clears any temporary failed state caused by the termination signal, so an intentional stop settles back to `stopped` instead of surfacing as an error.
 - Remote hosts must provide working `systemd` user services for the SSH account:
   - `systemd-run`, `systemctl`, `journalctl`, and `loginctl` must exist
   - `systemctl --user` must work for that account
