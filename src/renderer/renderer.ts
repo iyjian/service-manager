@@ -83,6 +83,79 @@ let activeLogTarget: { hostId: string; serviceId: string } | null = null;
 let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
+let lastLogLoadError: string | null = null;
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return typeof error === 'string' ? error : String(error);
+}
+
+function logRendererError(scope: string, error: unknown, context?: Record<string, unknown>): void {
+  const message = toErrorMessage(error);
+  console.error(`[renderer:${scope}] ${message}`, context ?? {});
+  if (error instanceof Error && error.stack) {
+    console.error(error.stack);
+  }
+}
+
+function reportRendererError(scope: string, error: unknown, fallbackMessage?: string): void {
+  logRendererError(scope, error);
+  setMessage(fallbackMessage ?? toErrorMessage(error), 'error');
+}
+
+function escapeAttribute(text: string): string {
+  return escapeHtml(text).replace(/\n/g, '&#10;');
+}
+
+function safeValue(value: string | number | undefined): string {
+  return escapeAttribute(value === undefined ? '' : String(value));
+}
+
+function renderSafely(scope = 'render'): void {
+  try {
+    render();
+  } catch (error) {
+    reportRendererError(scope, error, 'Unexpected UI render error.');
+  }
+}
+
+function showDialog(dialog: HTMLDialogElement, name: string): void {
+  if (dialog.open) {
+    return;
+  }
+
+  try {
+    dialog.showModal();
+  } catch (error) {
+    reportRendererError(`dialog:show:${name}`, error, `Unable to open ${name} dialog.`);
+  }
+}
+
+function closeDialog(dialog: HTMLDialogElement, name: string): void {
+  if (!dialog.open) {
+    return;
+  }
+
+  try {
+    dialog.close();
+  } catch (error) {
+    logRendererError(`dialog:close:${name}`, error);
+  }
+}
+
+function isActiveLogTarget(target: { hostId: string; serviceId: string }): boolean {
+  return Boolean(
+    activeLogTarget &&
+      activeLogTarget.hostId === target.hostId &&
+      activeLogTarget.serviceId === target.serviceId
+  );
+}
+
+function shouldStopLogRefresh(message: string): boolean {
+  return message === 'Host not found.' || message === 'Service not found.';
+}
 
 function renderUpdateState(state: UpdateState): void {
   updateStatusHintElement.classList.remove(
@@ -230,22 +303,22 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   const row = document.createElement('div');
   row.className = 'forward-row';
   row.innerHTML = `
-    <input type="hidden" data-field="id" value="${draft?.id ?? ''}" />
+    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
     <label class="field field-xs forward-local-host">
       Local Host
-      <input class="input" data-field="localHost" value="${draft?.localHost ?? '127.0.0.1'}" required />
+      <input class="input" data-field="localHost" value="${safeValue(draft?.localHost ?? '127.0.0.1')}" required />
     </label>
     <label class="field field-xs forward-local-port">
       Local Port
-      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${draft?.localPort ?? ''}" required />
+      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" required />
     </label>
     <label class="field field-xs forward-remote-host">
       Remote Host
-      <input class="input" data-field="remoteHost" value="${draft?.remoteHost ?? '127.0.0.1'}" required />
+      <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost ?? '127.0.0.1')}" required />
     </label>
     <label class="field field-xs forward-remote-port">
       Remote Port
-      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${draft?.remotePort ?? ''}" required />
+      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" required />
     </label>
     <label class="forward-auto">
       <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
@@ -265,22 +338,22 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   const row = document.createElement('div');
   row.className = 'forward-row';
   row.innerHTML = `
-    <input type="hidden" data-field="id" value="${draft?.id ?? ''}" />
+    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
     <label class="field field-xs forward-local-host">
       Name
-      <input class="input" data-field="name" value="${draft?.name ?? ''}" required />
+      <input class="input" data-field="name" value="${safeValue(draft?.name)}" required />
     </label>
     <label class="field field-xs">
       Start Command
-      <input class="input" data-field="startCommand" value="${draft?.startCommand ?? ''}" required />
+      <input class="input" data-field="startCommand" value="${safeValue(draft?.startCommand)}" required />
     </label>
     <label class="field field-xs">
       Exposed Port
-      <input class="input" data-field="port" type="number" min="0" max="65535" value="${draft?.port ?? ''}" required />
+      <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" required />
     </label>
     <label class="field field-xs">
       Forward Local Port (Optional)
-      <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${draft?.forwardLocalPort ?? ''}" />
+      <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
     </label>
     <button type="button" class="btn btn-danger btn-sm forward-remove">Remove</button>
   `;
@@ -429,11 +502,11 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
 
   toggleAuthFields();
   toggleJumpSection();
-  hostDialog.showModal();
+  showDialog(hostDialog, 'host');
 }
 
 function closeHostDialog(): void {
-  hostDialog.close();
+  closeDialog(hostDialog, 'host');
   setMessage('');
 }
 
@@ -455,7 +528,7 @@ function updateOverview(): void {
 
 async function loadHosts(): Promise<void> {
   hosts = await window.serviceApi.listHosts();
-  render();
+  renderSafely('load-hosts');
 }
 
 async function refreshAllServices(silent = false): Promise<void> {
@@ -492,11 +565,35 @@ function stopStatusAutoRefresh(): void {
 
 async function loadServiceLogs(): Promise<void> {
   if (!activeLogTarget) return;
-  const logs: ServiceLogsResult = await window.serviceApi.getServiceLogs(activeLogTarget.hostId, activeLogTarget.serviceId);
-  const merged = `${logs.stdout || ''}${logs.stderr || ''}`;
-  serviceLogTerminal.innerHTML = ansiToHtml(merged);
-  if (logAutoScrollInput.checked) {
-    serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+  const target = { ...activeLogTarget };
+
+  try {
+    const logs: ServiceLogsResult = await window.serviceApi.getServiceLogs(target.hostId, target.serviceId);
+    if (!isActiveLogTarget(target)) {
+      return;
+    }
+
+    const merged = `${logs.stdout || ''}${logs.stderr || ''}`;
+    serviceLogTerminal.innerHTML = ansiToHtml(merged);
+    lastLogLoadError = null;
+    if (logAutoScrollInput.checked) {
+      serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+    }
+  } catch (error) {
+    const message = toErrorMessage(error);
+    logRendererError('service-logs', error, target);
+    if (!isActiveLogTarget(target)) {
+      return;
+    }
+
+    serviceLogTerminal.textContent = `Unable to load logs.\n${message}`;
+    if (lastLogLoadError !== message) {
+      setMessage(`Log refresh failed: ${message}`, 'error');
+      lastLogLoadError = message;
+    }
+    if (shouldStopLogRefresh(message)) {
+      stopLogAutoRefresh();
+    }
   }
 }
 
@@ -571,12 +668,15 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
   if (!service) return;
 
   activeLogTarget = { hostId: host.id, serviceId: service.id };
+  lastLogLoadError = null;
   serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
   serviceLogTerminal.textContent = '';
 
-  void loadServiceLogs();
+  void loadServiceLogs().catch((error) => {
+    reportRendererError('service-logs:open', error, `Log refresh failed: ${toErrorMessage(error)}`);
+  });
   startLogAutoRefresh();
-  serviceLogDialog.showModal();
+  showDialog(serviceLogDialog, 'service log');
 }
 
 function formatStatus(status: string): string {
@@ -597,12 +697,18 @@ function render(): void {
   for (const host of hosts) {
     const groupRow = document.createElement('tr');
     groupRow.className = 'group-row';
+    const hostName = escapeHtml(host.name);
+    const hostDesc = escapeHtml(
+      `${host.username}@${host.sshHost}:${host.sshPort}${
+        host.jumpHost ? ` · via ${host.jumpHost.username}@${host.jumpHost.sshHost}:${host.jumpHost.sshPort}` : ''
+      }`
+    );
     groupRow.innerHTML = `
       <td colspan="6" class="group-cell">
         <div class="group-head">
           <div>
-            <div class="group-title">${host.name}</div>
-            <div class="group-desc">${host.username}@${host.sshHost}:${host.sshPort}${host.jumpHost ? ` · via ${host.jumpHost.username}@${host.jumpHost.sshHost}:${host.jumpHost.sshPort}` : ''}</div>
+            <div class="group-title">${hostName}</div>
+            <div class="group-desc">${hostDesc}</div>
           </div>
           <div class="row-actions">
             <button class="btn btn-secondary btn-sm" data-action="edit-host">Edit Host</button>
@@ -642,18 +748,22 @@ function render(): void {
       row.className = 'data-row';
       const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
       const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
+      const forwardError = escapeAttribute(forward.error ?? '');
+      const forwardStatus = escapeHtml(formatStatus(forward.status));
+      const localEndpoint = escapeHtml(`${forward.localHost}:${forward.localPort}`);
+      const remoteEndpoint = escapeHtml(`${forward.remoteHost}:${forward.remotePort}`);
       const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
         ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
         : '';
       row.innerHTML = `
         <td class="table-cell">#${index + 1}</td>
-        <td class="table-cell">${forward.localHost}:${forward.localPort}</td>
-        <td class="table-cell">${forward.remoteHost}:${forward.remotePort}</td>
+        <td class="table-cell">${localEndpoint}</td>
+        <td class="table-cell">${remoteEndpoint}</td>
         <td class="table-cell auto-start-cell">${forward.autoStart ? '✓' : '✗'}</td>
         <td class="table-cell">
-          <span class="status-indicator ${statusClass(forward.status)}" title="${forward.error ?? ''}">
+          <span class="status-indicator ${statusClass(forward.status)}" title="${forwardError}">
             <span class="status-dot"></span>
-            <span class="status-label">${formatStatus(forward.status)}</span>
+            <span class="status-label">${forwardStatus}</span>
           </span>
           ${retry}
         </td>
@@ -711,16 +821,20 @@ function render(): void {
       row.className = 'data-row';
       const updated = service.updatedAt ? new Date(service.updatedAt).toLocaleString() : '-';
       const pidText = service.pid ? String(service.pid) : '-';
+      const safeServiceName = escapeHtml(service.name);
+      const safeUpdated = escapeHtml(updated);
+      const safeServiceError = escapeAttribute(service.error ?? '');
       const portText = (() => {
         if (service.port === 0 || !service.forwardLocalPort) {
-          return `<span>${service.port}</span>`;
+          return `<span>${escapeHtml(String(service.port))}</span>`;
         }
-        const base = `${service.forwardLocalPort} -> ${service.port}`;
+        const base = escapeHtml(`${service.forwardLocalPort} -> ${service.port}`);
+        const href = escapeAttribute(`http://127.0.0.1:${service.forwardLocalPort}`);
         if (service.forwardState === 'ok') {
-          return `<a class="forward-link" href="http://127.0.0.1:${service.forwardLocalPort}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+          return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
         }
         if (service.forwardState === 'error') {
-          const err = (service.forwardError || 'Forward failed').replace(/"/g, '&quot;');
+          const err = escapeAttribute(service.forwardError || 'Forward failed');
           return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
         }
         return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
@@ -728,16 +842,16 @@ function render(): void {
       const startDisabled = canStartService(service.status) ? '' : 'disabled';
       const stopDisabled = canStopService(service.status) ? '' : 'disabled';
       row.innerHTML = `
-        <td class="table-cell">${service.name}</td>
+        <td class="table-cell">${safeServiceName}</td>
         <td class="table-cell">${portText}</td>
         <td class="table-cell">
-          <span class="status-indicator ${statusClass(service.status)}" title="${service.error ?? ''}">
+          <span class="status-indicator ${statusClass(service.status)}" title="${safeServiceError}">
             <span class="status-dot"></span>
-            <span class="status-label">${service.status}</span>
+            <span class="status-label">${escapeHtml(service.status)}</span>
           </span>
         </td>
-        <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${pidText}</button></td>
-        <td class="table-cell">${updated}</td>
+        <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
+        <td class="table-cell">${safeUpdated}</td>
         <td>
           <div class="row-actions">
             <button class="btn btn-primary btn-sm" data-action="start" ${startDisabled}>Start</button>
@@ -807,7 +921,9 @@ hostTableBody.addEventListener('click', (event) => {
   event.preventDefault();
   const url = link.getAttribute('href');
   if (!url) return;
-  void window.serviceApi.openExternal(url);
+  void window.serviceApi.openExternal(url).catch((error) => {
+    reportRendererError('open-external', error, `Open link failed: ${toErrorMessage(error)}`);
+  });
 });
 
 addForwardButton.addEventListener('click', () => {
@@ -838,11 +954,14 @@ useJumpHostInput.addEventListener('change', toggleJumpSection);
 jumpAuthTypeSelect.addEventListener('change', toggleJumpAuthFields);
 closeServiceLogDialogButton.addEventListener('click', () => {
   stopLogAutoRefresh();
-  serviceLogDialog.close();
+  closeDialog(serviceLogDialog, 'service log');
   activeLogTarget = null;
+  lastLogLoadError = null;
 });
 serviceLogDialog.addEventListener('close', () => {
   stopLogAutoRefresh();
+  activeLogTarget = null;
+  lastLogLoadError = null;
 });
 window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
@@ -912,50 +1031,75 @@ form.addEventListener('submit', async (event) => {
 });
 
 window.serviceApi.onServiceStatusChanged((change) => {
-  const host = hosts.find((item) => item.id === change.hostId);
-  if (!host) return;
+  try {
+    const host = hosts.find((item) => item.id === change.hostId);
+    if (!host) return;
 
-  const service = host.services.find((item) => item.id === change.serviceId);
-  if (!service) return;
+    const service = host.services.find((item) => item.id === change.serviceId);
+    if (!service) return;
 
-  service.status = change.status;
-  service.pid = change.pid;
-  service.error = change.error;
-  service.updatedAt = change.updatedAt;
-  service.forwardState = change.forwardState;
-  service.forwardError = change.forwardError;
-  render();
+    service.status = change.status;
+    service.pid = change.pid;
+    service.error = change.error;
+    service.updatedAt = change.updatedAt;
+    service.forwardState = change.forwardState;
+    service.forwardError = change.forwardError;
+    renderSafely('service-status-changed');
 
-  if (activeLogTarget && activeLogTarget.hostId === change.hostId && activeLogTarget.serviceId === change.serviceId) {
-    serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
+    if (activeLogTarget && activeLogTarget.hostId === change.hostId && activeLogTarget.serviceId === change.serviceId) {
+      serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
+    }
+  } catch (error) {
+    reportRendererError('service-status-changed', error, 'Unexpected service status update error.');
   }
 });
 
 window.serviceApi.onForwardStatusChanged((change) => {
-  const host = hosts.find((item) => item.id === change.hostId);
-  if (!host) return;
-  const forward = host.forwards.find((item) => item.id === change.forwardId);
-  if (!forward) return;
+  try {
+    const host = hosts.find((item) => item.id === change.hostId);
+    if (!host) return;
+    const forward = host.forwards.find((item) => item.id === change.forwardId);
+    if (!forward) return;
 
-  forward.status = change.status;
-  forward.error = change.error;
-  forward.reconnectAt = change.reconnectAt;
-  render();
+    forward.status = change.status;
+    forward.error = change.error;
+    forward.reconnectAt = change.reconnectAt;
+    renderSafely('forward-status-changed');
+  } catch (error) {
+    reportRendererError('forward-status-changed', error, 'Unexpected tunnel status update error.');
+  }
 });
 
 window.serviceApi.onUpdateStateChanged((state) => {
-  renderUpdateState(state);
+  try {
+    renderUpdateState(state);
+  } catch (error) {
+    reportRendererError('update-state-changed', error, 'Unexpected updater status error.');
+  }
 });
 
 (async function init() {
-  resetForm();
-  await loadHosts();
-  await refreshAllServices(true);
   try {
-    renderUpdateState(await window.serviceApi.getUpdateState());
-  } catch {
-    // no-op
+    resetForm();
+    await loadHosts();
+    await refreshAllServices(true);
+    try {
+      renderUpdateState(await window.serviceApi.getUpdateState());
+    } catch {
+      // no-op
+    }
+    startStatusAutoRefresh();
+    setMessage('Ready.');
+  } catch (error) {
+    reportRendererError('init', error, 'Failed to initialize UI.');
   }
-  startStatusAutoRefresh();
-  setMessage('Ready.');
 })();
+
+window.addEventListener('error', (event) => {
+  reportRendererError('window:error', event.error ?? event.message, 'Unexpected UI error.');
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  reportRendererError('window:unhandledrejection', event.reason, 'Unexpected async UI error.');
+  event.preventDefault();
+});

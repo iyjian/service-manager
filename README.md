@@ -42,6 +42,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - logs are captured as a single combined stream on server side, preserving stdout/stderr ordering like terminal output.
    - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but scroll position is preserved.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
+   - log open/refresh failures are caught in renderer so transient SSH errors or deleted targets do not surface as uncaught promise crashes; the error is shown in the page message bar instead.
 7. Tunnel list and service list are rendered under each host on home page:
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - `Service List`: start/stop service, PID/log, runtime forward indicator
@@ -142,6 +143,8 @@ open -a "Service Manager"
 - Start command runs in background and records PID plus stdout/stderr log file paths under `/tmp/service-manager`.
 - log file naming uses `hostname_service_name_pid.log` under `/tmp/service-manager` (e.g. `example_com_lms_api_12345.log`) to reduce multi-user/multi-project collisions.
 - PID is persisted with the service config, and status checks use `kill -0 <pid>`.
+- Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page message bar, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
+- Main process now logs top-level `uncaughtException` / `unhandledRejection`, renderer-process exits, and IPC broadcast failures to make crash diagnosis visible.
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section
   - Services section

@@ -31,6 +31,8 @@ Build a desktop Electron application to manage services on remote servers throug
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)
    - start should be non-blocking after PID capture; startup port checks are post-start and must not delay PID/log availability
    - service log file naming should be `hostname_service_name_pid.log` under `/tmp/service-manager`
+   - renderer must catch log open/refresh failures so missing targets or SSH errors do not escape as uncaught promise errors; surfaced failures should remain visible in the page message area
+   - dialog open/close paths must be idempotent; repeated clicks must not throw browser `InvalidStateError`
 5. Service actions in panel:
    - start
    - stop
@@ -90,6 +92,10 @@ The project must stay aligned with `ssh-tunnel-manager` in this workspace for:
 - SSH layer requirement:
   - Must use `ssh2` for host connection and remote command execution.
   - Keep `asn1` explicitly declared in dependencies for this project.
+- Runtime stability requirement:
+  - renderer must escape dynamic HTML text derived from host/service/error data before injecting into DOM
+  - renderer should surface caught runtime errors in the page message area instead of failing silently
+  - main process must log top-level runtime failures (`uncaughtException`, `unhandledRejection`, renderer-process exits) instead of failing silently
 
 ## Mandatory Documentation Rule
 

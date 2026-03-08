@@ -112,7 +112,13 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  window.on('unresponsive', () => {
+    logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
+  });
+
+  void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html')).catch((error) => {
+    logRuntimeError('window:load-file', error);
+  });
   return window;
 }
 
@@ -417,10 +423,7 @@ function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pi
     forwardError: forward.error,
   };
   runtimeStatus.set(serviceKey(hostId, serviceId), payload);
-
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IPC_CHANNELS.serviceStatusChanged, payload);
-  }
+  broadcast(IPC_CHANNELS.serviceStatusChanged, payload);
 }
 
 function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string): void {
@@ -435,6 +438,46 @@ function logRuntimeError(scope: string, error: unknown, context?: Record<string,
   if (error instanceof Error && error.stack) {
     console.error(error.stack);
   }
+}
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) {
+      continue;
+    }
+
+    try {
+      win.webContents.send(channel, payload);
+    } catch (error) {
+      logRuntimeError('ipc:broadcast', error, { channel });
+    }
+  }
+}
+
+function registerProcessErrorHandlers(): void {
+  process.on('uncaughtException', (error) => {
+    logRuntimeError('process:uncaughtException', error);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logRuntimeError('process:unhandledRejection', reason);
+  });
+
+  app.on('render-process-gone', (_event, _webContents, details) => {
+    logRuntimeError('app:render-process-gone', new Error(`Renderer process exited: ${details.reason}`), {
+      reason: details.reason,
+      exitCode: details.exitCode,
+    });
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    logRuntimeError('app:child-process-gone', new Error(`Child process exited: ${details.type}`), {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      name: details.name,
+    });
+  });
 }
 
 function syncKnownForwards(hosts: HostConfig[]): void {
@@ -971,44 +1014,51 @@ function wireForwardStatusBroadcast(): void {
       error: change.error,
       reconnectAt: change.reconnectAt,
     };
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC_CHANNELS.forwardStatusChanged, payload);
-    }
+    broadcast(IPC_CHANNELS.forwardStatusChanged, payload);
   });
 }
 
 function wireUpdaterBroadcast(): void {
   updater.on('state-changed', (state: UpdateState) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC_CHANNELS.updateState, state);
-    }
+    broadcast(IPC_CHANNELS.updateState, state);
   });
 }
 
-app.whenReady().then(async () => {
-  const filePath = path.join(app.getPath('userData'), 'service-manager.json');
-  store = new ServiceStore(filePath);
-  await store.load();
-  const hosts = store.listHosts();
-  syncKnownForwards(hosts);
+registerProcessErrorHandlers();
 
-  applyAppIcon();
-  registerIpcHandlers();
-  wireForwardStatusBroadcast();
-  wireUpdaterBroadcast();
-  applyAppMenu();
-  for (const host of hosts) {
-    await autoStartHostRules(host);
-  }
-  updater.start();
-  createWindow();
+app.whenReady()
+  .then(async () => {
+    const filePath = path.join(app.getPath('userData'), 'service-manager.json');
+    store = new ServiceStore(filePath);
+    await store.load();
+    const hosts = store.listHosts();
+    syncKnownForwards(hosts);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    applyAppIcon();
+    registerIpcHandlers();
+    wireForwardStatusBroadcast();
+    wireUpdaterBroadcast();
+    applyAppMenu();
+    for (const host of hosts) {
+      await autoStartHostRules(host);
     }
+    updater.start();
+    createWindow();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  })
+  .catch((error) => {
+    logRuntimeError('app:startup', error);
+    dialog.showErrorBox(
+      APP_DISPLAY_NAME,
+      `Failed to initialize application.\n\n${error instanceof Error ? error.message : String(error)}`
+    );
+    app.quit();
   });
-});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
