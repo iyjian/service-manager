@@ -139,6 +139,88 @@ xattr -dr com.apple.quarantine "/Applications/Service Manager.app"
 open -a "Service Manager"
 ```
 
+## Remote Host Preflight
+
+Before using service start/stop/log features on a remote Linux host, verify the SSH account satisfies the following requirements.
+
+1. Check that required `systemd` tools exist:
+
+```bash
+command -v systemd-run systemctl journalctl loginctl
+```
+
+Expected result:
+- all four commands resolve successfully
+
+If any command is missing:
+- install/configure `systemd` on the remote host
+- this app does not fall back to raw background shell processes
+
+2. Check that the SSH account has a working user manager:
+
+```bash
+systemctl --user show-environment
+```
+
+Expected result:
+- command exits successfully and prints user manager environment
+
+If it fails:
+- the remote host does not have a usable `systemd --user` session for that account
+- fix the host's `systemd` user-session configuration before using service management
+
+3. Check that lingering is enabled for the SSH account:
+
+```bash
+loginctl show-user "$USER" -p Linger --value
+```
+
+Expected result:
+- output is exactly `yes`
+
+If output is `no`, enable it with a privileged account:
+
+```bash
+sudo loginctl enable-linger <username>
+```
+
+Then re-check:
+
+```bash
+loginctl show-user "$USER" -p Linger --value
+```
+
+4. Check that the SSH account can access the service directory and execute the start command:
+
+```bash
+whoami
+echo "$SHELL"
+cd /path/to/app && pwd
+command -v yarn
+```
+
+Expected result:
+- the account is the one you configured in the app
+- the project directory is accessible
+- command dependencies such as `yarn`, `node`, `pnpm`, `python`, etc. are resolvable for that login shell
+
+If command dependencies are missing:
+- ensure the login shell initializes the runtime environment correctly, or
+- use absolute binary paths in `Start Command`, or
+- explicitly source the runtime environment in `Start Command`, for example:
+
+```bash
+source ~/.nvm/nvm.sh && cd /path/to/app && exec yarn start:dev
+```
+
+5. Recommended debug commands when a start attempt fails:
+
+```bash
+systemctl --user list-units --all --plain | grep service-manager-
+systemctl --user status <unit-name> --no-pager
+journalctl --user -u <unit-name> -n 200 --no-pager
+```
+
 ## Notes / Current Limits
 
 - SSH command execution now uses `ssh2` directly (not shelling out to system `ssh`).

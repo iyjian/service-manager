@@ -99,6 +99,8 @@ The project must stay aligned with `ssh-tunnel-manager` in this workspace for:
 - SSH layer requirement:
   - Must use `ssh2` for host connection and remote command execution.
   - Keep `asn1` explicitly declared in dependencies for this project.
+- Remote-host documentation requirement:
+  - `README.md` must document the remote service-management preflight checks, including `systemd` tool availability, `systemctl --user` availability, lingering verification, and the `loginctl enable-linger` enablement command.
 - Runtime stability requirement:
   - renderer must escape dynamic HTML text derived from host/service/error data before injecting into DOM
   - renderer should surface caught runtime errors in the page message area instead of failing silently
