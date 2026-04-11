@@ -10,6 +10,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - Jump Host is configured directly inside Add/Edit Host form.
    - Deleting a host requires confirmation.
    - creating or editing a host must only require host name and SSH connection info; empty forwarding-rule/service lists are valid
+   - host dialog validation/import feedback must be shown inside the modal, and user-facing notices should be dismissible rather than permanent inline text
 2. Service management under each host:
    - start command
    - start command editor in host modal must be full-width and multi-line so long shell commands stay practical to edit

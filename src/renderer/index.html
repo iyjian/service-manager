@@ -60,7 +60,17 @@
 
         <p id="update-status-hint" class="update-status-hint hidden"></p>
 
-        <p id="message" class="message message-default"></p>
+        <div id="page-message" class="message-banner message-default hidden" role="status" aria-live="polite">
+          <span id="page-message-text" class="message-text"></span>
+          <button
+            id="page-message-close-btn"
+            type="button"
+            class="message-close"
+            aria-label="Dismiss message"
+          >
+            ×
+          </button>
+        </div>
 
         <p id="overview-hint" class="overview-hint hidden">
           No hosts yet. Start by creating your first host.
@@ -98,6 +108,18 @@
         <div class="dialog-head">
           <h2 id="host-dialog-title" class="section-title">Add Host</h2>
           <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close">×</button>
+        </div>
+
+        <div id="host-dialog-message" class="message-banner message-default hidden" role="status" aria-live="polite">
+          <span id="host-dialog-message-text" class="message-text"></span>
+          <button
+            id="host-dialog-message-close-btn"
+            type="button"
+            class="message-close"
+            aria-label="Dismiss message"
+          >
+            ×
+          </button>
         </div>
 
         <form id="host-form" class="form-stack">

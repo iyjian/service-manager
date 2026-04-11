@@ -53,7 +53,12 @@ const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
 const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
-const messageElement = document.querySelector<HTMLParagraphElement>('#message');
+const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
+const pageMessageTextElement = requireElement<HTMLElement>('#page-message-text');
+const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
+const hostDialogMessageElement = requireElement<HTMLDivElement>('#host-dialog-message');
+const hostDialogMessageTextElement = requireElement<HTMLElement>('#host-dialog-message-text');
+const hostDialogMessageCloseButton = requireElement<HTMLButtonElement>('#host-dialog-message-close-btn');
 const addHostButton = requireElement<HTMLButtonElement>('#qa-add-host-btn');
 const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-btn');
 const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
@@ -84,6 +89,23 @@ let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
 let lastLogLoadError: string | null = null;
+
+type MessageLevel = 'default' | 'success' | 'error';
+
+interface MessageView {
+  root: HTMLElement;
+  text: HTMLElement;
+}
+
+const pageMessageView: MessageView = {
+  root: pageMessageElement,
+  text: pageMessageTextElement,
+};
+
+const hostDialogMessageView: MessageView = {
+  root: hostDialogMessageElement,
+  text: hostDialogMessageTextElement,
+};
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -222,13 +244,31 @@ function renderUpdateState(state: UpdateState): void {
   updateStatusHintElement.classList.add('update-status-info');
 }
 
-function setMessage(text: string, level: 'default' | 'success' | 'error' = 'default'): void {
-  if (!messageElement) return;
-  messageElement.classList.remove('message-default', 'message-success', 'message-error');
-  messageElement.classList.add(
+function renderMessage(view: MessageView, text: string, level: MessageLevel): void {
+  view.root.classList.remove('hidden', 'message-default', 'message-success', 'message-error');
+
+  if (!text) {
+    view.text.textContent = '';
+    view.root.classList.add('hidden');
+    return;
+  }
+
+  view.root.classList.add(
     level === 'success' ? 'message-success' : level === 'error' ? 'message-error' : 'message-default'
   );
-  messageElement.textContent = text;
+  view.text.textContent = text;
+}
+
+function setMessage(text: string, level: MessageLevel = 'default'): void {
+  renderMessage(pageMessageView, text, level);
+}
+
+function setHostDialogMessage(text: string, level: MessageLevel = 'default'): void {
+  renderMessage(hostDialogMessageView, text, level);
+}
+
+function clearHostDialogMessage(): void {
+  renderMessage(hostDialogMessageView, '', 'default');
 }
 
 function statusClass(status: ServiceStatus | TunnelStatus): string {
@@ -483,12 +523,14 @@ function resetForm(): void {
   jumpPassphraseInput.value = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
+  clearHostDialogMessage();
   toggleAuthFields();
   toggleJumpSection();
 }
 
 function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   hostDialogMode = mode;
+  clearHostDialogMessage();
   if (mode === 'edit' && host) {
     hostDialogTitle.textContent = 'Edit Host';
     hostIdInput.value = host.id;
@@ -539,7 +581,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
 
 function closeHostDialog(): void {
   closeDialog(hostDialog, 'host');
-  setMessage('');
+  clearHostDialogMessage();
 }
 
 function updateOverview(): void {
@@ -972,12 +1014,14 @@ importPrivateKeyButton.addEventListener('click', async () => {
     if (!imported) return;
     privateKeyInput.value = imported.content;
     editingPrivateKeyPath = imported.path;
-    setMessage(`Imported private key from ${imported.path}`, 'success');
+    setHostDialogMessage(`Imported private key from ${imported.path}`, 'success');
   } catch (error) {
-    setMessage((error as Error).message, 'error');
+    setHostDialogMessage((error as Error).message, 'error');
   }
 });
 
+pageMessageCloseButton.addEventListener('click', () => setMessage(''));
+hostDialogMessageCloseButton.addEventListener('click', clearHostDialogMessage);
 closeHostDialogButton.addEventListener('click', closeHostDialog);
 cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
@@ -1005,9 +1049,9 @@ importJumpPrivateKeyButton.addEventListener('click', async () => {
     const imported = await window.serviceApi.importPrivateKey();
     if (!imported) return;
     jumpPrivateKeyInput.value = imported.content;
-    setMessage(`Imported jump private key from ${imported.path}`, 'success');
+    setHostDialogMessage(`Imported jump private key from ${imported.path}`, 'success');
   } catch (error) {
-    setMessage((error as Error).message, 'error');
+    setHostDialogMessage((error as Error).message, 'error');
   }
 });
 
@@ -1056,9 +1100,9 @@ form.addEventListener('submit', async (event) => {
     await window.serviceApi.saveHost(draft);
     await loadHosts();
     closeHostDialog();
-    setMessage(hostDialogMode === 'create' ? 'Host created.' : 'Host updated.', 'success');
+    setMessage(hostDialogMode === 'create' ? `Host "${draft.name}" created.` : `Host "${draft.name}" updated.`, 'success');
   } catch (error) {
-    setMessage((error as Error).message, 'error');
+    setHostDialogMessage((error as Error).message, 'error');
   }
 });
 
@@ -1125,7 +1169,6 @@ window.serviceApi.onUpdateStateChanged((state) => {
       // no-op
     }
     startStatusAutoRefresh();
-    setMessage('Ready.');
   } catch (error) {
     reportRendererError('init', error, 'Failed to initialize UI.');
   }
