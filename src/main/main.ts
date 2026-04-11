@@ -308,9 +308,9 @@ function validateServiceDraft(input: ServiceDraft): ServiceConfig {
 function validateSshEndpoint(
   input: SshEndpointDraft,
   scope: 'target' | 'jump',
-  options?: { allowMissingPrivateKey?: boolean }
+  options?: { allowMissingPrivateKey?: boolean; label?: string }
 ): JumpHostConfig {
-  const label = scope === 'target' ? 'Target' : 'Jump host';
+  const label = options?.label ?? (scope === 'target' ? 'Target' : 'Jump host');
   const endpoint: JumpHostConfig = {
     sshHost: input.sshHost.trim(),
     sshPort: Number(input.sshPort),
@@ -356,6 +356,12 @@ function validateHostDraft(input: HostDraft): HostConfig {
     { allowMissingPrivateKey: Boolean(input.privateKeyPath) }
   );
 
+  const rawJumpHosts = Array.isArray(input.jumpHosts)
+    ? input.jumpHosts
+    : input.jumpHost
+      ? [input.jumpHost]
+      : [];
+
   const host: HostConfig = {
     id: input.id?.trim() || randomUUID(),
     name: input.name.trim(),
@@ -367,7 +373,9 @@ function validateHostDraft(input: HostDraft): HostConfig {
     privateKey: target.privateKey,
     passphrase: target.passphrase,
     privateKeyPath: input.privateKeyPath?.trim() || undefined,
-    jumpHost: input.jumpHost ? validateSshEndpoint(input.jumpHost, 'jump') : undefined,
+    jumpHosts: rawJumpHosts.map((jumpHost, index) =>
+      validateSshEndpoint(jumpHost, 'jump', { allowMissingPrivateKey: false, label: `Jump server ${index + 1}` })
+    ),
     forwards: (input.forwards ?? []).map((forward) => validateForwardDraft(forward)),
     services: (input.services ?? []).map((service) => validateServiceDraft(service)),
   };
@@ -504,12 +512,10 @@ async function resolveHostPrivateKey(host: HostConfig): Promise<string | undefin
 }
 
 async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<ForwardRuntimeConfig> {
-  const jumpHost = host.jumpHost
-    ? {
-        ...host.jumpHost,
-        privateKey: host.jumpHost.authType === 'privateKey' ? host.jumpHost.privateKey : undefined,
-      }
-    : undefined;
+  const jumpHosts = host.jumpHosts.map((jumpHost) => ({
+    ...jumpHost,
+    privateKey: jumpHost.authType === 'privateKey' ? jumpHost.privateKey : undefined,
+  }));
 
   return {
     id: forward.id,
@@ -520,7 +526,7 @@ async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<
     password: host.password,
     privateKey: await resolveHostPrivateKey(host),
     passphrase: host.passphrase,
-    jumpHost,
+    jumpHosts,
     localHost: forward.localHost,
     localPort: forward.localPort,
     remoteHost: forward.remoteHost,

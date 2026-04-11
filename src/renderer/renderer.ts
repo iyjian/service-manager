@@ -37,17 +37,8 @@ const passphraseRow = requireElement<HTMLElement>('#passphrase-row');
 const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-private-key-btn');
 const useJumpHostInput = requireElement<HTMLInputElement>('#use-jump-host');
 const jumpHostSection = requireElement<HTMLElement>('#jump-host-section');
-const jumpSshHostInput = requireElement<HTMLInputElement>('#jump-ssh-host');
-const jumpSshPortInput = requireElement<HTMLInputElement>('#jump-ssh-port');
-const jumpUsernameInput = requireElement<HTMLInputElement>('#jump-username');
-const jumpAuthTypeSelect = requireElement<HTMLSelectElement>('#jump-auth-type');
-const jumpPasswordInput = requireElement<HTMLInputElement>('#jump-password');
-const jumpPrivateKeyInput = requireElement<HTMLTextAreaElement>('#jump-private-key');
-const jumpPassphraseInput = requireElement<HTMLInputElement>('#jump-passphrase');
-const jumpPasswordRow = requireElement<HTMLElement>('#jump-password-row');
-const jumpPrivateKeyRow = requireElement<HTMLElement>('#jump-private-key-row');
-const jumpPassphraseRow = requireElement<HTMLElement>('#jump-passphrase-row');
-const importJumpPrivateKeyButton = requireElement<HTMLButtonElement>('#import-jump-private-key-btn');
+const jumpHostEditorList = requireElement<HTMLDivElement>('#jump-host-editor-list');
+const addJumpHostButton = requireElement<HTMLButtonElement>('#add-jump-host-btn');
 const forwardEditorList = requireElement<HTMLDivElement>('#forward-editor-list');
 const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
@@ -307,25 +298,16 @@ function toggleAuthFields(): void {
   }
 }
 
-function toggleJumpAuthFields(): void {
-  if (jumpAuthTypeSelect.value === 'password') {
-    jumpPasswordRow.classList.remove('hidden');
-    jumpPrivateKeyRow.classList.add('hidden');
-    jumpPassphraseRow.classList.add('hidden');
-  } else {
-    jumpPasswordRow.classList.add('hidden');
-    jumpPrivateKeyRow.classList.remove('hidden');
-    jumpPassphraseRow.classList.remove('hidden');
-  }
-}
-
 function toggleJumpSection(): void {
   if (!useJumpHostInput.checked) {
     jumpHostSection.classList.add('hidden');
     return;
   }
   jumpHostSection.classList.remove('hidden');
-  toggleJumpAuthFields();
+  if (jumpHostEditorList.children.length === 0) {
+    jumpHostEditorList.appendChild(createJumpHostEditorRow());
+    refreshJumpHostEditorTitles();
+  }
 }
 
 function parsePort(raw: string, label: string): number {
@@ -346,6 +328,131 @@ function formatConfigSummary(hostCount: number, ruleCount: number, serviceCount:
   const ruleLabel = ruleCount === 1 ? 'rule' : 'rules';
   const serviceLabel = serviceCount === 1 ? 'service' : 'services';
   return `${hostCount} ${hostLabel}, ${ruleCount} ${ruleLabel}, ${serviceCount} ${serviceLabel}`;
+}
+
+function formatJumpChain(jumpHosts: JumpHostConfig[]): string {
+  if (jumpHosts.length === 0) {
+    return '';
+  }
+  return ` · via ${jumpHosts.map((jumpHost) => `${jumpHost.username}@${jumpHost.sshHost}:${jumpHost.sshPort}`).join(' -> ')}`;
+}
+
+async function importPrivateKeyIntoField(
+  field: HTMLTextAreaElement,
+  successMessage: (path: string) => string,
+  onImported?: (path: string) => void
+): Promise<void> {
+  const imported = await window.serviceApi.importPrivateKey();
+  if (!imported) {
+    return;
+  }
+  field.value = imported.content;
+  onImported?.(imported.path);
+  setHostDialogMessage(successMessage(imported.path), 'success');
+}
+
+function toggleJumpHostEditorAuthFields(row: HTMLElement): void {
+  const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
+  const passwordRow = row.querySelector<HTMLElement>('.jump-password-row');
+  const privateKeyRow = row.querySelector<HTMLElement>('.jump-private-key-row');
+  const passphraseRow = row.querySelector<HTMLElement>('.jump-passphrase-row');
+
+  if (authType === 'password') {
+    passwordRow?.classList.remove('hidden');
+    privateKeyRow?.classList.add('hidden');
+    passphraseRow?.classList.add('hidden');
+    return;
+  }
+
+  passwordRow?.classList.add('hidden');
+  privateKeyRow?.classList.remove('hidden');
+  passphraseRow?.classList.remove('hidden');
+}
+
+function refreshJumpHostEditorTitles(): void {
+  Array.from(jumpHostEditorList.querySelectorAll<HTMLElement>('.jump-host-editor-row')).forEach((row, index) => {
+    const title = row.querySelector<HTMLElement>('.jump-host-editor-title');
+    if (title) {
+      title.textContent = `Hop ${index + 1}`;
+    }
+  });
+}
+
+function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'forward-row jump-host-editor-row';
+  row.innerHTML = `
+    <div class="jump-host-editor-head">
+      <div class="jump-host-editor-title">Jump Server</div>
+      <button type="button" class="btn btn-danger btn-sm jump-host-remove">Remove</button>
+    </div>
+    <div class="form-row">
+      <label class="field field-host field-xs">
+        SSH Host
+        <input class="input" data-field="sshHost" value="${safeValue(draft?.sshHost)}" />
+      </label>
+      <label class="field field-port field-xs">
+        SSH Port
+        <input class="input" data-field="sshPort" type="number" min="1" max="65535" value="${safeValue(draft?.sshPort ?? 22)}" />
+      </label>
+      <label class="field field-user field-xs">
+        Username
+        <input class="input" data-field="username" value="${safeValue(draft?.username)}" />
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="field field-auth field-xs">
+        Auth Type
+        <select class="input" data-field="authType">
+          <option value="privateKey" ${draft?.authType !== 'password' ? 'selected' : ''}>Private Key</option>
+          <option value="password" ${draft?.authType === 'password' ? 'selected' : ''}>Password</option>
+        </select>
+      </label>
+      <label class="field field-password field-xs jump-password-row hidden">
+        Password
+        <input class="input" data-field="password" type="password" value="${safeValue(draft?.password)}" />
+      </label>
+      <div class="private-key-wrap jump-private-key-row">
+        <label class="field field-privatekey field-xs">
+          Private Key
+          <textarea class="input" data-field="privateKey" rows="1">${escapeHtml(draft?.privateKey ?? '')}</textarea>
+        </label>
+        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">Import</button>
+      </div>
+      <label class="field field-passphrase field-xs jump-passphrase-row hidden">
+        Passphrase (Optional)
+        <input class="input" data-field="passphrase" type="password" value="${safeValue(draft?.passphrase)}" />
+      </label>
+    </div>
+  `;
+
+  row.querySelector<HTMLButtonElement>('.jump-host-remove')?.addEventListener('click', () => {
+    row.remove();
+    refreshJumpHostEditorTitles();
+    if (jumpHostEditorList.children.length === 0) {
+      useJumpHostInput.checked = false;
+      toggleJumpSection();
+    }
+  });
+
+  row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.addEventListener('change', () => {
+    toggleJumpHostEditorAuthFields(row);
+  });
+
+  row.querySelector<HTMLButtonElement>('.jump-import-private-key')?.addEventListener('click', async () => {
+    try {
+      const field = row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]');
+      if (!field) {
+        throw new Error('Jump private key field not found.');
+      }
+      await importPrivateKeyIntoField(field, (path) => `Imported jump private key from ${path}`);
+    } catch (error) {
+      setHostDialogMessage((error as Error).message, 'error');
+    }
+  });
+
+  toggleJumpHostEditorAuthFields(row);
+  return row;
 }
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
@@ -455,32 +562,55 @@ function collectForwardsFromEditor(): ForwardRuleDraft[] {
   return forwards;
 }
 
-function collectJumpHostDraft(): JumpHostConfig | undefined {
+function collectJumpHostsDraft(): JumpHostConfig[] {
   if (!useJumpHostInput.checked) {
-    return undefined;
+    return [];
   }
 
-  const authType = jumpAuthTypeSelect.value === 'password' ? 'password' : 'privateKey';
-  const jumpHost: JumpHostConfig = {
-    sshHost: jumpSshHostInput.value.trim(),
-    sshPort: parsePort(jumpSshPortInput.value, 'Jump SSH Port'),
-    username: jumpUsernameInput.value.trim(),
-    authType,
-    password: jumpPasswordInput.value || undefined,
-    privateKey: jumpPrivateKeyInput.value || undefined,
-    passphrase: jumpPassphraseInput.value || undefined,
-  };
+  const rows = Array.from(jumpHostEditorList.querySelectorAll<HTMLElement>('.jump-host-editor-row'));
+  const jumpHosts: JumpHostConfig[] = [];
 
-  if (!jumpHost.sshHost) throw new Error('Jump SSH Host is required');
-  if (!jumpHost.username) throw new Error('Jump Username is required');
-  if (authType === 'password' && !jumpHost.password) {
-    throw new Error('Jump Password is required for password auth');
-  }
-  if (authType === 'privateKey' && !jumpHost.privateKey?.trim()) {
-    throw new Error('Jump Private Key is required for private key auth');
-  }
+  rows.forEach((row, index) => {
+    const get = (field: string): string =>
+      row.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
 
-  return jumpHost;
+    const sshHost = get('sshHost');
+    const sshPortRaw = get('sshPort');
+    const username = get('username');
+    const authType = get('authType') === 'password' ? 'password' : 'privateKey';
+    const password = get('password');
+    const privateKey = get('privateKey');
+    const passphrase = get('passphrase');
+    const isBlank = !sshHost && !username && !password && !privateKey && !passphrase;
+
+    if (isBlank) {
+      return;
+    }
+
+    if (!sshHost) throw new Error(`Jump server ${index + 1}: SSH Host is required`);
+    if (!username) throw new Error(`Jump server ${index + 1}: Username is required`);
+
+    const jumpHost: JumpHostConfig = {
+      sshHost,
+      sshPort: parsePort(sshPortRaw || '22', `Jump server ${index + 1} SSH Port`),
+      username,
+      authType,
+      password: password || undefined,
+      privateKey: privateKey || undefined,
+      passphrase: passphrase || undefined,
+    };
+
+    if (authType === 'password' && !jumpHost.password) {
+      throw new Error(`Jump server ${index + 1}: Password is required for password auth`);
+    }
+    if (authType === 'privateKey' && !jumpHost.privateKey?.trim()) {
+      throw new Error(`Jump server ${index + 1}: Private Key is required for private key auth`);
+    }
+
+    jumpHosts.push(jumpHost);
+  });
+
+  return jumpHosts;
 }
 
 function collectServicesFromEditor(): ServiceDraft[] {
@@ -521,13 +651,7 @@ function resetForm(): void {
   editingPrivateKeyPath = undefined;
   sshPortInput.value = '22';
   useJumpHostInput.checked = false;
-  jumpSshHostInput.value = '';
-  jumpSshPortInput.value = '22';
-  jumpUsernameInput.value = '';
-  jumpAuthTypeSelect.value = 'privateKey';
-  jumpPasswordInput.value = '';
-  jumpPrivateKeyInput.value = '';
-  jumpPassphraseInput.value = '';
+  jumpHostEditorList.innerHTML = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
   clearHostDialogMessage();
@@ -549,14 +673,12 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     passwordInput.value = host.password ?? '';
     privateKeyInput.value = host.privateKey ?? '';
     passphraseInput.value = host.passphrase ?? '';
-    useJumpHostInput.checked = Boolean(host.jumpHost);
-    jumpSshHostInput.value = host.jumpHost?.sshHost ?? '';
-    jumpSshPortInput.value = host.jumpHost?.sshPort ? String(host.jumpHost.sshPort) : '22';
-    jumpUsernameInput.value = host.jumpHost?.username ?? '';
-    jumpAuthTypeSelect.value = host.jumpHost?.authType ?? 'privateKey';
-    jumpPasswordInput.value = host.jumpHost?.password ?? '';
-    jumpPrivateKeyInput.value = host.jumpHost?.privateKey ?? '';
-    jumpPassphraseInput.value = host.jumpHost?.passphrase ?? '';
+    useJumpHostInput.checked = host.jumpHosts.length > 0;
+    jumpHostEditorList.innerHTML = '';
+    for (const jumpHost of host.jumpHosts) {
+      jumpHostEditorList.appendChild(createJumpHostEditorRow(jumpHost));
+    }
+    refreshJumpHostEditorTitles();
     editingPrivateKeyPath = host.privateKeyPath;
 
     forwardEditorList.innerHTML = '';
@@ -789,11 +911,7 @@ function render(): void {
     const groupRow = document.createElement('tr');
     groupRow.className = `group-row${isCollapsed ? ' group-row-collapsed' : ''}`;
     const hostName = escapeHtml(host.name);
-    const hostDesc = escapeHtml(
-      `${host.username}@${host.sshHost}:${host.sshPort}${
-        host.jumpHost ? ` · via ${host.jumpHost.username}@${host.jumpHost.sshHost}:${host.jumpHost.sshPort}` : ''
-      }`
-    );
+    const hostDesc = escapeHtml(`${host.username}@${host.sshHost}:${host.sshPort}${formatJumpChain(host.jumpHosts)}`);
     groupRow.innerHTML = `
       <td colspan="6" class="group-cell">
         <div class="group-head">
@@ -1083,17 +1201,29 @@ addForwardButton.addEventListener('click', () => {
   forwardEditorList.appendChild(createForwardEditorRow());
 });
 
+addJumpHostButton.addEventListener('click', () => {
+  const hadRows = jumpHostEditorList.children.length > 0;
+  useJumpHostInput.checked = true;
+  toggleJumpSection();
+  if (hadRows) {
+    jumpHostEditorList.appendChild(createJumpHostEditorRow());
+    refreshJumpHostEditorTitles();
+  }
+});
+
 addServiceButton.addEventListener('click', () => {
   serviceEditorList.appendChild(createServiceEditorRow());
 });
 
 importPrivateKeyButton.addEventListener('click', async () => {
   try {
-    const imported = await window.serviceApi.importPrivateKey();
-    if (!imported) return;
-    privateKeyInput.value = imported.content;
-    editingPrivateKeyPath = imported.path;
-    setHostDialogMessage(`Imported private key from ${imported.path}`, 'success');
+    await importPrivateKeyIntoField(
+      privateKeyInput,
+      (path) => `Imported private key from ${path}`,
+      (path) => {
+        editingPrivateKeyPath = path;
+      }
+    );
   } catch (error) {
     setHostDialogMessage((error as Error).message, 'error');
   }
@@ -1106,7 +1236,6 @@ cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
 authTypeSelect.addEventListener('change', toggleAuthFields);
 useJumpHostInput.addEventListener('change', toggleJumpSection);
-jumpAuthTypeSelect.addEventListener('change', toggleJumpAuthFields);
 closeServiceLogDialogButton.addEventListener('click', () => {
   stopLogAutoRefresh();
   closeDialog(serviceLogDialog, 'service log');
@@ -1121,17 +1250,6 @@ serviceLogDialog.addEventListener('close', () => {
 window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
   stopStatusAutoRefresh();
-});
-
-importJumpPrivateKeyButton.addEventListener('click', async () => {
-  try {
-    const imported = await window.serviceApi.importPrivateKey();
-    if (!imported) return;
-    jumpPrivateKeyInput.value = imported.content;
-    setHostDialogMessage(`Imported jump private key from ${imported.path}`, 'success');
-  } catch (error) {
-    setHostDialogMessage((error as Error).message, 'error');
-  }
 });
 
 let floatingTooltip: HTMLDivElement | null = null;
@@ -1204,7 +1322,7 @@ form.addEventListener('submit', async (event) => {
       privateKey: privateKeyInput.value || undefined,
       passphrase: passphraseInput.value.trim() || undefined,
       privateKeyPath: editingPrivateKeyPath,
-      jumpHost: collectJumpHostDraft(),
+      jumpHosts: collectJumpHostsDraft(),
       forwards: collectForwardsFromEditor(),
       services: collectServicesFromEditor(),
     };

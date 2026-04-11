@@ -1,7 +1,13 @@
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
-import { Client, type ConnectConfig } from 'ssh2';
+import { Client } from 'ssh2';
 import type { JumpHostConfig, TunnelStatusChange, AuthType } from '../shared/types';
+import {
+  closeSshClients,
+  connectSshChain,
+  SshChainError,
+  type SshEndpointConfig,
+} from './sshChain';
 
 export interface ForwardRuntimeConfig {
   id: string;
@@ -12,7 +18,7 @@ export interface ForwardRuntimeConfig {
   password?: string;
   privateKey?: string;
   passphrase?: string;
-  jumpHost?: JumpHostConfig;
+  jumpHosts: JumpHostConfig[];
   localHost: string;
   localPort: number;
   remoteHost: string;
@@ -21,7 +27,7 @@ export interface ForwardRuntimeConfig {
 
 interface RunningTunnel {
   targetClient: Client;
-  jumpClient?: Client;
+  jumpClients: Client[];
   server: net.Server;
 }
 
@@ -59,7 +65,7 @@ export class TunnelManager extends EventEmitter {
   async start(config: ForwardRuntimeConfig): Promise<void> {
     this.configs.set(config.id, {
       ...config,
-      jumpHost: config.jumpHost ? { ...config.jumpHost } : undefined,
+      jumpHosts: config.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
     });
     this.clearReconnectTimer(config.id);
 
@@ -69,8 +75,8 @@ export class TunnelManager extends EventEmitter {
 
     this.updateStatus({ forwardId: config.id, status: 'starting' });
 
-    const targetClient = new Client();
-    let jumpClient: Client | undefined;
+    let targetClient: Client | undefined;
+    let jumpClients: Client[] = [];
     let server: net.Server | undefined;
 
     try {
@@ -80,52 +86,40 @@ export class TunnelManager extends EventEmitter {
         throw this.buildStartError('local-port-precheck', config, error);
       }
 
-      const targetConnectConfig = this.toConnectConfig({
-        sshHost: config.sshHost,
-        sshPort: config.sshPort,
-        username: config.username,
-        authType: config.authType,
-        password: config.password,
-        privateKey: config.privateKey,
-        passphrase: config.passphrase,
-      });
-
-      if (config.jumpHost) {
-        jumpClient = new Client();
-        try {
-          await this.connectClient(jumpClient, this.toConnectConfig(config.jumpHost));
-        } catch (error) {
-          throw this.buildStartError('jump-connect', config, error);
-        }
-        try {
-          targetConnectConfig.sock = await this.forwardThroughJump(
-            jumpClient,
-            config.sshHost,
-            config.sshPort
-          );
-        } catch (error) {
-          throw this.buildStartError('jump-forward', config, error);
-        }
-      }
-
       try {
-        await this.connectClient(targetClient, targetConnectConfig);
+        const connected = await connectSshChain(
+          this.toConnectableTarget(config),
+          config.jumpHosts.map((jumpHost) => this.toConnectableJump(jumpHost)),
+          {
+            readyTimeout: 20000,
+            keepaliveInterval: 10000,
+            keepaliveCountMax: 6,
+          }
+        );
+        targetClient = connected.targetClient;
+        jumpClients = connected.jumpClients;
       } catch (error) {
-        throw this.buildStartError('target-connect', config, error);
+        if (error instanceof SshChainError) {
+          throw this.buildStartError(error.stage, config, error);
+        }
+        throw this.buildStartError(config.jumpHosts.length > 0 ? 'jump-connect' : 'target-connect', config, error);
       }
       try {
+        if (!targetClient) {
+          throw new Error('SSH target connection is unavailable.');
+        }
         server = await this.createLocalServer(config, targetClient);
       } catch (error) {
         throw this.buildStartError('local-listen', config, error);
       }
 
-      this.running.set(config.id, { targetClient, jumpClient, server });
-      this.bindRuntimeHandlers(config.id, targetClient, jumpClient, server);
+      this.running.set(config.id, { targetClient, jumpClients, server });
+      this.bindRuntimeHandlers(config.id, targetClient, jumpClients, server);
       this.updateStatus({ forwardId: config.id, status: 'running' });
     } catch (error) {
       this.safeCloseServer(server);
       this.safeEndClient(targetClient);
-      this.safeEndClient(jumpClient);
+      closeSshClients(jumpClients);
       this.cleanup(config.id, { keepStatus: true });
       const semanticMessage = error instanceof Error ? error.message : String(error);
       this.markErrorAndScheduleReconnect(config.id, semanticMessage);
@@ -153,94 +147,28 @@ export class TunnelManager extends EventEmitter {
     await Promise.all([...this.running.keys()].map((id) => this.stop(id)));
   }
 
-  private toConnectConfig(config: {
-    sshHost: string;
-    sshPort: number;
-    username: string;
-    authType: AuthType;
-    password?: string;
-    privateKey?: string;
-    passphrase?: string;
-  }): ConnectConfig {
-    const connectConfig: ConnectConfig = {
-      host: config.sshHost,
-      port: config.sshPort,
+  private toConnectableTarget(config: ForwardRuntimeConfig): SshEndpointConfig {
+    return {
+      sshHost: config.sshHost,
+      sshPort: config.sshPort,
       username: config.username,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 6,
-      readyTimeout: 20000,
+      authType: config.authType,
+      password: config.password,
+      privateKey: config.privateKey,
+      passphrase: config.passphrase,
     };
-
-    if (config.authType === 'password') {
-      connectConfig.password = config.password ?? '';
-    } else {
-      connectConfig.privateKey = config.privateKey ?? '';
-      if (config.passphrase) {
-        connectConfig.passphrase = config.passphrase;
-      }
-    }
-
-    return connectConfig;
   }
 
-  private connectClient(client: Client, connectConfig: ConnectConfig): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-
-      const onReady = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve();
-      };
-
-      const onError = (error: Error): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        reject(error);
-      };
-
-      const onClose = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        reject(new Error('SSH connection closed before ready.'));
-      };
-
-      const cleanup = (): void => {
-        client.off('ready', onReady);
-        client.off('error', onError);
-        client.off('close', onClose);
-      };
-
-      client.once('ready', onReady);
-      client.once('error', onError);
-      client.on('close', onClose);
-      client.connect(connectConfig);
-    });
-  }
-
-  private forwardThroughJump(
-    jumpClient: Client,
-    targetHost: string,
-    targetPort: number
-  ): Promise<ConnectConfig['sock']> {
-    return new Promise((resolve, reject) => {
-      jumpClient.forwardOut('127.0.0.1', 0, targetHost, targetPort, (error, stream) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(stream);
-      });
-    });
+  private toConnectableJump(jumpHost: JumpHostConfig): SshEndpointConfig {
+    return {
+      sshHost: jumpHost.sshHost,
+      sshPort: jumpHost.sshPort,
+      username: jumpHost.username,
+      authType: jumpHost.authType,
+      password: jumpHost.password,
+      privateKey: jumpHost.privateKey,
+      passphrase: jumpHost.passphrase,
+    };
   }
 
   private createLocalServer(config: ForwardRuntimeConfig, targetClient: Client): Promise<net.Server> {
@@ -347,12 +275,14 @@ export class TunnelManager extends EventEmitter {
         config,
         rawMessage,
         code,
+        hopIndex: error instanceof SshChainError ? error.hopIndex : undefined,
       }));
     }
 
     if (stage === 'jump-forward') {
+      const destination = this.getJumpForwardDestination(config, error instanceof SshChainError ? error.hopIndex : undefined);
       return new Error(
-        `Connected to jump host, but failed to open channel to target ${config.sshHost}:${config.sshPort}: ${rawMessage}`
+        `Connected to jump chain, but failed to open channel to ${destination}: ${rawMessage}`
       );
     }
 
@@ -369,17 +299,20 @@ export class TunnelManager extends EventEmitter {
     config: ForwardRuntimeConfig;
     rawMessage: string;
     code?: string;
+    hopIndex?: number;
   }): string {
-    const { kind, config, rawMessage, code } = options;
-    const host = kind === 'jump' ? config.jumpHost?.sshHost ?? config.sshHost : config.sshHost;
-    const port = kind === 'jump' ? config.jumpHost?.sshPort ?? config.sshPort : config.sshPort;
-    const username = kind === 'jump' ? config.jumpHost?.username ?? config.username : config.username;
+    const { kind, config, rawMessage, code, hopIndex } = options;
+    const jumpHost = kind === 'jump' ? this.getJumpHop(config, hopIndex) : undefined;
+    const host = jumpHost?.sshHost ?? config.sshHost;
+    const port = jumpHost?.sshPort ?? config.sshPort;
+    const username = jumpHost?.username ?? config.username;
     const endpoint = `${host}:${port}`;
+    const chainLabel = config.jumpHosts.map((item) => `${item.username}@${item.sshHost}:${item.sshPort}`).join(' -> ');
 
     const prefix = kind === 'jump'
-      ? `Unable to connect to jump host ${endpoint} as ${username}.`
-      : config.jumpHost
-        ? `Unable to connect to target SSH host ${endpoint} via jump host ${config.jumpHost.sshHost}:${config.jumpHost.sshPort}.`
+      ? `Unable to connect to jump server ${hopIndex === undefined ? '' : `${hopIndex + 1} `}${endpoint} as ${username}.`
+      : config.jumpHosts.length > 0
+        ? `Unable to connect to target SSH host ${endpoint} via jump chain ${chainLabel}.`
         : `Unable to connect to target SSH host ${endpoint}.`;
 
     const hint = this.buildSshConnectionHint({ host, port, code, rawMessage, username });
@@ -388,6 +321,21 @@ export class TunnelManager extends EventEmitter {
     }
 
     return `${prefix} ${rawMessage}`;
+  }
+
+  private getJumpHop(config: ForwardRuntimeConfig, hopIndex: number | undefined): JumpHostConfig | undefined {
+    if (hopIndex === undefined) {
+      return config.jumpHosts[0];
+    }
+    return config.jumpHosts[hopIndex];
+  }
+
+  private getJumpForwardDestination(config: ForwardRuntimeConfig, hopIndex: number | undefined): string {
+    if (hopIndex !== undefined && hopIndex < config.jumpHosts.length) {
+      const nextJump = config.jumpHosts[hopIndex];
+      return `${nextJump.username}@${nextJump.sshHost}:${nextJump.sshPort}`;
+    }
+    return `${config.username}@${config.sshHost}:${config.sshPort}`;
   }
 
   private buildSshConnectionHint(options: {
@@ -436,7 +384,7 @@ export class TunnelManager extends EventEmitter {
   private bindRuntimeHandlers(
     id: string,
     targetClient: Client,
-    jumpClient: Client | undefined,
+    jumpClients: Client[],
     server: net.Server
   ): void {
     const handleRuntimeError = (prefix: string, error: Error): void => {
@@ -463,7 +411,7 @@ export class TunnelManager extends EventEmitter {
       this.markErrorAndScheduleReconnect(id, 'SSH connection closed unexpectedly.');
     });
 
-    if (jumpClient) {
+    for (const jumpClient of jumpClients) {
       jumpClient.on('error', (error) => {
         handleRuntimeError('Jump SSH error', error);
       });
@@ -498,11 +446,7 @@ export class TunnelManager extends EventEmitter {
       // no-op
     }
 
-    try {
-      running.jumpClient?.end();
-    } catch {
-      // no-op
-    }
+    closeSshClients(running.jumpClients);
 
     if (!options?.keepStatus) {
       this.updateStatus({ forwardId: id, status: 'stopped' });

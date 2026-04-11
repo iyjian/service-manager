@@ -54,7 +54,7 @@ export interface HostConfig {
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
-  jumpHost?: JumpHostConfig;
+  jumpHosts: JumpHostConfig[];
   forwards: ForwardRule[];
   services: ServiceConfig[];
 }
@@ -98,6 +98,7 @@ export interface HostDraft {
   passphrase?: string;
   privateKeyPath?: string;
   jumpHost?: JumpHostConfig;
+  jumpHosts?: JumpHostConfig[];
   forwards: ForwardRuleDraft[];
   services: ServiceDraft[];
 }

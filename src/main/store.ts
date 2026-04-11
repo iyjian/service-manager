@@ -1,7 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { ForwardRule, ForwardRuleDraft, HostConfig, HostDraft, ServiceConfig, ServiceDraft } from '../shared/types';
+import type {
+  ForwardRule,
+  ForwardRuleDraft,
+  HostConfig,
+  HostDraft,
+  JumpHostConfig,
+  ServiceConfig,
+  ServiceDraft,
+} from '../shared/types';
 
 export class ServiceStore {
   private hosts: HostConfig[] = [];
@@ -96,6 +104,12 @@ export class ServiceStore {
       return null;
     }
 
+    const rawJumpHosts = Array.isArray(input.jumpHosts)
+      ? input.jumpHosts
+      : input.jumpHost
+        ? [input.jumpHost]
+        : [];
+
     return {
       id: input.id?.trim() || randomUUID(),
       name: input.name.trim(),
@@ -107,17 +121,9 @@ export class ServiceStore {
       privateKey: input.privateKey,
       passphrase: input.passphrase,
       privateKeyPath: input.privateKeyPath,
-      jumpHost: input.jumpHost
-        ? {
-            sshHost: input.jumpHost.sshHost,
-            sshPort: Number(input.jumpHost.sshPort || 22),
-            username: input.jumpHost.username,
-            authType: input.jumpHost.authType === 'password' ? 'password' : 'privateKey',
-            password: input.jumpHost.password,
-            privateKey: input.jumpHost.privateKey,
-            passphrase: input.jumpHost.passphrase,
-          }
-        : undefined,
+      jumpHosts: rawJumpHosts
+        .map((jumpHost) => this.normalizeJumpHost(jumpHost))
+        .filter((jumpHost): jumpHost is JumpHostConfig => jumpHost !== null),
       forwards: Array.isArray(input.forwards)
         ? input.forwards
             .map((forward) => this.normalizeForward(forward))
@@ -128,6 +134,22 @@ export class ServiceStore {
             .map((service) => this.normalizeService(service))
             .filter((service): service is ServiceConfig => service !== null)
         : [],
+    };
+  }
+
+  private normalizeJumpHost(input: Partial<JumpHostConfig> | undefined): JumpHostConfig | null {
+    if (!input?.sshHost || !input.username) {
+      return null;
+    }
+
+    return {
+      sshHost: input.sshHost.trim(),
+      sshPort: Number(input.sshPort || 22),
+      username: input.username.trim(),
+      authType: input.authType === 'password' ? 'password' : 'privateKey',
+      password: input.password,
+      privateKey: input.privateKey,
+      passphrase: input.passphrase,
     };
   }
 
@@ -190,7 +212,7 @@ export class ServiceStore {
   private cloneHost(host: HostConfig): HostConfig {
     return {
       ...host,
-      jumpHost: host.jumpHost ? { ...host.jumpHost } : undefined,
+      jumpHosts: host.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
       forwards: host.forwards.map((forward) => ({ ...forward })),
       services: host.services.map((service) => ({ ...service })),
     };

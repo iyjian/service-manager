@@ -1,11 +1,12 @@
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
-import { Client, type ConnectConfig } from 'ssh2';
+import { Client } from 'ssh2';
 import type { HostConfig, ServiceConfig } from '../shared/types';
+import { closeSshClients, connectSshChain, type SshEndpointConfig } from './sshChain';
 
 interface RunningForward {
   targetClient: Client;
-  jumpClient?: Client;
+  jumpClients: Client[];
   server: net.Server;
   localPort: number;
 }
@@ -27,25 +28,15 @@ export class PortForwardManager {
       await this.stop(id);
     }
 
-    const targetClient = new Client();
-    let jumpClient: Client | undefined;
-
-    const connectConfig = await this.toConnectConfig(host);
-    if (host.jumpHost) {
-      jumpClient = new Client();
-      await this.connectClient(jumpClient, this.toJumpConnectConfig(host));
-      connectConfig.sock = await new Promise((resolve, reject) => {
-        jumpClient!.forwardOut('127.0.0.1', 0, host.sshHost, host.sshPort, (error, stream) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve(stream);
-        });
-      });
-    }
-
-    await this.connectClient(targetClient, connectConfig);
+    const { targetClient, jumpClients } = await connectSshChain(
+      await this.toConnectableEndpoint(host),
+      host.jumpHosts.map((jumpHost) => this.toConnectableJumpEndpoint(jumpHost)),
+      {
+        readyTimeout: 20000,
+        keepaliveInterval: 10000,
+        keepaliveCountMax: 6,
+      }
+    );
 
     const server = net.createServer((socket) => {
       targetClient.forwardOut(
@@ -91,13 +82,15 @@ export class PortForwardManager {
 
     targetClient.on('close', onClose);
     targetClient.on('error', onClose);
-    jumpClient?.on('close', onClose);
-    jumpClient?.on('error', onClose);
+    for (const jumpClient of jumpClients) {
+      jumpClient.on('close', onClose);
+      jumpClient.on('error', onClose);
+    }
     server.on('error', onClose);
 
     this.running.set(id, {
       targetClient,
-      jumpClient,
+      jumpClients,
       server,
       localPort: service.forwardLocalPort,
     });
@@ -124,12 +117,7 @@ export class PortForwardManager {
     } catch {
       // no-op
     }
-
-    try {
-      running.jumpClient?.end();
-    } catch {
-      // no-op
-    }
+    closeSshClients(running.jumpClients);
   }
 
   async stopMany(ids: string[]): Promise<void> {
@@ -142,104 +130,32 @@ export class PortForwardManager {
     await this.stopMany([...this.running.keys()]);
   }
 
-  private async toConnectConfig(host: HostConfig): Promise<ConnectConfig> {
-    const config: ConnectConfig = {
-      host: host.sshHost,
-      port: host.sshPort,
-      username: host.username,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 6,
-      readyTimeout: 20000,
-    };
-
-    if (host.authType === 'password') {
-      config.password = host.password;
-      return config;
-    }
-
+  private async toConnectableEndpoint(host: HostConfig): Promise<SshEndpointConfig> {
     const privateKey = host.privateKey?.trim()
       ? host.privateKey
       : host.privateKeyPath
         ? await fs.readFile(host.privateKeyPath, 'utf8')
         : undefined;
-
-    if (!privateKey) {
-      throw new Error('Private key is required for port forward.');
-    }
-
-    config.privateKey = privateKey;
-    if (host.passphrase) {
-      config.passphrase = host.passphrase;
-    }
-
-    return config;
-  }
-
-  private toJumpConnectConfig(host: HostConfig): ConnectConfig {
-    if (!host.jumpHost) {
-      throw new Error('Jump host config is missing.');
-    }
-
-    const config: ConnectConfig = {
-      host: host.jumpHost.sshHost,
-      port: host.jumpHost.sshPort,
-      username: host.jumpHost.username,
-      keepaliveInterval: 10000,
-      keepaliveCountMax: 6,
-      readyTimeout: 20000,
+    return {
+      sshHost: host.sshHost,
+      sshPort: host.sshPort,
+      username: host.username,
+      authType: host.authType,
+      password: host.password,
+      privateKey,
+      passphrase: host.passphrase,
     };
-
-    if (host.jumpHost.authType === 'password') {
-      config.password = host.jumpHost.password;
-      return config;
-    }
-
-    if (!host.jumpHost.privateKey?.trim()) {
-      throw new Error('Jump host private key is required for port forward.');
-    }
-
-    config.privateKey = host.jumpHost.privateKey;
-    if (host.jumpHost.passphrase) {
-      config.passphrase = host.jumpHost.passphrase;
-    }
-    return config;
   }
 
-  private connectClient(client: Client, connectConfig: ConnectConfig): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-
-      const onReady = (): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-
-      const onError = (error: Error): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      };
-
-      const onClose = (): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error('SSH connection closed before ready.'));
-      };
-
-      const cleanup = (): void => {
-        client.off('ready', onReady);
-        client.off('error', onError);
-        client.off('close', onClose);
-      };
-
-      client.once('ready', onReady);
-      client.once('error', onError);
-      client.on('close', onClose);
-      client.connect(connectConfig);
-    });
+  private toConnectableJumpEndpoint(jumpHost: HostConfig['jumpHosts'][number]): SshEndpointConfig {
+    return {
+      sshHost: jumpHost.sshHost,
+      sshPort: jumpHost.sshPort,
+      username: jumpHost.username,
+      authType: jumpHost.authType,
+      password: jumpHost.password,
+      privateKey: jumpHost.privateKey,
+      passphrase: jumpHost.passphrase,
+    };
   }
 }

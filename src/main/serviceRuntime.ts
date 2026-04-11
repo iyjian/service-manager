@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
-import { Client, type ClientChannel, type ConnectConfig } from 'ssh2';
+import { Client, type ClientChannel } from 'ssh2';
 import type { HostConfig, ServiceConfig, ServiceLogsResult, ServiceStatus } from '../shared/types';
+import { closeSshClients, connectSshChain, type SshEndpointConfig } from './sshChain';
 
 interface SshResult {
   ok: boolean;
@@ -30,127 +31,36 @@ async function resolvePrivateKey(host: HostConfig): Promise<string | undefined> 
   return fs.readFile(host.privateKeyPath, 'utf8');
 }
 
-async function buildTargetConnectConfig(host: HostConfig): Promise<ConnectConfig> {
-  const base: ConnectConfig = {
-    host: host.sshHost,
-    port: host.sshPort,
+async function buildTargetEndpoint(host: HostConfig): Promise<SshEndpointConfig> {
+  return {
+    sshHost: host.sshHost,
+    sshPort: host.sshPort,
     username: host.username,
+    authType: host.authType,
+    password: host.password,
+    privateKey: await resolvePrivateKey(host),
+    passphrase: host.passphrase,
+  };
+}
+
+function buildJumpEndpoints(host: HostConfig): SshEndpointConfig[] {
+  return host.jumpHosts.map((jumpHost) => ({
+    sshHost: jumpHost.sshHost,
+    sshPort: jumpHost.sshPort,
+    username: jumpHost.username,
+    authType: jumpHost.authType,
+    password: jumpHost.password,
+    privateKey: jumpHost.privateKey,
+    passphrase: jumpHost.passphrase,
+  }));
+}
+
+async function connectTargetClient(host: HostConfig): Promise<{ targetClient: Client; jumpClients: Client[]; allClients: Client[] }> {
+  return connectSshChain(await buildTargetEndpoint(host), buildJumpEndpoints(host), {
     readyTimeout: 10000,
     keepaliveInterval: 5000,
     keepaliveCountMax: 2,
-  };
-
-  if (host.authType === 'password') {
-    base.password = host.password;
-    return base;
-  }
-
-  const privateKey = await resolvePrivateKey(host);
-  if (!privateKey) {
-    throw new Error('Private key is required for private key authentication.');
-  }
-  base.privateKey = privateKey;
-  if (host.passphrase) {
-    base.passphrase = host.passphrase;
-  }
-  return base;
-}
-
-function buildJumpConnectConfig(host: HostConfig): ConnectConfig | undefined {
-  if (!host.jumpHost) return undefined;
-
-  const base: ConnectConfig = {
-    host: host.jumpHost.sshHost,
-    port: host.jumpHost.sshPort,
-    username: host.jumpHost.username,
-    readyTimeout: 10000,
-    keepaliveInterval: 5000,
-    keepaliveCountMax: 2,
-  };
-
-  if (host.jumpHost.authType === 'password') {
-    base.password = host.jumpHost.password;
-    return base;
-  }
-
-  if (!host.jumpHost.privateKey?.trim()) {
-    throw new Error('Jump host private key is required for private key auth.');
-  }
-
-  base.privateKey = host.jumpHost.privateKey;
-  if (host.jumpHost.passphrase) {
-    base.passphrase = host.jumpHost.passphrase;
-  }
-  return base;
-}
-
-function connectClient(client: Client, connectConfig: ConnectConfig): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-
-    const onReady = (): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-
-    const onError = (error: Error): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-
-    const onClose = (): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new Error('SSH connection closed before ready.'));
-    };
-
-    const cleanup = (): void => {
-      client.off('ready', onReady);
-      client.off('error', onError);
-      client.off('close', onClose);
-    };
-
-    client.once('ready', onReady);
-    client.once('error', onError);
-    client.on('close', onClose);
-    client.connect(connectConfig);
   });
-}
-
-async function connectTargetClient(host: HostConfig): Promise<{ targetClient: Client; jumpClient?: Client }> {
-  const targetClient = new Client();
-  const targetConfig = await buildTargetConnectConfig(host);
-  const jumpConfig = buildJumpConnectConfig(host);
-
-  if (!jumpConfig) {
-    await connectClient(targetClient, targetConfig);
-    return { targetClient };
-  }
-
-  const jumpClient = new Client();
-  await connectClient(jumpClient, jumpConfig);
-
-  const sock = await new Promise<ConnectConfig['sock']>((resolve, reject) => {
-    jumpClient.forwardOut('127.0.0.1', 0, host.sshHost, host.sshPort, (error, stream) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(stream);
-    });
-  });
-
-  await connectClient(targetClient, {
-    ...targetConfig,
-    sock,
-  });
-
-  return { targetClient, jumpClient };
 }
 
 export async function runSsh(host: HostConfig, command: string): Promise<SshResult> {
@@ -158,8 +68,7 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let targetClient: Client | undefined;
-    let jumpClient: Client | undefined;
+    let sshClients: Client[] = [];
 
     const settle = (result: SshResult): void => {
       if (settled) return;
@@ -167,16 +76,7 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
       if (timer) {
         clearTimeout(timer);
       }
-      try {
-        targetClient?.end();
-      } catch {
-        // no-op
-      }
-      try {
-        jumpClient?.end();
-      } catch {
-        // no-op
-      }
+      closeSshClients(sshClients);
       resolve(result);
     };
 
@@ -192,8 +92,8 @@ export async function runSsh(host: HostConfig, command: string): Promise<SshResu
     void (async () => {
       try {
         const connected = await connectTargetClient(host);
-        targetClient = connected.targetClient;
-        jumpClient = connected.jumpClient;
+        const { targetClient } = connected;
+        sshClients = connected.allClients;
 
         targetClient.exec(command, (execError: Error | undefined, stream: ClientChannel) => {
           if (execError) {

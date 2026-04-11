@@ -18,7 +18,8 @@ This project is now aligned with the **UI style** and **development approach** o
 ## Core Features
 
 1. Host list with SSH connection settings.
-   - supports optional `Jump Host` configuration directly in Add/Edit Host form (no separate entry page/button)
+   - supports optional `Jump Servers` chain configuration directly in Add/Edit Host form (no separate entry page/button)
+   - older configs with a single legacy `jumpHost` are still read as a one-hop chain
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
    - host dialog validation/import errors are surfaced inside the dialog itself, and user-facing success/error notices use dismissible message banners
 2. Per-host configuration now has **two independent lists**:
@@ -71,7 +72,7 @@ This project is now aligned with the **UI style** and **development approach** o
 10. Config transfer:
    - `Import Config` from JSON
    - `Export Config` to JSON
-   - includes hosts, jump-host settings, forwarding rules, and services
+   - includes hosts, jump-server chain settings, forwarding rules, and services
 11. Destructive deletes (`Delete Host`, `Delete` rule) always prompt for confirmation.
 
 ## Tech Stack
@@ -246,7 +247,7 @@ journalctl --user -u <unit-name> -n 200 --no-pager
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section
   - Services section
-  - Jump Host section (optional)
+  - Jump Servers section (optional, supports multi-hop chains)
 
 ## Change Discipline
 

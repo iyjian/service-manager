@@ -555,6 +555,14 @@ textarea.input {
   margin-bottom: var(--space-3);
 }
 
+.subcard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .subcard-title {
   margin: 0;
   font-size: var(--font-size-sm);
@@ -580,6 +588,28 @@ textarea.input {
 
 .forward-editor-row {
   align-items: flex-end;
+}
+
+.jump-host-editor-row {
+  display: block;
+}
+
+.jump-host-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.jump-host-editor-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+
+.jump-host-editor-row .form-row + .form-row {
+  margin-top: var(--space-3);
 }
 
 .service-editor-row {
