@@ -50,6 +50,8 @@ This project is now aligned with the **UI style** and **development approach** o
 7. Tunnel list and service list are rendered under each host on home page:
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - `Service List`: start/stop service, PID/log, runtime forward indicator
+   - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
+   - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
    - Overview metrics are split clearly by domain:
      - tunnel running/stopped/errors
      - service running/stopped/errors

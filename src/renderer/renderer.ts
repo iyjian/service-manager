@@ -89,6 +89,7 @@ let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
 let lastLogLoadError: string | null = null;
+const collapsedHostIds = new Set<string>();
 
 type MessageLevel = 'default' | 'success' | 'error';
 
@@ -768,9 +769,19 @@ function render(): void {
     return;
   }
 
-  for (const host of hosts) {
+  hosts.forEach((host, hostIndex) => {
+    if (hostIndex > 0) {
+      const spacerRow = document.createElement('tr');
+      spacerRow.className = 'host-spacer-row';
+      spacerRow.innerHTML = '<td colspan="6"></td>';
+      hostTableBody.appendChild(spacerRow);
+    }
+
+    const isCollapsed = collapsedHostIds.has(host.id);
+    const runningForwards = host.forwards.filter((item) => item.status === 'running').length;
+    const runningServices = host.services.filter((item) => item.status === 'running').length;
     const groupRow = document.createElement('tr');
-    groupRow.className = 'group-row';
+    groupRow.className = `group-row${isCollapsed ? ' group-row-collapsed' : ''}`;
     const hostName = escapeHtml(host.name);
     const hostDesc = escapeHtml(
       `${host.username}@${host.sshHost}:${host.sshPort}${
@@ -780,26 +791,82 @@ function render(): void {
     groupRow.innerHTML = `
       <td colspan="6" class="group-cell">
         <div class="group-head">
-          <div>
-            <div class="group-title">${hostName}</div>
-            <div class="group-desc">${hostDesc}</div>
+          <div class="group-main">
+            <button
+              type="button"
+              class="host-toggle-btn"
+              data-action="toggle-host"
+              aria-expanded="${isCollapsed ? 'false' : 'true'}"
+              aria-label="${isCollapsed ? 'Expand host' : 'Collapse host'}"
+            >
+              <span class="host-toggle-icon">${isCollapsed ? '▸' : '▾'}</span>
+            </button>
+            <div class="group-meta">
+              <div class="group-title">${hostName}</div>
+              <div class="group-desc">${hostDesc}</div>
+            </div>
           </div>
-          <div class="row-actions">
+          <div class="group-right">
+            <div class="group-metrics">
+              <span class="group-metric">${host.forwards.length} tunnel${host.forwards.length === 1 ? '' : 's'} · ${runningForwards} running</span>
+              <span class="group-metric">${host.services.length} service${host.services.length === 1 ? '' : 's'} · ${runningServices} running</span>
+            </div>
+            <div class="row-actions">
             <button class="btn btn-secondary btn-sm" data-action="edit-host">Edit Host</button>
             <button class="btn btn-danger btn-sm" data-action="delete-host">Delete Host</button>
+            </div>
           </div>
         </div>
       </td>
     `;
     hostTableBody.appendChild(groupRow);
+    groupRow.querySelector<HTMLButtonElement>('[data-action="toggle-host"]')?.addEventListener('click', () => {
+      if (isCollapsed) {
+        collapsedHostIds.delete(host.id);
+      } else {
+        collapsedHostIds.add(host.id);
+      }
+      renderSafely('toggle-host');
+    });
+
+    if (isCollapsed) {
+      groupRow.querySelector<HTMLButtonElement>('[data-action="edit-host"]')?.addEventListener('click', () => {
+        openHostDialog('edit', host);
+      });
+      groupRow.querySelector<HTMLButtonElement>('[data-action="delete-host"]')?.addEventListener('click', async () => {
+        try {
+          const ok = await window.serviceApi.confirmAction({
+            title: 'Delete Host',
+            message: `Delete host "${host.name}"?`,
+            detail: 'All services and forwarding rules under this host will be deleted.',
+            kind: 'warning',
+            confirmLabel: 'Delete',
+            cancelLabel: 'Cancel',
+          });
+          if (!ok) {
+            return;
+          }
+          await window.serviceApi.deleteHost(host.id);
+          if (hostDialog.open && hostIdInput.value === host.id) {
+            closeHostDialog();
+          }
+          await loadHosts();
+          setMessage(`Host ${host.name} deleted`, 'success');
+        } catch (error) {
+          setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
+        }
+      });
+      return;
+    }
 
     const tunnelTitle = document.createElement('tr');
-    tunnelTitle.className = 'host-rules-head';
-    tunnelTitle.innerHTML = '<th colspan="6">Tunnel List</th>';
+    tunnelTitle.className = 'host-section-row host-section-row-tunnel';
+    tunnelTitle.innerHTML =
+      '<th colspan="6"><span class="host-section-label host-section-label-tunnel">Tunnel List</span></th>';
     hostTableBody.appendChild(tunnelTitle);
 
     const tunnelHeader = document.createElement('tr');
-    tunnelHeader.className = 'host-rules-head';
+    tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
     tunnelHeader.innerHTML = `
       <th>Rule</th>
       <th>Local</th>
@@ -812,14 +879,14 @@ function render(): void {
 
     if (host.forwards.length === 0) {
       const empty = document.createElement('tr');
-      empty.className = 'data-row';
+      empty.className = 'data-row section-empty-row section-empty-row-tunnel';
       empty.innerHTML = `<td colspan="6" class="table-empty">No forwarding rules under this host.</td>`;
       hostTableBody.appendChild(empty);
     }
 
     host.forwards.forEach((forward, index) => {
       const row = document.createElement('tr');
-      row.className = 'data-row';
+      row.className = 'data-row data-row-tunnel';
       const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
       const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
       const forwardError = escapeAttribute(forward.error ?? '');
@@ -833,13 +900,15 @@ function render(): void {
         <td class="table-cell">#${index + 1}</td>
         <td class="table-cell">${localEndpoint}</td>
         <td class="table-cell">${remoteEndpoint}</td>
-        <td class="table-cell auto-start-cell">${forward.autoStart ? '✓' : '✗'}</td>
+        <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
         <td class="table-cell">
-          <span class="status-indicator ${statusClass(forward.status)}" title="${forwardError}">
-            <span class="status-dot"></span>
-            <span class="status-label">${forwardStatus}</span>
-          </span>
-          ${retry}
+          <div class="status-wrap">
+            <span class="status-indicator ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}" ${forwardError ? `data-tooltip="${forwardError}"` : ''}>
+              <span class="status-dot"></span>
+              <span class="status-label">${forwardStatus}</span>
+            </span>
+            ${retry}
+          </div>
         </td>
         <td class="table-cell">
           <div class="row-actions">
@@ -867,12 +936,13 @@ function render(): void {
     });
 
     const serviceTitle = document.createElement('tr');
-    serviceTitle.className = 'host-rules-head';
-    serviceTitle.innerHTML = '<th colspan="6">Service List</th>';
+    serviceTitle.className = 'host-section-row host-section-row-service';
+    serviceTitle.innerHTML =
+      '<th colspan="6"><span class="host-section-label host-section-label-service">Service List</span></th>';
     hostTableBody.appendChild(serviceTitle);
 
     const serviceHeader = document.createElement('tr');
-    serviceHeader.className = 'host-rules-head';
+    serviceHeader.className = 'host-rules-head host-rules-head-service';
     serviceHeader.innerHTML = `
       <th>Service</th>
       <th>Port</th>
@@ -885,14 +955,14 @@ function render(): void {
 
     if (host.services.length === 0) {
       const empty = document.createElement('tr');
-      empty.className = 'data-row';
+      empty.className = 'data-row section-empty-row section-empty-row-service';
       empty.innerHTML = `<td colspan="6" class="table-empty">No services under this host.</td>`;
       hostTableBody.appendChild(empty);
     }
 
     for (const service of host.services) {
       const row = document.createElement('tr');
-      row.className = 'data-row';
+      row.className = 'data-row data-row-service';
       const updated = service.updatedAt ? new Date(service.updatedAt).toLocaleString() : '-';
       const pidText = service.pid ? String(service.pid) : '-';
       const safeServiceName = escapeHtml(service.name);
@@ -919,10 +989,12 @@ function render(): void {
         <td class="table-cell">${safeServiceName}</td>
         <td class="table-cell">${portText}</td>
         <td class="table-cell">
-          <span class="status-indicator ${statusClass(service.status)}" title="${safeServiceError}">
-            <span class="status-dot"></span>
-            <span class="status-label">${escapeHtml(service.status)}</span>
-          </span>
+          <div class="status-wrap">
+            <span class="status-indicator ${statusClass(service.status)}${safeServiceError ? ' status-has-tooltip' : ''}" ${safeServiceError ? `data-tooltip="${safeServiceError}"` : ''}>
+              <span class="status-dot"></span>
+              <span class="status-label">${escapeHtml(service.status)}</span>
+            </span>
+          </div>
         </td>
         <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
         <td class="table-cell">${safeUpdated}</td>
@@ -981,7 +1053,7 @@ function render(): void {
         setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
       }
     });
-  }
+  });
 }
 
 addHostButton.addEventListener('click', () => {
@@ -1054,6 +1126,39 @@ importJumpPrivateKeyButton.addEventListener('click', async () => {
     setHostDialogMessage((error as Error).message, 'error');
   }
 });
+
+let floatingTooltip: HTMLDivElement | null = null;
+
+function showFloatingTooltip(anchor: HTMLElement): void {
+  const text = anchor.getAttribute('data-tooltip');
+  if (!text) return;
+  hideFloatingTooltip();
+  const tip = document.createElement('div');
+  tip.className = 'status-tooltip-floating';
+  tip.textContent = text;
+  document.body.appendChild(tip);
+  floatingTooltip = tip;
+  const rect = anchor.getBoundingClientRect();
+  tip.style.left = `${rect.left}px`;
+  tip.style.top = `${rect.bottom + 6}px`;
+}
+
+function hideFloatingTooltip(): void {
+  if (floatingTooltip) {
+    floatingTooltip.remove();
+    floatingTooltip = null;
+  }
+}
+
+hostTableBody.addEventListener('mouseenter', (event) => {
+  const target = (event.target as HTMLElement).closest('.status-has-tooltip') as HTMLElement | null;
+  if (target) showFloatingTooltip(target);
+}, true);
+
+hostTableBody.addEventListener('mouseleave', (event) => {
+  const target = (event.target as HTMLElement).closest('.status-has-tooltip');
+  if (target) hideFloatingTooltip();
+}, true);
 
 importConfigButton.addEventListener('click', async () => {
   try {

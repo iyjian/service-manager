@@ -58,6 +58,8 @@ Build a desktop Electron application to manage services on remote servers throug
    - Home page structure must be host-centric:
      - each host is a top-level block
      - each host contains `Tunnel List` and `Service List`
+     - each host block must be collapsible from the list page
+     - `Tunnel List` and `Service List` should have clearly distinct visual section treatments inside the host block
 6. Host edit page structure must follow same hierarchy:
    - Forwarding Rules section
    - Services section

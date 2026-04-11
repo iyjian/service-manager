@@ -8,6 +8,10 @@
   </head>
   <body>
     <main class="app-shell">
+      <header class="page-head">
+        <h1 class="page-title">Service Manager</h1>
+      </header>
+
       <section class="card section">
         <div class="section-head">
           <h2 class="section-title">Overview</h2>
@@ -21,34 +25,20 @@
           <div class="overview-card">
             <p class="overview-label">Tunnels</p>
             <p id="stat-forwards" class="overview-value">0</p>
+            <div id="stat-tunnel-detail" class="overview-sub-stats">
+              <span class="overview-sub-stat sub-stat-running"><span class="overview-sub-dot"></span><span id="stat-tunnel-running">0</span> running</span>
+              <span class="overview-sub-stat sub-stat-stopped"><span class="overview-sub-dot"></span><span id="stat-tunnel-stopped">0</span> stopped</span>
+              <span class="overview-sub-stat sub-stat-errors"><span class="overview-sub-dot"></span><span id="stat-tunnel-errors">0</span> errors</span>
+            </div>
           </div>
           <div class="overview-card">
             <p class="overview-label">Services</p>
             <p id="stat-services" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Tunnel Running</p>
-            <p id="stat-tunnel-running" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Tunnel Stopped</p>
-            <p id="stat-tunnel-stopped" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Tunnel Errors</p>
-            <p id="stat-tunnel-errors" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Service Running</p>
-            <p id="stat-service-running" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Service Stopped</p>
-            <p id="stat-service-stopped" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Service Errors</p>
-            <p id="stat-service-errors" class="overview-value">0</p>
+            <div id="stat-service-detail" class="overview-sub-stats">
+              <span class="overview-sub-stat sub-stat-running"><span class="overview-sub-dot"></span><span id="stat-service-running">0</span> running</span>
+              <span class="overview-sub-stat sub-stat-stopped"><span class="overview-sub-dot"></span><span id="stat-service-stopped">0</span> stopped</span>
+              <span class="overview-sub-stat sub-stat-errors"><span class="overview-sub-dot"></span><span id="stat-service-errors">0</span> errors</span>
+            </div>
           </div>
         </div>
 
@@ -68,7 +58,7 @@
             class="message-close"
             aria-label="Dismiss message"
           >
-            ×
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
           </button>
         </div>
 
@@ -93,7 +83,7 @@
       <div class="dialog-panel">
         <div class="dialog-head">
           <h2 id="service-log-title" class="section-title">Service Logs</h2>
-          <button id="close-service-log-dialog-btn" type="button" class="icon-btn" aria-label="Close">×</button>
+          <button id="close-service-log-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
         </div>
         <label class="forward-auto">
           <input id="log-auto-scroll" type="checkbox" class="checkbox" checked />
@@ -107,7 +97,7 @@
       <div class="dialog-panel">
         <div class="dialog-head">
           <h2 id="host-dialog-title" class="section-title">Add Host</h2>
-          <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close">×</button>
+          <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
         </div>
 
         <div id="host-dialog-message" class="message-banner message-default hidden" role="status" aria-live="polite">
@@ -118,7 +108,7 @@
             class="message-close"
             aria-label="Dismiss message"
           >
-            ×
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
           </button>
         </div>
 
