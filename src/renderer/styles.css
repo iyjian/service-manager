@@ -578,6 +578,10 @@ textarea.input {
   background: var(--color-bg-surface);
 }
 
+.forward-editor-row {
+  align-items: flex-end;
+}
+
 .service-editor-row {
   display: grid;
   grid-template-columns: minmax(180px, 1.6fr) minmax(120px, 0.8fr) minmax(200px, 1fr) auto;
@@ -605,14 +609,23 @@ textarea.input {
   white-space: pre-wrap;
 }
 
+.forward-name {
+  width: min(190px, 100%);
+  flex: 1 1 190px;
+  min-width: 180px;
+}
+
 .forward-local-host,
 .forward-remote-host {
-  width: min(170px, 100%);
+  width: min(180px, 100%);
+  flex: 1 1 180px;
+  min-width: 160px;
 }
 
 .forward-local-port,
 .forward-remote-port {
-  width: 120px;
+  width: 156px;
+  flex: 0 0 156px;
 }
 
 .forward-auto {

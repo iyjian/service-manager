@@ -257,6 +257,7 @@ function toView(hosts: HostConfig[]): HostView[] {
 function validateForwardDraft(input: ForwardRuleDraft): ForwardRule {
   const forward: ForwardRule = {
     id: input.id?.trim() || randomUUID(),
+    name: input.name?.trim() || undefined,
     localHost: input.localHost.trim(),
     localPort: Number(input.localPort),
     remoteHost: input.remoteHost.trim(),

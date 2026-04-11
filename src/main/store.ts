@@ -151,6 +151,7 @@ export class ServiceStore {
 
     return {
       id: input.id?.trim() || randomUUID(),
+      name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : undefined,
       localHost: input.localHost.trim(),
       localPort,
       remoteHost: input.remoteHost.trim(),

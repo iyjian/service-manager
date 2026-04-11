@@ -6,6 +6,7 @@ export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'er
 
 export interface ForwardRule {
   id: string;
+  name?: string;
   localHost: string;
   localPort: number;
   remoteHost: string;
@@ -15,6 +16,7 @@ export interface ForwardRule {
 
 export interface ForwardRuleDraft {
   id?: string;
+  name?: string;
   localHost: string;
   localPort: number;
   remoteHost: string;

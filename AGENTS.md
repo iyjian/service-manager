@@ -17,6 +17,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - exposed port (`0` means not exposed)
    - optional local forward port
 3. Forwarding-rule management under each host (same capability model as `ssh-tunnel-manager`):
+   - optional rule name, shown in the host tunnel list when present
    - local host / local port
    - remote host / remote port
    - auto-start flag

@@ -350,9 +350,13 @@ function formatConfigSummary(hostCount: number, ruleCount: number, serviceCount:
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row';
+  row.className = 'forward-row forward-editor-row';
   row.innerHTML = `
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
+    <label class="field field-xs forward-name">
+      Name
+      <input class="input" data-field="name" value="${safeValue(draft?.name)}" placeholder="web / db / redis" />
+    </label>
     <label class="field field-xs forward-local-host">
       Local Host
       <input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" />
@@ -423,11 +427,12 @@ function collectForwardsFromEditor(): ForwardRuleDraft[] {
       row.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
     const autoStart = row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false;
 
+    const name = get('name');
     const localHost = get('localHost');
     const localPortRaw = get('localPort');
     const remoteHost = get('remoteHost');
     const remotePortRaw = get('remotePort');
-    const isBlank = !localHost && !localPortRaw && !remoteHost && !remotePortRaw && !autoStart;
+    const isBlank = !name && !localHost && !localPortRaw && !remoteHost && !remotePortRaw && !autoStart;
     if (isBlank) {
       return;
     }
@@ -438,6 +443,7 @@ function collectForwardsFromEditor(): ForwardRuleDraft[] {
 
     forwards.push({
       id: get('id') || undefined,
+      name: name || undefined,
       localHost,
       localPort: parsePort(localPortRaw, `Rule ${index + 1} Local Port`),
       remoteHost,
@@ -868,7 +874,7 @@ function render(): void {
     const tunnelHeader = document.createElement('tr');
     tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
     tunnelHeader.innerHTML = `
-      <th>Rule</th>
+      <th>Name</th>
       <th>Local</th>
       <th>Remote</th>
       <th>Auto Start</th>
@@ -891,13 +897,14 @@ function render(): void {
       const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
       const forwardError = escapeAttribute(forward.error ?? '');
       const forwardStatus = escapeHtml(formatStatus(forward.status));
+      const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
       const localEndpoint = escapeHtml(`${forward.localHost}:${forward.localPort}`);
       const remoteEndpoint = escapeHtml(`${forward.remoteHost}:${forward.remotePort}`);
       const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
         ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
         : '';
       row.innerHTML = `
-        <td class="table-cell">#${index + 1}</td>
+        <td class="table-cell">${forwardName}</td>
         <td class="table-cell">${localEndpoint}</td>
         <td class="table-cell">${remoteEndpoint}</td>
         <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>

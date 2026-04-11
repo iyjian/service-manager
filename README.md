@@ -26,6 +26,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - `Services` (remote process lifecycle)
    - both lists start empty in Add/Edit Host; the dialog does not insert placeholder rows by default
 3. Forwarding rule fields:
+   - optional rule name (shown in the home-page tunnel list when present; older configs without it still work)
    - local host / local port
    - remote host / remote port
    - auto start
