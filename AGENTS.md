@@ -9,6 +9,7 @@ Build a desktop Electron application to manage services on remote servers throug
 1. Host management with SSH connection configuration.
    - Jump Host is configured directly inside Add/Edit Host form.
    - Deleting a host requires confirmation.
+   - creating or editing a host must only require host name and SSH connection info; empty forwarding-rule/service lists are valid
 2. Service management under each host:
    - start command
    - start command editor in host modal must be full-width and multi-line so long shell commands stay practical to edit
@@ -21,6 +22,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - runtime start/stop in list (delete handled in host edit form, with confirmation)
    - tunnel status with reconnect countdown on error
    - supports jump-host chain when host has jump configured
+   - Add/Edit Host should not create placeholder forwarding-rule or service rows automatically; users add rows only when needed
 4. Service status and runtime state:
    - save PID on start
    - service runtime is managed only through remote `systemd --user` transient units created by `systemd-run`

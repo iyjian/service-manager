@@ -314,19 +314,19 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
     <label class="field field-xs forward-local-host">
       Local Host
-      <input class="input" data-field="localHost" value="${safeValue(draft?.localHost ?? '127.0.0.1')}" required />
+      <input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" />
     </label>
     <label class="field field-xs forward-local-port">
-      Local Port
-      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" required />
+      Local Port (Optional)
+      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" />
     </label>
     <label class="field field-xs forward-remote-host">
       Remote Host
-      <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost ?? '127.0.0.1')}" required />
+      <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" />
     </label>
     <label class="field field-xs forward-remote-port">
-      Remote Port
-      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" required />
+      Remote Port (Optional)
+      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" />
     </label>
     <label class="forward-auto">
       <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
@@ -349,11 +349,11 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
     <label class="field field-xs service-name-field">
       Name
-      <input class="input" data-field="name" value="${safeValue(draft?.name)}" required />
+      <input class="input" data-field="name" value="${safeValue(draft?.name)}" />
     </label>
     <label class="field field-xs service-port-field">
-      Exposed Port
-      <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" required />
+      Exposed Port (Optional)
+      <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" />
     </label>
     <label class="field field-xs service-forward-port-field">
       Forward Local Port (Optional)
@@ -362,7 +362,7 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
     <button type="button" class="btn btn-danger btn-sm forward-remove">Remove</button>
     <label class="field field-xs service-command-field">
       Start Command
-      <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /path/to/app && exec yarn start:dev" required>${escapeHtml(draft?.startCommand ?? '')}</textarea>
+      <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /path/to/app && exec yarn start:dev">${escapeHtml(draft?.startCommand ?? '')}</textarea>
     </label>
   `;
 
@@ -375,25 +375,37 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
 
 function collectForwardsFromEditor(): ForwardRuleDraft[] {
   const rows = Array.from(forwardEditorList.querySelectorAll<HTMLElement>('.forward-row'));
-  return rows.map((row, index) => {
+  const forwards: ForwardRuleDraft[] = [];
+
+  rows.forEach((row, index) => {
     const get = (field: string): string =>
       row.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
     const autoStart = row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false;
 
     const localHost = get('localHost');
+    const localPortRaw = get('localPort');
     const remoteHost = get('remoteHost');
+    const remotePortRaw = get('remotePort');
+    const isBlank = !localHost && !localPortRaw && !remoteHost && !remotePortRaw && !autoStart;
+    if (isBlank) {
+      return;
+    }
     if (!localHost) throw new Error(`Rule ${index + 1}: Local Host is required`);
+    if (!localPortRaw) throw new Error(`Rule ${index + 1}: Local Port is required`);
     if (!remoteHost) throw new Error(`Rule ${index + 1}: Remote Host is required`);
+    if (!remotePortRaw) throw new Error(`Rule ${index + 1}: Remote Port is required`);
 
-    return {
+    forwards.push({
       id: get('id') || undefined,
       localHost,
-      localPort: parsePort(get('localPort'), `Rule ${index + 1} Local Port`),
+      localPort: parsePort(localPortRaw, `Rule ${index + 1} Local Port`),
       remoteHost,
-      remotePort: parsePort(get('remotePort'), `Rule ${index + 1} Remote Port`),
+      remotePort: parsePort(remotePortRaw, `Rule ${index + 1} Remote Port`),
       autoStart,
-    };
+    });
   });
+
+  return forwards;
 }
 
 function collectJumpHostDraft(): JumpHostConfig | undefined {
@@ -426,18 +438,34 @@ function collectJumpHostDraft(): JumpHostConfig | undefined {
 
 function collectServicesFromEditor(): ServiceDraft[] {
   const rows = Array.from(serviceEditorList.querySelectorAll<HTMLElement>('.service-editor-row'));
-  return rows.map((row) => {
+  const services: ServiceDraft[] = [];
+
+  rows.forEach((row, index) => {
     const get = (field: string): string =>
       row.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
 
-    return {
+    const name = get('name');
+    const startCommand = get('startCommand');
+    const portRaw = get('port');
+    const forwardLocalPortRaw = get('forwardLocalPort');
+    const isBlank = !name && !startCommand && !portRaw && !forwardLocalPortRaw;
+    if (isBlank) {
+      return;
+    }
+    if (!name) throw new Error(`Service ${index + 1}: Name is required`);
+    if (!startCommand) throw new Error(`Service ${index + 1}: Start Command is required`);
+    if (!portRaw) throw new Error(`Service ${index + 1}: Exposed Port is required`);
+
+    services.push({
       id: get('id') || undefined,
-      name: get('name'),
-      startCommand: get('startCommand'),
-      port: Number(get('port')),
-      forwardLocalPort: get('forwardLocalPort') ? Number(get('forwardLocalPort')) : undefined,
-    };
+      name,
+      startCommand,
+      port: Number(portRaw),
+      forwardLocalPort: forwardLocalPortRaw ? Number(forwardLocalPortRaw) : undefined,
+    });
   });
+
+  return services;
 }
 
 function resetForm(): void {
@@ -455,8 +483,6 @@ function resetForm(): void {
   jumpPassphraseInput.value = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
-  forwardEditorList.appendChild(createForwardEditorRow());
-  serviceEditorList.appendChild(createServiceEditorRow());
   toggleAuthFields();
   toggleJumpSection();
 }
@@ -488,7 +514,6 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     for (const forward of host.forwards) {
       forwardEditorList.appendChild(createForwardEditorRow(forward));
     }
-    if (host.forwards.length === 0) forwardEditorList.appendChild(createForwardEditorRow());
 
     serviceEditorList.innerHTML = '';
     for (const service of host.services) {
@@ -502,7 +527,6 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
         })
       );
     }
-    if (host.services.length === 0) serviceEditorList.appendChild(createServiceEditorRow());
   } else {
     hostDialogTitle.textContent = 'Add Host';
     resetForm();

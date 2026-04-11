@@ -19,9 +19,11 @@ This project is now aligned with the **UI style** and **development approach** o
 
 1. Host list with SSH connection settings.
    - supports optional `Jump Host` configuration directly in Add/Edit Host form (no separate entry page/button)
+   - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
    - `Services` (remote process lifecycle)
+   - both lists start empty in Add/Edit Host; the dialog does not insert placeholder rows by default
 3. Forwarding rule fields:
    - local host / local port
    - remote host / remote port
