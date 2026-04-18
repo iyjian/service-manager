@@ -1252,17 +1252,16 @@ function render(): void {
     const tunnelTitle = document.createElement('tr');
     tunnelTitle.className = 'host-section-row host-section-row-tunnel';
     tunnelTitle.innerHTML =
-      '<th colspan="6"><span class="host-section-label host-section-label-tunnel">Tunnel List</span></th>';
+      '<th colspan="5"><span class="host-section-label host-section-label-tunnel">Tunnel List</span></th>';
     hostTableBody.appendChild(tunnelTitle);
 
     const tunnelHeader = document.createElement('tr');
     tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
     tunnelHeader.innerHTML = `
       <th>Name</th>
-      <th>Local</th>
-      <th>Remote</th>
-      <th>Auto Start</th>
+      <th>Port</th>
       <th>Status</th>
+      <th>Auto Start</th>
       <th>Actions</th>
     `;
     hostTableBody.appendChild(tunnelHeader);
@@ -1270,7 +1269,7 @@ function render(): void {
     if (host.forwards.length === 0) {
       const empty = document.createElement('tr');
       empty.className = 'data-row section-empty-row section-empty-row-tunnel';
-      empty.innerHTML = `<td colspan="6" class="table-empty">No forwarding rules under this host.</td>`;
+      empty.innerHTML = `<td colspan="5" class="table-empty">No forwarding rules under this host.</td>`;
       hostTableBody.appendChild(empty);
     }
 
@@ -1282,20 +1281,24 @@ function render(): void {
       const forwardError = escapeAttribute(forward.error ?? '');
       const forwardStatus = escapeHtml(formatStatus(forward.status));
       const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
-      const localEndpoint = escapeHtml(`${forward.localHost}:${forward.localPort}`);
-      const localHref = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
-      const localCell = forward.status === 'running'
-        ? `<a class="forward-link" href="${localHref}" target="_blank" rel="noreferrer">${localEndpoint}</a>`
-        : `<span>${localEndpoint}</span>`;
-      const remoteEndpoint = escapeHtml(`${forward.remoteHost}:${forward.remotePort}`);
+      const portText = (() => {
+        const base = escapeHtml(`${forward.localPort} -> ${forward.remotePort}`);
+        const href = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
+        if (forward.status === 'running') {
+          return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+        }
+        if (forward.status === 'error') {
+          const err = escapeAttribute(forward.error || 'Forward failed');
+          return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+        }
+        return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
+      })();
       const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
         ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
         : '';
       row.innerHTML = `
         <td class="table-cell">${forwardName}</td>
-        <td class="table-cell">${localCell}</td>
-        <td class="table-cell">${remoteEndpoint}</td>
-        <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
+        <td class="table-cell">${portText}</td>
         <td class="table-cell">
           <div class="status-wrap">
             <span class="status-indicator ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}" ${forwardError ? `data-tooltip="${forwardError}"` : ''}>
@@ -1305,6 +1308,7 @@ function render(): void {
             ${retry}
           </div>
         </td>
+        <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
         <td class="table-cell">
           <div class="row-actions">
             <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>Start</button>
@@ -1333,17 +1337,16 @@ function render(): void {
     const serviceTitle = document.createElement('tr');
     serviceTitle.className = 'host-section-row host-section-row-service';
     serviceTitle.innerHTML =
-      '<th colspan="6"><span class="host-section-label host-section-label-service">Service List</span></th>';
+      '<th colspan="5"><span class="host-section-label host-section-label-service">Service List</span></th>';
     hostTableBody.appendChild(serviceTitle);
 
     const serviceHeader = document.createElement('tr');
     serviceHeader.className = 'host-rules-head host-rules-head-service';
     serviceHeader.innerHTML = `
-      <th>Service</th>
+      <th>Name</th>
       <th>Port</th>
       <th>Status</th>
       <th>PID</th>
-      <th>Updated</th>
       <th>Actions</th>
     `;
     hostTableBody.appendChild(serviceHeader);
@@ -1351,17 +1354,15 @@ function render(): void {
     if (host.services.length === 0) {
       const empty = document.createElement('tr');
       empty.className = 'data-row section-empty-row section-empty-row-service';
-      empty.innerHTML = `<td colspan="6" class="table-empty">No services under this host.</td>`;
+      empty.innerHTML = `<td colspan="5" class="table-empty">No services under this host.</td>`;
       hostTableBody.appendChild(empty);
     }
 
     for (const service of host.services) {
       const row = document.createElement('tr');
       row.className = 'data-row data-row-service';
-      const updated = service.updatedAt ? new Date(service.updatedAt).toLocaleString() : '-';
       const pidText = service.pid ? String(service.pid) : '-';
       const safeServiceName = escapeHtml(service.name);
-      const safeUpdated = escapeHtml(updated);
       const safeServiceError = escapeAttribute(service.error ?? '');
       const portText = (() => {
         if (service.port === 0 || !service.forwardLocalPort) {
@@ -1392,8 +1393,7 @@ function render(): void {
           </div>
         </td>
         <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
-        <td class="table-cell">${safeUpdated}</td>
-        <td>
+        <td class="table-cell">
           <div class="row-actions">
             <button class="btn btn-primary btn-sm" data-action="start" ${startDisabled}>Start</button>
             <button class="btn btn-secondary btn-sm" data-action="stop" ${stopDisabled}>Stop</button>

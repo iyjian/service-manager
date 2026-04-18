@@ -1,153 +1,157 @@
-# UI 整理方案（已实施）
+# UI 重构方案 v2（已实施）
 
-目标：消除页面"凌乱感"，不增删任何页面元素，仅做视觉/布局/样式调整。
+风格目标：Vercel / Railway / K8s Dashboard 的共性 —
+**中性灰 + 1px 描边 + 无卡片阴影 + 紧凑密度 + 克制的单一强调色（Vercel 黑）**。
 
-实施范围：`src/renderer/styles.css`（本轮未改 `index.html`）。
+决策基线：
+- 强调色 = **Vercel 黑** `#0a0a0a`
+- 基础字号 = **13px**
+- 圆角 = **4 / 6 / 8**
 
-每条按 **设计要求 / 现状** 两段记录；"现状"描述实施后的结果。
+实施范围：`src/renderer/styles.css`（`index.html` 未改动）。
 
----
-
-## 1. 表格视觉降噪
-
-### 设计要求
-tunnel / service 区分**只保留 section label 这一个色彩信号**。行色系归一，不使用底色 + 彩色边框 + 标签的三重编码。`.group-row` 的蓝色渐变降级为纯色，不再拼图感。
-
-### 现状
-- `.data-row-tunnel / .data-row-service / .section-empty-row-*` 统一白底（`--color-bg-surface`），删除原 `#fbfeff / #fffdfa` 色底。
-- `.host-section-row-tunnel / -service` 和 `.host-rules-head-tunnel / -service` 的彩色背景、左右蓝色描边全部移除，背景 transparent。
-- `.group-row td` 从 `linear-gradient(135deg, #f8fbff, #eef6ff)` + `#d7e5f6` 边框改为 `--color-bg-subtle` + 底边 `--color-border-default`，不再有"渐变卡片头"的独立语言。
-- `.host-section-label-tunnel / -service` 的 badge 配色**保留**，作为分区的唯一色彩信号。
+每条按 **设计要求 / 现状** 记录。
 
 ---
 
-## 2. 卡片嵌套层级差异化
+## 1. Token 系统重写
 
 ### 设计要求
-Dialog 内 `.card → .subcard → .forward-row` 三层视觉上要能一眼区分，形成"凹—凸—凹"的层级节奏。
+抛弃 `--color-primary-*`（cyan）和 `--color-text-*` / `--color-border-default` 等带 bootstrap 味道的命名。建立中性灰阶 + 单一强调色 + 功能色的 3 层结构，旧名保留为 alias 不破坏现有 class 使用。
 
 ### 现状
-- `.card` 白底（保持）
-- `.subcard` 改为 `--color-bg-subtle`（`#f1f5f9`），边框保留
-- `.forward-row` 白底 + 1px 边（保持）
+`:root` 被重写为四组：
+- **Surface**：`--color-bg-page: #fafafa` / `--color-bg-surface: #fff` / `--color-bg-subtle / --color-bg-hover: #f4f4f5`
+- **Border**：`--color-border: #e4e4e7` / `--color-border-strong: #d4d4d8` / `--color-border-subtle: #f4f4f5`
+- **Foreground**：`--color-fg-primary: #09090b` (标题/强文本) → `--color-fg-secondary: #3f3f46` → `--color-fg-tertiary: #71717a` → `--color-fg-quaternary: #a1a1aa`
+- **Accent**：`--color-accent: #0a0a0a`（黑）/ `--color-accent-hover: #262626` / `--color-focus: #0070f3`（焦点用的小范围蓝）
 
-嵌套层级从"三层同色盒子"变成"白底 → 浅灰底 → 白底行卡"。
+旧 token（`--color-primary-500 / --color-text-primary / --color-border-default / --radius-md / --shadow-sm` 等）保留为 alias 映射到新 token。`--color-shadow-soft` 移除，`--shadow-sm` 设为 `none`，新增 `--shadow-pop`（仅 dialog 用）。
+
+字号提梯度：`--font-size-sm` 从 14 → **13**（新 base），新增 `--font-size-xl: 20px`。移除 v1 临时的 `--font-size-3xl / --font-size-stat`。
+
+圆角：`--radius-sm: 4 / --radius: 6 / --radius-lg: 8`（替代旧的 `xs/sm/md` 三档相同的值）。
 
 ---
 
-## 3. Overview 三张卡高度对齐
+## 2. 按钮系统重写
 
 ### 设计要求
-Hosts / Tunnels / Services 三张统计卡底部对齐。
+原来的"白底 + cyan 描边 + cyan 字"二级按钮风格太 bootstrap。改为四种语义清晰的变体：**black primary / outline secondary / ghost / danger-outline**。尺寸收敛到 32（regular）、28（small）、24（图标）。
 
 ### 现状
-`.overview-card` 改为 flex 垂直布局；`.overview-sub-stats` 加 `margin-top: auto`，让没有 sub-stats 的 Hosts 卡自动把 `.overview-value` 撑到可用空间，三张卡高度一致。
-
----
-
-## 4. 设计 token 统一
-
-### 设计要求
-定义好的 `--space-*` / `--font-size-*` 应覆盖全部常规场景；散落的硬编码像素值（10/11/13/17px 等）全部回收进 token。允许极少数语义特殊值以专用变量形式集中声明。
-
-### 现状
-新增 token：
 ```
---font-size-2xs: 11px;
---font-size-3xl: 28px;
---font-size-stat: 20px;
+.btn-primary   — 黑底 #0a0a0a + 白字（hover #262626）
+.btn-secondary — 白底 + 1px 深灰边 + 黑字（hover 浅灰底）
+.btn-ghost     — 透明底 + 灰字（hover 浅灰底，新增）
+.btn-danger    — 透明底 + 红字 + 灰边（hover 红底白字，从"红底白字常态"改为"hover 才红底"）
 ```
-已替换为 token 的位置：
-- `.overview-label / .overview-sub-stats / .group-metric / .host-section-label / .status-retry`：`11px → var(--font-size-2xs)`
-- `.overview-value`：`17px → var(--font-size-stat)`（视觉上由 17 提升到 20，与 2xl/3xl 标题形成稳定梯度）
-- `.overview-grid` gap：`10px → var(--space-2)`
-- `.message-banner` padding：`10px 12px → var(--space-2) var(--space-3)`
-- `.terminal-log` padding：`12px → var(--space-3)`；`font-size: 12px → var(--font-size-xs)`
-- `.service-command-input` padding / font-size：`10px 12px / 13px → var(--space-2) var(--space-3) / var(--font-size-xs)`
-- `th / td / .host-rules-head th`：`10px 12px → var(--space-2) var(--space-3)`
-- `.host-section-row th`：`12px 14px 8px → var(--space-3) var(--space-3) var(--space-2)`
-- `.group-cell`：`14px 16px → var(--space-3) var(--space-4)`
-- `.host-spacer-row td` height：`14px → var(--space-4)`
-- `.host-toggle-icon`：`13px → var(--font-size-xs)`
-- `.input` padding / height：`0 10px / 36px → 0 var(--space-2) / 32px`
-
-仍保留的硬编码（合理特例）：
-- `.overview-sub-dot / .status-dot`：5px 圆点
-- `.checkbox`：14×14
-- `.forward-name / .forward-local-* / .forward-remote-*`：flex 成员的 `190/180/160/156px` 宽度（`forward-row` 是独立 flex 布局，未纳入 12 列 grid，下一轮若需要再改）
+规格：
+- 高 **32**，padding `0 var(--space-3)`，radius `--radius-sm`（4px）
+- `.btn-sm` 高 **28**，padding `0 var(--space-2)`，font xs
+- 去掉 `transform: scale(0.98)` 的 active 弹性效果（过于 web app 感）
+- `:focus-visible` 统一 `box-shadow: 0 0 0 2px var(--color-focus-ring)`（2px 焦点环，替代旧的 3px）
+- `.icon-btn` 改为 **24×24 ghost**（原 28×28 带边框），hover 才出浅灰底
+- `.host-toggle-btn` 改为 **20×20 ghost**（原 28×28），视觉上不抢表格数据
 
 ---
 
-## 5. 表单字段宽度网格化
+## 3. 卡片与表格扁平化
 
 ### 设计要求
-`.form-row` 内所有字段共享同一套 12 列线；去掉各自写死的 `320/280/120/170/280/420/220px`，对齐节奏统一。
+- `.card` 去掉 box-shadow，1px border 定义区块
+- Hosts 表去掉"蓝色渐变 group-row"、"彩色 section 标签"、"淡色行底"的多重装饰
+- 表格头改成 Vercel/Linear 式 **uppercase + 字间距 + tertiary 色**
+- 行 hover 用 `--color-bg-hover`（极浅灰），不再用 `#f8fafc` 偏蓝底色
 
 ### 现状
-`.form-row` 改为 `display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--space-3); align-items: end`。
-
-各字段 span 分布：
-| 行 | 字段 | span | 合计 |
-|---|---|---|---|
-| Name row | `field-name` | 6 | 6（单字段占半行） |
-| SSH row | `field-host` / `field-port` / `field-user` | 5 / 2 / 5 | 12 |
-| Auth row (password 模式) | `field-auth` / `field-password` | 3 / 9 | 12 |
-| Auth row (privateKey 模式) | `field-auth` / `private-key-wrap` / `field-passphrase` | 3 / 6 / 3 | 12 |
-
-两种 auth 配置都严格收敛到 12 列。
-
-小屏（`max-width: 900px`）覆盖：`.field-* / .private-key-wrap` 一律 `grid-column: span 12`，各自占满一行。
+- `.card`：仅 `background + border + radius + padding`，无 shadow
+- `.dialog-panel`：保留 `--shadow-pop`（8px 黑软阴影，仅此一处用阴影）
+- 表头：`th / .host-rules-head th` 字号降到 `--font-size-2xs`，`text-transform: uppercase; letter-spacing: 0.06em; color: tertiary`
+- `td`：base 字号 `--font-size-sm`(13)，border 改为 `--color-border-subtle`，更淡
+- `.data-row:hover td` → `--color-bg-hover`
+- `.group-row td`：彻底去除背景色，改为 `border-top + border-bottom` 两条细线定义分组头（上下包夹）
+- `.group-title`：从 13 semibold → **14 semibold + letter-spacing: -0.01em**（K8s 资源列表风）
+- `.group-desc`：改用 `var(--font-family-mono)` 显示 host 技术描述
+- `.group-metrics`：取消 chip 样式（原 4px padding + 1px border + 白底），改成纯文字 `color: tertiary, font-xs`，仅用 gap 分隔 — 与 Vercel dashboard 一致
+- `.host-section-label-tunnel/-service`：**取消色底 + 色边 + 色字**（原蓝/黄两套），统一为 `color: tertiary, uppercase, letter-spacing 0.08em`，只靠文字区分。`.host-section-row th` 也去掉 uppercase 样式避免重复
+- `.data-row-tunnel / -service / .section-empty-row-*`：统一 `background: transparent`，完全融入白底
+- `.section-empty-row-*`：空行改为 `italic + tertiary 色`，更像 K8s dashboard 的 "No resources"
+- `.status-dot` 从 5px → **6px**，与 overview 卡一致
+- `.status-indicator`：字号从 xs → sm，字重由 medium → regular（状态色本身已有语义，不需要加粗）
+- `.status-tooltip-floating`：改为**反转色**（黑底白字），更像 Vercel 的 tooltip
 
 ---
 
-## 6. 按钮尺寸收敛
+## 4. Overview 卡
 
 ### 设计要求
-按钮高度从 4 种（36 / 32 / 32 / 30）收敛到 2–3 档语义清晰的尺寸。
+label 是 uppercase + tracking 的小标签；value 是大数字，tabular-nums。
 
 ### 现状
-统一为三档：
-- **常规按钮** `.btn`：高度 `32px`（原 36），padding `0 var(--space-3)`
-- **紧凑按钮** `.btn-sm`：高度 `28px`（原 32），padding `0 var(--space-2)`，字号 xs
-- **图标/辅助按钮**：统一到 `28×28` 和 `24×24`
-  - `.icon-btn`（dialog 关闭）28×28（原 32）
-  - `.host-toggle-btn`（表格折叠）28×28（原 30，且去掉自定义蓝边，改用系统边框色）
-  - `.message-close`（banner 关闭）24×24（保持）
-
-效果：主区域按钮全 28–32 节奏，图标按钮不再比文字按钮"矮一截"。
+- `.overview-label`：`uppercase + letter-spacing 0.06em + font-size 2xs + medium + tertiary` — K8s dashboard 的 "STATISTIC" 小标题风
+- `.overview-value`：从 20 semibold + **`tabular-nums` + `letter-spacing: -0.01em`**
+- `.overview-sub-stats`：`tabular-nums`，颜色从旧的"绿/灰/红全涂在字上"改为**字用 secondary，只有 dot 用状态色**（K8s 风）
+- `.overview-sub-dot` 从 5×5 → **6×6**
+- padding 从 `space-2 space-3` → `space-3 space-4`，呼吸更好
+- `.quick-actions` 保持 v1 的 `dashed border-top` 分隔
+- `.checkbox`：`accent-color` 从 cyan → 黑
 
 ---
 
-## 7. 页面层级节奏
+## 5. Dialog / Subcard
 
 ### 设计要求
-H1 与 section 标题字号要拉开差距；Dialog 宽度与主区对齐；`page-head` 与首卡间距合理。
+Dialog 用唯一的 pop shadow；subcard 回到"白底 + 1px 边"，靠 title 的 uppercase tracking 小号样式来区分层级（Vercel/Linear 风，而非 bootstrap 的"凹凸凹"）。
 
 ### 现状
-- `.page-title`：从 `var(--font-size-2xl)`（24px）升级到 `var(--font-size-3xl)`（28px），加 `letter-spacing: -0.01em` 收紧。
-- `.page-head`：padding 改为 `var(--space-2) 0 var(--space-1)`，配合 `.app-shell` 的 gap 形成呼吸。
-- `.host-dialog`：`max-width` 从 `1180px` 改为 `1120px`，与 `.app-shell` 的 1120 对齐。
+- `.dialog-panel`：`box-shadow` 从旧的 `0 18px 48px rgba(15,23,42,0.22)` 改为 `var(--shadow-pop)`（更轻），backdrop 改为中性黑 `rgba(9,9,11,0.45)`
+- `.subcard`：保留 v1 的 `--color-bg-subtle` 底色，与 dialog panel 形成轻微层级差
+- `.subcard-title`：**uppercase + letter-spacing 0.06em + font-2xs + semibold + tertiary** — 替代原 "14px medium" 的普通小标题
+- `.forward-row`：subcard 内的行卡用 `--color-bg-surface` + 1px border，radius 降到 `--radius-sm`（4px，更紧），与 subcard 形成清晰的凹-凸节奏
+- `.icon-btn`：dialog 头的关闭按钮改成 24×24 ghost（前面已提）
 
 ---
 
-## 8. Overview 卡内"看/做"内容分隔
+## 6. Input 微调
 
 ### 设计要求
-统计区（数据）与 quick-actions（操作）共用一张 Overview 卡时，要有明确的视觉分界，不能只靠 12px 间距。
+焦点环用新焦点色（#0070f3），不再用 cyan halo；hover 态给 border 一点反馈。
 
 ### 现状
-`.quick-actions`：
-```
-margin-top: var(--space-4);
-padding-top: var(--space-4);
-border-top: 1px dashed var(--color-divider);
-```
-一条虚线把"看数据"和"做动作"切开。
+- `.input`：padding 从 `0 var(--space-2)` 改为 `0 var(--space-3)`，与 button padding 对齐
+- `.input:hover`：border 色从默认变为 `--color-fg-quaternary`（更深灰），提示可交互
+- `.input:focus`：`border: var(--color-focus)` + `box-shadow: 0 0 0 2px var(--color-focus-ring)`（2px 蓝环，原 3px）
+- 新增 `.input::placeholder { color: var(--color-fg-quaternary); }`
+- `.terminal-log`：`font-family` 改用 `--font-family-mono` token，边/底色从 `#0f172a/#020617` → 中性 `#0a0a0a/#09090b`（与新 accent 同色系）
 
 ---
 
-## 尚未处理（下一轮可考虑）
+## 7. 链接与指示器
 
-- `.forward-row`（forwarding / service 行内编辑器）仍是 flex + 写死宽度，没纳入 12 列 grid。当前在 subcard 内显示不成问题，若后续字段增删可考虑改造。
-- `.forward-name / .forward-local-* / .forward-remote-*` 的 `156/180/190px` 宽度暂保留。
-- `.overview-sub-dot / .status-dot` 的 5px 圆点、`.checkbox` 14×14、`auto-start` 图标尺寸未纳入 token，属于语义特化值，可保留。
+### 设计要求
+链接不再是 cyan 下划线；端口号等技术标识符用 mono 字体显现"开发者工具"质感。
+
+### 现状
+- `.forward-link`：颜色从 `--color-primary-600`（cyan）→ `--color-fg-primary`（近黑），下划线 `decoration-color: --color-border-strong` 降灰，`text-underline-offset: 2px`，hover 时变 `--color-focus`（蓝）— Vercel 的链接样式
+- `.forward-link`：加 `font-family: mono`，让 `host:port` 等链接文本进入开发者工具质感
+- `.forward-indicator`：尺寸 16 → 14，radius `--radius-xs` → `--radius-sm`（都是 4，本质相同）
+- `.group-desc`：同样用 mono，显示 host 技术描述
+- `.overview-value / .overview-sub-stats / table`：全部加 `font-variant-numeric: tabular-nums`，数字对齐
+
+---
+
+## 8. 不在本轮范围
+
+- `index.html` 结构**完全未改**（零增删元素）
+- `.forward-name / .forward-local-* / .forward-remote-*` 的 `156/180/190px` 固定宽度保留
+- `.terminal-log` 的 ANSI 颜色码（`.ansi-fg-*`）未改，保持终端兼容
+- 字体文件仍用 `STM UI`，未替换为 Geist/Inter（如需替换可以作为下一步）
+
+---
+
+## 技术细节备忘
+
+- 旧 class（`btn-primary / card / subcard / host-section-label-tunnel` 等）**全部保留**，仅样式替换 — HTML 不需要改
+- 所有颜色/字号/圆角写死值已替换为 token（除极少数特殊值：`1px`、`5px/6px/14px` dot/checkbox、`108px` command input min-height、terminal-log 色盘）
+- 焦点环从 cyan halo 改为蓝色 2px ring，全站统一
