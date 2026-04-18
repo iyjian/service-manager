@@ -49,6 +49,7 @@ const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
 const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
 const pageMessageTextElement = requireElement<HTMLElement>('#page-message-text');
 const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
+const pageVersionElement = requireElement<HTMLElement>('#page-version');
 const hostDialogMessageElement = requireElement<HTMLDivElement>('#host-dialog-message');
 const hostDialogMessageTextElement = requireElement<HTMLElement>('#host-dialog-message-text');
 const hostDialogMessageCloseButton = requireElement<HTMLButtonElement>('#host-dialog-message-close-btn');
@@ -57,22 +58,18 @@ const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-
 const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
 const updateStatusHintElement = requireElement<HTMLParagraphElement>('#update-status-hint');
 const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
-const statHostsElement = requireElement<HTMLElement>('#stat-hosts');
-const statForwardsElement = requireElement<HTMLElement>('#stat-forwards');
-const statServicesElement = requireElement<HTMLElement>('#stat-services');
-const statTunnelRunningElement = requireElement<HTMLElement>('#stat-tunnel-running');
-const statTunnelStoppedElement = requireElement<HTMLElement>('#stat-tunnel-stopped');
-const statTunnelErrorsElement = requireElement<HTMLElement>('#stat-tunnel-errors');
-const statServiceRunningElement = requireElement<HTMLElement>('#stat-service-running');
-const statServiceStoppedElement = requireElement<HTMLElement>('#stat-service-stopped');
-const statServiceErrorsElement = requireElement<HTMLElement>('#stat-service-errors');
-const overviewHintElement = requireElement<HTMLElement>('#overview-hint');
 
 const serviceLogDialog = requireElement<HTMLDialogElement>('#service-log-dialog');
 const serviceLogTitle = requireElement<HTMLElement>('#service-log-title');
 const closeServiceLogDialogButton = requireElement<HTMLButtonElement>('#close-service-log-dialog-btn');
 const logAutoScrollInput = requireElement<HTMLInputElement>('#log-auto-scroll');
+const serviceLogSearchInput = requireElement<HTMLInputElement>('#service-log-search');
+const serviceLogFilterInput = requireElement<HTMLInputElement>('#service-log-filter');
+const serviceLogSearchStatus = requireElement<HTMLElement>('#service-log-search-status');
+const serviceLogPrevButton = requireElement<HTMLButtonElement>('#service-log-prev-btn');
+const serviceLogNextButton = requireElement<HTMLButtonElement>('#service-log-next-btn');
 const serviceLogTerminal = requireElement<HTMLDivElement>('#service-log-terminal');
+const serviceLogContent = requireElement<HTMLDivElement>('#service-log-content');
 
 let hosts: HostView[] = [];
 let hostDialogMode: 'create' | 'edit' = 'create';
@@ -82,6 +79,11 @@ let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
 let lastLogLoadError: string | null = null;
+let currentLogText = '';
+let pendingLogText: string | null = null;
+let logSearchMatchElements: HTMLElement[] = [];
+let activeLogSearchMatchIndex = -1;
+let pageMessageTimer: number | null = null;
 const collapsedHostIds = new Set<string>();
 
 type MessageLevel = 'default' | 'success' | 'error';
@@ -169,6 +171,11 @@ function closeDialog(dialog: HTMLDialogElement, name: string): void {
   }
 }
 
+function setServiceLogPageScrollLock(locked: boolean): void {
+  document.documentElement.classList.toggle('service-log-open', locked);
+  document.body.classList.toggle('service-log-open', locked);
+}
+
 function isActiveLogTarget(target: { hostId: string; serviceId: string }): boolean {
   return Boolean(
     activeLogTarget &&
@@ -182,6 +189,9 @@ function shouldStopLogRefresh(message: string): boolean {
 }
 
 function renderUpdateState(state: UpdateState): void {
+  pageVersionElement.textContent = `v${state.currentVersion}`;
+  pageVersionElement.classList.remove('hidden');
+
   updateStatusHintElement.classList.remove(
     'hidden',
     'update-status-info',
@@ -254,7 +264,21 @@ function renderMessage(view: MessageView, text: string, level: MessageLevel): vo
 }
 
 function setMessage(text: string, level: MessageLevel = 'default'): void {
+  if (pageMessageTimer !== null) {
+    window.clearTimeout(pageMessageTimer);
+    pageMessageTimer = null;
+  }
+
   renderMessage(pageMessageView, text, level);
+
+  if (!text) {
+    return;
+  }
+
+  pageMessageTimer = window.setTimeout(() => {
+    pageMessageTimer = null;
+    renderMessage(pageMessageView, '', 'default');
+  }, 1000);
 }
 
 function setHostDialogMessage(text: string, level: MessageLevel = 'default'): void {
@@ -603,7 +627,9 @@ type ButtonIconName =
   | 'edit'
   | 'delete'
   | 'start'
-  | 'stop';
+  | 'stop'
+  | 'prev'
+  | 'next';
 
 function renderButtonIcon(icon: ButtonIconName): string {
   switch (icon) {
@@ -741,6 +767,18 @@ function renderButtonIcon(icon: ButtonIconName): string {
           <rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.25"></rect>
         </svg>
       `;
+    case 'prev':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10 3.5 5.5 8 10 12.5"></path>
+        </svg>
+      `;
+    case 'next':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 3.5 10.5 8 6 12.5"></path>
+        </svg>
+      `;
   }
 }
 
@@ -760,6 +798,8 @@ function applyStaticButtonIcons(): void {
   saveHostButton.innerHTML = renderButtonContent('save', 'Save Host');
   resetButton.innerHTML = renderButtonContent('reset', 'Reset');
   cancelHostDialogButton.innerHTML = renderButtonContent('cancel', 'Cancel');
+  serviceLogPrevButton.innerHTML = renderButtonContent('prev', 'Prev');
+  serviceLogNextButton.innerHTML = renderButtonContent('next', 'Next');
 }
 
 function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
@@ -1163,22 +1203,6 @@ function closeHostDialog(): void {
   clearHostDialogMessage();
 }
 
-function updateOverview(): void {
-  const forwards = hosts.flatMap((host) => host.forwards);
-  const services = hosts.flatMap((host) => host.services);
-
-  statHostsElement.textContent = String(hosts.length);
-  statForwardsElement.textContent = String(forwards.length);
-  statServicesElement.textContent = String(services.length);
-  statTunnelRunningElement.textContent = String(forwards.filter((item) => item.status === 'running').length);
-  statTunnelStoppedElement.textContent = String(forwards.filter((item) => item.status === 'stopped').length);
-  statTunnelErrorsElement.textContent = String(forwards.filter((item) => item.status === 'error').length);
-  statServiceRunningElement.textContent = String(services.filter((item) => item.status === 'running').length);
-  statServiceStoppedElement.textContent = String(services.filter((item) => item.status === 'stopped').length);
-  statServiceErrorsElement.textContent = String(services.filter((item) => item.status === 'error').length);
-  overviewHintElement.classList.toggle('hidden', hosts.length > 0);
-}
-
 async function loadHosts(): Promise<void> {
   hosts = await window.serviceApi.listHosts();
   renderSafely('load-hosts');
@@ -1216,6 +1240,242 @@ function stopStatusAutoRefresh(): void {
   statusAutoRefreshTimer = null;
 }
 
+function stripAnsiCodes(input: string): string {
+  return input.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function filterLogText(input: string, filterQuery: string): string {
+  const query = filterQuery.trim().toLowerCase();
+  if (!query) {
+    return input;
+  }
+
+  return input
+    .split('\n')
+    .filter((line) => stripAnsiCodes(line).toLowerCase().includes(query))
+    .join('\n');
+}
+
+function hasActiveLogSelection(): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return false;
+  }
+
+  const anchorNode = selection.anchorNode;
+  const focusNode = selection.focusNode;
+  return Boolean(anchorNode && focusNode && serviceLogTerminal.contains(anchorNode) && serviceLogTerminal.contains(focusNode));
+}
+
+function setLogSearchStatus(current: number, total: number): void {
+  serviceLogSearchStatus.textContent = total > 0 ? `${current} / ${total}` : '0 / 0';
+}
+
+function updateLogSearchButtons(): void {
+  const disabled = logSearchMatchElements.length === 0;
+  serviceLogPrevButton.disabled = disabled;
+  serviceLogNextButton.disabled = disabled;
+}
+
+function clearLogSearchHighlights(): void {
+  for (const match of Array.from(serviceLogContent.querySelectorAll('mark.log-search-hit'))) {
+    match.replaceWith(document.createTextNode(match.textContent ?? ''));
+  }
+  serviceLogContent.normalize();
+  logSearchMatchElements = [];
+  activeLogSearchMatchIndex = -1;
+}
+
+function setActiveLogSearchMatch(index: number, scrollIntoView = true): void {
+  if (logSearchMatchElements.length === 0) {
+    activeLogSearchMatchIndex = -1;
+    setLogSearchStatus(0, 0);
+    updateLogSearchButtons();
+    return;
+  }
+
+  const normalizedIndex = ((index % logSearchMatchElements.length) + logSearchMatchElements.length) % logSearchMatchElements.length;
+  logSearchMatchElements.forEach((element, elementIndex) => {
+    element.classList.toggle('log-search-hit-active', elementIndex === normalizedIndex);
+  });
+  activeLogSearchMatchIndex = normalizedIndex;
+  setLogSearchStatus(normalizedIndex + 1, logSearchMatchElements.length);
+  updateLogSearchButtons();
+
+  if (scrollIntoView) {
+    logSearchMatchElements[normalizedIndex]?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+}
+
+function applyLogSearchHighlights(focusActiveMatch = false): void {
+  const previousIndex = activeLogSearchMatchIndex;
+  clearLogSearchHighlights();
+
+  const query = serviceLogSearchInput.value.trim();
+  if (!query) {
+    setLogSearchStatus(0, 0);
+    updateLogSearchButtons();
+    return;
+  }
+
+  const loweredQuery = query.toLowerCase();
+  const walker = document.createTreeWalker(
+    serviceLogContent,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (!node.nodeValue) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (node.parentElement?.closest('.terminal-log-empty')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    }
+  );
+
+  const textNodes: Text[] = [];
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    textNodes.push(currentNode as Text);
+    currentNode = walker.nextNode();
+  }
+
+  for (const node of textNodes) {
+    const original = node.nodeValue ?? '';
+    const lowered = original.toLowerCase();
+    let searchIndex = lowered.indexOf(loweredQuery);
+    if (searchIndex === -1) {
+      continue;
+    }
+
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    while (searchIndex !== -1) {
+      if (searchIndex > cursor) {
+        fragment.append(document.createTextNode(original.slice(cursor, searchIndex)));
+      }
+      const match = document.createElement('mark');
+      match.className = 'log-search-hit';
+      match.textContent = original.slice(searchIndex, searchIndex + query.length);
+      logSearchMatchElements.push(match);
+      fragment.append(match);
+      cursor = searchIndex + query.length;
+      searchIndex = lowered.indexOf(loweredQuery, cursor);
+    }
+    if (cursor < original.length) {
+      fragment.append(document.createTextNode(original.slice(cursor)));
+    }
+
+    node.parentNode?.replaceChild(fragment, node);
+  }
+
+  if (logSearchMatchElements.length === 0) {
+    setLogSearchStatus(0, 0);
+    updateLogSearchButtons();
+    return;
+  }
+
+  const nextIndex = previousIndex >= 0 ? Math.min(previousIndex, logSearchMatchElements.length - 1) : 0;
+  setActiveLogSearchMatch(nextIndex, focusActiveMatch);
+}
+
+function renderServiceLogView(options: { preserveScroll?: boolean; focusActiveMatch?: boolean } = {}): void {
+  const previousScrollTop = serviceLogTerminal.scrollTop;
+  const filterQuery = serviceLogFilterInput.value.trim();
+  const visibleText = filterLogText(currentLogText, filterQuery);
+
+  if (visibleText) {
+    serviceLogContent.innerHTML = ansiToHtml(visibleText);
+  } else {
+    const emptyMessage = filterQuery ? 'No matching log lines.' : 'No logs yet for this invocation.';
+    serviceLogContent.innerHTML = `<div class="terminal-log-empty">${escapeHtml(emptyMessage)}</div>`;
+  }
+
+  applyLogSearchHighlights(options.focusActiveMatch ?? false);
+
+  if (serviceLogSearchInput.value.trim() && logSearchMatchElements.length > 0) {
+    return;
+  }
+
+  if (logAutoScrollInput.checked && !options.preserveScroll) {
+    serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+    return;
+  }
+
+  serviceLogTerminal.scrollTop = previousScrollTop;
+}
+
+function appendServiceLogSuffix(suffix: string): void {
+  if (!suffix) {
+    return;
+  }
+
+  const previousScrollTop = serviceLogTerminal.scrollTop;
+  const emptyState = serviceLogContent.querySelector('.terminal-log-empty');
+  if (emptyState) {
+    emptyState.remove();
+  }
+
+  serviceLogContent.insertAdjacentHTML('beforeend', ansiToHtml(suffix));
+
+  if (logAutoScrollInput.checked) {
+    serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+    return;
+  }
+
+  serviceLogTerminal.scrollTop = previousScrollTop;
+}
+
+function updateDisplayedServiceLog(nextText: string): void {
+  if (hasActiveLogSelection()) {
+    pendingLogText = nextText;
+    return;
+  }
+
+  if (nextText === currentLogText) {
+    pendingLogText = null;
+    return;
+  }
+
+  const previousText = currentLogText;
+  currentLogText = nextText;
+  pendingLogText = null;
+
+  const hasQueryOverlay = serviceLogSearchInput.value.trim() || serviceLogFilterInput.value.trim();
+  if (!hasQueryOverlay && previousText && nextText.startsWith(previousText)) {
+    appendServiceLogSuffix(nextText.slice(previousText.length));
+    return;
+  }
+
+  renderServiceLogView({ preserveScroll: !logAutoScrollInput.checked });
+}
+
+function applyPendingLogUpdateIfPossible(): void {
+  if (pendingLogText === null || hasActiveLogSelection()) {
+    return;
+  }
+
+  const nextText = pendingLogText;
+  pendingLogText = null;
+  updateDisplayedServiceLog(nextText);
+}
+
+function resetServiceLogState(): void {
+  currentLogText = '';
+  pendingLogText = null;
+  lastLogLoadError = null;
+  logSearchMatchElements = [];
+  activeLogSearchMatchIndex = -1;
+  serviceLogSearchInput.value = '';
+  serviceLogFilterInput.value = '';
+  serviceLogContent.innerHTML = '';
+  setLogSearchStatus(0, 0);
+  updateLogSearchButtons();
+  serviceLogTerminal.scrollTop = 0;
+}
+
 async function loadServiceLogs(): Promise<void> {
   if (!activeLogTarget) return;
   const target = { ...activeLogTarget };
@@ -1227,11 +1487,8 @@ async function loadServiceLogs(): Promise<void> {
     }
 
     const merged = `${logs.stdout || ''}${logs.stderr || ''}`;
-    serviceLogTerminal.innerHTML = ansiToHtml(merged);
+    updateDisplayedServiceLog(merged);
     lastLogLoadError = null;
-    if (logAutoScrollInput.checked) {
-      serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
-    }
   } catch (error) {
     const message = toErrorMessage(error);
     logRendererError('service-logs', error, target);
@@ -1239,7 +1496,10 @@ async function loadServiceLogs(): Promise<void> {
       return;
     }
 
-    serviceLogTerminal.textContent = `Unable to load logs.\n${message}`;
+    clearLogSearchHighlights();
+    setLogSearchStatus(0, 0);
+    updateLogSearchButtons();
+    serviceLogContent.innerHTML = `<div class="terminal-log-empty terminal-log-empty-error">${escapeHtml(`Unable to load logs.\n${message}`)}</div>`;
     if (lastLogLoadError !== message) {
       setMessage(`Log refresh failed: ${message}`, 'error');
       lastLogLoadError = message;
@@ -1321,15 +1581,15 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
   if (!service) return;
 
   activeLogTarget = { hostId: host.id, serviceId: service.id };
-  lastLogLoadError = null;
+  resetServiceLogState();
   serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
-  serviceLogTerminal.textContent = '';
 
   void loadServiceLogs().catch((error) => {
     reportRendererError('service-logs:open', error, `Log refresh failed: ${toErrorMessage(error)}`);
   });
   startLogAutoRefresh();
   showDialog(serviceLogDialog, 'service log');
+  setServiceLogPageScrollLock(true);
 }
 
 function bindHostActions(root: ParentNode, host: HostView): void {
@@ -1377,7 +1637,6 @@ function formatStatus(status: string): string {
 }
 
 function render(): void {
-  updateOverview();
   hostTableBody.innerHTML = '';
 
   if (hosts.length === 0) {
@@ -1615,6 +1874,7 @@ function render(): void {
 }
 
 applyStaticButtonIcons();
+resetServiceLogState();
 
 addHostButton.addEventListener('click', () => {
   openHostDialog('create');
@@ -1682,20 +1942,57 @@ cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
 authTypeSelect.addEventListener('change', toggleAuthFields);
 useJumpHostInput.addEventListener('change', toggleJumpSection);
+serviceLogSearchInput.addEventListener('input', () => {
+  renderServiceLogView({ preserveScroll: true, focusActiveMatch: true });
+});
+serviceLogSearchInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') {
+    return;
+  }
+  event.preventDefault();
+  if (logSearchMatchElements.length === 0) {
+    return;
+  }
+  setActiveLogSearchMatch(activeLogSearchMatchIndex + (event.shiftKey ? -1 : 1));
+});
+serviceLogFilterInput.addEventListener('input', () => {
+  renderServiceLogView({ preserveScroll: true, focusActiveMatch: true });
+});
+serviceLogPrevButton.addEventListener('click', () => {
+  setActiveLogSearchMatch(activeLogSearchMatchIndex - 1);
+});
+serviceLogNextButton.addEventListener('click', () => {
+  setActiveLogSearchMatch(activeLogSearchMatchIndex + 1);
+});
+logAutoScrollInput.addEventListener('change', () => {
+  if (logAutoScrollInput.checked) {
+    serviceLogTerminal.scrollTop = serviceLogTerminal.scrollHeight;
+  }
+  applyPendingLogUpdateIfPossible();
+});
 closeServiceLogDialogButton.addEventListener('click', () => {
   stopLogAutoRefresh();
   closeDialog(serviceLogDialog, 'service log');
   activeLogTarget = null;
-  lastLogLoadError = null;
+  resetServiceLogState();
+  setServiceLogPageScrollLock(false);
 });
 serviceLogDialog.addEventListener('close', () => {
   stopLogAutoRefresh();
   activeLogTarget = null;
-  lastLogLoadError = null;
+  resetServiceLogState();
+  setServiceLogPageScrollLock(false);
+});
+document.addEventListener('selectionchange', () => {
+  if (!serviceLogDialog.open) {
+    return;
+  }
+  applyPendingLogUpdateIfPossible();
 });
 window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
   stopStatusAutoRefresh();
+  setServiceLogPageScrollLock(false);
 });
 
 let floatingTooltip: HTMLDivElement | null = null;

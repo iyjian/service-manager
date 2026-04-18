@@ -9,7 +9,7 @@ This project is now aligned with the **UI style** and **development approach** o
 - Same engineering style: `TypeScript + tsc build + dist runtime`
 - Same Electron startup pattern: build first, then run Electron from `dist`
 - Same UI interaction pattern:
-  - `Overview` cards
+  - brand header with quick actions
   - grouped list/table by Host
   - `Add/Edit Host` via modal dialog
   - add/remove services inside the host modal (similar to how rules are added in `ssh-tunnel-manager`)
@@ -21,10 +21,11 @@ This project is now aligned with the **UI style** and **development approach** o
    - supports optional `Jump Servers` chain configuration directly in Add/Edit Host form (no separate entry page/button)
    - older configs with a single legacy `jumpHost` are still read as a one-hop chain
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
+   - page header shows the local app logo plus the current app version when update state is available
    - home-page host blocks include a `Copy` action that writes the host config JSON to clipboard
    - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
    - user-facing buttons use local inline SVG icons matched to their actions, so recognition improves without introducing remote icon dependencies
-   - host dialog validation/import errors are surfaced inside the dialog itself, and user-facing success/error notices use dismissible message banners
+   - host dialog validation/import errors are surfaced inside the dialog itself, and page-level success/error notices use right-top toast messages that auto-dismiss after a short delay while still allowing manual close
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
    - `Services` (remote process lifecycle)
@@ -49,9 +50,13 @@ This project is now aligned with the **UI style** and **development approach** o
 6. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
    - logs are read from `journalctl --user` for the current systemd invocation, so the panel always shows the logs for the unit instance currently managed by the app.
-   - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but scroll position is preserved.
+   - log view opens as a larger dedicated dialog (about 80% of the viewport) with a slightly larger monospace font for easier reading.
+   - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but manual reading position is preserved.
+   - while the log dialog is open, background page scrolling is locked so only the log viewport itself can scroll.
+   - background refresh avoids disrupting active text selection, so copying log snippets is no longer interrupted by periodic updates.
+   - log view provides `Search` with previous/next match navigation and `Filter` to only show matching lines, similar to a lightweight grep view.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
-   - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown in the page message bar instead.
+   - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown through the page toast instead.
 7. Tunnel list and service list are rendered under each host on home page:
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - running tunnel rows expose the local endpoint as a clickable `http://...` link, matching service-forward behavior
@@ -61,9 +66,6 @@ This project is now aligned with the **UI style** and **development approach** o
    - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
    - section titles include small local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan
    - empty `Tunnel List` or `Service List` sections are omitted entirely, so hosts without those resources stay compact
-   - Overview metrics are split clearly by domain:
-     - tunnel running/stopped/errors
-     - service running/stopped/errors
 8. Service actions in list: `Start`, `Stop`.
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
    - the managed command is launched through the remote account's login shell so user-level PATH/runtime initialization (for example `nvm`, `conda`, shell-managed Node/Yarn installs) is closer to an interactive SSH session.
@@ -249,7 +251,7 @@ journalctl --user -u <unit-name> -n 200 --no-pager
   - lingering must be enabled, for example: `sudo loginctl enable-linger <username>`
 - When those systemd prerequisites are missing, service start/stop/log actions surface an explicit install/configuration error in the UI instead of falling back to raw background processes.
 - The app persists the latest `MainPID` reported by systemd for display and refresh, but start/stop/log ownership is defined by the transient unit, not by a log file path or `kill -0`.
-- Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page message bar, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
+- Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page toast, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
 - Main process now logs top-level `uncaughtException` / `unhandledRejection`, renderer-process exits, and IPC broadcast failures to make crash diagnosis visible.
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section

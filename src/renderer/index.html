@@ -9,63 +9,25 @@
   <body>
     <main class="app-shell">
       <header class="page-head">
-        <h1 class="page-title">Service Manager</h1>
+        <div class="page-head-main">
+          <div class="page-brand">
+            <img class="page-logo" src="../../assets/icon-64.png" alt="Service Manager logo" />
+            <div class="page-brand-copy">
+              <div class="page-title-row">
+                <h1 class="page-title">Service Manager</h1>
+                <span id="page-version" class="page-version hidden">v0.0.0</span>
+              </div>
+              <p id="update-status-hint" class="update-status-hint hidden"></p>
+            </div>
+          </div>
+
+          <div class="page-actions">
+            <button id="qa-add-host-btn" type="button" class="btn btn-primary btn-sm">Add Host</button>
+            <button id="qa-import-config-btn" type="button" class="btn btn-secondary btn-sm">Import Config</button>
+            <button id="qa-export-config-btn" type="button" class="btn btn-secondary btn-sm">Export Config</button>
+          </div>
+        </div>
       </header>
-
-      <section class="card section">
-        <div class="section-head">
-          <h2 class="section-title">Overview</h2>
-        </div>
-
-        <div class="overview-grid">
-          <div class="overview-card">
-            <p class="overview-label">Hosts</p>
-            <p id="stat-hosts" class="overview-value">0</p>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Tunnels</p>
-            <p id="stat-forwards" class="overview-value">0</p>
-            <div id="stat-tunnel-detail" class="overview-sub-stats">
-              <span class="overview-sub-stat sub-stat-running"><span class="overview-sub-dot"></span><span id="stat-tunnel-running">0</span> running</span>
-              <span class="overview-sub-stat sub-stat-stopped"><span class="overview-sub-dot"></span><span id="stat-tunnel-stopped">0</span> stopped</span>
-              <span class="overview-sub-stat sub-stat-errors"><span class="overview-sub-dot"></span><span id="stat-tunnel-errors">0</span> errors</span>
-            </div>
-          </div>
-          <div class="overview-card">
-            <p class="overview-label">Services</p>
-            <p id="stat-services" class="overview-value">0</p>
-            <div id="stat-service-detail" class="overview-sub-stats">
-              <span class="overview-sub-stat sub-stat-running"><span class="overview-sub-dot"></span><span id="stat-service-running">0</span> running</span>
-              <span class="overview-sub-stat sub-stat-stopped"><span class="overview-sub-dot"></span><span id="stat-service-stopped">0</span> stopped</span>
-              <span class="overview-sub-stat sub-stat-errors"><span class="overview-sub-dot"></span><span id="stat-service-errors">0</span> errors</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="quick-actions">
-          <button id="qa-add-host-btn" type="button" class="btn btn-primary btn-sm">Add Host</button>
-          <button id="qa-import-config-btn" type="button" class="btn btn-secondary btn-sm">Import Config</button>
-          <button id="qa-export-config-btn" type="button" class="btn btn-secondary btn-sm">Export Config</button>
-        </div>
-
-        <p id="update-status-hint" class="update-status-hint hidden"></p>
-
-        <div id="page-message" class="message-banner message-default hidden" role="status" aria-live="polite">
-          <span id="page-message-text" class="message-text"></span>
-          <button
-            id="page-message-close-btn"
-            type="button"
-            class="message-close"
-            aria-label="Dismiss message"
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
-          </button>
-        </div>
-
-        <p id="overview-hint" class="overview-hint hidden">
-          No hosts yet. Start by creating your first host.
-        </p>
-      </section>
 
       <section class="card section">
         <div class="section-head">
@@ -79,17 +41,62 @@
       </section>
     </main>
 
-    <dialog id="service-log-dialog" class="host-dialog">
-      <div class="dialog-panel">
+    <div id="page-message" class="message-banner message-toast message-default hidden" role="status" aria-live="polite">
+      <span id="page-message-text" class="message-text"></span>
+      <button
+        id="page-message-close-btn"
+        type="button"
+        class="message-close"
+        aria-label="Dismiss message"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+      </button>
+    </div>
+
+    <dialog id="service-log-dialog" class="host-dialog service-log-dialog">
+      <div class="dialog-panel service-log-panel">
         <div class="dialog-head">
           <h2 id="service-log-title" class="section-title">Service Logs</h2>
           <button id="close-service-log-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
         </div>
-        <label class="forward-auto">
-          <input id="log-auto-scroll" type="checkbox" class="checkbox" checked />
-          Auto Scroll
-        </label>
-        <div id="service-log-terminal" class="terminal-log"></div>
+        <div class="service-log-toolbar">
+          <div class="service-log-toolbar-group service-log-toolbar-controls">
+            <label class="forward-auto">
+              <input id="log-auto-scroll" type="checkbox" class="checkbox" checked />
+              Auto Scroll
+            </label>
+          </div>
+          <div class="service-log-toolbar-group service-log-toolbar-search">
+            <label class="field field-xs service-log-field">
+              Search
+              <input
+                id="service-log-search"
+                type="text"
+                class="input"
+                placeholder="Find in visible logs"
+                spellcheck="false"
+              />
+            </label>
+            <span id="service-log-search-status" class="service-log-search-status">0 / 0</span>
+            <button id="service-log-prev-btn" type="button" class="btn btn-secondary btn-sm">Prev</button>
+            <button id="service-log-next-btn" type="button" class="btn btn-secondary btn-sm">Next</button>
+          </div>
+          <div class="service-log-toolbar-group service-log-toolbar-filter">
+            <label class="field field-xs service-log-field">
+              Filter
+              <input
+                id="service-log-filter"
+                type="text"
+                class="input"
+                placeholder="Only show matching lines"
+                spellcheck="false"
+              />
+            </label>
+          </div>
+        </div>
+        <div id="service-log-terminal" class="terminal-log">
+          <div id="service-log-content" class="terminal-log-content"></div>
+        </div>
       </div>
     </dialog>
 
