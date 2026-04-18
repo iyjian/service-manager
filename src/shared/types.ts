@@ -187,6 +187,8 @@ export interface ServiceApi {
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdates: () => Promise<UpdateState>;
   openExternal: (url: string) => Promise<void>;
+  readClipboardText: () => Promise<string>;
+  writeClipboardText: (text: string) => Promise<void>;
   confirmAction: (options: ConfirmDialogOptions) => Promise<boolean>;
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;

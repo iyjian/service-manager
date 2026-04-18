@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -45,6 +45,8 @@ const IPC_CHANNELS = {
   forwardStatusChanged: 'forward:status',
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
+  readClipboardText: 'clipboard:read-text',
+  writeClipboardText: 'clipboard:write-text',
   confirmAction: 'dialog:confirm',
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
@@ -994,6 +996,14 @@ function registerIpcHandlers(): void {
       throw new Error('Only http/https URLs are allowed.');
     }
     await shell.openExternal(parsed.toString());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.readClipboardText, async () => {
+    return clipboard.readText();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.writeClipboardText, async (_event, text: string) => {
+    clipboard.writeText(text ?? '');
   });
 
   ipcMain.handle(IPC_CHANNELS.getUpdateState, async () => {

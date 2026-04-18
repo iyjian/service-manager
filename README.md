@@ -21,6 +21,8 @@ This project is now aligned with the **UI style** and **development approach** o
    - supports optional `Jump Servers` chain configuration directly in Add/Edit Host form (no separate entry page/button)
    - older configs with a single legacy `jumpHost` are still read as a one-hop chain
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
+   - home-page host blocks include a `Copy` action that writes the host config JSON to clipboard
+   - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
    - host dialog validation/import errors are surfaced inside the dialog itself, and user-facing success/error notices use dismissible message banners
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
@@ -51,6 +53,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown in the page message bar instead.
 7. Tunnel list and service list are rendered under each host on home page:
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
+   - running tunnel rows expose the local endpoint as a clickable `http://...` link, matching service-forward behavior
    - `Service List`: start/stop service, PID/log, runtime forward indicator
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction

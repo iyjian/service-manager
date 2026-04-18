@@ -10,6 +10,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - Jump Servers are configured directly inside Add/Edit Host form as an ordered multi-hop chain.
    - Deleting a host requires confirmation.
    - creating or editing a host must only require host name and SSH connection info; empty forwarding-rule/service lists are valid
+   - host list should provide a copy-config action per host, and Add Host should support pasting one host config from clipboard into the form
    - host dialog validation/import feedback must be shown inside the modal, and user-facing notices should be dismissible rather than permanent inline text
 2. Service management under each host:
    - start command
@@ -23,6 +24,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - auto-start flag
    - runtime start/stop in list (delete handled in host edit form, with confirmation)
    - tunnel status with reconnect countdown on error
+   - when a tunnel is running, its local endpoint should be rendered as a clickable link
    - supports multi-hop jump-server chains when configured on the host
    - Add/Edit Host should not create placeholder forwarding-rule or service rows automatically; users add rows only when needed
 4. Service status and runtime state:

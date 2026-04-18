@@ -19,6 +19,7 @@ function requireElement<T extends Element>(selector: string): T {
 
 const hostDialog = requireElement<HTMLDialogElement>('#host-dialog');
 const hostDialogTitle = requireElement<HTMLElement>('#host-dialog-title');
+const pasteHostConfigButton = requireElement<HTMLButtonElement>('#paste-host-config-btn');
 const closeHostDialogButton = requireElement<HTMLButtonElement>('#close-host-dialog-btn');
 const cancelHostDialogButton = requireElement<HTMLButtonElement>('#cancel-host-dialog-btn');
 const form = requireElement<HTMLFormElement>('#host-form');
@@ -335,6 +336,254 @@ function formatJumpChain(jumpHosts: JumpHostConfig[]): string {
     return '';
   }
   return ` · via ${jumpHosts.map((jumpHost) => `${jumpHost.username}@${jumpHost.sshHost}:${jumpHost.sshPort}`).join(' -> ')}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  return value.trim() || undefined;
+}
+
+function readPort(value: unknown, fallback?: number): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
+function stripJsonCodeFence(raw: string): string {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
+function normalizeClipboardJumpHost(input: unknown): JumpHostConfig | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const sshHost = readString(input.sshHost);
+  const username = readString(input.username);
+  if (!sshHost || !username) {
+    return null;
+  }
+
+  return {
+    sshHost,
+    sshPort: readPort(input.sshPort, 22) ?? 22,
+    username,
+    authType: input.authType === 'password' ? 'password' : 'privateKey',
+    password: readString(input.password),
+    privateKey: typeof input.privateKey === 'string' ? input.privateKey : undefined,
+    passphrase: readString(input.passphrase),
+  };
+}
+
+function normalizeClipboardForward(input: unknown): ForwardRuleDraft | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const localHost = readString(input.localHost);
+  const remoteHost = readString(input.remoteHost);
+  const localPort = readPort(input.localPort);
+  const remotePort = readPort(input.remotePort);
+
+  if (!localHost || !remoteHost || localPort === undefined || remotePort === undefined) {
+    return null;
+  }
+
+  return {
+    id: readString(input.id),
+    name: readString(input.name),
+    localHost,
+    localPort,
+    remoteHost,
+    remotePort,
+    autoStart: Boolean(input.autoStart),
+  };
+}
+
+function normalizeClipboardService(input: unknown): ServiceDraft | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const name = readString(input.name);
+  const startCommand = typeof input.startCommand === 'string' ? input.startCommand : undefined;
+  const port = readPort(input.port);
+
+  if (!name || !startCommand || port === undefined) {
+    return null;
+  }
+
+  return {
+    id: readString(input.id),
+    name,
+    startCommand,
+    port,
+    forwardLocalPort: readPort(input.forwardLocalPort),
+  };
+}
+
+interface ClipboardHostDraft extends Partial<HostDraft> {
+  jumpHost?: JumpHostConfig;
+}
+
+function parseHostDraftFromClipboard(raw: string): ClipboardHostDraft {
+  const text = stripJsonCodeFence(raw);
+  if (!text) {
+    throw new Error('Clipboard is empty.');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Clipboard does not contain valid JSON.');
+  }
+
+  let source: unknown = parsed;
+  if (Array.isArray(parsed)) {
+    if (parsed.length !== 1) {
+      throw new Error('Clipboard contains multiple hosts. Copy a single host config.');
+    }
+    source = parsed[0];
+  } else if (isRecord(parsed) && Array.isArray(parsed.hosts)) {
+    if (parsed.hosts.length !== 1) {
+      throw new Error('Clipboard contains multiple hosts. Copy a single host config.');
+    }
+    source = parsed.hosts[0];
+  }
+
+  if (!isRecord(source)) {
+    throw new Error('Clipboard does not contain a host config object.');
+  }
+
+  const jumpHosts = Array.isArray(source.jumpHosts)
+    ? source.jumpHosts.map((item) => normalizeClipboardJumpHost(item)).filter((item): item is JumpHostConfig => item !== null)
+    : normalizeClipboardJumpHost(source.jumpHost)
+      ? [normalizeClipboardJumpHost(source.jumpHost) as JumpHostConfig]
+      : [];
+
+  return {
+    id: readString(source.id),
+    name: readString(source.name),
+    sshHost: readString(source.sshHost),
+    sshPort: readPort(source.sshPort, 22),
+    username: readString(source.username),
+    authType: source.authType === 'password' ? 'password' : 'privateKey',
+    password: readString(source.password),
+    privateKey: typeof source.privateKey === 'string' ? source.privateKey : undefined,
+    passphrase: readString(source.passphrase),
+    privateKeyPath: readString(source.privateKeyPath),
+    jumpHosts,
+    jumpHost: jumpHosts.length === 1 ? jumpHosts[0] : undefined,
+    forwards: Array.isArray(source.forwards)
+      ? source.forwards
+          .map((item) => normalizeClipboardForward(item))
+          .filter((item): item is ForwardRuleDraft => item !== null)
+      : [],
+    services: Array.isArray(source.services)
+      ? source.services
+          .map((item) => normalizeClipboardService(item))
+          .filter((item): item is ServiceDraft => item !== null)
+      : [],
+  };
+}
+
+function applyHostDraftToForm(draft: ClipboardHostDraft): void {
+  hostDialogMode = 'create';
+  hostDialogTitle.textContent = 'Add Host';
+  hostIdInput.value = '';
+  nameInput.value = draft.name ?? '';
+  sshHostInput.value = draft.sshHost ?? '';
+  sshPortInput.value = String(draft.sshPort ?? 22);
+  usernameInput.value = draft.username ?? '';
+  authTypeSelect.value = draft.authType === 'password' ? 'password' : 'privateKey';
+  passwordInput.value = draft.password ?? '';
+  privateKeyInput.value = draft.privateKey ?? '';
+  passphraseInput.value = draft.passphrase ?? '';
+  editingPrivateKeyPath = draft.privateKeyPath;
+
+  const jumpHosts = draft.jumpHosts ?? (draft.jumpHost ? [draft.jumpHost] : []);
+  useJumpHostInput.checked = jumpHosts.length > 0;
+  jumpHostEditorList.innerHTML = '';
+  for (const jumpHost of jumpHosts) {
+    jumpHostEditorList.appendChild(createJumpHostEditorRow(jumpHost));
+  }
+
+  forwardEditorList.innerHTML = '';
+  for (const forward of draft.forwards ?? []) {
+    forwardEditorList.appendChild(createForwardEditorRow(forward));
+  }
+
+  serviceEditorList.innerHTML = '';
+  for (const service of draft.services ?? []) {
+    serviceEditorList.appendChild(createServiceEditorRow(service));
+  }
+
+  toggleAuthFields();
+  toggleJumpSection();
+  refreshJumpHostEditorTitles();
+}
+
+function buildCopyableHostPayload(host: HostView): Record<string, unknown> {
+  const jumpHosts = host.jumpHosts.map((jumpHost) => ({ ...jumpHost }));
+  return {
+    id: host.id,
+    name: host.name,
+    sshHost: host.sshHost,
+    sshPort: host.sshPort,
+    username: host.username,
+    authType: host.authType,
+    password: host.password,
+    privateKey: host.privateKey,
+    privateKeyPath: host.privateKeyPath,
+    passphrase: host.passphrase,
+    jumpHosts,
+    jumpHost: jumpHosts.length === 1 ? jumpHosts[0] : undefined,
+    forwards: host.forwards.map((forward) => ({
+      id: forward.id,
+      name: forward.name,
+      localHost: forward.localHost,
+      localPort: forward.localPort,
+      remoteHost: forward.remoteHost,
+      remotePort: forward.remotePort,
+      autoStart: forward.autoStart,
+    })),
+    services: host.services.map((service) => ({
+      id: service.id,
+      name: service.name,
+      startCommand: service.startCommand,
+      port: service.port,
+      forwardLocalPort: service.forwardLocalPort,
+    })),
+  };
+}
+
+function toForwardUrl(localHost: string, localPort: number): string {
+  let host = localHost;
+  if (host === '0.0.0.0') {
+    host = '127.0.0.1';
+  } else if (host === '::' || host === '::0') {
+    host = '::1';
+  }
+  if (host.includes(':') && !host.startsWith('[')) {
+    host = `[${host}]`;
+  }
+  return `http://${host}:${localPort}`;
 }
 
 async function importPrivateKeyIntoField(
@@ -882,6 +1131,46 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
   showDialog(serviceLogDialog, 'service log');
 }
 
+function bindHostActions(root: ParentNode, host: HostView): void {
+  root.querySelector<HTMLButtonElement>('[data-action="copy-host"]')?.addEventListener('click', async () => {
+    try {
+      const payload = JSON.stringify(buildCopyableHostPayload(host), null, 2);
+      await window.serviceApi.writeClipboardText(payload);
+      setMessage(`Copied host "${host.name}" to clipboard.`, 'success');
+    } catch (error) {
+      setMessage(`Copy host failed: ${(error as Error).message}`, 'error');
+    }
+  });
+
+  root.querySelector<HTMLButtonElement>('[data-action="edit-host"]')?.addEventListener('click', () => {
+    openHostDialog('edit', host);
+  });
+
+  root.querySelector<HTMLButtonElement>('[data-action="delete-host"]')?.addEventListener('click', async () => {
+    try {
+      const ok = await window.serviceApi.confirmAction({
+        title: 'Delete Host',
+        message: `Delete host "${host.name}"?`,
+        detail: 'All services and forwarding rules under this host will be deleted.',
+        kind: 'warning',
+        confirmLabel: 'Delete',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) {
+        return;
+      }
+      await window.serviceApi.deleteHost(host.id);
+      if (hostDialog.open && hostIdInput.value === host.id) {
+        closeHostDialog();
+      }
+      await loadHosts();
+      setMessage(`Host ${host.name} deleted`, 'success');
+    } catch (error) {
+      setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
+    }
+  });
+}
+
 function formatStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
@@ -936,6 +1225,7 @@ function render(): void {
               <span class="group-metric">${host.services.length} service${host.services.length === 1 ? '' : 's'} · ${runningServices} running</span>
             </div>
             <div class="row-actions">
+            <button class="btn btn-secondary btn-sm" data-action="copy-host">Copy</button>
             <button class="btn btn-secondary btn-sm" data-action="edit-host">Edit Host</button>
             <button class="btn btn-danger btn-sm" data-action="delete-host">Delete Host</button>
             </div>
@@ -953,33 +1243,9 @@ function render(): void {
       renderSafely('toggle-host');
     });
 
+    bindHostActions(groupRow, host);
+
     if (isCollapsed) {
-      groupRow.querySelector<HTMLButtonElement>('[data-action="edit-host"]')?.addEventListener('click', () => {
-        openHostDialog('edit', host);
-      });
-      groupRow.querySelector<HTMLButtonElement>('[data-action="delete-host"]')?.addEventListener('click', async () => {
-        try {
-          const ok = await window.serviceApi.confirmAction({
-            title: 'Delete Host',
-            message: `Delete host "${host.name}"?`,
-            detail: 'All services and forwarding rules under this host will be deleted.',
-            kind: 'warning',
-            confirmLabel: 'Delete',
-            cancelLabel: 'Cancel',
-          });
-          if (!ok) {
-            return;
-          }
-          await window.serviceApi.deleteHost(host.id);
-          if (hostDialog.open && hostIdInput.value === host.id) {
-            closeHostDialog();
-          }
-          await loadHosts();
-          setMessage(`Host ${host.name} deleted`, 'success');
-        } catch (error) {
-          setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
-        }
-      });
       return;
     }
 
@@ -1017,13 +1283,17 @@ function render(): void {
       const forwardStatus = escapeHtml(formatStatus(forward.status));
       const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
       const localEndpoint = escapeHtml(`${forward.localHost}:${forward.localPort}`);
+      const localHref = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
+      const localCell = forward.status === 'running'
+        ? `<a class="forward-link" href="${localHref}" target="_blank" rel="noreferrer">${localEndpoint}</a>`
+        : `<span>${localEndpoint}</span>`;
       const remoteEndpoint = escapeHtml(`${forward.remoteHost}:${forward.remotePort}`);
       const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
         ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
         : '';
       row.innerHTML = `
         <td class="table-cell">${forwardName}</td>
-        <td class="table-cell">${localEndpoint}</td>
+        <td class="table-cell">${localCell}</td>
         <td class="table-cell">${remoteEndpoint}</td>
         <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
         <td class="table-cell">
@@ -1152,32 +1422,6 @@ function render(): void {
       hostTableBody.appendChild(row);
     }
 
-    groupRow.querySelector<HTMLButtonElement>('[data-action="edit-host"]')?.addEventListener('click', () => {
-      openHostDialog('edit', host);
-    });
-    groupRow.querySelector<HTMLButtonElement>('[data-action="delete-host"]')?.addEventListener('click', async () => {
-      try {
-        const ok = await window.serviceApi.confirmAction({
-          title: 'Delete Host',
-          message: `Delete host "${host.name}"?`,
-          detail: 'All services and forwarding rules under this host will be deleted.',
-          kind: 'warning',
-          confirmLabel: 'Delete',
-          cancelLabel: 'Cancel',
-        });
-        if (!ok) {
-          return;
-        }
-        await window.serviceApi.deleteHost(host.id);
-        if (hostDialog.open && hostIdInput.value === host.id) {
-          closeHostDialog();
-        }
-        await loadHosts();
-        setMessage(`Host ${host.name} deleted`, 'success');
-      } catch (error) {
-        setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
-      }
-    });
   });
 }
 
@@ -1224,6 +1468,17 @@ importPrivateKeyButton.addEventListener('click', async () => {
         editingPrivateKeyPath = path;
       }
     );
+  } catch (error) {
+    setHostDialogMessage((error as Error).message, 'error');
+  }
+});
+
+pasteHostConfigButton.addEventListener('click', async () => {
+  try {
+    const clipboardText = await window.serviceApi.readClipboardText();
+    const draft = parseHostDraftFromClipboard(clipboardText);
+    applyHostDraftToForm(draft);
+    setHostDialogMessage('Pasted host config from clipboard. Review and save when ready.', 'success');
   } catch (error) {
     setHostDialogMessage((error as Error).message, 'error');
   }
