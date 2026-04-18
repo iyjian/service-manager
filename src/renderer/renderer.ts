@@ -44,6 +44,7 @@ const forwardEditorList = requireElement<HTMLDivElement>('#forward-editor-list')
 const addForwardButton = requireElement<HTMLButtonElement>('#add-forward-btn');
 const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list');
 const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
+const saveHostButton = requireElement<HTMLButtonElement>('#save-host-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
 const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
 const pageMessageTextElement = requireElement<HTMLElement>('#page-message-text');
@@ -586,6 +587,206 @@ function toForwardUrl(localHost: string, localPort: number): string {
   return `http://${host}:${localPort}`;
 }
 
+type ButtonIconName =
+  | 'addHost'
+  | 'importConfig'
+  | 'exportConfig'
+  | 'pasteConfig'
+  | 'key'
+  | 'addHop'
+  | 'addRule'
+  | 'addService'
+  | 'save'
+  | 'reset'
+  | 'cancel'
+  | 'copy'
+  | 'edit'
+  | 'delete'
+  | 'start'
+  | 'stop';
+
+function renderButtonIcon(icon: ButtonIconName): string {
+  switch (icon) {
+    case 'addHost':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2.5" y="3" width="7" height="4" rx="1"></rect>
+          <rect x="2.5" y="9" width="7" height="4" rx="1"></rect>
+          <path d="M12 5.25v5.5"></path>
+          <path d="M9.25 8h5.5"></path>
+        </svg>
+      `;
+    case 'importConfig':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 2.5v7"></path>
+          <path d="M5.5 7 8 9.5 10.5 7"></path>
+          <path d="M3 11.5h10"></path>
+          <path d="M4.5 11.5v1a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-1"></path>
+        </svg>
+      `;
+    case 'exportConfig':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 13.5v-7"></path>
+          <path d="M5.5 6 8 3.5 10.5 6"></path>
+          <path d="M3 11.5h10"></path>
+          <path d="M4.5 11.5v1a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-1"></path>
+        </svg>
+      `;
+    case 'pasteConfig':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="4" y="3.5" width="8" height="10" rx="1.5"></rect>
+          <path d="M6 3.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v.5"></path>
+          <path d="M6.5 7h3"></path>
+          <path d="M6.5 9.5h3"></path>
+        </svg>
+      `;
+    case 'key':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="5" cy="8" r="2.5"></circle>
+          <path d="M7.5 8h5"></path>
+          <path d="M10.5 8v1.75"></path>
+          <path d="M12.5 8v1.25"></path>
+        </svg>
+      `;
+    case 'addHop':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="4" cy="4" r="1.5"></circle>
+          <circle cx="4" cy="12" r="1.5"></circle>
+          <circle cx="10" cy="8" r="1.5"></circle>
+          <path d="M5.5 4h1A2.5 2.5 0 0 1 9 6.5V8"></path>
+          <path d="M5.5 12h1A2.5 2.5 0 0 0 9 9.5V8"></path>
+          <path d="M13 3.75v4.5"></path>
+          <path d="M10.75 6h4.5"></path>
+        </svg>
+      `;
+    case 'addRule':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="4" cy="5" r="1.5"></circle>
+          <circle cx="9" cy="10" r="1.5"></circle>
+          <path d="M5.5 5h1A2.5 2.5 0 0 1 9 7.5V8.5"></path>
+          <path d="M7.5 10h-1A2.5 2.5 0 0 1 4 7.5V6.5"></path>
+          <path d="M13 3.75v4.5"></path>
+          <path d="M10.75 6h4.5"></path>
+        </svg>
+      `;
+    case 'addService':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="2.5" y="3" width="8" height="10" rx="2"></rect>
+          <path d="M5 6.25 7 8 5 9.75"></path>
+          <path d="M8 10h.75"></path>
+          <path d="M13 3.75v4.5"></path>
+          <path d="M10.75 6h4.5"></path>
+        </svg>
+      `;
+    case 'save':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3.5 8.5 6.5 11.5 12.5 4.5"></path>
+        </svg>
+      `;
+    case 'reset':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 8a5 5 0 1 0 1.5-3.56"></path>
+          <path d="M3 3.5v3h3"></path>
+        </svg>
+      `;
+    case 'cancel':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4.5 4.5 11.5 11.5"></path>
+          <path d="M11.5 4.5 4.5 11.5"></path>
+        </svg>
+      `;
+    case 'copy':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="5" y="3" width="7" height="9" rx="1.5"></rect>
+          <path d="M4 5H3.5A1.5 1.5 0 0 0 2 6.5v6A1.5 1.5 0 0 0 3.5 14H8"></path>
+        </svg>
+      `;
+    case 'edit':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 13l2.75-.5L12 6.25 9.75 4 3.5 10.25 3 13z"></path>
+          <path d="M8.75 5 11 7.25"></path>
+        </svg>
+      `;
+    case 'delete':
+      return `
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3.5 4.5h9"></path>
+          <path d="M6 4.5V3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1"></path>
+          <path d="M5 6.5V12a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V6.5"></path>
+          <path d="M6.75 7.25v4"></path>
+          <path d="M9.25 7.25v4"></path>
+        </svg>
+      `;
+    case 'start':
+      return `
+        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true">
+          <path d="M5 3.75v8.5l6.5-4.25L5 3.75z"></path>
+        </svg>
+      `;
+    case 'stop':
+      return `
+        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true">
+          <rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.25"></rect>
+        </svg>
+      `;
+  }
+}
+
+function renderButtonContent(icon: ButtonIconName, label: string): string {
+  return `<span class="btn-icon">${renderButtonIcon(icon)}</span><span class="btn-label">${escapeHtml(label)}</span>`;
+}
+
+function applyStaticButtonIcons(): void {
+  addHostButton.innerHTML = renderButtonContent('addHost', 'Add Host');
+  importConfigButton.innerHTML = renderButtonContent('importConfig', 'Import Config');
+  exportConfigButton.innerHTML = renderButtonContent('exportConfig', 'Export Config');
+  pasteHostConfigButton.innerHTML = renderButtonContent('pasteConfig', 'Paste Config');
+  importPrivateKeyButton.innerHTML = renderButtonContent('key', 'Import');
+  addJumpHostButton.innerHTML = renderButtonContent('addHop', 'Add Hop');
+  addForwardButton.innerHTML = renderButtonContent('addRule', 'Add Rule');
+  addServiceButton.innerHTML = renderButtonContent('addService', 'Add Service');
+  saveHostButton.innerHTML = renderButtonContent('save', 'Save Host');
+  resetButton.innerHTML = renderButtonContent('reset', 'Reset');
+  cancelHostDialogButton.innerHTML = renderButtonContent('cancel', 'Cancel');
+}
+
+function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
+  const iconMarkup = kind === 'tunnel'
+    ? `
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="4" cy="5" r="1.5"></circle>
+        <circle cx="12" cy="11" r="1.5"></circle>
+        <path d="M5.5 5h2a2.5 2.5 0 0 1 2.5 2.5V8"></path>
+        <path d="M10.5 11h-2A2.5 2.5 0 0 1 6 8.5V8"></path>
+      </svg>
+    `
+    : `
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2.5" y="3" width="11" height="10" rx="2"></rect>
+        <path d="M5 6.25 7 8 5 9.75"></path>
+        <path d="M8.75 9.75H11"></path>
+      </svg>
+    `;
+  return `
+    <span class="host-section-label host-section-label-${kind}">
+      <span class="host-section-icon">${iconMarkup}</span>
+      <span>${escapeHtml(text)}</span>
+    </span>
+  `;
+}
+
 async function importPrivateKeyIntoField(
   field: HTMLTextAreaElement,
   successMessage: (path: string) => string,
@@ -633,7 +834,7 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   row.innerHTML = `
     <div class="jump-host-editor-head">
       <div class="jump-host-editor-title">Jump Server</div>
-      <button type="button" class="btn btn-danger btn-sm jump-host-remove">Remove</button>
+      <button type="button" class="btn btn-danger btn-sm jump-host-remove">${renderButtonContent('delete', 'Remove')}</button>
     </div>
     <div class="form-row">
       <label class="field field-host field-xs">
@@ -666,7 +867,7 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
           Private Key
           <textarea class="input" data-field="privateKey" rows="1">${escapeHtml(draft?.privateKey ?? '')}</textarea>
         </label>
-        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">Import</button>
+        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">${renderButtonContent('key', 'Import')}</button>
       </div>
       <label class="field field-passphrase field-xs jump-passphrase-row hidden">
         Passphrase (Optional)
@@ -733,7 +934,7 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
       <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
       Auto Start
     </label>
-    <button type="button" class="btn btn-danger btn-sm forward-remove">Delete Rule</button>
+    <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Delete Rule')}</button>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
@@ -760,7 +961,7 @@ function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
       Forward Local Port (Optional)
       <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
     </label>
-    <button type="button" class="btn btn-danger btn-sm forward-remove">Remove</button>
+    <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Remove')}</button>
     <label class="field field-xs service-command-field">
       Start Command
       <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /path/to/app && exec yarn start:dev">${escapeHtml(draft?.startCommand ?? '')}</textarea>
@@ -1225,9 +1426,9 @@ function render(): void {
               <span class="group-metric">${host.services.length} service${host.services.length === 1 ? '' : 's'} · ${runningServices} running</span>
             </div>
             <div class="row-actions">
-            <button class="btn btn-secondary btn-sm" data-action="copy-host">Copy</button>
-            <button class="btn btn-secondary btn-sm" data-action="edit-host">Edit Host</button>
-            <button class="btn btn-danger btn-sm" data-action="delete-host">Delete Host</button>
+            <button class="btn btn-secondary btn-sm" data-action="copy-host">${renderButtonContent('copy', 'Copy')}</button>
+            <button class="btn btn-secondary btn-sm" data-action="edit-host">${renderButtonContent('edit', 'Edit Host')}</button>
+            <button class="btn btn-danger btn-sm" data-action="delete-host">${renderButtonContent('delete', 'Delete Host')}</button>
             </div>
           </div>
         </div>
@@ -1249,181 +1450,171 @@ function render(): void {
       return;
     }
 
-    const tunnelTitle = document.createElement('tr');
-    tunnelTitle.className = 'host-section-row host-section-row-tunnel';
-    tunnelTitle.innerHTML =
-      '<th colspan="5"><span class="host-section-label host-section-label-tunnel">Tunnel List</span></th>';
-    hostTableBody.appendChild(tunnelTitle);
+    if (host.forwards.length > 0) {
+      const tunnelTitle = document.createElement('tr');
+      tunnelTitle.className = 'host-section-row host-section-row-tunnel';
+      tunnelTitle.innerHTML = `<th colspan="5">${renderSectionLabel('tunnel', 'Tunnel List')}</th>`;
+      hostTableBody.appendChild(tunnelTitle);
 
-    const tunnelHeader = document.createElement('tr');
-    tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
-    tunnelHeader.innerHTML = `
-      <th>Name</th>
-      <th>Port</th>
-      <th>Status</th>
-      <th>Auto Start</th>
-      <th>Actions</th>
-    `;
-    hostTableBody.appendChild(tunnelHeader);
+      const tunnelHeader = document.createElement('tr');
+      tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
+      tunnelHeader.innerHTML = `
+        <th>Name</th>
+        <th>Port</th>
+        <th>Status</th>
+        <th>Auto Start</th>
+        <th>Actions</th>
+      `;
+      hostTableBody.appendChild(tunnelHeader);
 
-    if (host.forwards.length === 0) {
-      const empty = document.createElement('tr');
-      empty.className = 'data-row section-empty-row section-empty-row-tunnel';
-      empty.innerHTML = `<td colspan="5" class="table-empty">No forwarding rules under this host.</td>`;
-      hostTableBody.appendChild(empty);
+      host.forwards.forEach((forward, index) => {
+        const row = document.createElement('tr');
+        row.className = 'data-row data-row-tunnel';
+        const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
+        const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
+        const forwardError = escapeAttribute(forward.error ?? '');
+        const forwardStatus = escapeHtml(formatStatus(forward.status));
+        const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
+        const portText = (() => {
+          const base = escapeHtml(`${forward.localPort} -> ${forward.remotePort}`);
+          const href = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
+          if (forward.status === 'running') {
+            return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+          }
+          if (forward.status === 'error') {
+            const err = escapeAttribute(forward.error || 'Forward failed');
+            return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+          }
+          return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
+        })();
+        const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
+          ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
+          : '';
+        row.innerHTML = `
+          <td class="table-cell">${forwardName}</td>
+          <td class="table-cell">${portText}</td>
+          <td class="table-cell">
+            <div class="status-wrap">
+              <span class="status-indicator ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}" ${forwardError ? `data-tooltip="${forwardError}"` : ''}>
+                <span class="status-dot"></span>
+                <span class="status-label">${forwardStatus}</span>
+              </span>
+              ${retry}
+            </div>
+          </td>
+          <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
+          <td class="table-cell">
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>${renderButtonContent('start', 'Start')}</button>
+              <button class="btn btn-secondary btn-sm" data-action="stop-forward" ${stopDisabled}>${renderButtonContent('stop', 'Stop')}</button>
+            </div>
+          </td>
+        `;
+
+        row.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
+          try {
+            await window.serviceApi.startForward(host.id, forward.id);
+          } catch (error) {
+            setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
+          }
+        });
+        row.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
+          try {
+            await window.serviceApi.stopForward(host.id, forward.id);
+          } catch (error) {
+            setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
+          }
+        });
+        hostTableBody.appendChild(row);
+      });
     }
 
-    host.forwards.forEach((forward, index) => {
-      const row = document.createElement('tr');
-      row.className = 'data-row data-row-tunnel';
-      const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
-      const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
-      const forwardError = escapeAttribute(forward.error ?? '');
-      const forwardStatus = escapeHtml(formatStatus(forward.status));
-      const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
-      const portText = (() => {
-        const base = escapeHtml(`${forward.localPort} -> ${forward.remotePort}`);
-        const href = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
-        if (forward.status === 'running') {
-          return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
-        }
-        if (forward.status === 'error') {
-          const err = escapeAttribute(forward.error || 'Forward failed');
-          return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
-        }
-        return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
-      })();
-      const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
-        ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
-        : '';
-      row.innerHTML = `
-        <td class="table-cell">${forwardName}</td>
-        <td class="table-cell">${portText}</td>
-        <td class="table-cell">
-          <div class="status-wrap">
-            <span class="status-indicator ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}" ${forwardError ? `data-tooltip="${forwardError}"` : ''}>
-              <span class="status-dot"></span>
-              <span class="status-label">${forwardStatus}</span>
-            </span>
-            ${retry}
-          </div>
-        </td>
-        <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
-        <td class="table-cell">
-          <div class="row-actions">
-            <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>Start</button>
-            <button class="btn btn-secondary btn-sm" data-action="stop-forward" ${stopDisabled}>Stop</button>
-          </div>
-        </td>
+    if (host.services.length > 0) {
+      const serviceTitle = document.createElement('tr');
+      serviceTitle.className = 'host-section-row host-section-row-service';
+      serviceTitle.innerHTML = `<th colspan="5">${renderSectionLabel('service', 'Service List')}</th>`;
+      hostTableBody.appendChild(serviceTitle);
+
+      const serviceHeader = document.createElement('tr');
+      serviceHeader.className = 'host-rules-head host-rules-head-service';
+      serviceHeader.innerHTML = `
+        <th>Name</th>
+        <th>Port</th>
+        <th>Status</th>
+        <th>PID</th>
+        <th>Actions</th>
       `;
+      hostTableBody.appendChild(serviceHeader);
 
-      row.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
-        try {
-          await window.serviceApi.startForward(host.id, forward.id);
-        } catch (error) {
-          setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
-        }
-      });
-      row.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
-        try {
-          await window.serviceApi.stopForward(host.id, forward.id);
-        } catch (error) {
-          setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
-        }
-      });
-      hostTableBody.appendChild(row);
-    });
+      for (const service of host.services) {
+        const row = document.createElement('tr');
+        row.className = 'data-row data-row-service';
+        const pidText = service.pid ? String(service.pid) : '-';
+        const safeServiceName = escapeHtml(service.name);
+        const safeServiceError = escapeAttribute(service.error ?? '');
+        const portText = (() => {
+          if (service.port === 0 || !service.forwardLocalPort) {
+            return `<span>${escapeHtml(String(service.port))}</span>`;
+          }
+          const base = escapeHtml(`${service.forwardLocalPort} -> ${service.port}`);
+          const href = escapeAttribute(`http://127.0.0.1:${service.forwardLocalPort}`);
+          if (service.forwardState === 'ok') {
+            return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+          }
+          if (service.forwardState === 'error') {
+            const err = escapeAttribute(service.forwardError || 'Forward failed');
+            return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+          }
+          return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
+        })();
+        const startDisabled = canStartService(service.status) ? '' : 'disabled';
+        const stopDisabled = canStopService(service.status) ? '' : 'disabled';
+        row.innerHTML = `
+          <td class="table-cell">${safeServiceName}</td>
+          <td class="table-cell">${portText}</td>
+          <td class="table-cell">
+            <div class="status-wrap">
+              <span class="status-indicator ${statusClass(service.status)}${safeServiceError ? ' status-has-tooltip' : ''}" ${safeServiceError ? `data-tooltip="${safeServiceError}"` : ''}>
+                <span class="status-dot"></span>
+                <span class="status-label">${escapeHtml(service.status)}</span>
+              </span>
+            </div>
+          </td>
+          <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
+          <td class="table-cell">
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" data-action="start" ${startDisabled}>${renderButtonContent('start', 'Start')}</button>
+              <button class="btn btn-secondary btn-sm" data-action="stop" ${stopDisabled}>${renderButtonContent('stop', 'Stop')}</button>
+            </div>
+          </td>
+        `;
 
-    const serviceTitle = document.createElement('tr');
-    serviceTitle.className = 'host-section-row host-section-row-service';
-    serviceTitle.innerHTML =
-      '<th colspan="5"><span class="host-section-label host-section-label-service">Service List</span></th>';
-    hostTableBody.appendChild(serviceTitle);
+        row.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
+          try {
+            await window.serviceApi.startService(host.id, service.id);
+          } catch (error) {
+            setMessage(`Start failed: ${(error as Error).message}`, 'error');
+          }
+        });
+        row.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
+          try {
+            await window.serviceApi.stopService(host.id, service.id);
+          } catch (error) {
+            setMessage(`Stop failed: ${(error as Error).message}`, 'error');
+          }
+        });
+        row.querySelector<HTMLButtonElement>('[data-action="pid"]')?.addEventListener('click', () => {
+          openServiceLogDialog(host, service.id);
+        });
 
-    const serviceHeader = document.createElement('tr');
-    serviceHeader.className = 'host-rules-head host-rules-head-service';
-    serviceHeader.innerHTML = `
-      <th>Name</th>
-      <th>Port</th>
-      <th>Status</th>
-      <th>PID</th>
-      <th>Actions</th>
-    `;
-    hostTableBody.appendChild(serviceHeader);
-
-    if (host.services.length === 0) {
-      const empty = document.createElement('tr');
-      empty.className = 'data-row section-empty-row section-empty-row-service';
-      empty.innerHTML = `<td colspan="5" class="table-empty">No services under this host.</td>`;
-      hostTableBody.appendChild(empty);
-    }
-
-    for (const service of host.services) {
-      const row = document.createElement('tr');
-      row.className = 'data-row data-row-service';
-      const pidText = service.pid ? String(service.pid) : '-';
-      const safeServiceName = escapeHtml(service.name);
-      const safeServiceError = escapeAttribute(service.error ?? '');
-      const portText = (() => {
-        if (service.port === 0 || !service.forwardLocalPort) {
-          return `<span>${escapeHtml(String(service.port))}</span>`;
-        }
-        const base = escapeHtml(`${service.forwardLocalPort} -> ${service.port}`);
-        const href = escapeAttribute(`http://127.0.0.1:${service.forwardLocalPort}`);
-        if (service.forwardState === 'ok') {
-          return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
-        }
-        if (service.forwardState === 'error') {
-          const err = escapeAttribute(service.forwardError || 'Forward failed');
-          return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
-        }
-        return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
-      })();
-      const startDisabled = canStartService(service.status) ? '' : 'disabled';
-      const stopDisabled = canStopService(service.status) ? '' : 'disabled';
-      row.innerHTML = `
-        <td class="table-cell">${safeServiceName}</td>
-        <td class="table-cell">${portText}</td>
-        <td class="table-cell">
-          <div class="status-wrap">
-            <span class="status-indicator ${statusClass(service.status)}${safeServiceError ? ' status-has-tooltip' : ''}" ${safeServiceError ? `data-tooltip="${safeServiceError}"` : ''}>
-              <span class="status-dot"></span>
-              <span class="status-label">${escapeHtml(service.status)}</span>
-            </span>
-          </div>
-        </td>
-        <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
-        <td class="table-cell">
-          <div class="row-actions">
-            <button class="btn btn-primary btn-sm" data-action="start" ${startDisabled}>Start</button>
-            <button class="btn btn-secondary btn-sm" data-action="stop" ${stopDisabled}>Stop</button>
-          </div>
-        </td>
-      `;
-
-      row.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
-        try {
-          await window.serviceApi.startService(host.id, service.id);
-        } catch (error) {
-          setMessage(`Start failed: ${(error as Error).message}`, 'error');
-        }
-      });
-      row.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
-        try {
-          await window.serviceApi.stopService(host.id, service.id);
-        } catch (error) {
-          setMessage(`Stop failed: ${(error as Error).message}`, 'error');
-        }
-      });
-      row.querySelector<HTMLButtonElement>('[data-action="pid"]')?.addEventListener('click', () => {
-        openServiceLogDialog(host, service.id);
-      });
-
-      hostTableBody.appendChild(row);
+        hostTableBody.appendChild(row);
+      }
     }
 
   });
 }
+
+applyStaticButtonIcons();
 
 addHostButton.addEventListener('click', () => {
   openHostDialog('create');

@@ -11,6 +11,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - Deleting a host requires confirmation.
    - creating or editing a host must only require host name and SSH connection info; empty forwarding-rule/service lists are valid
    - host list should provide a copy-config action per host, and Add Host should support pasting one host config from clipboard into the form
+   - user-facing buttons should pair their labels with local inline icons that match the action, rather than relying on remote icon assets
    - host dialog validation/import feedback must be shown inside the modal, and user-facing notices should be dismissible rather than permanent inline text
 2. Service management under each host:
    - start command
@@ -63,6 +64,9 @@ Build a desktop Electron application to manage services on remote servers throug
      - each host contains `Tunnel List` and `Service List`
      - each host block must be collapsible from the list page
      - `Tunnel List` and `Service List` should have clearly distinct visual section treatments inside the host block
+     - section titles should carry slightly stronger typographic emphasis than table column headers so hierarchy remains clear in the compact layout
+     - section titles should use local inline icons rather than remote icon assets, so packaging and offline usage stay self-contained
+     - when a host has no tunnels or no services, the empty section should be omitted instead of rendering a placeholder block
 6. Host edit page structure must follow same hierarchy:
    - Forwarding Rules section
    - Services section

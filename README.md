@@ -23,6 +23,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
    - home-page host blocks include a `Copy` action that writes the host config JSON to clipboard
    - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
+   - user-facing buttons use local inline SVG icons matched to their actions, so recognition improves without introducing remote icon dependencies
    - host dialog validation/import errors are surfaced inside the dialog itself, and user-facing success/error notices use dismissible message banners
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
@@ -57,6 +58,9 @@ This project is now aligned with the **UI style** and **development approach** o
    - `Service List`: start/stop service, PID/log, runtime forward indicator
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
+   - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
+   - section titles include small local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan
+   - empty `Tunnel List` or `Service List` sections are omitted entirely, so hosts without those resources stay compact
    - Overview metrics are split clearly by domain:
      - tunnel running/stopped/errors
      - service running/stopped/errors
