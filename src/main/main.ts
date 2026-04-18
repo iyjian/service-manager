@@ -945,13 +945,13 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     IPC_CHANNELS.getServiceLogs,
-    async (_event, payload: { hostId: string; serviceId: string }): Promise<ServiceLogsResult> => {
+    async (_event, payload: { hostId: string; serviceId: string; query?: { lineLimit?: number } }): Promise<ServiceLogsResult> => {
       try {
         const host = getStore().findHostById(payload.hostId);
         if (!host) throw new Error('Host not found.');
         const service = host.services.find((item) => item.id === payload.serviceId);
         if (!service) throw new Error('Service not found.');
-        return getServiceLogs(host, service);
+        return getServiceLogs(host, service, payload.query);
       } catch (error) {
         logRuntimeError('service:logs', error, payload);
         throw error;

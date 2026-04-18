@@ -53,6 +53,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - log view opens as a larger dedicated dialog (about 80% of the viewport) with a slightly larger monospace font for easier reading.
    - log view includes an `Auto Scroll` toggle (default on); when off, logs still refresh but manual reading position is preserved.
    - while the log dialog is open, background page scrolling is locked so only the log viewport itself can scroll.
+   - scrolling to the top of the log viewport automatically loads older lines for the same invocation instead of being capped to the initial recent slice.
    - background refresh avoids disrupting active text selection, so copying log snippets is no longer interrupted by periodic updates.
    - log view provides `Search` with previous/next match navigation and `Filter` to only show matching lines, similar to a lightweight grep view.
    - service status itself is auto-refreshed in background (no manual refresh button in list).

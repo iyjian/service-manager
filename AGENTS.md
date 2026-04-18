@@ -41,6 +41,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - log dialog should occupy about 80% of the viewport and use a comfortably readable monospace size
    - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
    - while the log dialog is open, page scrolling should be locked so only the log viewport can scroll
+   - reaching the top of the log viewport should automatically load older lines for the current invocation instead of hard-capping history to the initial recent slice
    - log refresh should avoid disrupting active text selection, so copying text is not interrupted by auto refresh
    - log dialog should provide search with previous/next match navigation plus grep-like filtering that only shows matching lines
    - log dialog is read-only (no start/stop/refresh buttons inside dialog)

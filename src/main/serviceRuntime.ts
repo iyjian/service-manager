@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { Client, type ClientChannel } from 'ssh2';
-import type { HostConfig, ServiceConfig, ServiceLogsResult, ServiceStatus } from '../shared/types';
+import type { HostConfig, ServiceConfig, ServiceLogsQuery, ServiceLogsResult, ServiceStatus } from '../shared/types';
 import { closeSshClients, connectSshChain, type SshEndpointConfig } from './sshChain';
 
 interface SshResult {
@@ -481,12 +481,18 @@ export async function checkServiceStatus(
   }
 }
 
-export async function getServiceLogs(host: HostConfig, service: ServiceConfig): Promise<ServiceLogsResult> {
+export async function getServiceLogs(
+  host: HostConfig,
+  service: ServiceConfig,
+  query?: ServiceLogsQuery
+): Promise<ServiceLogsResult> {
   const unit = buildSystemdUnitName(host, service);
   const state = await querySystemdServiceState(host, service);
+  const requestedLineLimit = Number.isFinite(query?.lineLimit) ? Math.trunc(query?.lineLimit as number) : 200;
+  const lineLimit = Math.max(50, requestedLineLimit);
   const journalCmd = state.invocationId
-    ? `journalctl --user --no-pager -n 200 -o cat _SYSTEMD_INVOCATION_ID=${shellQuoteSingle(state.invocationId)}`
-    : `journalctl --user --no-pager -n 200 -o cat -u ${shellQuoteSingle(unit)}`;
+    ? `journalctl --user --no-pager -n ${lineLimit} -o cat _SYSTEMD_INVOCATION_ID=${shellQuoteSingle(state.invocationId)}`
+    : `journalctl --user --no-pager -n ${lineLimit} -o cat -u ${shellQuoteSingle(unit)}`;
   const mergedRet = await runSsh(host, `bash -lc ${shellQuoteSingle(journalCmd)}`);
   if (!mergedRet.ok) {
     throw new Error(formatCommandFailure('journalctl', mergedRet));

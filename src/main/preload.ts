@@ -21,8 +21,8 @@ const api: ServiceApi = {
     ipcRenderer.invoke('forward:stop', { hostId, forwardId }),
   refreshService: (hostId: string, serviceId: string) =>
     ipcRenderer.invoke('service:refresh', { hostId, serviceId }),
-  getServiceLogs: (hostId: string, serviceId: string) =>
-    ipcRenderer.invoke('service:logs', { hostId, serviceId }),
+  getServiceLogs: (hostId: string, serviceId: string, query) =>
+    ipcRenderer.invoke('service:logs', { hostId, serviceId, query }),
   importPrivateKey: () => ipcRenderer.invoke('auth:import-private-key'),
   getUpdateState: () => ipcRenderer.invoke('updater:get-state'),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),

@@ -169,6 +169,10 @@ export interface ServiceLogsResult {
   stderr: string;
 }
 
+export interface ServiceLogsQuery {
+  lineLimit?: number;
+}
+
 export interface ServiceApi {
   listHosts: () => Promise<HostView[]>;
   saveHost: (host: HostDraft) => Promise<HostView>;
@@ -180,7 +184,7 @@ export interface ServiceApi {
   startForward: (hostId: string, forwardId: string) => Promise<void>;
   stopForward: (hostId: string, forwardId: string) => Promise<void>;
   refreshService: (hostId: string, serviceId: string) => Promise<void>;
-  getServiceLogs: (hostId: string, serviceId: string) => Promise<ServiceLogsResult>;
+  getServiceLogs: (hostId: string, serviceId: string, query?: ServiceLogsQuery) => Promise<ServiceLogsResult>;
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
   exportConfig: () => Promise<ConfigTransferResult | null>;
   importConfig: () => Promise<ConfigTransferResult | null>;

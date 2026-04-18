@@ -71,6 +71,10 @@ const serviceLogNextButton = requireElement<HTMLButtonElement>('#service-log-nex
 const serviceLogTerminal = requireElement<HTMLDivElement>('#service-log-terminal');
 const serviceLogContent = requireElement<HTMLDivElement>('#service-log-content');
 
+const LOG_FETCH_CHUNK_LINES = 200;
+
+type LogLoadReason = 'refresh' | 'older';
+
 let hosts: HostView[] = [];
 let hostDialogMode: 'create' | 'edit' = 'create';
 let editingPrivateKeyPath: string | undefined;
@@ -80,9 +84,12 @@ let statusAutoRefreshTimer: number | null = null;
 let isAutoRefreshing = false;
 let lastLogLoadError: string | null = null;
 let currentLogText = '';
-let pendingLogText: string | null = null;
+let pendingLogSnapshot: { text: string; reason: LogLoadReason } | null = null;
 let logSearchMatchElements: HTMLElement[] = [];
 let activeLogSearchMatchIndex = -1;
+let logLineLimit = LOG_FETCH_CHUNK_LINES;
+let logHasOlderHistory = true;
+let isLoadingOlderLogs = false;
 let pageMessageTimer: number | null = null;
 const collapsedHostIds = new Set<string>();
 
@@ -174,6 +181,21 @@ function closeDialog(dialog: HTMLDialogElement, name: string): void {
 function setServiceLogPageScrollLock(locked: boolean): void {
   document.documentElement.classList.toggle('service-log-open', locked);
   document.body.classList.toggle('service-log-open', locked);
+}
+
+function maybeLoadOlderServiceLogs(): void {
+  if (!serviceLogDialog.open || !activeLogTarget || isLoadingOlderLogs || !logHasOlderHistory) {
+    return;
+  }
+  if (serviceLogTerminal.scrollTop > 12) {
+    return;
+  }
+
+  isLoadingOlderLogs = true;
+  logLineLimit += LOG_FETCH_CHUNK_LINES;
+  void loadServiceLogs({ reason: 'older', lineLimit: logLineLimit }).finally(() => {
+    isLoadingOlderLogs = false;
+  });
 }
 
 function isActiveLogTarget(target: { hostId: string; serviceId: string }): boolean {
@@ -1256,6 +1278,15 @@ function filterLogText(input: string, filterQuery: string): string {
     .join('\n');
 }
 
+function countLogLines(input: string): number {
+  if (!input) {
+    return 0;
+  }
+
+  const normalized = input.endsWith('\n') ? input.slice(0, -1) : input;
+  return normalized ? normalized.split('\n').length : 0;
+}
+
 function hasActiveLogSelection(): boolean {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
@@ -1381,8 +1412,17 @@ function applyLogSearchHighlights(focusActiveMatch = false): void {
   setActiveLogSearchMatch(nextIndex, focusActiveMatch);
 }
 
-function renderServiceLogView(options: { preserveScroll?: boolean; focusActiveMatch?: boolean } = {}): void {
-  const previousScrollTop = serviceLogTerminal.scrollTop;
+function renderServiceLogView(
+  options: {
+    preserveScroll?: boolean;
+    focusActiveMatch?: boolean;
+    previousScrollTop?: number;
+    previousScrollHeight?: number;
+    anchorHistoryPrepend?: boolean;
+  } = {}
+): void {
+  const previousScrollTop = options.previousScrollTop ?? serviceLogTerminal.scrollTop;
+  const previousScrollHeight = options.previousScrollHeight ?? serviceLogTerminal.scrollHeight;
   const filterQuery = serviceLogFilterInput.value.trim();
   const visibleText = filterLogText(currentLogText, filterQuery);
 
@@ -1395,7 +1435,13 @@ function renderServiceLogView(options: { preserveScroll?: boolean; focusActiveMa
 
   applyLogSearchHighlights(options.focusActiveMatch ?? false);
 
-  if (serviceLogSearchInput.value.trim() && logSearchMatchElements.length > 0) {
+  if (options.focusActiveMatch && serviceLogSearchInput.value.trim() && logSearchMatchElements.length > 0) {
+    return;
+  }
+
+  if (options.anchorHistoryPrepend) {
+    const nextScrollHeight = serviceLogTerminal.scrollHeight;
+    serviceLogTerminal.scrollTop = previousScrollTop + (nextScrollHeight - previousScrollHeight);
     return;
   }
 
@@ -1428,46 +1474,56 @@ function appendServiceLogSuffix(suffix: string): void {
   serviceLogTerminal.scrollTop = previousScrollTop;
 }
 
-function updateDisplayedServiceLog(nextText: string): void {
+function updateDisplayedServiceLog(nextText: string, reason: LogLoadReason = 'refresh'): void {
   if (hasActiveLogSelection()) {
-    pendingLogText = nextText;
+    pendingLogSnapshot = { text: nextText, reason };
     return;
   }
 
   if (nextText === currentLogText) {
-    pendingLogText = null;
+    pendingLogSnapshot = null;
     return;
   }
 
   const previousText = currentLogText;
+  const previousScrollTop = serviceLogTerminal.scrollTop;
+  const previousScrollHeight = serviceLogTerminal.scrollHeight;
   currentLogText = nextText;
-  pendingLogText = null;
+  pendingLogSnapshot = null;
 
   const hasQueryOverlay = serviceLogSearchInput.value.trim() || serviceLogFilterInput.value.trim();
-  if (!hasQueryOverlay && previousText && nextText.startsWith(previousText)) {
+  if (reason === 'refresh' && !hasQueryOverlay && previousText && nextText.startsWith(previousText)) {
     appendServiceLogSuffix(nextText.slice(previousText.length));
     return;
   }
 
-  renderServiceLogView({ preserveScroll: !logAutoScrollInput.checked });
+  renderServiceLogView({
+    preserveScroll: reason === 'older' || !logAutoScrollInput.checked,
+    previousScrollTop,
+    previousScrollHeight,
+    anchorHistoryPrepend: reason === 'older',
+  });
 }
 
 function applyPendingLogUpdateIfPossible(): void {
-  if (pendingLogText === null || hasActiveLogSelection()) {
+  if (pendingLogSnapshot === null || hasActiveLogSelection()) {
     return;
   }
 
-  const nextText = pendingLogText;
-  pendingLogText = null;
-  updateDisplayedServiceLog(nextText);
+  const nextSnapshot = pendingLogSnapshot;
+  pendingLogSnapshot = null;
+  updateDisplayedServiceLog(nextSnapshot.text, nextSnapshot.reason);
 }
 
 function resetServiceLogState(): void {
   currentLogText = '';
-  pendingLogText = null;
+  pendingLogSnapshot = null;
   lastLogLoadError = null;
   logSearchMatchElements = [];
   activeLogSearchMatchIndex = -1;
+  logLineLimit = LOG_FETCH_CHUNK_LINES;
+  logHasOlderHistory = true;
+  isLoadingOlderLogs = false;
   serviceLogSearchInput.value = '';
   serviceLogFilterInput.value = '';
   serviceLogContent.innerHTML = '';
@@ -1476,18 +1532,25 @@ function resetServiceLogState(): void {
   serviceLogTerminal.scrollTop = 0;
 }
 
-async function loadServiceLogs(): Promise<void> {
+async function loadServiceLogs(options: { reason?: LogLoadReason; lineLimit?: number } = {}): Promise<void> {
   if (!activeLogTarget) return;
   const target = { ...activeLogTarget };
+  const reason = options.reason ?? 'refresh';
+  const lineLimit = options.lineLimit ?? logLineLimit;
 
   try {
-    const logs: ServiceLogsResult = await window.serviceApi.getServiceLogs(target.hostId, target.serviceId);
+    const logs: ServiceLogsResult = await window.serviceApi.getServiceLogs(target.hostId, target.serviceId, { lineLimit });
     if (!isActiveLogTarget(target)) {
       return;
     }
 
     const merged = `${logs.stdout || ''}${logs.stderr || ''}`;
-    updateDisplayedServiceLog(merged);
+    if (reason === 'older' && merged === currentLogText) {
+      logHasOlderHistory = false;
+    } else {
+      updateDisplayedServiceLog(merged, reason);
+      logHasOlderHistory = countLogLines(merged) >= lineLimit;
+    }
     lastLogLoadError = null;
   } catch (error) {
     const message = toErrorMessage(error);
@@ -1584,7 +1647,7 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
   resetServiceLogState();
   serviceLogTitle.textContent = `${host.name} / ${service.name} (PID: ${service.pid ?? '-'})`;
 
-  void loadServiceLogs().catch((error) => {
+  void loadServiceLogs({ lineLimit: logLineLimit }).catch((error) => {
     reportRendererError('service-logs:open', error, `Log refresh failed: ${toErrorMessage(error)}`);
   });
   startLogAutoRefresh();
@@ -1963,6 +2026,9 @@ serviceLogPrevButton.addEventListener('click', () => {
 });
 serviceLogNextButton.addEventListener('click', () => {
   setActiveLogSearchMatch(activeLogSearchMatchIndex + 1);
+});
+serviceLogTerminal.addEventListener('scroll', () => {
+  maybeLoadOlderServiceLogs();
 });
 logAutoScrollInput.addEventListener('change', () => {
   if (logAutoScrollInput.checked) {
