@@ -26,6 +26,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
    - user-facing buttons use local inline SVG icons matched to their actions, so recognition improves without introducing remote icon dependencies
    - host dialog validation/import errors are surfaced inside the dialog itself, and page-level success/error notices use right-top toast messages that auto-dismiss after a short delay while still allowing manual close
+   - default desktop window size is `1230 x 820`, with minimum size kept at `900 x 620`
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
    - `Services` (remote process lifecycle)
@@ -65,18 +66,21 @@ This project is now aligned with the **UI style** and **development approach** o
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
    - the home page does not wrap hosts in a separate `Hosts` card; each host is its own container with spacing between hosts
    - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control lives with row actions
-   - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual icon-only start/stop actions
-   - when a host has both tunnels and services, the home page lays them out as two compact columns: tunnels on the left and services on the right
+   - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual power-icon start/stop actions colored by runtime status
+   - every expanded host always uses two compact columns: tunnels on the left and services on the right, even when one side is empty
+   - the two runtime columns are separated by a very light vertical divider
+   - runtime rows use fixed proportional columns; names and ports align to the left within their columns, while the start/stop action is centered
+   - the two runtime section titles and data rows use fixed heights so left and right columns stay horizontally aligned
    - runtime status is shown through the tunnel/service name color instead of a separate status column
    - service PID is not shown as a separate column; clicking the service name opens the log dialog
    - port text is formatted for fast scanning: tunnels and forwarded services use `L:<local> → R:<remote>`, while non-forwarded services use `:<exposedPort>`
    - port numbers are right-aligned in fixed five-character slots so local and remote ports line up vertically
-   - status colors are fixed to soft green running (`#22c55e`), gray stopped (`#6b7280`), and red error (`#ef4444`)
+   - status colors are fixed to muted green running (`#15803d`), gray stopped (`#6b7280`), and red error (`#ef4444`)
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
    - `Tunnel List` and `Service List` section headers do not show standalone collapse arrows because those sections are not individually collapsible
    - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
    - section titles include small local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan
-   - empty `Tunnel List` or `Service List` sections are omitted entirely, so hosts without those resources stay compact
+   - empty `Tunnel List` or `Service List` columns remain visible with a compact empty state, so the two-column structure stays stable
 8. Service actions in list: `Start`, `Stop`.
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
    - the managed command is launched through the remote account's login shell so user-level PATH/runtime initialization (for example `nvm`, `conda`, shell-managed Node/Yarn installs) is closer to an interactive SSH session.
@@ -142,7 +146,8 @@ Artifacts are generated under `release/`.
   - checks automatically after startup, then on interval
   - supports manual `Check for Updates...` from app menu (macOS style)
   - prompts for download and restart install
-- In dev mode (unpackaged), updater state shows unsupported.
+- Header update text is intentionally quiet for `unsupported` and `up-to-date` states; the header already shows the current app version.
+- In dev mode (unpackaged), updater state is unsupported but no header hint is shown.
 
 ## CI/CD Release Workflow
 

@@ -102,8 +102,8 @@ function serviceForwardKey(hostId: string, serviceId: string): string {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1080,
-    height: 720,
+    width: 1230,
+    height: 820,
     minWidth: 900,
     minHeight: 620,
     icon: APP_ICON_PATH,

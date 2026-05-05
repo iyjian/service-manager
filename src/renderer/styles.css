@@ -71,7 +71,7 @@
   --color-primary-active: var(--color-accent-active);
 
   /* ===== Status ===== */
-  --color-success-500: #22c55e;
+  --color-success-500: #15803d;
   --color-success-bg: #f0fdf4;
   --color-warning-500: #ca8a04;
   --color-warning-bg: #fefce8;
@@ -416,7 +416,7 @@ textarea.input {
 
 .ansi-fg-30 { color: #111827; }
 .ansi-fg-31 { color: #ef4444; }
-.ansi-fg-32 { color: #22c55e; }
+.ansi-fg-32 { color: #15803d; }
 .ansi-fg-33 { color: #f59e0b; }
 .ansi-fg-34 { color: #60a5fa; }
 .ansi-fg-35 { color: #e879f9; }
@@ -1295,7 +1295,7 @@ td {
 
 .host-panel-body-two-col {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  column-gap: 14px;
+  column-gap: 0;
 }
 
 .host-panel-collapsed .host-panel-body {
@@ -1304,25 +1304,35 @@ td {
 
 .runtime-section {
   display: grid;
+  grid-template-rows: 20px auto;
   gap: 2px;
   min-width: 0;
+}
+
+.host-panel-body-two-col .runtime-section-services {
+  border-left: 1px solid var(--color-border-subtle);
+  padding-left: 14px;
+  margin-left: 14px;
 }
 
 .runtime-section-title {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  height: 20px;
   width: max-content;
   color: var(--color-fg-secondary);
-  line-height: 1.2;
+  line-height: 20px;
 }
 
 .runtime-section-title .host-section-label {
   gap: 5px;
+  height: 20px;
   font-family: var(--font-family-mono);
   font-size: var(--font-size-xs);
   font-weight: 700;
   letter-spacing: 0.03em;
+  line-height: 20px;
 }
 
 .runtime-section-title .host-section-icon,
@@ -1333,14 +1343,16 @@ td {
 
 .runtime-list {
   display: grid;
+  grid-auto-rows: 24px;
   gap: 1px;
 }
 
 .runtime-row {
   display: grid;
-  grid-template-columns: minmax(92px, 1fr) max-content 28px;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr) 28px;
   align-items: center;
-  min-height: 24px;
+  height: 24px;
+  min-height: 0;
   padding: 2px 4px;
   gap: 8px;
   border-radius: var(--radius-sm);
@@ -1376,14 +1388,18 @@ td {
 .runtime-name-cell {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
+  justify-self: stretch;
   min-width: 0;
   gap: 6px;
   overflow: hidden;
+  text-align: left;
 }
 
 .runtime-name {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 5px;
   min-width: 0;
   overflow: hidden;
@@ -1400,6 +1416,7 @@ td {
 }
 
 .runtime-name-button {
+  width: 100%;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1431,9 +1448,11 @@ td {
 }
 
 .runtime-port {
+  justify-self: stretch;
   min-width: 0;
   overflow: hidden;
   color: var(--color-fg-secondary);
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1525,54 +1544,45 @@ td {
 
 .runtime-actions {
   display: inline-flex;
-  justify-content: flex-end;
+  justify-self: center;
+  justify-content: center;
+  width: 28px;
 }
 
 .runtime-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 23px;
+  width: 22px;
   height: 22px;
   padding: 0;
-  border: 1px solid var(--color-border-strong);
+  border: 1px solid currentColor;
   border-radius: var(--radius-sm);
-  background: var(--color-bg-surface);
-  color: var(--color-fg-primary);
+  background: transparent;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
 .runtime-action-btn:hover:not(:disabled) {
-  border-color: var(--color-fg-primary);
-  background: var(--color-bg-hover);
+  background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .runtime-action-btn:disabled {
-  color: var(--color-fg-quaternary);
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.42;
 }
 
 .runtime-action-btn svg {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   display: block;
 }
 
-.runtime-action-start:not(:disabled) {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-}
-
-.runtime-action-start:hover:not(:disabled) {
-  background: var(--color-accent-hover);
-  border-color: var(--color-accent-hover);
-}
-
 .runtime-empty {
-  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 4px;
   color: var(--color-fg-tertiary);
   font-style: italic;
 }
@@ -1720,5 +1730,11 @@ td {
   .host-panel-body-two-col {
     grid-template-columns: 1fr;
     row-gap: 8px;
+  }
+
+  .host-panel-body-two-col .runtime-section-services {
+    border-left: 0;
+    padding-left: 0;
+    margin-left: 0;
   }
 }

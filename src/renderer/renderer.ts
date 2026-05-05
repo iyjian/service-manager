@@ -221,7 +221,7 @@ function renderUpdateState(state: UpdateState): void {
     'update-status-error'
   );
 
-  if (state.status === 'idle') {
+  if (state.status === 'idle' || state.status === 'unsupported' || state.status === 'up-to-date') {
     updateStatusHintElement.classList.add('hidden');
     updateStatusHintElement.textContent = '';
     return;
@@ -243,12 +243,6 @@ function renderUpdateState(state: UpdateState): void {
     if (state.status === 'downloaded') {
       return `Update ${state.downloadedVersion ?? state.availableVersion ?? ''} downloaded. Restart to install.`;
     }
-    if (state.status === 'up-to-date') {
-      return `You're up to date (${state.currentVersion}).`;
-    }
-    if (state.status === 'unsupported') {
-      return `Version ${state.currentVersion}. Auto update works in packaged builds only.`;
-    }
     if (state.status === 'error') {
       return state.rawMessage ? `Update error: ${state.rawMessage}` : 'Update check failed.';
     }
@@ -262,7 +256,7 @@ function renderUpdateState(state: UpdateState): void {
     return;
   }
 
-  if (state.status === 'up-to-date' || state.status === 'downloaded') {
+  if (state.status === 'downloaded') {
     updateStatusHintElement.classList.add('update-status-success');
     return;
   }
@@ -1721,17 +1715,31 @@ function renderSinglePort(port: number): string {
   return `<span class="runtime-port-single"><span>:</span>${renderPortNumber(port)}</span>`;
 }
 
-function renderRuntimeActionButton(action: string, icon: 'start' | 'stop', label: string, disabled: boolean): string {
+function renderPowerIcon(): string {
+  return `
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M8 2.5v5"></path>
+      <path d="M5.15 4.35a5 5 0 1 0 5.7 0"></path>
+    </svg>
+  `;
+}
+
+function renderRuntimeActionButton(
+  action: string,
+  label: string,
+  disabled: boolean,
+  status: ServiceStatus | TunnelStatus
+): string {
   return `
     <button
-      class="runtime-action-btn runtime-action-${icon}"
+      class="runtime-action-btn ${statusClass(status)}"
       type="button"
       data-action="${escapeAttribute(action)}"
       title="${escapeAttribute(label)}"
       aria-label="${escapeAttribute(label)}"
       ${disabled ? 'disabled' : ''}
     >
-      ${renderButtonIcon(icon)}
+      ${renderPowerIcon()}
     </button>
   `;
 }
@@ -1843,29 +1851,31 @@ function render(): void {
     }
 
     if (!isCollapsed) {
-      body.classList.toggle('host-panel-body-two-col', host.forwards.length > 0 && host.services.length > 0);
+      body.classList.add('host-panel-body-two-col');
 
-      if (host.forwards.length > 0) {
-        const section = document.createElement('section');
-        section.className = 'runtime-section runtime-section-tunnels';
-        section.innerHTML = `
-          <div class="runtime-section-title">
-            ${renderSectionLabel('tunnel', 'Tunnels')}
-          </div>
-          <div class="runtime-list"></div>
-        `;
-        const list = section.querySelector<HTMLDivElement>('.runtime-list');
-        if (!list) {
-          throw new Error('Missing tunnel runtime list.');
-        }
+      const tunnelSection = document.createElement('section');
+      tunnelSection.className = 'runtime-section runtime-section-tunnels';
+      tunnelSection.innerHTML = `
+        <div class="runtime-section-title">
+          ${renderSectionLabel('tunnel', 'Tunnels')}
+        </div>
+        <div class="runtime-list"></div>
+      `;
+      const tunnelList = tunnelSection.querySelector<HTMLDivElement>('.runtime-list');
+      if (!tunnelList) {
+        throw new Error('Missing tunnel runtime list.');
+      }
 
+      if (host.forwards.length === 0) {
+        tunnelList.innerHTML = '<div class="runtime-empty">No tunnels</div>';
+      } else {
         host.forwards.forEach((forward, index) => {
           const item = document.createElement('div');
           item.className = 'runtime-row runtime-row-tunnel';
           const canStop = canStopForward(forward.status);
           const action = canStop
-            ? renderRuntimeActionButton('stop-forward', 'stop', 'Stop', false)
-            : renderRuntimeActionButton('start-forward', 'start', 'Start', !canStartForward(forward.status));
+            ? renderRuntimeActionButton('stop-forward', 'Stop', false, forward.status)
+            : renderRuntimeActionButton('start-forward', 'Start', !canStartForward(forward.status), forward.status);
           const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
             ? `<span class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</span>`
             : '';
@@ -1899,33 +1909,34 @@ function render(): void {
               setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
             }
           });
-          list.appendChild(item);
+          tunnelList.appendChild(item);
         });
+      }
+      body.appendChild(tunnelSection);
 
-        body.appendChild(section);
+      const serviceSection = document.createElement('section');
+      serviceSection.className = 'runtime-section runtime-section-services';
+      serviceSection.innerHTML = `
+        <div class="runtime-section-title">
+          ${renderSectionLabel('service', 'Services')}
+        </div>
+        <div class="runtime-list"></div>
+      `;
+      const serviceList = serviceSection.querySelector<HTMLDivElement>('.runtime-list');
+      if (!serviceList) {
+        throw new Error('Missing service runtime list.');
       }
 
-      if (host.services.length > 0) {
-        const section = document.createElement('section');
-        section.className = 'runtime-section runtime-section-services';
-        section.innerHTML = `
-          <div class="runtime-section-title">
-            ${renderSectionLabel('service', 'Services')}
-          </div>
-          <div class="runtime-list"></div>
-        `;
-        const list = section.querySelector<HTMLDivElement>('.runtime-list');
-        if (!list) {
-          throw new Error('Missing service runtime list.');
-        }
-
+      if (host.services.length === 0) {
+        serviceList.innerHTML = '<div class="runtime-empty">No services</div>';
+      } else {
         for (const service of host.services) {
           const item = document.createElement('div');
           item.className = 'runtime-row runtime-row-service';
           const canStop = canStopService(service.status);
           const action = canStop
-            ? renderRuntimeActionButton('stop', 'stop', 'Stop', false)
-            : renderRuntimeActionButton('start', 'start', 'Start', !canStartService(service.status));
+            ? renderRuntimeActionButton('stop', 'Stop', false, service.status)
+            : renderRuntimeActionButton('start', 'Start', !canStartService(service.status), service.status);
           const serviceError = escapeAttribute(service.error ?? '');
           const logTitle = service.pid
             ? `Open logs (PID ${service.pid}, ${formatStatus(service.status)})`
@@ -1964,18 +1975,10 @@ function render(): void {
           item.querySelector<HTMLButtonElement>('[data-action="logs"]')?.addEventListener('click', () => {
             openServiceLogDialog(host, service.id);
           });
-          list.appendChild(item);
+          serviceList.appendChild(item);
         }
-
-        body.appendChild(section);
       }
-
-      if (host.forwards.length === 0 && host.services.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'runtime-empty';
-        empty.textContent = 'No tunnels or services configured.';
-        body.appendChild(empty);
-      }
+      body.appendChild(serviceSection);
     }
 
     cell.appendChild(panel);

@@ -34,7 +34,6 @@ export class AppUpdater extends EventEmitter {
           status: 'unsupported',
           currentVersion: this.currentVersion,
           trigger: 'auto',
-          message: 'Auto update works in packaged builds only.',
         };
   }
 
@@ -80,7 +79,6 @@ export class AppUpdater extends EventEmitter {
         status: 'unsupported',
         currentVersion: this.currentVersion,
         trigger,
-        message: 'Auto update works in packaged builds only.',
       });
       return this.getState();
     }
@@ -123,7 +121,6 @@ export class AppUpdater extends EventEmitter {
         status: 'up-to-date',
         currentVersion: this.currentVersion,
         trigger: this.lastTrigger,
-        message: `You're up to date (${this.currentVersion}).`,
       });
     });
 

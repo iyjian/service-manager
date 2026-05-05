@@ -14,6 +14,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - host list should provide a copy-config action per host, and Add Host should support pasting one host config from clipboard into the form
    - user-facing buttons should pair their labels with local inline icons that match the action, rather than relying on remote icon assets
    - host dialog validation/import feedback must be shown inside the modal, and page-level notices should use top-right auto-dismiss toast messages rather than permanent inline text
+   - default desktop window size should be `1230 x 820`, while minimum window size remains `900 x 620`
 2. Service management under each host:
    - start command
    - start command editor in host modal must be full-width and multi-line so long shell commands stay practical to edit
@@ -71,18 +72,21 @@ Build a desktop Electron application to manage services on remote servers throug
      - each host block must be collapsible from the list page
      - the home page should not wrap the host list in an extra `Hosts` card; each host should be rendered as its own spaced container
      - host names should align to the left edge of the host container, with the host collapse control grouped with row actions rather than indenting the title
-     - home-page runtime rows should use the compact local monospace layout: colored name, scan-friendly port text, optional tunnel metadata, and contextual icon-only start/stop action
-     - when both lists exist, the home page should render tunnels as the left column and services as the right column for tighter density
+     - home-page runtime rows should use the compact local monospace layout: colored name, scan-friendly port text, optional tunnel metadata, and contextual power-icon start/stop action colored by runtime status
+     - every expanded host should always render two runtime columns: tunnels on the left and services on the right, even when one column is empty
+     - the runtime columns should be separated by a very light vertical divider
+     - runtime rows should use fixed proportional columns; tunnel/service names and ports align left inside their columns, and start/stop actions are centered
+     - runtime section titles and data rows should use fixed heights so left and right columns stay horizontally aligned
      - runtime status should be represented by tunnel/service name color instead of a separate status column
      - service PID should not be rendered as its own list column; clicking the service name opens the log dialog
      - port text should be easy to scan: tunnel and forwarded service rows use `L:<local> → R:<remote>`, while non-forwarded service rows use `:<exposedPort>`
      - port numbers should be right-aligned in fixed five-character slots to keep mappings vertically aligned
-     - runtime status colors are standardized: running `#22c55e`, stopped `#6b7280`, error `#ef4444`
+     - runtime status colors are standardized: running `#15803d`, stopped `#6b7280`, error `#ef4444`
      - `Tunnel List` and `Service List` should have clearly distinct visual section treatments inside the host block
      - `Tunnel List` and `Service List` section headers should not show standalone collapse arrows because the sections are not individually collapsible
      - section titles should carry slightly stronger typographic emphasis than table column headers so hierarchy remains clear in the compact layout
      - section titles should use local inline icons rather than remote icon assets, so packaging and offline usage stay self-contained
-     - when a host has no tunnels or no services, the empty section should be omitted instead of rendering a placeholder block
+     - empty tunnel/service columns should remain visible with compact empty states so the two-column structure stays stable
 6. Host edit page structure must follow same hierarchy:
    - Forwarding Rules section
    - Services section
@@ -96,6 +100,7 @@ Build a desktop Electron application to manage services on remote servers throug
    - GitHub Actions release workflow must build macOS / Windows / Linux artifacts and publish release
    - app must support auto update (`electron-updater`) with state broadcast to renderer
    - manual check update entry should be in app menu (`Check for Updates...`), not a dedicated quick-action button
+   - header update hint should stay hidden for `unsupported` and `up-to-date` states because the header already displays the app version
    - README must include unsigned macOS install guidance
 10. App icon assets:
    - base image at `assets/source.png`
