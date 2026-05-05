@@ -1,7 +1,7 @@
-import { promises as fs } from 'node:fs';
 import { Client, type ClientChannel } from 'ssh2';
 import type { HostConfig, ServiceConfig, ServiceLogsQuery, ServiceLogsResult, ServiceStatus } from '../shared/types';
-import { closeSshClients, connectSshChain, type SshEndpointConfig } from './sshChain';
+import { hostToEndpoint, jumpHostsToEndpoints } from './hostConnection';
+import { closeSshClients, connectSshChain } from './sshChain';
 
 interface SshResult {
   ok: boolean;
@@ -16,7 +16,7 @@ export interface StartResult {
   error?: string;
 }
 
-interface SystemdServiceState {
+export interface SystemdServiceState {
   exists: boolean;
   activeState?: string;
   subState?: string;
@@ -25,38 +25,8 @@ interface SystemdServiceState {
   invocationId?: string;
 }
 
-async function resolvePrivateKey(host: HostConfig): Promise<string | undefined> {
-  if (host.privateKey?.trim()) return host.privateKey;
-  if (!host.privateKeyPath) return undefined;
-  return fs.readFile(host.privateKeyPath, 'utf8');
-}
-
-async function buildTargetEndpoint(host: HostConfig): Promise<SshEndpointConfig> {
-  return {
-    sshHost: host.sshHost,
-    sshPort: host.sshPort,
-    username: host.username,
-    authType: host.authType,
-    password: host.password,
-    privateKey: await resolvePrivateKey(host),
-    passphrase: host.passphrase,
-  };
-}
-
-function buildJumpEndpoints(host: HostConfig): SshEndpointConfig[] {
-  return host.jumpHosts.map((jumpHost) => ({
-    sshHost: jumpHost.sshHost,
-    sshPort: jumpHost.sshPort,
-    username: jumpHost.username,
-    authType: jumpHost.authType,
-    password: jumpHost.password,
-    privateKey: jumpHost.privateKey,
-    passphrase: jumpHost.passphrase,
-  }));
-}
-
 async function connectTargetClient(host: HostConfig): Promise<{ targetClient: Client; jumpClients: Client[]; allClients: Client[] }> {
-  return connectSshChain(await buildTargetEndpoint(host), buildJumpEndpoints(host), {
+  return connectSshChain(await hostToEndpoint(host), jumpHostsToEndpoints(host), {
     readyTimeout: 10000,
     keepaliveInterval: 5000,
     keepaliveCountMax: 2,
@@ -139,15 +109,15 @@ function safeUnitFragment(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_.@-]/g, '_');
 }
 
-function buildSystemdUnitName(host: HostConfig, service: ServiceConfig): string {
+export function buildSystemdUnitName(host: HostConfig, service: ServiceConfig): string {
   return `service-manager-${safeUnitFragment(host.id)}-${safeUnitFragment(service.id)}.service`;
 }
 
-function shellQuoteSingle(raw: string): string {
+export function shellQuoteSingle(raw: string): string {
   return `'${raw.replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildManagedShellLauncher(command: string): string {
+export function buildManagedShellLauncher(command: string): string {
   const launcher = [
     'SHELL_BIN="${SHELL:-}"',
     'if [ -z "$SHELL_BIN" ] || [ ! -x "$SHELL_BIN" ]; then',
@@ -168,7 +138,7 @@ function buildManagedShellLauncher(command: string): string {
   return `/bin/bash -lc ${shellQuoteSingle(launcher)}`;
 }
 
-function parseSystemdState(raw: string): SystemdServiceState {
+export function parseSystemdState(raw: string): SystemdServiceState {
   const state: SystemdServiceState = { exists: true };
 
   for (const line of raw.split('\n')) {

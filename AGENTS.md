@@ -1,147 +1,115 @@
-# AGENTS Collaboration Guide
+# AGENTS Guide
 
-## Goal
+## Purpose
 
-Build a desktop Electron application to manage services on remote servers through SSH.
+Service Manager is an Electron + TypeScript desktop app for managing remote development hosts over SSH.
 
-## Current Product Scope
+It supports two host-scoped runtime resources:
 
-1. Host management with SSH connection configuration.
-   - Jump Servers are configured directly inside Add/Edit Host form as an ordered multi-hop chain.
-   - Deleting a host requires confirmation.
-   - creating or editing a host must only require host name and SSH connection info; empty forwarding-rule/service lists are valid
-   - page header should show the packaged app logo and current app version
-   - host list should provide a copy-config action per host, and Add Host should support pasting one host config from clipboard into the form
-   - user-facing buttons should pair their labels with local inline icons that match the action, rather than relying on remote icon assets
-   - host dialog validation/import feedback must be shown inside the modal, and page-level notices should use top-right auto-dismiss toast messages rather than permanent inline text
-   - default desktop window size should be `1230 x 820`, while minimum window size remains `900 x 620`
-2. Service management under each host:
-   - start command
-   - start command editor in host modal must be full-width and multi-line so long shell commands stay practical to edit
-   - exposed port (`0` means not exposed)
-   - optional local forward port
-3. Forwarding-rule management under each host (same capability model as `ssh-tunnel-manager`):
-   - optional rule name, shown in the host tunnel list when present
-   - local host / local port
-   - remote host / remote port
-   - auto-start flag
-   - runtime start/stop in list (delete handled in host edit form, with confirmation)
-   - tunnel status with reconnect countdown on error
-   - when a tunnel is running, its local endpoint should be rendered as a clickable link
-   - supports multi-hop jump-server chains when configured on the host
-   - Add/Edit Host should not create placeholder forwarding-rule or service rows automatically; users add rows only when needed
-4. Service status and runtime state:
-   - save PID on start
-   - service runtime is managed only through remote `systemd --user` transient units created by `systemd-run`
-   - systemd `active` means running; missing/inactive unit means stopped
-   - in-progress actions should surface explicit transition states (`starting` / `stopping`) instead of generic unknown
-   - show PID in service list
-   - click PID to view merged terminal-style logs (stdout + stderr), with auto refresh and ANSI color display
-   - capture logs as a single merged stream at source to preserve original output order
-   - clicking PID must read `journalctl --user` output for the unit's current invocation, so the panel always shows the logs for the currently managed process instance
-   - log dialog should occupy about 80% of the viewport and use a comfortably readable monospace size
-   - provide auto-scroll toggle in log dialog (default enabled); disabling keeps refresh but preserves manual scroll position
-   - while the log dialog is open, page scrolling should be locked so only the log viewport can scroll
-   - reaching the top of the log viewport should automatically load older lines for the current invocation instead of hard-capping history to the initial recent slice
-   - log refresh should avoid disrupting active text selection, so copying text is not interrupted by auto refresh
-   - log dialog should provide search with previous/next match navigation plus grep-like filtering that only shows matching lines
-   - log dialog is read-only (no start/stop/refresh buttons inside dialog)
-   - start should be non-blocking after systemd `MainPID` capture; startup port checks are post-start and must not delay PID/log availability
-   - transient systemd units must remain inspectable after exit/failure; do not use `systemd-run --collect`
-   - intentional `Stop` must settle back to `stopped`; if systemd briefly marks the unit failed because of the termination signal, the app should wait for deactivation and clear that failed state
-   - renderer must catch log open/refresh failures so missing targets or SSH errors do not escape as uncaught promise errors; surfaced failures should remain visible through the page toast
-   - dialog open/close paths must be idempotent; repeated clicks must not throw browser `InvalidStateError`
-   - if remote host lacks usable systemd user services, service actions must fail explicitly and tell the user to install/configure systemd instead of falling back to raw background processes
-5. Service actions in panel:
-   - start
-   - stop
-   - status refresh is automatic in background (no per-row refresh button)
-   - service delete is provided in host edit form (not in list row actions)
-   - start behavior is `systemd-run --user` transient unit creation; no raw shell background fallback
-   - managed service commands should be launched through the remote account's login shell so shell-managed runtime PATH initialization remains compatible with manual SSH usage
-   - stop behavior is `systemctl --user stop` on the transient unit; no configurable stop command
-   - if local forward port is configured, start/refresh should ensure SSH local port forwarding is active; stop/delete should close forwarding.
-   - if service exposed port is `0`, skip port-listen checks and disable service forwarding.
-   - Port column must visualize forward result when forward port is set:
-     - success: green check and clickable `http://127.0.0.1:<localPort>` link (opens via system default browser)
-     - failure: red cross indicator (with error hint)
-   - when forward local port is empty, treat forwarding as disabled (no forward attempt on start/refresh).
-   - Home page structure must be host-centric:
-     - each host is a top-level block
-     - each host contains `Tunnel List` and `Service List`
-     - each host block must be collapsible from the list page
-     - the home page should not wrap the host list in an extra `Hosts` card; each host should be rendered as its own spaced container
-     - host names should align to the left edge of the host container, with the host collapse control grouped with row actions rather than indenting the title
-     - host connection metadata and the runtime tunnel/service area should be separated by a subtle divider
-     - base UI font tokens should be raised by about 2px, with host names, runtime section titles, rows, status markers, and power buttons scaled together for clearer scanability
-     - home-page runtime rows should use the compact local monospace layout: colored name, scan-friendly port text, optional tunnel metadata, and contextual power-icon start/stop action colored by runtime status
-     - every expanded host should always render two runtime columns: tunnels on the left and services on the right, even when one column is empty
-     - the runtime columns should be separated by a very light vertical divider
-     - runtime rows should use fixed proportional columns; tunnel/service names and ports align left inside their columns, and start/stop actions are centered
-     - runtime section titles and data rows should use fixed heights so left and right columns stay horizontally aligned
-     - runtime status should be represented by tunnel/service name color instead of a separate status column
-     - service PID should not be rendered as its own list column; clicking the service name opens the log dialog
-     - port text should be easy to scan: tunnel and forwarded service rows use `L:<local> → R:<remote>`, while non-forwarded service rows use `:<exposedPort>`
-     - port numbers should be right-aligned in fixed five-character slots to keep mappings vertically aligned
-     - runtime status colors are standardized: running `#15803d`, stopped `#6b7280`, error `#ef4444`
-     - `Tunnel List` and `Service List` should have clearly distinct visual section treatments inside the host block
-     - `Tunnel List` and `Service List` section headers should not show standalone collapse arrows because the sections are not individually collapsible
-     - section titles should carry slightly stronger typographic emphasis than table column headers so hierarchy remains clear in the compact layout
-     - section titles should use local inline icons rather than remote icon assets, so packaging and offline usage stay self-contained
-     - empty tunnel/service columns should remain visible with compact empty states so the two-column structure stays stable
-6. Host edit page structure must follow same hierarchy:
-   - Forwarding Rules section
-   - Services section
-7. Config import/export must be available from home page quick actions:
-   - export current hosts/rules/services to JSON
-   - import JSON and replace current config
-   - imported IDs must be normalized for uniqueness
-8. Host private key auth supports key content input and key file import.
-   - private key import dialog should default to `~/.ssh` when available.
-9. Release and update pipeline:
-   - GitHub Actions release workflow must build macOS / Windows / Linux artifacts and publish release
-   - app must support auto update (`electron-updater`) with state broadcast to renderer
-   - manual check update entry should be in app menu (`Check for Updates...`), not a dedicated quick-action button
-   - header update hint should stay hidden for `unsupported` and `up-to-date` states because the header already displays the app version
-   - README must include unsigned macOS install guidance
-10. App icon assets:
-   - base image at `assets/source.png`
-   - generated icons (`assets/icon.*`) are used for runtime window icon and packaging
+- Forwarding rules: SSH local port forwards, aligned with `ssh-tunnel-manager`.
+- Services: remote processes managed through `systemd --user` transient units.
 
-## Alignment Requirement (with `ssh-tunnel-manager`)
+## Non-Negotiable Rules
 
-The project must stay aligned with `ssh-tunnel-manager` in this workspace for:
+- Keep the app aligned with `ssh-tunnel-manager` for English UI tone, modal host editing, grouped host lists, and `tsc` build-to-`dist` workflow.
+- Use `ssh2` for SSH connections and remote command execution; do not shell out to system `ssh`.
+- Keep `asn1` explicitly declared as a dependency.
+- Do not install dependencies yourself. If dependencies are needed, stop and ask the user to run `pnpm install`.
+- Important changes must update both `README.md` and `AGENTS.md` when they affect features, architecture, runtime behavior, command flow, data model, limits, or developer workflow.
+- Prefer incremental changes with tests.
 
-- UI style and interaction model
-  - header branding with quick actions
-  - grouped host/service list
-  - modal-based host creation/editing
-  - service creation/editing flow inside host modal
-- language tone in UI (English)
-- engineering approach
-  - TypeScript source
-  - `tsc` build to `dist`
-  - Electron runs compiled output from `dist`
+## Current Architecture
 
-## Working Constraints
+- `src/main/main.ts`: Electron app/window/menu wiring and IPC orchestration.
+- `src/main/validation.ts`: host, forwarding-rule, and service draft validation.
+- `src/main/configTransfer.ts`: config import/export parsing, counting, and imported-ID normalization.
+- `src/main/runtimeRegistry.ts`: in-memory service/forward runtime state and `HostView` assembly.
+- `src/main/operationQueue.ts`: per-host/service async serialization for service mutations.
+- `src/main/hostConnection.ts`: shared SSH endpoint and private-key resolution.
+- `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, status checks, and journal log access.
+- `src/main/portForwardManager.ts`: service-owned local port forwarding.
+- `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
+- `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
+- `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering.
+- `src/renderer/status.ts`: renderer status formatting and action-state helpers.
+- `src/shared/types.ts`: shared IPC/data contracts.
+- `tests/*.test.js`: Node built-in tests against compiled `dist` output.
 
-- If dependency installation is needed, stop and let the user run `pnpm install`.
-- Prefer incremental, testable changes.
-- SSH layer requirement:
-  - Must use `ssh2` for host connection and remote command execution.
-  - Keep `asn1` explicitly declared in dependencies for this project.
-- Remote-host documentation requirement:
-  - `README.md` must document the remote service-management preflight checks, including `systemd` tool availability, `systemctl --user` availability, lingering verification, and the `loginctl enable-linger` enablement command.
-- Runtime stability requirement:
-  - renderer must escape dynamic HTML text derived from host/service/error data before injecting into DOM
-  - renderer should surface caught runtime errors through the page toast instead of failing silently
-  - main process must log top-level runtime failures (`uncaughtException`, `unhandledRejection`, renderer-process exits) instead of failing silently
+## Runtime Model
 
-## Mandatory Documentation Rule
+Hosts:
 
-For every important change (features, architecture, data model, runtime behavior, command flow, limits):
+- Host creation/editing requires only name and SSH connection info.
+- Forwarding rules and services are optional and start empty.
+- Jump servers are configured inside Add/Edit Host as an ordered multi-hop chain.
+- Private-key auth supports pasted key content and imported key files; import should default to `~/.ssh` when possible.
 
-- Update `README.md`
-- Update `AGENTS.md`
+Forwarding rules:
 
-This rule is mandatory for ongoing development.
+- Match the `ssh-tunnel-manager` model: optional name, local host/port, remote host/port, auto-start, start/stop from list.
+- Use the host's jump-server chain when configured.
+- Running local endpoints should be clickable links opened by the system browser.
+- Runtime errors should expose status and reconnect countdown where applicable.
+
+Services:
+
+- Store only name, start command, exposed port, and optional local forward port.
+- Exposed port `0` means not exposed; skip port checks and disable service forwarding.
+- Start uses `systemd-run --user` transient units only. No raw background-process fallback.
+- Stop uses `systemctl --user stop`; there is no configurable stop command.
+- Commands must run through the remote account's login shell to preserve shell-managed PATH/runtime setup.
+- `systemd active` means running; missing/inactive units mean stopped.
+- Start should return once `MainPID` is available; port checks and forwarding are post-start work.
+- Do not use `systemd-run --collect`; failed/exited units must remain inspectable.
+- Intentional stop should settle to `stopped`, even if systemd briefly reports failed due to termination signal.
+- Service `start`, `stop`, background `refresh`, and `delete` must be serialized per host/service key.
+
+Logs:
+
+- Open logs from the service name in the list.
+- Read logs with `journalctl --user` for the current unit invocation.
+- Preserve stdout/stderr ordering as a single terminal-like stream.
+- Render ANSI colors, auto-refresh, auto-scroll toggle, older-line loading, search, and filter.
+- Log dialog is read-only and must catch failures without uncaught renderer promises.
+
+## UI Principles
+
+- UI language is English.
+- Home page is host-centric: each host is a top-level block with tunnel and service sections.
+- Host edit form follows the same hierarchy: forwarding rules, services, jump servers.
+- Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, power-icon start/stop actions.
+- Empty tunnel/service columns should keep the two-column layout stable.
+- Use local inline icons/assets only; do not depend on remote icon assets.
+- Page-level notices should be top-right auto-dismiss toasts. Modal validation/import feedback stays inside the modal.
+
+## Safety Requirements
+
+- Renderer must escape dynamic HTML derived from host, service, tunnel, log, or error data before injecting into the DOM.
+- Renderer runtime failures should be surfaced through page toasts instead of failing silently.
+- Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
+- Dialog open/close paths must be idempotent.
+- Missing remote `systemd --user` support must fail explicitly with setup guidance; never silently switch to an unmanaged process model.
+
+## Testing
+
+- Run `pnpm test` after behavioral or architecture changes.
+- `pnpm test` must build first, then run `node --test tests/*.test.js`.
+- Add `node:test` coverage for extracted pure logic, runtime orchestration helpers, import/export behavior, and command-building logic.
+- No extra test framework should be introduced unless there is a clear need and the user installs it.
+
+## Remote Host Documentation
+
+`README.md` must document the remote service preflight checklist:
+
+- `systemd-run`, `systemctl`, `journalctl`, and `loginctl` availability.
+- `systemctl --user` availability for the SSH account.
+- Lingering verification.
+- `sudo loginctl enable-linger <username>` setup command.
+
+## Release And Updates
+
+- GitHub Actions must build macOS, Windows, and Linux artifacts.
+- Auto update uses `electron-updater` with state broadcast to renderer.
+- Manual update check belongs in the app menu as `Check for Updates...`, not as a home-page quick action.
+- README must include unsigned macOS install/quarantine guidance.
+- Runtime/build icons come from `assets/source.png` and generated `assets/icon.*` files.

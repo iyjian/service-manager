@@ -48,7 +48,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - while start/stop command is in progress: `starting` / `stopping`
    - start flow uses `systemd-run --user` and returns as soon as `MainPID` is available; port-listen/forward checks are handled asynchronously by refresh cycle.
    - when service `exposed port` is `0`, app skips port listen checks and disables service forwarding.
-6. Service list shows `status` and `pid`; clicking PID opens a terminal-like log view.
+6. Service runtime stores the current `pid`; clicking the service name opens a terminal-like log view.
    - log view uses a single panel (stdout + stderr merged), supports ANSI color rendering and auto refresh.
    - logs are read from `journalctl --user` for the current systemd invocation, so the panel always shows the logs for the unit instance currently managed by the app.
    - log view opens as a larger dedicated dialog (about 80% of the viewport) with a slightly larger monospace font for easier reading.
@@ -87,6 +87,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
    - the managed command is launched through the remote account's login shell so user-level PATH/runtime initialization (for example `nvm`, `conda`, shell-managed Node/Yarn installs) is closer to an interactive SSH session.
    - `Stop` uses `systemctl --user stop` on that transient unit; there is no stop-command config and no legacy PID-group fallback.
+   - service `Start` / `Stop` / background `Refresh` / `Delete` operations are serialized per host/service key, so a background refresh cannot race a user action and overwrite its transition state.
    - only `Start` / `Stop` remain in list actions; service delete is handled in host edit form.
    - when service is running and `forward local port` is configured, app auto creates SSH local port forwarding (`127.0.0.1:<local>` -> `remote:exposedPort`); forwarding is closed when service stops.
    - when `exposed port` is `0`, forwarding is disabled even if forward local port is filled.
@@ -112,10 +113,20 @@ This project is now aligned with the **UI style** and **development approach** o
 
 ## Project Structure
 
-- `src/main/*.ts`: main process, IPC, persistence, SSH execution
+- `src/main/main.ts`: Electron app/window/menu wiring and IPC orchestration
 - `src/main/preload.ts`: secure renderer bridge
-- `src/renderer/*`: UI and interaction logic
+- `src/main/validation.ts`: host/forward/service draft validation and runtime-field preservation
+- `src/main/configTransfer.ts`: config import/export parsing, counting, and imported-ID normalization
+- `src/main/runtimeRegistry.ts`: in-memory service/forward runtime state and `HostView` assembly
+- `src/main/operationQueue.ts`: per-key async queue used to serialize service mutations
+- `src/main/hostConnection.ts`: shared SSH endpoint/private-key resolution for service, tunnel, and forwarding paths
+- `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
+- `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime
+- `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
+- `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering helpers
+- `src/renderer/status.ts`: shared renderer status formatting and action-state helpers
 - `src/shared/types.ts`: shared type contracts
+- `tests/*.test.js`: Node built-in test runner coverage for extracted main-process pure/runtime helpers
 - `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build
 - `dist/*`: compiled output (generated)
 
@@ -130,6 +141,7 @@ Build & run workflow:
 
 - `pnpm build` -> compile TS and copy renderer assets to `dist`
 - `pnpm dev` / `pnpm start` -> run Electron using `dist/main/main.js`
+- `pnpm test` -> build first, then run `node --test tests/*.test.js`
 
 ## Build Packaging
 
@@ -271,6 +283,8 @@ journalctl --user -u <unit-name> -n 200 --no-pager
 - The app persists the latest `MainPID` reported by systemd for display and refresh, but start/stop/log ownership is defined by the transient unit, not by a log file path or `kill -0`.
 - Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page toast, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
 - Main process now logs top-level `uncaughtException` / `unhandledRejection`, renderer-process exits, and IPC broadcast failures to make crash diagnosis visible.
+- Main-process validation, config transfer, runtime-state assembly, SSH endpoint resolution, and service-operation serialization are split into focused modules so they can be tested without launching Electron.
+- Unit tests use Node's built-in test runner against compiled `dist/main/*` output; no extra test framework dependency is required.
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section
   - Services section

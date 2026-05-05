@@ -1,22 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type {
-  AuthType,
   ConfigTransferResult,
   ConfirmDialogOptions,
-  ForwardRule,
-  ForwardRuleDraft,
   ForwardState,
   HostConfig,
   HostDraft,
-  HostView,
-  JumpHostConfig,
   PrivateKeyImportResult,
   ServiceLogsResult,
-  ServiceConfig,
-  ServiceDraft,
   ServiceStatus,
   TunnelStatusChange,
   UpdateState,
@@ -24,8 +16,19 @@ import type {
 import { ServiceStore } from './store';
 import { checkServiceStatus, getServiceLogs, startService, stopService } from './serviceRuntime';
 import { PortForwardManager } from './portForwardManager';
-import { TunnelManager, type ForwardRuntimeConfig } from './tunnelManager';
+import { TunnelManager } from './tunnelManager';
 import { AppUpdater } from './updater';
+import { forwardToRuntimeConfig } from './hostConnection';
+import { KeyedOperationQueue } from './operationQueue';
+import {
+  countRules,
+  countServices,
+  ensureUniqueImportedIds,
+  type ExportedConfigFile,
+  parseImportedHostDrafts,
+} from './configTransfer';
+import { RuntimeRegistry } from './runtimeRegistry';
+import { preserveServiceRuntimeFields, validateHostDraft } from './validation';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -53,27 +56,10 @@ const IPC_CHANNELS = {
   updateState: 'updater:state',
 } as const;
 
-interface SshEndpointDraft {
-  sshHost: string;
-  sshPort: number | string;
-  username: string;
-  authType: AuthType;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
-}
-
-interface ExportedConfigFile {
-  schemaVersion: number;
-  exportedAt: string;
-  app: string;
-  hosts: HostConfig[];
-}
-
-const runtimeStatus = new Map<string, { status: ServiceStatus; pid?: number; error?: string; updatedAt?: string }>();
-const runtimeForwardStatus = new Map<string, { state: ForwardState; error?: string }>();
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
+const runtimeRegistry = new RuntimeRegistry();
+const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
 const updater = new AppUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
@@ -210,233 +196,18 @@ function applyAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function getStatus(
-  hostId: string,
-  serviceId: string,
-  defaultPid?: number
-): { status: ServiceStatus; pid?: number; error?: string; updatedAt?: string } {
-  const status = runtimeStatus.get(serviceKey(hostId, serviceId));
-  return {
-    status: status?.status ?? (defaultPid ? 'running' : 'stopped'),
-    pid: status?.pid ?? defaultPid,
-    error: status?.error,
-    updatedAt: status?.updatedAt,
-  };
-}
-
-function getForwardStatus(hostId: string, serviceId: string): { state: ForwardState; error?: string } {
-  return runtimeForwardStatus.get(serviceKey(hostId, serviceId)) ?? { state: 'none' };
-}
-
-function toView(hosts: HostConfig[]): HostView[] {
-  return hosts.map((host) => ({
-    ...host,
-    forwards: host.forwards.map((forward) => {
-      const status = tunnelManager.getStatus(forward.id);
-      return {
-        ...forward,
-        status: status.status,
-        error: status.error,
-        reconnectAt: status.reconnectAt,
-      };
-    }),
-    services: host.services.map((service) => {
-      const status = getStatus(host.id, service.id, service.pid);
-      const forward = getForwardStatus(host.id, service.id);
-      return {
-        ...service,
-        status: status.status,
-        pid: status.pid,
-        error: status.error,
-        updatedAt: status.updatedAt,
-        forwardState: service.forwardLocalPort && service.port > 0 ? forward.state : 'none',
-        forwardError: service.forwardLocalPort && service.port > 0 ? forward.error : undefined,
-      };
-    }),
-  }));
-}
-
-function validateForwardDraft(input: ForwardRuleDraft): ForwardRule {
-  const forward: ForwardRule = {
-    id: input.id?.trim() || randomUUID(),
-    name: input.name?.trim() || undefined,
-    localHost: input.localHost.trim(),
-    localPort: Number(input.localPort),
-    remoteHost: input.remoteHost.trim(),
-    remotePort: Number(input.remotePort),
-    autoStart: Boolean(input.autoStart),
-  };
-
-  if (!forward.localHost) throw new Error('Forward local host is required.');
-  if (!forward.remoteHost) throw new Error('Forward remote host is required.');
-  if (!Number.isInteger(forward.localPort) || forward.localPort < 1 || forward.localPort > 65535) {
-    throw new Error('Forward local port must be an integer in range 1-65535.');
-  }
-  if (!Number.isInteger(forward.remotePort) || forward.remotePort < 1 || forward.remotePort > 65535) {
-    throw new Error('Forward remote port must be an integer in range 1-65535.');
-  }
-
-  return forward;
-}
-
-function validateServiceDraft(input: ServiceDraft): ServiceConfig {
-  const service: ServiceConfig = {
-    id: input.id?.trim() || randomUUID(),
-    name: input.name.trim(),
-    startCommand: input.startCommand.trim(),
-    port: Number(input.port),
-    forwardLocalPort: input.forwardLocalPort ? Number(input.forwardLocalPort) : undefined,
-    pid: undefined,
-  };
-
-  if (!service.name) throw new Error('Service name is required.');
-  if (!service.startCommand) throw new Error('Service start command is required.');
-  if (!Number.isInteger(service.port) || service.port < 0 || service.port > 65535) {
-    throw new Error('Service port must be an integer in range 0-65535.');
-  }
-  if (
-    service.forwardLocalPort !== undefined &&
-    (!Number.isInteger(service.forwardLocalPort) || service.forwardLocalPort < 1 || service.forwardLocalPort > 65535)
-  ) {
-    throw new Error('Forward local port must be an integer in range 1-65535.');
-  }
-  if (service.port === 0) {
-    service.forwardLocalPort = undefined;
-  }
-
-  return service;
-}
-
-function validateSshEndpoint(
-  input: SshEndpointDraft,
-  scope: 'target' | 'jump',
-  options?: { allowMissingPrivateKey?: boolean; label?: string }
-): JumpHostConfig {
-  const label = options?.label ?? (scope === 'target' ? 'Target' : 'Jump host');
-  const endpoint: JumpHostConfig = {
-    sshHost: input.sshHost.trim(),
-    sshPort: Number(input.sshPort),
-    username: input.username.trim(),
-    authType: input.authType,
-    password: input.password,
-    privateKey: input.privateKey,
-    passphrase: input.passphrase,
-  };
-
-  if (!endpoint.sshHost) throw new Error(`${label} SSH host is required.`);
-  if (!endpoint.username) throw new Error(`${label} SSH username is required.`);
-  if (!Number.isInteger(endpoint.sshPort) || endpoint.sshPort < 1 || endpoint.sshPort > 65535) {
-    throw new Error(`${label} SSH port must be an integer in range 1-65535.`);
-  }
-
-  if (endpoint.authType === 'password') {
-    if (!endpoint.password) throw new Error(`${label} password is required for password auth.`);
-    endpoint.privateKey = undefined;
-    endpoint.passphrase = undefined;
-  } else {
-    if (!endpoint.privateKey?.trim() && !options?.allowMissingPrivateKey) {
-      throw new Error(`${label} private key is required for private key auth.`);
-    }
-    endpoint.password = undefined;
-  }
-
-  return endpoint;
-}
-
-function validateHostDraft(input: HostDraft): HostConfig {
-  const target = validateSshEndpoint(
-    {
-      sshHost: input.sshHost,
-      sshPort: input.sshPort,
-      username: input.username,
-      authType: input.authType,
-      password: input.password,
-      privateKey: input.privateKey,
-      passphrase: input.passphrase,
-    },
-    'target',
-    { allowMissingPrivateKey: Boolean(input.privateKeyPath) }
-  );
-
-  const rawJumpHosts = Array.isArray(input.jumpHosts)
-    ? input.jumpHosts
-    : input.jumpHost
-      ? [input.jumpHost]
-      : [];
-
-  const host: HostConfig = {
-    id: input.id?.trim() || randomUUID(),
-    name: input.name.trim(),
-    sshHost: target.sshHost,
-    sshPort: target.sshPort,
-    username: target.username,
-    authType: target.authType,
-    password: target.password,
-    privateKey: target.privateKey,
-    passphrase: target.passphrase,
-    privateKeyPath: input.privateKeyPath?.trim() || undefined,
-    jumpHosts: rawJumpHosts.map((jumpHost, index) =>
-      validateSshEndpoint(jumpHost, 'jump', { allowMissingPrivateKey: false, label: `Jump server ${index + 1}` })
-    ),
-    forwards: (input.forwards ?? []).map((forward) => validateForwardDraft(forward)),
-    services: (input.services ?? []).map((service) => validateServiceDraft(service)),
-  };
-
-  if (!host.name) throw new Error('Host name is required.');
-  if (host.authType === 'privateKey' && !host.privateKey?.trim() && !host.privateKeyPath) {
-    throw new Error('Target private key is required when auth type is private key.');
-  }
-
-  return host;
-}
-
-function preserveServiceRuntimeFields(previous: HostConfig | undefined, next: HostConfig): HostConfig {
-  if (!previous) {
-    return next;
-  }
-
-  const previousById = new Map(previous.services.map((service) => [service.id, service]));
-  return {
-    ...next,
-    services: next.services.map((service) => {
-      const old = previousById.get(service.id);
-      if (!old) {
-        return service;
-      }
-
-      const sameRuntimeShape = old.startCommand === service.startCommand && old.port === service.port;
-      if (!sameRuntimeShape) {
-        return service;
-      }
-
-      return {
-        ...service,
-        pid: old.pid,
-      };
-    }),
-  };
+function toView(hosts: HostConfig[]) {
+  return runtimeRegistry.toView(hosts, (forwardId) => tunnelManager.getStatus(forwardId));
 }
 
 function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pid?: number, error?: string): void {
-  const forward = getForwardStatus(hostId, serviceId);
-  const payload = {
-    hostId,
-    serviceId,
-    status,
-    pid,
-    error,
-    updatedAt: new Date().toISOString(),
-    forwardState: forward.state,
-    forwardError: forward.error,
-  };
-  runtimeStatus.set(serviceKey(hostId, serviceId), payload);
+  const payload = runtimeRegistry.setServiceStatus(hostId, serviceId, status, pid, error);
   broadcast(IPC_CHANNELS.serviceStatusChanged, payload);
 }
 
 function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string): void {
-  runtimeForwardStatus.set(serviceKey(hostId, serviceId), { state, error });
-  const current = runtimeStatus.get(serviceKey(hostId, serviceId));
-  emitStatus(hostId, serviceId, current?.status ?? 'unknown', current?.pid, current?.error);
+  const current = runtimeRegistry.setServiceForwardStatus(hostId, serviceId, state, error);
+  emitStatus(hostId, serviceId, current.status, current.pid, current.error);
 }
 
 function logRuntimeError(scope: string, error: unknown, context?: Record<string, unknown>): void {
@@ -507,35 +278,6 @@ function syncKnownForwards(hosts: HostConfig[]): void {
   }
 }
 
-async function resolveHostPrivateKey(host: HostConfig): Promise<string | undefined> {
-  if (host.privateKey?.trim()) return host.privateKey;
-  if (!host.privateKeyPath) return undefined;
-  return fs.readFile(host.privateKeyPath, 'utf8');
-}
-
-async function toRuntimeConfig(host: HostConfig, forward: ForwardRule): Promise<ForwardRuntimeConfig> {
-  const jumpHosts = host.jumpHosts.map((jumpHost) => ({
-    ...jumpHost,
-    privateKey: jumpHost.authType === 'privateKey' ? jumpHost.privateKey : undefined,
-  }));
-
-  return {
-    id: forward.id,
-    sshHost: host.sshHost,
-    sshPort: host.sshPort,
-    username: host.username,
-    authType: host.authType,
-    password: host.password,
-    privateKey: await resolveHostPrivateKey(host),
-    passphrase: host.passphrase,
-    jumpHosts,
-    localHost: forward.localHost,
-    localPort: forward.localPort,
-    remoteHost: forward.remoteHost,
-    remotePort: forward.remotePort,
-  };
-}
-
 async function stopAllHostRules(host: HostConfig): Promise<void> {
   await Promise.all(host.forwards.map((forward) => tunnelManager.stop(forward.id)));
 }
@@ -554,65 +296,12 @@ async function autoStartHostRules(host: HostConfig): Promise<void> {
   for (const forward of host.forwards) {
     if (!forward.autoStart) continue;
     try {
-      const config = await toRuntimeConfig(host, forward);
+      const config = await forwardToRuntimeConfig(host, forward);
       void tunnelManager.start(config).catch(() => undefined);
     } catch (error) {
       logRuntimeError('forward:auto-start', error, { hostId: host.id, forwardId: forward.id });
     }
   }
-}
-
-function countRules(hosts: HostConfig[]): number {
-  return hosts.reduce((total, host) => total + host.forwards.length, 0);
-}
-
-function countServices(hosts: HostConfig[]): number {
-  return hosts.reduce((total, host) => total + host.services.length, 0);
-}
-
-function parseImportedHostDrafts(data: unknown): HostDraft[] {
-  if (Array.isArray(data)) {
-    return data as HostDraft[];
-  }
-  if (data && typeof data === 'object') {
-    const hosts = (data as { hosts?: unknown }).hosts;
-    if (Array.isArray(hosts)) {
-      return hosts as HostDraft[];
-    }
-  }
-  throw new Error('Invalid config file format. Expected an array of hosts or an object with "hosts".');
-}
-
-function ensureUniqueImportedIds(hosts: HostConfig[]): HostConfig[] {
-  const hostIds = new Set<string>();
-  const forwardIds = new Set<string>();
-  const serviceIdsByHost = new Map<string, Set<string>>();
-
-  return hosts.map((host) => {
-    const nextHostId = host.id && !hostIds.has(host.id) ? host.id : randomUUID();
-    hostIds.add(nextHostId);
-
-    const forwards = host.forwards.map((forward) => {
-      const nextForwardId = forward.id && !forwardIds.has(forward.id) ? forward.id : randomUUID();
-      forwardIds.add(nextForwardId);
-      return { ...forward, id: nextForwardId };
-    });
-
-    const serviceIds = serviceIdsByHost.get(nextHostId) ?? new Set<string>();
-    serviceIdsByHost.set(nextHostId, serviceIds);
-    const services = host.services.map((service) => {
-      const nextServiceId = service.id && !serviceIds.has(service.id) ? service.id : randomUUID();
-      serviceIds.add(nextServiceId);
-      return { ...service, id: nextServiceId };
-    });
-
-    return {
-      ...host,
-      id: nextHostId,
-      forwards,
-      services,
-    };
-  });
 }
 
 function registerIpcHandlers(): void {
@@ -786,9 +475,11 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.deleteService, async (_event, payload: { hostId: string; serviceId: string }) => {
-    await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
-    emitForwardStatus(payload.hostId, payload.serviceId, 'none');
-    await getStore().removeService(payload.hostId, payload.serviceId);
+    await serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
+      await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
+      emitForwardStatus(payload.hostId, payload.serviceId, 'none');
+      await getStore().removeService(payload.hostId, payload.serviceId);
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.deleteForward, async (_event, payload: { hostId: string; forwardId: string }) => {
@@ -825,7 +516,7 @@ function registerIpcHandlers(): void {
     const forward = host.forwards.find((item) => item.id === payload.forwardId);
     if (!forward) throw new Error('Forward rule not found.');
 
-    const config = await toRuntimeConfig(host, forward);
+    const config = await forwardToRuntimeConfig(host, forward);
     await tunnelManager.start(config);
   });
 
@@ -839,107 +530,113 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.refreshService, async (_event, payload: { hostId: string; serviceId: string }) => {
-    try {
-      const host = getStore().findHostById(payload.hostId);
-      if (!host) throw new Error('Host not found.');
-      const service = host.services.find((item) => item.id === payload.serviceId);
-      if (!service) throw new Error('Service not found.');
-      const currentState = runtimeStatus.get(serviceKey(host.id, service.id));
-
-      const result = await checkServiceStatus(host, service);
-      if (currentState?.status === 'starting' && result.status === 'stopped') {
-        emitStatus(host.id, service.id, 'starting', service.pid);
-        return;
-      }
-      if (result.pid && result.pid !== service.pid) {
-        service.pid = result.pid;
-        await getStore().upsertHost(host);
-      }
-      if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
-        try {
-          await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-          emitForwardStatus(host.id, service.id, 'ok');
-        } catch (error) {
-          logRuntimeError('port-forward:start', error, {
-            hostId: host.id,
-            serviceId: service.id,
-            localPort: service.forwardLocalPort,
-            remotePort: service.port,
-          });
-          emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
-        }
-      } else if (!service.forwardLocalPort || service.port === 0) {
-        emitForwardStatus(host.id, service.id, 'none');
-      }
-      if (result.status === 'stopped' && service.pid) {
-        await portForwardManager.stop(serviceForwardKey(host.id, service.id));
-        emitForwardStatus(host.id, service.id, 'none');
-        service.pid = undefined;
-        await getStore().upsertHost(host);
-      }
-      emitStatus(host.id, service.id, result.status, service.pid, result.error);
-    } catch (error) {
-      logRuntimeError('service:refresh', error, payload);
-      throw error;
-    }
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.startService,
-    async (_event, payload: { hostId: string; serviceId: string }) => {
+    return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
       try {
         const host = getStore().findHostById(payload.hostId);
         if (!host) throw new Error('Host not found.');
         const service = host.services.find((item) => item.id === payload.serviceId);
         if (!service) throw new Error('Service not found.');
+        const currentState = runtimeRegistry.getServiceStatus(host.id, service.id, service.pid);
 
-        emitStatus(host.id, service.id, 'starting');
-        const ret = await startService(host, service);
-        if (!ret.ok) {
-          logRuntimeError('service:start', ret.error ?? 'unknown start failure', payload);
-          emitStatus(host.id, service.id, 'error', undefined, ret.error);
+        const result = await checkServiceStatus(host, service);
+        if (currentState?.status === 'starting' && result.status === 'stopped') {
+          emitStatus(host.id, service.id, 'starting', service.pid);
           return;
         }
-
-        service.pid = ret.pid;
-        await getStore().upsertHost(host);
-        if (!service.forwardLocalPort || service.port === 0) {
+        if (result.pid && result.pid !== service.pid) {
+          service.pid = result.pid;
+          await getStore().upsertHost(host);
+        }
+        if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
+          try {
+            await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+            emitForwardStatus(host.id, service.id, 'ok');
+          } catch (error) {
+            logRuntimeError('port-forward:start', error, {
+              hostId: host.id,
+              serviceId: service.id,
+              localPort: service.forwardLocalPort,
+              remotePort: service.port,
+            });
+            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
+          }
+        } else if (!service.forwardLocalPort || service.port === 0) {
           emitForwardStatus(host.id, service.id, 'none');
         }
-        emitStatus(host.id, service.id, 'running', service.pid);
+        if (result.status === 'stopped' && service.pid) {
+          await portForwardManager.stop(serviceForwardKey(host.id, service.id));
+          emitForwardStatus(host.id, service.id, 'none');
+          service.pid = undefined;
+          await getStore().upsertHost(host);
+        }
+        emitStatus(host.id, service.id, result.status, service.pid, result.error);
       } catch (error) {
-        logRuntimeError('service:start', error, payload);
+        logRuntimeError('service:refresh', error, payload);
         throw error;
       }
+    });
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.startService,
+    async (_event, payload: { hostId: string; serviceId: string }) => {
+      return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
+        try {
+          const host = getStore().findHostById(payload.hostId);
+          if (!host) throw new Error('Host not found.');
+          const service = host.services.find((item) => item.id === payload.serviceId);
+          if (!service) throw new Error('Service not found.');
+
+          emitStatus(host.id, service.id, 'starting');
+          const ret = await startService(host, service);
+          if (!ret.ok) {
+            logRuntimeError('service:start', ret.error ?? 'unknown start failure', payload);
+            emitStatus(host.id, service.id, 'error', undefined, ret.error);
+            return;
+          }
+
+          service.pid = ret.pid;
+          await getStore().upsertHost(host);
+          if (!service.forwardLocalPort || service.port === 0) {
+            emitForwardStatus(host.id, service.id, 'none');
+          }
+          emitStatus(host.id, service.id, 'running', service.pid);
+        } catch (error) {
+          logRuntimeError('service:start', error, payload);
+          throw error;
+        }
+      });
     }
   );
 
   ipcMain.handle(
     IPC_CHANNELS.stopService,
     async (_event, payload: { hostId: string; serviceId: string }) => {
-      try {
-        const host = getStore().findHostById(payload.hostId);
-        if (!host) throw new Error('Host not found.');
-        const service = host.services.find((item) => item.id === payload.serviceId);
-        if (!service) throw new Error('Service not found.');
+      return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
+        try {
+          const host = getStore().findHostById(payload.hostId);
+          if (!host) throw new Error('Host not found.');
+          const service = host.services.find((item) => item.id === payload.serviceId);
+          if (!service) throw new Error('Service not found.');
 
-        emitStatus(host.id, service.id, 'stopping', service.pid);
-        const ret = await stopService(host, service);
-        if (!ret.ok) {
-          logRuntimeError('service:stop', ret.error ?? 'unknown stop failure', payload);
-          emitStatus(host.id, service.id, 'error', service.pid, ret.error);
-          return;
+          emitStatus(host.id, service.id, 'stopping', service.pid);
+          const ret = await stopService(host, service);
+          if (!ret.ok) {
+            logRuntimeError('service:stop', ret.error ?? 'unknown stop failure', payload);
+            emitStatus(host.id, service.id, 'error', service.pid, ret.error);
+            return;
+          }
+
+          await portForwardManager.stop(serviceForwardKey(host.id, service.id));
+          emitForwardStatus(host.id, service.id, 'none');
+          service.pid = undefined;
+          await getStore().upsertHost(host);
+          emitStatus(host.id, service.id, 'stopped', undefined);
+        } catch (error) {
+          logRuntimeError('service:stop', error, payload);
+          throw error;
         }
-
-        await portForwardManager.stop(serviceForwardKey(host.id, service.id));
-        emitForwardStatus(host.id, service.id, 'none');
-        service.pid = undefined;
-        await getStore().upsertHost(host);
-        emitStatus(host.id, service.id, 'stopped', undefined);
-      } catch (error) {
-        logRuntimeError('service:stop', error, payload);
-        throw error;
-      }
+      });
     }
   );
 

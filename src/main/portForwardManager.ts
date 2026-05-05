@@ -1,8 +1,8 @@
 import net from 'node:net';
-import { promises as fs } from 'node:fs';
 import { Client } from 'ssh2';
 import type { HostConfig, ServiceConfig } from '../shared/types';
-import { closeSshClients, connectSshChain, type SshEndpointConfig } from './sshChain';
+import { hostToEndpoint, jumpHostsToEndpoints } from './hostConnection';
+import { closeSshClients, connectSshChain } from './sshChain';
 
 interface RunningForward {
   targetClient: Client;
@@ -29,8 +29,8 @@ export class PortForwardManager {
     }
 
     const { targetClient, jumpClients } = await connectSshChain(
-      await this.toConnectableEndpoint(host),
-      host.jumpHosts.map((jumpHost) => this.toConnectableJumpEndpoint(jumpHost)),
+      await hostToEndpoint(host),
+      jumpHostsToEndpoints(host),
       {
         readyTimeout: 20000,
         keepaliveInterval: 10000,
@@ -128,34 +128,5 @@ export class PortForwardManager {
 
   async stopAll(): Promise<void> {
     await this.stopMany([...this.running.keys()]);
-  }
-
-  private async toConnectableEndpoint(host: HostConfig): Promise<SshEndpointConfig> {
-    const privateKey = host.privateKey?.trim()
-      ? host.privateKey
-      : host.privateKeyPath
-        ? await fs.readFile(host.privateKeyPath, 'utf8')
-        : undefined;
-    return {
-      sshHost: host.sshHost,
-      sshPort: host.sshPort,
-      username: host.username,
-      authType: host.authType,
-      password: host.password,
-      privateKey,
-      passphrase: host.passphrase,
-    };
-  }
-
-  private toConnectableJumpEndpoint(jumpHost: HostConfig['jumpHosts'][number]): SshEndpointConfig {
-    return {
-      sshHost: jumpHost.sshHost,
-      sshPort: jumpHost.sshPort,
-      username: jumpHost.username,
-      authType: jumpHost.authType,
-      password: jumpHost.password,
-      privateKey: jumpHost.privateKey,
-      passphrase: jumpHost.passphrase,
-    };
   }
 }

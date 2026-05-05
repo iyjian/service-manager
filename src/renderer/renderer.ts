@@ -10,6 +10,16 @@ import type {
   TunnelStatus,
   UpdateState,
 } from '../shared/types';
+import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
+import {
+  canStartForward,
+  canStartService,
+  canStopForward,
+  canStopService,
+  formatStatus,
+  runtimeStatusMarker,
+  statusClass,
+} from './status.js';
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -136,10 +146,6 @@ function logRendererError(scope: string, error: unknown, context?: Record<string
 function reportRendererError(scope: string, error: unknown, fallbackMessage?: string): void {
   logRendererError(scope, error);
   setMessage(fallbackMessage ?? toErrorMessage(error), 'error');
-}
-
-function escapeAttribute(text: string): string {
-  return escapeHtml(text).replace(/\n/g, '&#10;');
 }
 
 function safeValue(value: string | number | undefined): string {
@@ -303,29 +309,6 @@ function setHostDialogMessage(text: string, level: MessageLevel = 'default'): vo
 
 function clearHostDialogMessage(): void {
   renderMessage(hostDialogMessageView, '', 'default');
-}
-
-function statusClass(status: ServiceStatus | TunnelStatus): string {
-  if (status === 'running') return 'status-running';
-  if (status === 'error') return 'status-error';
-  if (status === 'starting' || status === 'stopping') return 'status-transition';
-  return 'status-stopped';
-}
-
-function canStartService(status: ServiceStatus): boolean {
-  return status === 'stopped' || status === 'error';
-}
-
-function canStopService(status: ServiceStatus): boolean {
-  return status === 'running' || status === 'starting';
-}
-
-function canStartForward(status: TunnelStatus): boolean {
-  return status === 'stopped' || status === 'error';
-}
-
-function canStopForward(status: TunnelStatus): boolean {
-  return status === 'running' || status === 'starting';
 }
 
 function toggleAuthFields(): void {
@@ -1567,57 +1550,6 @@ async function loadServiceLogs(options: { reason?: LogLoadReason; lineLimit?: nu
   }
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function ansiToHtml(input: string): string {
-  const tokenRegex = /\x1b\[([0-9;]*)m/g;
-  let currentClasses: string[] = [];
-  let lastIndex = 0;
-  let html = '';
-
-  const appendChunk = (chunk: string): void => {
-    if (!chunk) return;
-    const escaped = escapeHtml(chunk);
-    if (currentClasses.length === 0) {
-      html += escaped;
-      return;
-    }
-    html += `<span class="${currentClasses.join(' ')}">${escaped}</span>`;
-  };
-
-  let match: RegExpExecArray | null;
-  while ((match = tokenRegex.exec(input)) !== null) {
-    appendChunk(input.slice(lastIndex, match.index));
-    lastIndex = tokenRegex.lastIndex;
-
-    const codes = (match[1] || '0').split(';').map((v) => Number(v || '0'));
-    for (const code of codes) {
-      if (code === 0) {
-        currentClasses = [];
-        continue;
-      }
-      if (code === 1) {
-        if (!currentClasses.includes('ansi-bold')) currentClasses.push('ansi-bold');
-        continue;
-      }
-      if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-        currentClasses = currentClasses.filter((c) => !c.startsWith('ansi-fg-'));
-        currentClasses.push(`ansi-fg-${code}`);
-      }
-    }
-  }
-
-  appendChunk(input.slice(lastIndex));
-  return html.replace(/\n/g, '<br/>');
-}
-
 function startLogAutoRefresh(): void {
   if (logAutoRefreshTimer !== null) {
     window.clearInterval(logAutoRefreshTimer);
@@ -1687,14 +1619,6 @@ function bindHostActions(root: ParentNode, host: HostView): void {
       setMessage(`Delete host failed: ${(error as Error).message}`, 'error');
     }
   });
-}
-
-function formatStatus(status: string): string {
-  return status.toUpperCase();
-}
-
-function runtimeStatusMarker(status: ServiceStatus | TunnelStatus): string {
-  return status === 'stopped' || status === 'unknown' ? '○' : '●';
 }
 
 function renderPortNumber(port: number): string {
