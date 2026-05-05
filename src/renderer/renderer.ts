@@ -824,18 +824,20 @@ function applyStaticButtonIcons(): void {
 function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
   const iconMarkup = kind === 'tunnel'
     ? `
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="4" cy="5" r="1.5"></circle>
-        <circle cx="12" cy="11" r="1.5"></circle>
-        <path d="M5.5 5h2a2.5 2.5 0 0 1 2.5 2.5V8"></path>
-        <path d="M10.5 11h-2A2.5 2.5 0 0 1 6 8.5V8"></path>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 18v-4.25a8 8 0 0 1 16 0V18"></path>
+        <path d="M7.25 18v-4.25a4.75 4.75 0 0 1 9.5 0V18"></path>
+        <path d="M3.5 18.5h17"></path>
+        <path d="M12 18v-6"></path>
+        <path d="M9.75 15.25h4.5"></path>
       </svg>
     `
     : `
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="2.5" y="3" width="11" height="10" rx="2"></rect>
-        <path d="M5 6.25 7 8 5 9.75"></path>
-        <path d="M8.75 9.75H11"></path>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="4" y="5" width="16" height="14" rx="2.4"></rect>
+        <path d="M7.5 9.25 10.25 12 7.5 14.75"></path>
+        <path d="M12.25 15h4.25"></path>
+        <circle cx="17" cy="9" r="1.15" fill="currentColor" stroke="none"></circle>
       </svg>
     `;
   return `
@@ -1745,16 +1747,21 @@ function renderRuntimeActionButton(
   disabled: boolean,
   status: ServiceStatus | TunnelStatus
 ): string {
+  const actionKind = action.startsWith('start') ? 'start' : 'stop';
+  const isBusy = status === 'starting' || status === 'stopping';
   return `
     <button
-      class="runtime-action-btn ${statusClass(status)}"
+      class="runtime-action-btn runtime-action-btn-${actionKind} ${statusClass(status)}${isBusy ? ' is-busy' : ''}"
       type="button"
       data-action="${escapeAttribute(action)}"
+      data-status="${escapeAttribute(status)}"
       title="${escapeAttribute(label)}"
       aria-label="${escapeAttribute(label)}"
+      aria-busy="${isBusy ? 'true' : 'false'}"
       ${disabled ? 'disabled' : ''}
     >
-      ${renderPowerIcon()}
+      <span class="runtime-action-icon">${renderPowerIcon()}</span>
+      ${isBusy ? '<span class="runtime-action-spinner" aria-hidden="true"></span>' : ''}
     </button>
   `;
 }

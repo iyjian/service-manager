@@ -72,7 +72,9 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control lives with row actions
    - each host has a subtle divider between host connection metadata and its runtime tunnel/service area
    - base UI font tokens are raised by about 2px, with host names, runtime section titles, rows, status markers, and power buttons scaled together for clearer scanability
-   - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual power-icon start/stop actions colored by runtime status
+   - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual power-icon start/stop actions colored by runtime status and explicit hover/active/focus/busy feedback
+   - runtime rows do not use whole-row hover highlighting; interactive feedback belongs to the service name link and the power action button
+   - runtime power buttons keep their outer hit area stable on hover/active; motion is limited to the inner icon to avoid pointer flicker
    - every expanded host always uses two compact columns: tunnels on the left and services on the right, even when one side is empty
    - the two runtime columns are separated by a very light vertical divider
    - runtime rows use fixed proportional columns; names and ports align to the left within their columns, while the start/stop action is centered
@@ -85,7 +87,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
    - `Tunnel List` and `Service List` section headers do not show standalone collapse arrows because those sections are not individually collapsible
    - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
-   - section titles include small local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan
+   - section titles include larger semantic local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan; the tunnel section uses a tunnel-shaped glyph instead of a generic network glyph
    - empty `Tunnel List` or `Service List` columns remain visible with a compact empty state, so the two-column structure stays stable
 8. Service actions in list: `Start`, `Stop`.
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
@@ -111,9 +113,10 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 
 - Electron
 - TypeScript
+- Tailwind CSS renderer component/utilities layer (`tailwind.css`, preflight disabled)
 - `ssh2` (SSH connection and remote command execution)
 - `asn1` (explicit dependency required by ssh2 stack in this project)
-- Native HTML/CSS (renderer)
+- Base renderer CSS for local fonts, CSS variables, and terminal ANSI log colors
 - Local JSON persistence in Electron userData
 
 ## Project Structure
@@ -128,8 +131,13 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
 - `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
+- `src/renderer/tailwind.css`: primary renderer visual layer built with Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`
+- `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering helpers
 - `src/renderer/status.ts`: shared renderer status formatting and action-state helpers
+- `tailwind.config.cjs`: Tailwind content/theme configuration; preflight is disabled to avoid global reset drift
+- `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper
 - `src/shared/types.ts`: shared type contracts
 - `tests/*.test.js`: Node built-in test runner coverage for extracted main-process pure/runtime helpers
 - `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build
@@ -145,6 +153,7 @@ Install dependencies manually (as requested):
 Build & run workflow:
 
 - `pnpm build` -> compile TS and copy renderer assets to `dist`
+- `pnpm run build:css` -> generate `dist/renderer/tailwind.css`
 - `pnpm dev` / `pnpm start` -> run Electron using `dist/main/main.js`
 - `pnpm test` -> build first, then run `node --test tests/*.test.js`
 

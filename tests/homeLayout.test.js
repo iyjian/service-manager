@@ -4,9 +4,9 @@ const path = require('node:path');
 const test = require('node:test');
 
 test('home page header stays sticky above long host lists', async () => {
-  const styles = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'styles.css'), 'utf8');
+  const styles = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'tailwind.css'), 'utf8');
 
-  assert.match(styles, /\.page-head\s*\{[\s\S]*position: sticky/);
-  assert.match(styles, /\.page-head\s*\{[\s\S]*top: 0/);
-  assert.match(styles, /\.page-head\s*\{[\s\S]*z-index: 40/);
+  assert.match(styles, /\.page-head[^{]*\{[^}]*position:sticky/);
+  assert.match(styles, /\.page-head[^{]*\{[^}]*top:0/);
+  assert.match(styles, /\.page-head[^{]*\{[^}]*z-index:40/);
 });

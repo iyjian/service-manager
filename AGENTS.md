@@ -30,8 +30,13 @@ It supports two host-scoped runtime resources:
 - `src/main/portForwardManager.ts`: service-owned local port forwarding.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
+- `src/renderer/tailwind.css`: primary renderer visual layer using Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`.
+- `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers.
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering.
 - `src/renderer/status.ts`: renderer status formatting and action-state helpers.
+- `tailwind.config.cjs`: Tailwind content/theme configuration with preflight disabled to avoid global reset drift.
+- `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper.
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper.
 - `src/shared/types.ts`: shared IPC/data contracts.
 - `tests/*.test.js`: Node built-in tests against compiled `dist` output.
 
@@ -75,6 +80,8 @@ Logs:
 ## UI Principles
 
 - UI language is English.
+- Tailwind CSS owns renderer component/layout styling through `src/renderer/tailwind.css`; keep `src/renderer/styles.css` limited to base fonts, tokens, browser defaults, and ANSI log helpers.
+- Keep Tailwind preflight disabled unless intentionally redesigning global base styles.
 - Home page is host-centric: each host is a top-level block with tunnel and service sections.
 - Home page header must stay sticky so quick actions remain reachable on long host lists.
 - Host edit form follows the same hierarchy: forwarding rules, services, jump servers.
@@ -82,7 +89,10 @@ Logs:
 - Host edit forwarding-rule and service editors should use compact summary rows with expandable details.
 - Private-key auth should show a compact key-source summary; pasted key content stays collapsed unless explicitly opened.
 - Jump Servers are enabled by adding hop rows, not by a separate visible enable checkbox.
-- Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, power-icon start/stop actions.
+- Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, and power-icon start/stop actions with clear hover, active, focus, disabled, and busy feedback.
+- Do not add whole-row hover highlights to runtime service/tunnel rows; keep feedback on the clickable service name and power action button.
+- Runtime power buttons must keep a stable outer hit area on hover/active; do not move or scale the button container because that can cause pointer flicker. Animate the inner icon instead.
+- Section header icons must be local inline SVGs with semantic shapes and enough visual weight to match their titles; the tunnel section should read visually as a tunnel rather than a generic network glyph.
 - Empty tunnel/service columns should keep the two-column layout stable.
 - Use local inline icons/assets only; do not depend on remote icon assets.
 - Page-level notices should be top-right auto-dismiss toasts. Modal validation/import feedback stays inside the modal.

@@ -8,7 +8,7 @@ test('host dialog keeps compact editor structure and non-misleading labels', asy
   const [html, renderer, styles] = await Promise.all([
     readFile(path.join(rendererDir, 'index.html'), 'utf8'),
     readFile(path.join(rendererDir, 'renderer.js'), 'utf8'),
-    readFile(path.join(rendererDir, 'styles.css'), 'utf8'),
+    readFile(path.join(rendererDir, 'tailwind.css'), 'utf8'),
   ]);
 
   assert.match(html, /id="private-key-source-status"/);
@@ -22,6 +22,6 @@ test('host dialog keeps compact editor structure and non-misleading labels', asy
   assert.doesNotMatch(renderer, /\n\s*Remote Port \(Optional\)\n/);
   assert.doesNotMatch(renderer, /\n\s*Exposed Port \(Optional\)\n/);
 
-  assert.match(styles, /\.form-actions\s*\{[\s\S]*position: sticky/);
-  assert.match(styles, /\.editor-summary\s*\{/);
+  assert.match(styles, /\.form-actions[^{]*\{[^}]*position:sticky/);
+  assert.match(styles, /\.editor-summary[^{]*\{/);
 });
