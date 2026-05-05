@@ -2,18 +2,18 @@
 
 Desktop service manager for remote servers over SSH.
 
-This project is now aligned with the **UI style** and **development approach** of `ssh-tunnel-manager` in this workspace.
+Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build + dist runtime` workflow.
 
-## What Was Aligned
+## Design And Workflow
 
-- Same engineering style: `TypeScript + tsc build + dist runtime`
-- Same Electron startup pattern: build first, then run Electron from `dist`
-- Same UI interaction pattern:
+- Engineering style: `TypeScript + tsc build + dist runtime`
+- Electron startup pattern: build first, then run Electron from `dist`
+- UI interaction pattern:
   - brand header with quick actions
   - grouped list/table by Host
   - `Add/Edit Host` via modal dialog
-  - add/remove services inside the host modal (similar to how rules are added in `ssh-tunnel-manager`)
-- Same language direction in app UI: English labels and actions
+  - add/remove services inside the host modal
+- App UI language: English labels and actions
 
 ## Core Features
 
@@ -21,6 +21,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - supports optional `Jump Servers` chain configuration directly in Add/Edit Host form (no separate entry page/button)
    - older configs with a single legacy `jumpHost` are still read as a one-hop chain
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
+   - Add/Edit Host keeps `Save Host` / `Reset` / `Cancel` visible in a sticky footer while long configurations scroll
    - page header shows the local app logo plus the current app version when update state is available
    - home-page host blocks include a `Copy` action that writes the host config JSON to clipboard
    - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
@@ -28,9 +29,11 @@ This project is now aligned with the **UI style** and **development approach** o
    - host dialog validation/import errors are surfaced inside the dialog itself, and page-level success/error notices use right-top toast messages that auto-dismiss after a short delay while still allowing manual close
    - default desktop window size is `1230 x 820`, with minimum size kept at `900 x 620`
 2. Per-host configuration now has **two independent lists**:
-   - `Forwarding Rules` (tunnel rules, same model as `ssh-tunnel-manager`)
+   - `Forwarding Rules` (tunnel rules)
    - `Services` (remote process lifecycle)
    - both lists start empty in Add/Edit Host; the dialog does not insert placeholder rows by default
+   - forwarding-rule and service editors use compact summary rows by default; click a row to expand its full editor
+   - empty editor sections show explicit empty states
 3. Forwarding rule fields:
    - optional rule name (shown in the home-page tunnel list when present; older configs without it still work)
    - local host / local port
@@ -60,6 +63,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - service status itself is auto-refreshed in background (no manual refresh button in list).
    - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown through the page toast instead.
 7. Tunnel list and service list are rendered under each host on home page:
+   - the page header is sticky, so branding and quick actions remain available while long host lists scroll
    - `Tunnel List`: start/stop tunnel rule, status, auto-retry on runtime errors
    - running tunnel rows expose the local endpoint as a clickable `http://...` link, matching service-forward behavior
    - `Service List`: start/stop service, PID/log, runtime forward indicator
@@ -96,6 +100,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - direct paste of key content
    - import key file from local filesystem
    - import dialog defaults to `~/.ssh` directory
+   - Add/Edit Host shows the current key source in a compact summary and keeps pasted key content collapsed until needed
 10. Config transfer:
    - `Import Config` from JSON
    - `Export Config` to JSON
@@ -289,6 +294,7 @@ journalctl --user -u <unit-name> -n 200 --no-pager
   - Forwarding Rules section
   - Services section
   - Jump Servers section (optional, supports multi-hop chains)
+- Jump Servers are enabled by adding one or more hops; there is no separate enable checkbox to keep the modal state model simple.
 
 ## Change Discipline
 

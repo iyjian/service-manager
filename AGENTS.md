@@ -6,12 +6,12 @@ Service Manager is an Electron + TypeScript desktop app for managing remote deve
 
 It supports two host-scoped runtime resources:
 
-- Forwarding rules: SSH local port forwards, aligned with `ssh-tunnel-manager`.
+- Forwarding rules: SSH local port forwards managed in-app.
 - Services: remote processes managed through `systemd --user` transient units.
 
 ## Non-Negotiable Rules
 
-- Keep the app aligned with `ssh-tunnel-manager` for English UI tone, modal host editing, grouped host lists, and `tsc` build-to-`dist` workflow.
+- Keep the app consistent in English UI tone, modal host editing, grouped host lists, and `tsc` build-to-`dist` workflow.
 - Use `ssh2` for SSH connections and remote command execution; do not shell out to system `ssh`.
 - Keep `asn1` explicitly declared as a dependency.
 - Do not install dependencies yourself. If dependencies are needed, stop and ask the user to run `pnpm install`.
@@ -46,7 +46,7 @@ Hosts:
 
 Forwarding rules:
 
-- Match the `ssh-tunnel-manager` model: optional name, local host/port, remote host/port, auto-start, start/stop from list.
+- Use optional name, local host/port, remote host/port, auto-start, and start/stop from list.
 - Use the host's jump-server chain when configured.
 - Running local endpoints should be clickable links opened by the system browser.
 - Runtime errors should expose status and reconnect countdown where applicable.
@@ -76,7 +76,12 @@ Logs:
 
 - UI language is English.
 - Home page is host-centric: each host is a top-level block with tunnel and service sections.
+- Home page header must stay sticky so quick actions remain reachable on long host lists.
 - Host edit form follows the same hierarchy: forwarding rules, services, jump servers.
+- Host edit actions must stay visible in a sticky footer for long configs.
+- Host edit forwarding-rule and service editors should use compact summary rows with expandable details.
+- Private-key auth should show a compact key-source summary; pasted key content stays collapsed unless explicitly opened.
+- Jump Servers are enabled by adding hop rows, not by a separate visible enable checkbox.
 - Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, power-icon start/stop actions.
 - Empty tunnel/service columns should keep the two-column layout stable.
 - Use local inline icons/assets only; do not depend on remote icon assets.

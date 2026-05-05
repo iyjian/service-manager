@@ -46,6 +46,9 @@ const passwordRow = requireElement<HTMLElement>('#password-row');
 const privateKeyRow = requireElement<HTMLElement>('#private-key-row');
 const passphraseRow = requireElement<HTMLElement>('#passphrase-row');
 const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-private-key-btn');
+const togglePrivateKeyButton = requireElement<HTMLButtonElement>('#toggle-private-key-btn');
+const privateKeyContent = requireElement<HTMLElement>('#private-key-content');
+const privateKeySourceStatus = requireElement<HTMLElement>('#private-key-source-status');
 const useJumpHostInput = requireElement<HTMLInputElement>('#use-jump-host');
 const jumpHostSection = requireElement<HTMLElement>('#jump-host-section');
 const jumpHostEditorList = requireElement<HTMLDivElement>('#jump-host-editor-list');
@@ -311,6 +314,22 @@ function clearHostDialogMessage(): void {
   renderMessage(hostDialogMessageView, '', 'default');
 }
 
+function setPrivateKeyExpanded(expanded: boolean): void {
+  privateKeyContent.classList.toggle('hidden', !expanded);
+  togglePrivateKeyButton.innerHTML = renderButtonContent('key', expanded ? 'Hide Key' : 'Paste Key');
+}
+
+function updatePrivateKeySourceStatus(): void {
+  const hasKeyContent = privateKeyInput.value.trim().length > 0;
+  if (editingPrivateKeyPath) {
+    const source = getFileName(editingPrivateKeyPath);
+    privateKeySourceStatus.textContent = hasKeyContent ? `Imported: ${source}` : `Key file: ${source}`;
+    return;
+  }
+
+  privateKeySourceStatus.textContent = hasKeyContent ? 'Pasted key content' : 'No key configured';
+}
+
 function toggleAuthFields(): void {
   if (authTypeSelect.value === 'password') {
     passwordRow.classList.remove('hidden');
@@ -321,18 +340,19 @@ function toggleAuthFields(): void {
     privateKeyRow.classList.remove('hidden');
     passphraseRow.classList.remove('hidden');
   }
+  updatePrivateKeySourceStatus();
 }
 
-function toggleJumpSection(): void {
-  if (!useJumpHostInput.checked) {
+function syncJumpSection(): void {
+  const hasJumpHosts = jumpHostEditorList.children.length > 0;
+  useJumpHostInput.checked = hasJumpHosts;
+  if (!hasJumpHosts) {
     jumpHostSection.classList.add('hidden');
     return;
   }
+
   jumpHostSection.classList.remove('hidden');
-  if (jumpHostEditorList.children.length === 0) {
-    jumpHostEditorList.appendChild(createJumpHostEditorRow());
-    refreshJumpHostEditorTitles();
-  }
+  refreshJumpHostEditorTitles();
 }
 
 function parsePort(raw: string, label: string): number {
@@ -542,7 +562,6 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   editingPrivateKeyPath = draft.privateKeyPath;
 
   const jumpHosts = draft.jumpHosts ?? (draft.jumpHost ? [draft.jumpHost] : []);
-  useJumpHostInput.checked = jumpHosts.length > 0;
   jumpHostEditorList.innerHTML = '';
   for (const jumpHost of jumpHosts) {
     jumpHostEditorList.appendChild(createJumpHostEditorRow(jumpHost));
@@ -559,8 +578,9 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   }
 
   toggleAuthFields();
-  toggleJumpSection();
-  refreshJumpHostEditorTitles();
+  setPrivateKeyExpanded(Boolean(privateKeyInput.value && !editingPrivateKeyPath));
+  updatePrivateKeySourceStatus();
+  syncJumpSection();
 }
 
 function buildCopyableHostPayload(host: HostView): Record<string, unknown> {
@@ -840,6 +860,60 @@ async function importPrivateKeyIntoField(
   setHostDialogMessage(successMessage(imported.path), 'success');
 }
 
+function getEditorValue(row: HTMLElement, field: string): string {
+  return row.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
+}
+
+function setEditorExpanded(row: HTMLElement, expanded: boolean): void {
+  row.classList.toggle('editor-row-expanded', expanded);
+  const toggle = row.querySelector<HTMLElement>('.editor-summary-toggle');
+  if (toggle) {
+    toggle.textContent = expanded ? 'Collapse' : 'Edit';
+  }
+}
+
+function updateForwardEditorSummary(row: HTMLElement): void {
+  const name = getEditorValue(row, 'name') || 'Unnamed rule';
+  const localHost = getEditorValue(row, 'localHost') || 'local host';
+  const localPort = getEditorValue(row, 'localPort') || '-';
+  const remoteHost = getEditorValue(row, 'remoteHost') || 'remote host';
+  const remotePort = getEditorValue(row, 'remotePort') || '-';
+  const autoStart = row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false;
+
+  row.querySelector<HTMLElement>('.editor-summary-title')!.textContent = name;
+  row.querySelector<HTMLElement>('.editor-summary-meta')!.textContent =
+    `L:${localHost}:${localPort} -> R:${remoteHost}:${remotePort}${autoStart ? ' · auto-start' : ''}`;
+}
+
+function updateServiceEditorSummary(row: HTMLElement): void {
+  const name = getEditorValue(row, 'name') || 'Unnamed service';
+  const port = getEditorValue(row, 'port');
+  const forwardPort = getEditorValue(row, 'forwardLocalPort');
+  const command = getEditorValue(row, 'startCommand');
+  const portText = port === '0'
+    ? 'port disabled'
+    : port
+      ? `:${port}${forwardPort ? ` -> L:${forwardPort}` : ''}`
+      : 'port required';
+  const commandText = command ? ` · ${command}` : ' · no start command';
+
+  row.querySelector<HTMLElement>('.editor-summary-title')!.textContent = name;
+  row.querySelector<HTMLElement>('.editor-summary-meta')!.textContent = `${portText}${commandText}`;
+}
+
+function bindEditorRowSummary(row: HTMLElement, updateSummary: (row: HTMLElement) => void): void {
+  row.querySelector<HTMLButtonElement>('.editor-summary')?.addEventListener('click', () => {
+    setEditorExpanded(row, !row.classList.contains('editor-row-expanded'));
+  });
+
+  row.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((field) => {
+    field.addEventListener('input', () => updateSummary(row));
+    field.addEventListener('change', () => updateSummary(row));
+  });
+
+  updateSummary(row);
+}
+
 function toggleJumpHostEditorAuthFields(row: HTMLElement): void {
   const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
   const passwordRow = row.querySelector<HTMLElement>('.jump-password-row');
@@ -917,11 +991,7 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
 
   row.querySelector<HTMLButtonElement>('.jump-host-remove')?.addEventListener('click', () => {
     row.remove();
-    refreshJumpHostEditorTitles();
-    if (jumpHostEditorList.children.length === 0) {
-      useJumpHostInput.checked = false;
-      toggleJumpSection();
-    }
+    syncJumpSection();
   });
 
   row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.addEventListener('change', () => {
@@ -946,71 +1016,94 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row forward-editor-row';
+  row.className = 'forward-row forward-editor-row editor-row';
   row.innerHTML = `
-    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <label class="field field-xs forward-name">
-      Name
-      <input class="input" data-field="name" value="${safeValue(draft?.name)}" placeholder="web / db / redis" />
-    </label>
-    <label class="field field-xs forward-local-host">
-      Local Host
-      <input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" />
-    </label>
-    <label class="field field-xs forward-local-port">
-      Local Port (Optional)
-      <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" />
-    </label>
-    <label class="field field-xs forward-remote-host">
-      Remote Host
-      <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" />
-    </label>
-    <label class="field field-xs forward-remote-port">
-      Remote Port (Optional)
-      <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" />
-    </label>
-    <label class="forward-auto">
-      <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
-      Auto Start
-    </label>
-    <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Delete Rule')}</button>
+    <button type="button" class="editor-summary" aria-label="Edit forwarding rule">
+      <span class="editor-summary-main">
+        <span class="editor-summary-title">Forwarding Rule</span>
+        <span class="editor-summary-meta"></span>
+      </span>
+      <span class="editor-summary-toggle">Edit</span>
+    </button>
+    <div class="editor-body forward-editor-fields">
+      <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
+      <label class="field field-xs forward-name">
+        Name
+        <input class="input" data-field="name" value="${safeValue(draft?.name)}" placeholder="web / db / redis" />
+      </label>
+      <label class="field field-xs forward-local-host">
+        Local Host
+        <input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" />
+      </label>
+      <label class="field field-xs forward-local-port">
+        Local Port
+        <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" />
+      </label>
+      <label class="field field-xs forward-remote-host">
+        Remote Host
+        <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" />
+      </label>
+      <label class="field field-xs forward-remote-port">
+        Remote Port
+        <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" />
+      </label>
+      <label class="forward-auto">
+        <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
+        Auto Start
+      </label>
+      <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Delete Rule')}</button>
+    </div>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
     row.remove();
   });
 
+  bindEditorRowSummary(row, updateForwardEditorSummary);
+  setEditorExpanded(row, !draft);
   return row;
 }
 
 function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row service-editor-row';
+  row.className = 'forward-row service-editor-row editor-row';
   row.innerHTML = `
-    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <label class="field field-xs service-name-field">
-      Name
-      <input class="input" data-field="name" value="${safeValue(draft?.name)}" />
-    </label>
-    <label class="field field-xs service-port-field">
-      Exposed Port (Optional)
-      <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" />
-    </label>
-    <label class="field field-xs service-forward-port-field">
-      Forward Local Port (Optional)
-      <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
-    </label>
-    <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Remove')}</button>
-    <label class="field field-xs service-command-field">
-      Start Command
-      <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /path/to/app && exec yarn start:dev">${escapeHtml(draft?.startCommand ?? '')}</textarea>
-    </label>
+    <button type="button" class="editor-summary" aria-label="Edit service">
+      <span class="editor-summary-main">
+        <span class="editor-summary-title">Service</span>
+        <span class="editor-summary-meta"></span>
+      </span>
+      <span class="editor-summary-toggle">Edit</span>
+    </button>
+    <div class="editor-body service-editor-fields">
+      <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
+      <label class="field field-xs service-name-field">
+        Name
+        <input class="input" data-field="name" value="${safeValue(draft?.name)}" />
+      </label>
+      <label class="field field-xs service-port-field">
+        Exposed Port (0 = disabled)
+        <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" />
+      </label>
+      <label class="field field-xs service-forward-port-field">
+        Forward Local Port (Optional)
+        <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
+      </label>
+      <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Remove')}</button>
+      <label class="field field-xs service-command-field">
+        Start Command
+        <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /home/user/app && yarn start:dev">${escapeHtml(draft?.startCommand ?? '')}</textarea>
+      </label>
+      <div class="service-command-hint">Runs through the remote login shell.</div>
+    </div>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
     row.remove();
   });
 
+  bindEditorRowSummary(row, updateServiceEditorSummary);
+  setEditorExpanded(row, !draft);
   return row;
 }
 
@@ -1052,10 +1145,6 @@ function collectForwardsFromEditor(): ForwardRuleDraft[] {
 }
 
 function collectJumpHostsDraft(): JumpHostConfig[] {
-  if (!useJumpHostInput.checked) {
-    return [];
-  }
-
   const rows = Array.from(jumpHostEditorList.querySelectorAll<HTMLElement>('.jump-host-editor-row'));
   const jumpHosts: JumpHostConfig[] = [];
 
@@ -1139,13 +1228,14 @@ function resetForm(): void {
   hostIdInput.value = '';
   editingPrivateKeyPath = undefined;
   sshPortInput.value = '22';
-  useJumpHostInput.checked = false;
   jumpHostEditorList.innerHTML = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
+  setPrivateKeyExpanded(false);
+  updatePrivateKeySourceStatus();
   clearHostDialogMessage();
   toggleAuthFields();
-  toggleJumpSection();
+  syncJumpSection();
 }
 
 function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
@@ -1162,7 +1252,6 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     passwordInput.value = host.password ?? '';
     privateKeyInput.value = host.privateKey ?? '';
     passphraseInput.value = host.passphrase ?? '';
-    useJumpHostInput.checked = host.jumpHosts.length > 0;
     jumpHostEditorList.innerHTML = '';
     for (const jumpHost of host.jumpHosts) {
       jumpHostEditorList.appendChild(createJumpHostEditorRow(jumpHost));
@@ -1193,7 +1282,9 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   }
 
   toggleAuthFields();
-  toggleJumpSection();
+  setPrivateKeyExpanded(false);
+  updatePrivateKeySourceStatus();
+  syncJumpSection();
   showDialog(hostDialog, 'host');
 }
 
@@ -1935,13 +2026,8 @@ addForwardButton.addEventListener('click', () => {
 });
 
 addJumpHostButton.addEventListener('click', () => {
-  const hadRows = jumpHostEditorList.children.length > 0;
-  useJumpHostInput.checked = true;
-  toggleJumpSection();
-  if (hadRows) {
-    jumpHostEditorList.appendChild(createJumpHostEditorRow());
-    refreshJumpHostEditorTitles();
-  }
+  jumpHostEditorList.appendChild(createJumpHostEditorRow());
+  syncJumpSection();
 });
 
 addServiceButton.addEventListener('click', () => {
@@ -1955,6 +2041,8 @@ importPrivateKeyButton.addEventListener('click', async () => {
       (path) => `Imported private key from ${path}`,
       (path) => {
         editingPrivateKeyPath = path;
+        setPrivateKeyExpanded(false);
+        updatePrivateKeySourceStatus();
       }
     );
   } catch (error) {
@@ -1979,7 +2067,16 @@ closeHostDialogButton.addEventListener('click', closeHostDialog);
 cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
 authTypeSelect.addEventListener('change', toggleAuthFields);
-useJumpHostInput.addEventListener('change', toggleJumpSection);
+privateKeyInput.addEventListener('input', () => {
+  if (editingPrivateKeyPath && privateKeyInput.value.trim() === '') {
+    editingPrivateKeyPath = undefined;
+  }
+  updatePrivateKeySourceStatus();
+});
+togglePrivateKeyButton.addEventListener('click', () => {
+  setPrivateKeyExpanded(privateKeyContent.classList.contains('hidden'));
+});
+useJumpHostInput.addEventListener('change', syncJumpSection);
 serviceLogSearchInput.addEventListener('input', () => {
   renderServiceLogView({ preserveScroll: true, focusActiveMatch: true });
 });
@@ -2095,17 +2192,18 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
+    const authType = authTypeSelect.value === 'password' ? 'password' : 'privateKey';
     const draft: HostDraft = {
       id: hostIdInput.value.trim() || undefined,
       name: nameInput.value.trim(),
       sshHost: sshHostInput.value.trim(),
       sshPort: Number(sshPortInput.value),
       username: usernameInput.value.trim(),
-      authType: authTypeSelect.value === 'password' ? 'password' : 'privateKey',
-      password: passwordInput.value.trim() || undefined,
-      privateKey: privateKeyInput.value || undefined,
-      passphrase: passphraseInput.value.trim() || undefined,
-      privateKeyPath: editingPrivateKeyPath,
+      authType,
+      password: authType === 'password' ? passwordInput.value.trim() || undefined : undefined,
+      privateKey: authType === 'privateKey' ? privateKeyInput.value || undefined : undefined,
+      passphrase: authType === 'privateKey' ? passphraseInput.value.trim() || undefined : undefined,
+      privateKeyPath: authType === 'privateKey' ? editingPrivateKeyPath : undefined,
       jumpHosts: collectJumpHostsDraft(),
       forwards: collectForwardsFromEditor(),
       services: collectServicesFromEditor(),

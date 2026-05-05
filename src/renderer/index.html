@@ -160,19 +160,31 @@
               <input id="password" type="password" class="input" />
             </label>
 
-            <div id="private-key-row" class="private-key-wrap">
-              <label class="field field-privatekey field-xs">
-                Private Key
+            <div id="private-key-row" class="private-key-card">
+              <div class="private-key-summary">
+                <div class="private-key-meta">
+                  <span class="private-key-label">Private Key</span>
+                  <span id="private-key-source-status" class="private-key-source-status">No key configured</span>
+                </div>
+                <div class="private-key-actions">
+                  <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">
+                    Import
+                  </button>
+                  <button id="toggle-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">
+                    Paste Key
+                  </button>
+                </div>
+              </div>
+              <label id="private-key-content" class="field field-privatekey field-xs private-key-content hidden">
+                Key Content
                 <textarea
                   id="private-key"
-                  rows="1"
+                  rows="4"
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                   class="input"
+                  spellcheck="false"
                 ></textarea>
               </label>
-              <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">
-                Import
-              </button>
             </div>
 
             <label id="passphrase-row" class="field field-passphrase field-xs hidden">
@@ -186,15 +198,12 @@
               <h3 class="subcard-title">Jump Servers (Optional)</h3>
               <div class="subcard-actions">
                 <button id="add-jump-host-btn" type="button" class="btn btn-secondary btn-sm">Add Hop</button>
-                <label class="forward-auto">
-                  <input id="use-jump-host" type="checkbox" class="checkbox" />
-                  Enable
-                </label>
+                <input id="use-jump-host" type="checkbox" class="hidden" aria-hidden="true" />
               </div>
             </div>
 
             <div id="jump-host-section" class="hidden">
-              <div id="jump-host-editor-list" class="forward-list"></div>
+              <div id="jump-host-editor-list" class="forward-list" data-empty="No jump servers"></div>
             </div>
           </div>
 
@@ -203,7 +212,7 @@
               <h3 class="subcard-title">Forwarding Rules</h3>
               <button id="add-forward-btn" type="button" class="btn btn-secondary btn-sm">Add Rule</button>
             </div>
-            <div id="forward-editor-list" class="forward-list"></div>
+            <div id="forward-editor-list" class="forward-list" data-empty="No forwarding rules"></div>
           </div>
 
           <div class="subcard">
@@ -211,7 +220,7 @@
               <h3 class="subcard-title">Services</h3>
               <button id="add-service-btn" type="button" class="btn btn-secondary btn-sm">Add Service</button>
             </div>
-            <div id="service-editor-list" class="forward-list"></div>
+            <div id="service-editor-list" class="forward-list" data-empty="No services"></div>
           </div>
 
           <div class="form-actions">
