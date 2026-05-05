@@ -63,7 +63,17 @@ This project is now aligned with the **UI style** and **development approach** o
    - running tunnel rows expose the local endpoint as a clickable `http://...` link, matching service-forward behavior
    - `Service List`: start/stop service, PID/log, runtime forward indicator
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
+   - the home page does not wrap hosts in a separate `Hosts` card; each host is its own container with spacing between hosts
+   - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control lives with row actions
+   - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual icon-only start/stop actions
+   - when a host has both tunnels and services, the home page lays them out as two compact columns: tunnels on the left and services on the right
+   - runtime status is shown through the tunnel/service name color instead of a separate status column
+   - service PID is not shown as a separate column; clicking the service name opens the log dialog
+   - port text is formatted for fast scanning: tunnels and forwarded services use `L:<local> → R:<remote>`, while non-forwarded services use `:<exposedPort>`
+   - port numbers are right-aligned in fixed five-character slots so local and remote ports line up vertically
+   - status colors are fixed to soft green running (`#22c55e`), gray stopped (`#6b7280`), and red error (`#ef4444`)
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
+   - `Tunnel List` and `Service List` section headers do not show standalone collapse arrows because those sections are not individually collapsible
    - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
    - section titles include small local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan
    - empty `Tunnel List` or `Service List` sections are omitted entirely, so hosts without those resources stay compact

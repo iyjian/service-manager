@@ -1696,7 +1696,80 @@ function bindHostActions(root: ParentNode, host: HostView): void {
 }
 
 function formatStatus(status: string): string {
-  return status.charAt(0).toUpperCase() + status.slice(1);
+  return status.toUpperCase();
+}
+
+function runtimeStatusMarker(status: ServiceStatus | TunnelStatus): string {
+  return status === 'stopped' || status === 'unknown' ? '○' : '●';
+}
+
+function renderPortNumber(port: number): string {
+  return `<span class="runtime-port-number">${escapeHtml(String(port))}</span>`;
+}
+
+function renderPortMap(localPort: number, remotePort: number): string {
+  return `
+    <span class="runtime-port-map">
+      <span>L:</span>${renderPortNumber(localPort)}
+      <span class="runtime-port-arrow">→</span>
+      <span>R:</span>${renderPortNumber(remotePort)}
+    </span>
+  `;
+}
+
+function renderSinglePort(port: number): string {
+  return `<span class="runtime-port-single"><span>:</span>${renderPortNumber(port)}</span>`;
+}
+
+function renderRuntimeActionButton(action: string, icon: 'start' | 'stop', label: string, disabled: boolean): string {
+  return `
+    <button
+      class="runtime-action-btn runtime-action-${icon}"
+      type="button"
+      data-action="${escapeAttribute(action)}"
+      title="${escapeAttribute(label)}"
+      aria-label="${escapeAttribute(label)}"
+      ${disabled ? 'disabled' : ''}
+    >
+      ${renderButtonIcon(icon)}
+    </button>
+  `;
+}
+
+function renderTunnelPort(forward: HostView['forwards'][number]): string {
+  const base = renderPortMap(forward.localPort, forward.remotePort);
+  const endpoint = escapeAttribute(`${forward.localHost}:${forward.localPort} -> ${forward.remoteHost}:${forward.remotePort}`);
+
+  if (forward.status === 'running') {
+    const href = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
+    return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer" title="${endpoint}">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+  }
+  if (forward.status === 'error') {
+    const err = escapeAttribute(forward.error || 'Forward failed');
+    return `<span title="${endpoint}">${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+  }
+  return `<span title="${endpoint}">${base}</span>`;
+}
+
+function renderServicePort(service: HostView['services'][number]): string {
+  if (service.port === 0) {
+    return '<span class="runtime-port-muted">-</span>';
+  }
+
+  if (!service.forwardLocalPort) {
+    return renderSinglePort(service.port);
+  }
+
+  const base = renderPortMap(service.forwardLocalPort, service.port);
+  const href = escapeAttribute(`http://127.0.0.1:${service.forwardLocalPort}`);
+  if (service.forwardState === 'ok') {
+    return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
+  }
+  if (service.forwardState === 'error') {
+    const err = escapeAttribute(service.forwardError || 'Forward failed');
+    return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
+  }
+  return `<span>${base}</span> <span class="forward-indicator pending" title="Forward pending">…</span>`;
 }
 
 function render(): void {
@@ -1709,55 +1782,51 @@ function render(): void {
     return;
   }
 
-  hosts.forEach((host, hostIndex) => {
-    if (hostIndex > 0) {
-      const spacerRow = document.createElement('tr');
-      spacerRow.className = 'host-spacer-row';
-      spacerRow.innerHTML = '<td colspan="6"></td>';
-      hostTableBody.appendChild(spacerRow);
-    }
-
+  hosts.forEach((host) => {
     const isCollapsed = collapsedHostIds.has(host.id);
-    const runningForwards = host.forwards.filter((item) => item.status === 'running').length;
-    const runningServices = host.services.filter((item) => item.status === 'running').length;
-    const groupRow = document.createElement('tr');
-    groupRow.className = `group-row${isCollapsed ? ' group-row-collapsed' : ''}`;
+    const row = document.createElement('tr');
+    row.className = 'host-panel-row';
+    const cell = document.createElement('td');
+    cell.className = 'host-panel-cell';
+    cell.colSpan = 6;
+
+    const panel = document.createElement('article');
+    panel.className = `host-panel${isCollapsed ? ' host-panel-collapsed' : ''}`;
     const hostName = escapeHtml(host.name);
     const hostDesc = escapeHtml(`${host.username}@${host.sshHost}:${host.sshPort}${formatJumpChain(host.jumpHosts)}`);
-    groupRow.innerHTML = `
-      <td colspan="6" class="group-cell">
-        <div class="group-head">
-          <div class="group-main">
-            <button
-              type="button"
-              class="host-toggle-btn"
-              data-action="toggle-host"
-              aria-expanded="${isCollapsed ? 'false' : 'true'}"
-              aria-label="${isCollapsed ? 'Expand host' : 'Collapse host'}"
-            >
-              <span class="host-toggle-icon">${isCollapsed ? '▸' : '▾'}</span>
-            </button>
-            <div class="group-meta">
-              <div class="group-title">${hostName}</div>
-              <div class="group-desc">${hostDesc}</div>
+    const tunnelCount = host.forwards.length;
+    const serviceCount = host.services.length;
+    panel.innerHTML = `
+      <div class="host-panel-head">
+        <div class="host-panel-main">
+          <div class="host-panel-title-wrap">
+            <div class="host-panel-title">
+              <span class="host-panel-name">${hostName}</span>
+              <span class="host-panel-count">(${tunnelCount} tunnel${tunnelCount === 1 ? '' : 's'} · ${serviceCount} service${serviceCount === 1 ? '' : 's'})</span>
             </div>
-          </div>
-          <div class="group-right">
-            <div class="group-metrics">
-              <span class="group-metric">${host.forwards.length} tunnel${host.forwards.length === 1 ? '' : 's'} · ${runningForwards} running</span>
-              <span class="group-metric">${host.services.length} service${host.services.length === 1 ? '' : 's'} · ${runningServices} running</span>
-            </div>
-            <div class="row-actions">
-            <button class="btn btn-secondary btn-sm" data-action="copy-host">${renderButtonContent('copy', 'Copy')}</button>
-            <button class="btn btn-secondary btn-sm" data-action="edit-host">${renderButtonContent('edit', 'Edit Host')}</button>
-            <button class="btn btn-danger btn-sm" data-action="delete-host">${renderButtonContent('delete', 'Delete Host')}</button>
-            </div>
+            <div class="host-panel-desc">${hostDesc}</div>
           </div>
         </div>
-      </td>
+        <div class="host-panel-actions row-actions">
+          <button
+            type="button"
+            class="host-toggle-btn"
+            data-action="toggle-host"
+            aria-expanded="${isCollapsed ? 'false' : 'true'}"
+            aria-label="${isCollapsed ? 'Expand host' : 'Collapse host'}"
+            title="${isCollapsed ? 'Expand host' : 'Collapse host'}"
+          >
+            <span class="host-toggle-icon">${isCollapsed ? '▸' : '▾'}</span>
+          </button>
+          <button class="btn btn-secondary btn-sm" data-action="copy-host">${renderButtonContent('copy', 'Copy')}</button>
+          <button class="btn btn-secondary btn-sm" data-action="edit-host">${renderButtonContent('edit', 'Edit Host')}</button>
+          <button class="btn btn-danger btn-sm" data-action="delete-host">${renderButtonContent('delete', 'Delete Host')}</button>
+        </div>
+      </div>
+      <div class="host-panel-body"></div>
     `;
-    hostTableBody.appendChild(groupRow);
-    groupRow.querySelector<HTMLButtonElement>('[data-action="toggle-host"]')?.addEventListener('click', () => {
+
+    panel.querySelector<HTMLButtonElement>('[data-action="toggle-host"]')?.addEventListener('click', () => {
       if (isCollapsed) {
         collapsedHostIds.delete(host.id);
       } else {
@@ -1766,173 +1835,152 @@ function render(): void {
       renderSafely('toggle-host');
     });
 
-    bindHostActions(groupRow, host);
+    bindHostActions(panel, host);
 
-    if (isCollapsed) {
-      return;
+    const body = panel.querySelector<HTMLDivElement>('.host-panel-body');
+    if (!body) {
+      throw new Error('Missing host panel body.');
     }
 
-    if (host.forwards.length > 0) {
-      const tunnelTitle = document.createElement('tr');
-      tunnelTitle.className = 'host-section-row host-section-row-tunnel';
-      tunnelTitle.innerHTML = `<th colspan="5">${renderSectionLabel('tunnel', 'Tunnel List')}</th>`;
-      hostTableBody.appendChild(tunnelTitle);
+    if (!isCollapsed) {
+      body.classList.toggle('host-panel-body-two-col', host.forwards.length > 0 && host.services.length > 0);
 
-      const tunnelHeader = document.createElement('tr');
-      tunnelHeader.className = 'host-rules-head host-rules-head-tunnel';
-      tunnelHeader.innerHTML = `
-        <th>Name</th>
-        <th>Port</th>
-        <th>Status</th>
-        <th>Auto Start</th>
-        <th>Actions</th>
-      `;
-      hostTableBody.appendChild(tunnelHeader);
-
-      host.forwards.forEach((forward, index) => {
-        const row = document.createElement('tr');
-        row.className = 'data-row data-row-tunnel';
-        const startDisabled = canStartForward(forward.status) ? '' : 'disabled';
-        const stopDisabled = canStopForward(forward.status) ? '' : 'disabled';
-        const forwardError = escapeAttribute(forward.error ?? '');
-        const forwardStatus = escapeHtml(formatStatus(forward.status));
-        const forwardName = escapeHtml(forward.name?.trim() || `Rule #${index + 1}`);
-        const portText = (() => {
-          const base = escapeHtml(`${forward.localPort} -> ${forward.remotePort}`);
-          const href = escapeAttribute(toForwardUrl(forward.localHost, forward.localPort));
-          if (forward.status === 'running') {
-            return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
-          }
-          if (forward.status === 'error') {
-            const err = escapeAttribute(forward.error || 'Forward failed');
-            return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
-          }
-          return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
-        })();
-        const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
-          ? `<div class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</div>`
-          : '';
-        row.innerHTML = `
-          <td class="table-cell">${forwardName}</td>
-          <td class="table-cell">${portText}</td>
-          <td class="table-cell">
-            <div class="status-wrap">
-              <span class="status-indicator ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}" ${forwardError ? `data-tooltip="${forwardError}"` : ''}>
-                <span class="status-dot"></span>
-                <span class="status-label">${forwardStatus}</span>
-              </span>
-              ${retry}
-            </div>
-          </td>
-          <td class="table-cell auto-start-cell"><span class="auto-start-indicator ${forward.autoStart ? 'auto-start-enabled' : 'auto-start-disabled'}">${forward.autoStart ? '✓' : '✗'}</span></td>
-          <td class="table-cell">
-            <div class="row-actions">
-              <button class="btn btn-primary btn-sm" data-action="start-forward" ${startDisabled}>${renderButtonContent('start', 'Start')}</button>
-              <button class="btn btn-secondary btn-sm" data-action="stop-forward" ${stopDisabled}>${renderButtonContent('stop', 'Stop')}</button>
-            </div>
-          </td>
+      if (host.forwards.length > 0) {
+        const section = document.createElement('section');
+        section.className = 'runtime-section runtime-section-tunnels';
+        section.innerHTML = `
+          <div class="runtime-section-title">
+            ${renderSectionLabel('tunnel', 'Tunnels')}
+          </div>
+          <div class="runtime-list"></div>
         `;
+        const list = section.querySelector<HTMLDivElement>('.runtime-list');
+        if (!list) {
+          throw new Error('Missing tunnel runtime list.');
+        }
 
-        row.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
-          try {
-            await window.serviceApi.startForward(host.id, forward.id);
-          } catch (error) {
-            setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
-          }
-        });
-        row.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
-          try {
-            await window.serviceApi.stopForward(host.id, forward.id);
-          } catch (error) {
-            setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
-          }
-        });
-        hostTableBody.appendChild(row);
-      });
-    }
-
-    if (host.services.length > 0) {
-      const serviceTitle = document.createElement('tr');
-      serviceTitle.className = 'host-section-row host-section-row-service';
-      serviceTitle.innerHTML = `<th colspan="5">${renderSectionLabel('service', 'Service List')}</th>`;
-      hostTableBody.appendChild(serviceTitle);
-
-      const serviceHeader = document.createElement('tr');
-      serviceHeader.className = 'host-rules-head host-rules-head-service';
-      serviceHeader.innerHTML = `
-        <th>Name</th>
-        <th>Port</th>
-        <th>Status</th>
-        <th>PID</th>
-        <th>Actions</th>
-      `;
-      hostTableBody.appendChild(serviceHeader);
-
-      for (const service of host.services) {
-        const row = document.createElement('tr');
-        row.className = 'data-row data-row-service';
-        const pidText = service.pid ? String(service.pid) : '-';
-        const safeServiceName = escapeHtml(service.name);
-        const safeServiceError = escapeAttribute(service.error ?? '');
-        const portText = (() => {
-          if (service.port === 0 || !service.forwardLocalPort) {
-            return `<span>${escapeHtml(String(service.port))}</span>`;
-          }
-          const base = escapeHtml(`${service.forwardLocalPort} -> ${service.port}`);
-          const href = escapeAttribute(`http://127.0.0.1:${service.forwardLocalPort}`);
-          if (service.forwardState === 'ok') {
-            return `<a class="forward-link" href="${href}" target="_blank" rel="noreferrer">${base}</a> <span class="forward-indicator ok" title="Forward active">✓</span>`;
-          }
-          if (service.forwardState === 'error') {
-            const err = escapeAttribute(service.forwardError || 'Forward failed');
-            return `<span>${base}</span> <span class="forward-indicator error" title="${err}">✗</span>`;
-          }
-          return `<span>${base}</span> <span class="forward-indicator pending" title="Forward not active">…</span>`;
-        })();
-        const startDisabled = canStartService(service.status) ? '' : 'disabled';
-        const stopDisabled = canStopService(service.status) ? '' : 'disabled';
-        row.innerHTML = `
-          <td class="table-cell">${safeServiceName}</td>
-          <td class="table-cell">${portText}</td>
-          <td class="table-cell">
-            <div class="status-wrap">
-              <span class="status-indicator ${statusClass(service.status)}${safeServiceError ? ' status-has-tooltip' : ''}" ${safeServiceError ? `data-tooltip="${safeServiceError}"` : ''}>
-                <span class="status-dot"></span>
-                <span class="status-label">${escapeHtml(service.status)}</span>
+        host.forwards.forEach((forward, index) => {
+          const item = document.createElement('div');
+          item.className = 'runtime-row runtime-row-tunnel';
+          const canStop = canStopForward(forward.status);
+          const action = canStop
+            ? renderRuntimeActionButton('stop-forward', 'stop', 'Stop', false)
+            : renderRuntimeActionButton('start-forward', 'start', 'Start', !canStartForward(forward.status));
+          const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
+            ? `<span class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</span>`
+            : '';
+          const forwardError = escapeAttribute(forward.error ?? '');
+          item.innerHTML = `
+            <span class="runtime-name-cell">
+              <span
+                class="runtime-name runtime-name-status ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}"
+                title="${escapeAttribute(formatStatus(forward.status))}"
+                ${forwardError ? `data-tooltip="${forwardError}"` : ''}
+              >
+                <span class="runtime-status-marker">${runtimeStatusMarker(forward.status)}</span>
+                <span class="runtime-name-text">${escapeHtml(forward.name?.trim() || `Rule #${index + 1}`)}</span>
               </span>
-            </div>
-          </td>
-          <td class="table-cell"><button class="btn btn-secondary btn-sm" data-action="pid" ${service.pid ? '' : 'disabled'}>${escapeHtml(pidText)}</button></td>
-          <td class="table-cell">
-            <div class="row-actions">
-              <button class="btn btn-primary btn-sm" data-action="start" ${startDisabled}>${renderButtonContent('start', 'Start')}</button>
-              <button class="btn btn-secondary btn-sm" data-action="stop" ${stopDisabled}>${renderButtonContent('stop', 'Stop')}</button>
-            </div>
-          </td>
+              ${forward.autoStart ? '<span class="runtime-auto">AUTO</span>' : ''}${retry}
+            </span>
+            <span class="runtime-port">${renderTunnelPort(forward)}</span>
+            <span class="runtime-actions">${action}</span>
+          `;
+          item.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
+            try {
+              await window.serviceApi.startForward(host.id, forward.id);
+            } catch (error) {
+              setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
+            }
+          });
+          item.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
+            try {
+              await window.serviceApi.stopForward(host.id, forward.id);
+            } catch (error) {
+              setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
+            }
+          });
+          list.appendChild(item);
+        });
+
+        body.appendChild(section);
+      }
+
+      if (host.services.length > 0) {
+        const section = document.createElement('section');
+        section.className = 'runtime-section runtime-section-services';
+        section.innerHTML = `
+          <div class="runtime-section-title">
+            ${renderSectionLabel('service', 'Services')}
+          </div>
+          <div class="runtime-list"></div>
         `;
+        const list = section.querySelector<HTMLDivElement>('.runtime-list');
+        if (!list) {
+          throw new Error('Missing service runtime list.');
+        }
 
-        row.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
-          try {
-            await window.serviceApi.startService(host.id, service.id);
-          } catch (error) {
-            setMessage(`Start failed: ${(error as Error).message}`, 'error');
-          }
-        });
-        row.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
-          try {
-            await window.serviceApi.stopService(host.id, service.id);
-          } catch (error) {
-            setMessage(`Stop failed: ${(error as Error).message}`, 'error');
-          }
-        });
-        row.querySelector<HTMLButtonElement>('[data-action="pid"]')?.addEventListener('click', () => {
-          openServiceLogDialog(host, service.id);
-        });
+        for (const service of host.services) {
+          const item = document.createElement('div');
+          item.className = 'runtime-row runtime-row-service';
+          const canStop = canStopService(service.status);
+          const action = canStop
+            ? renderRuntimeActionButton('stop', 'stop', 'Stop', false)
+            : renderRuntimeActionButton('start', 'start', 'Start', !canStartService(service.status));
+          const serviceError = escapeAttribute(service.error ?? '');
+          const logTitle = service.pid
+            ? `Open logs (PID ${service.pid}, ${formatStatus(service.status)})`
+            : `Open logs (${formatStatus(service.status)})`;
 
-        hostTableBody.appendChild(row);
+          item.innerHTML = `
+            <span class="runtime-name-cell">
+              <button
+                class="runtime-name runtime-name-button runtime-name-status ${statusClass(service.status)}${serviceError ? ' status-has-tooltip' : ''}"
+                type="button"
+                data-action="logs"
+                title="${escapeAttribute(logTitle)}"
+                ${serviceError ? `data-tooltip="${serviceError}"` : ''}
+              >
+                <span class="runtime-status-marker">${runtimeStatusMarker(service.status)}</span>
+                <span class="runtime-name-text">${escapeHtml(service.name)}</span>
+              </button>
+            </span>
+            <span class="runtime-port">${renderServicePort(service)}</span>
+            <span class="runtime-actions">${action}</span>
+          `;
+          item.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
+            try {
+              await window.serviceApi.startService(host.id, service.id);
+            } catch (error) {
+              setMessage(`Start failed: ${(error as Error).message}`, 'error');
+            }
+          });
+          item.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
+            try {
+              await window.serviceApi.stopService(host.id, service.id);
+            } catch (error) {
+              setMessage(`Stop failed: ${(error as Error).message}`, 'error');
+            }
+          });
+          item.querySelector<HTMLButtonElement>('[data-action="logs"]')?.addEventListener('click', () => {
+            openServiceLogDialog(host, service.id);
+          });
+          list.appendChild(item);
+        }
+
+        body.appendChild(section);
+      }
+
+      if (host.forwards.length === 0 && host.services.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'runtime-empty';
+        empty.textContent = 'No tunnels or services configured.';
+        body.appendChild(empty);
       }
     }
 
+    cell.appendChild(panel);
+    row.appendChild(cell);
+    hostTableBody.appendChild(row);
   });
 }
 

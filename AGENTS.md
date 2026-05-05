@@ -69,7 +69,17 @@ Build a desktop Electron application to manage services on remote servers throug
      - each host is a top-level block
      - each host contains `Tunnel List` and `Service List`
      - each host block must be collapsible from the list page
+     - the home page should not wrap the host list in an extra `Hosts` card; each host should be rendered as its own spaced container
+     - host names should align to the left edge of the host container, with the host collapse control grouped with row actions rather than indenting the title
+     - home-page runtime rows should use the compact local monospace layout: colored name, scan-friendly port text, optional tunnel metadata, and contextual icon-only start/stop action
+     - when both lists exist, the home page should render tunnels as the left column and services as the right column for tighter density
+     - runtime status should be represented by tunnel/service name color instead of a separate status column
+     - service PID should not be rendered as its own list column; clicking the service name opens the log dialog
+     - port text should be easy to scan: tunnel and forwarded service rows use `L:<local> → R:<remote>`, while non-forwarded service rows use `:<exposedPort>`
+     - port numbers should be right-aligned in fixed five-character slots to keep mappings vertically aligned
+     - runtime status colors are standardized: running `#22c55e`, stopped `#6b7280`, error `#ef4444`
      - `Tunnel List` and `Service List` should have clearly distinct visual section treatments inside the host block
+     - `Tunnel List` and `Service List` section headers should not show standalone collapse arrows because the sections are not individually collapsible
      - section titles should carry slightly stronger typographic emphasis than table column headers so hierarchy remains clear in the compact layout
      - section titles should use local inline icons rather than remote icon assets, so packaging and offline usage stay self-contained
      - when a host has no tunnels or no services, the empty section should be omitted instead of rendering a placeholder block

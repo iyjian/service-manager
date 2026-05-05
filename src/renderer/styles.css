@@ -71,11 +71,11 @@
   --color-primary-active: var(--color-accent-active);
 
   /* ===== Status ===== */
-  --color-success-500: #16a34a;
+  --color-success-500: #22c55e;
   --color-success-bg: #f0fdf4;
   --color-warning-500: #ca8a04;
   --color-warning-bg: #fefce8;
-  --color-error-500: #dc2626;
+  --color-error-500: #ef4444;
   --color-error-bg: #fef2f2;
 
   /* ===== Type ===== */
@@ -902,6 +902,17 @@ textarea.input {
   background: var(--color-bg-surface);
 }
 
+.host-list-section {
+  margin-top: var(--space-4);
+}
+
+.host-list-wrap {
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 table {
   width: 100%;
   border-collapse: separate;
@@ -1197,6 +1208,375 @@ td {
   padding: var(--space-6) var(--space-4);
 }
 
+.host-panel-cell {
+  padding: 0 0 12px;
+  border-bottom: 0;
+  color: inherit;
+}
+
+.host-panel {
+  min-width: 760px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  color: var(--color-fg-secondary);
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.host-panel-row:last-child .host-panel-cell {
+  padding-bottom: 0;
+}
+
+.host-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.host-panel-main {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.host-panel-title-wrap {
+  min-width: 0;
+}
+
+.host-panel-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--color-fg-primary);
+  line-height: 1.25;
+}
+
+.host-panel-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-panel-count {
+  flex: 0 0 auto;
+  color: var(--color-fg-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+  white-space: nowrap;
+}
+
+.host-panel-desc {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--color-fg-tertiary);
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-panel-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.host-panel-body {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.host-panel-body-two-col {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 14px;
+}
+
+.host-panel-collapsed .host-panel-body {
+  display: none;
+}
+
+.runtime-section {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.runtime-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+  color: var(--color-fg-secondary);
+  line-height: 1.2;
+}
+
+.runtime-section-title .host-section-label {
+  gap: 5px;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.runtime-section-title .host-section-icon,
+.runtime-section-title .host-section-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+.runtime-list {
+  display: grid;
+  gap: 1px;
+}
+
+.runtime-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) max-content 28px;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 4px;
+  gap: 8px;
+  border-radius: var(--radius-sm);
+  line-height: 1.25;
+}
+
+.runtime-row:hover {
+  background: var(--color-bg-hover);
+}
+
+.runtime-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+}
+
+.runtime-status-marker {
+  width: 10px;
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+}
+
+.runtime-status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-name-cell {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.runtime-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-name-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.runtime-name-button:hover .runtime-name-text {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.runtime-name-status.status-running {
+  color: var(--color-success-500);
+}
+
+.runtime-name-status.status-error {
+  color: var(--color-error-500);
+}
+
+.runtime-name-status.status-transition {
+  color: var(--color-warning-500);
+}
+
+.runtime-name-status.status-stopped {
+  color: #6b7280;
+}
+
+.runtime-port {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-fg-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-port-map,
+.runtime-port-single {
+  display: inline-grid;
+  align-items: baseline;
+  column-gap: 2px;
+}
+
+.runtime-port-map {
+  grid-template-columns: auto 5ch auto auto 5ch;
+}
+
+.runtime-port-single {
+  grid-template-columns: auto 5ch;
+}
+
+.runtime-port-number {
+  display: inline-block;
+  width: 5ch;
+  overflow: hidden;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.runtime-port-arrow {
+  padding: 0 2px;
+  color: var(--color-fg-tertiary);
+}
+
+.runtime-port .forward-link {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: inherit;
+}
+
+.runtime-port-muted,
+.runtime-pid-empty {
+  color: var(--color-fg-quaternary);
+}
+
+.runtime-meta {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--color-fg-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-auto {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-fg-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.runtime-pid {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg-primary);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.runtime-pid:hover {
+  color: var(--color-focus);
+  text-decoration-color: currentColor;
+}
+
+.runtime-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+.runtime-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  color: var(--color-fg-primary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.runtime-action-btn:hover:not(:disabled) {
+  border-color: var(--color-fg-primary);
+  background: var(--color-bg-hover);
+}
+
+.runtime-action-btn:disabled {
+  color: var(--color-fg-quaternary);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.runtime-action-btn svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+.runtime-action-start:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.runtime-action-start:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.runtime-empty {
+  padding: 4px 6px;
+  color: var(--color-fg-tertiary);
+  font-style: italic;
+}
+
 .status-indicator {
   display: inline-flex;
   align-items: center;
@@ -1228,6 +1608,7 @@ td {
 }
 
 .status-retry {
+  flex: 0 0 auto;
   font-size: var(--font-size-2xs);
   line-height: 1;
   color: var(--color-text-tertiary);
@@ -1267,7 +1648,7 @@ td {
 }
 
 .status-stopped {
-  color: var(--color-fg-tertiary);
+  color: #6b7280;
 }
 
 .hidden {
@@ -1330,5 +1711,14 @@ td {
 
   .btn-nowrap {
     width: fit-content;
+  }
+
+  .host-panel {
+    min-width: 640px;
+  }
+
+  .host-panel-body-two-col {
+    grid-template-columns: 1fr;
+    row-gap: 8px;
   }
 }
