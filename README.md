@@ -66,6 +66,7 @@ This project is now aligned with the **UI style** and **development approach** o
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
    - the home page does not wrap hosts in a separate `Hosts` card; each host is its own container with spacing between hosts
    - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control lives with row actions
+   - each host has a subtle divider between host connection metadata and its runtime tunnel/service area
    - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual power-icon start/stop actions colored by runtime status
    - every expanded host always uses two compact columns: tunnels on the left and services on the right, even when one side is empty
    - the two runtime columns are separated by a very light vertical divider

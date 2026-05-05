@@ -72,6 +72,7 @@ Build a desktop Electron application to manage services on remote servers throug
      - each host block must be collapsible from the list page
      - the home page should not wrap the host list in an extra `Hosts` card; each host should be rendered as its own spaced container
      - host names should align to the left edge of the host container, with the host collapse control grouped with row actions rather than indenting the title
+     - host connection metadata and the runtime tunnel/service area should be separated by a subtle divider
      - home-page runtime rows should use the compact local monospace layout: colored name, scan-friendly port text, optional tunnel metadata, and contextual power-icon start/stop action colored by runtime status
      - every expanded host should always render two runtime columns: tunnels on the left and services on the right, even when one column is empty
      - the runtime columns should be separated by a very light vertical divider
