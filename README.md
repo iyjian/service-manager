@@ -69,7 +69,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - `Service List`: start/stop service, PID/log, runtime forward indicator
    - hosts are rendered as distinct collapsible blocks so dense host lists remain scannable
    - the home page does not wrap hosts in a separate `Hosts` card; each host is its own container with spacing between hosts
-   - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control lives with row actions
+   - host names align to the left edge of their container so they read as the first hierarchy level; the host collapse control uses an 18px local inline SVG icon placed before the host name, with a down triangle when expanded and the original right triangle when collapsed
    - each host has a subtle divider between host connection metadata and its runtime tunnel/service area
    - base UI font tokens are raised by about 2px, with host names, runtime section titles, rows, status markers, and power buttons scaled together for clearer scanability
    - host runtime rows use a compact local monospace layout for terminal-like scanability, with contextual power-icon start/stop actions colored by runtime status and explicit hover/active/focus/busy feedback
@@ -87,7 +87,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - `Tunnel List` and `Service List` use separate visual section treatments to improve in-host distinction
    - `Tunnel List` and `Service List` section headers do not show standalone collapse arrows because those sections are not individually collapsible
    - section titles use a slightly stronger typographic emphasis than column headers, so list hierarchy stays readable in the compact layout
-   - section titles include larger semantic local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan; the tunnel section uses a tunnel-shaped glyph instead of a generic network glyph
+   - section titles include larger semantic local inline SVG icons, avoiding any remote icon dependency while making the hierarchy easier to scan; the tunnel section uses a filled tunnel glyph and the service section uses a filled process-grid glyph
    - empty `Tunnel List` or `Service List` columns remain visible with a compact empty state, so the two-column structure stays stable
 8. Service actions in list: `Start`, `Stop`.
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.

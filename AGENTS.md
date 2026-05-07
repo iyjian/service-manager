@@ -84,6 +84,7 @@ Logs:
 - Keep Tailwind preflight disabled unless intentionally redesigning global base styles.
 - Home page is host-centric: each host is a top-level block with tunnel and service sections.
 - Home page header must stay sticky so quick actions remain reachable on long host lists.
+- Host collapse control belongs before the host name and uses the local filled list-toggle SVG with a restrained 18px visual icon size; expanded state points the triangle down, collapsed state keeps the original right-pointing triangle.
 - Host edit form follows the same hierarchy: forwarding rules, services, jump servers.
 - Host edit actions must stay visible in a sticky footer for long configs.
 - Host edit forwarding-rule and service editors should use compact summary rows with expandable details.
@@ -92,7 +93,7 @@ Logs:
 - Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, and power-icon start/stop actions with clear hover, active, focus, disabled, and busy feedback.
 - Do not add whole-row hover highlights to runtime service/tunnel rows; keep feedback on the clickable service name and power action button.
 - Runtime power buttons must keep a stable outer hit area on hover/active; do not move or scale the button container because that can cause pointer flicker. Animate the inner icon instead.
-- Section header icons must be local inline SVGs with semantic shapes and enough visual weight to match their titles; the tunnel section should read visually as a tunnel rather than a generic network glyph.
+- Section header icons must be local inline SVGs with semantic shapes and enough visual weight to match their titles; the tunnel section should use the filled tunnel glyph, and the service section should use the filled process-grid glyph.
 - Empty tunnel/service columns should keep the two-column layout stable.
 - Use local inline icons/assets only; do not depend on remote icon assets.
 - Page-level notices should be top-right auto-dismiss toasts. Modal validation/import feedback stays inside the modal.

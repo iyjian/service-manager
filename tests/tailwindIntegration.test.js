@@ -37,7 +37,13 @@ test('runtime action buttons keep interactive and busy states explicit', async (
   assert.match(renderer, /runtime-action-btn-\$\{actionKind\}/);
   assert.match(renderer, /aria-busy="\$\{isBusy \? 'true' : 'false'\}"/);
   assert.match(renderer, /runtime-action-spinner/);
-  assert.match(renderer, /M4 18v-4\.25a8 8 0 0 1 16 0V18/);
+  assert.match(renderer, /m4 3\.5l5 5l-5 5zM21 20v-2H3v2/);
+  assert.match(renderer, /M2 5h8l-4 5zM21 20v-2H3v2/);
+  assert.match(renderer, /renderHostToggleIcon\(isCollapsed\)/);
+  assert.match(renderer, /class="host-toggle-btn"[\s\S]*?<span class="host-panel-name">/);
+  assert.match(renderer, /M12 2C6\.5 2 2 6\.5 2 12v10h20V12c0-5\.5-4\.5-10-10-10/);
+  assert.match(renderer, /M5\.126 18\.874q-\.357-\.357-\.357-\.874t\.357-\.874/);
+  assert.match(tailwind, /\.host-toggle-icon,\s*\.host-toggle-icon svg\s*\{[^}]*@apply block;[^}]*height:\s*18px;[^}]*width:\s*18px;/);
   assert.match(tailwind, /\.runtime-action-btn:not\(:disabled\):hover/);
   assert.match(tailwind, /\.runtime-action-btn:focus-visible/);
   assert.match(tailwind, /\.runtime-action-btn\s*\{/);

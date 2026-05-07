@@ -824,20 +824,13 @@ function applyStaticButtonIcons(): void {
 function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
   const iconMarkup = kind === 'tunnel'
     ? `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 18v-4.25a8 8 0 0 1 16 0V18"></path>
-        <path d="M7.25 18v-4.25a4.75 4.75 0 0 1 9.5 0V18"></path>
-        <path d="M3.5 18.5h17"></path>
-        <path d="M12 18v-6"></path>
-        <path d="M9.75 15.25h4.5"></path>
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12v10h20V12c0-5.5-4.5-10-10-10m3.47 5.11A5.95 5.95 0 0 0 13 6.09V4.07c1.46.18 2.79.76 3.9 1.62zm-6.94 0L7.1 5.69A7.94 7.94 0 0 1 11 4.07v2.02c-.91.15-1.75.51-2.47 1.02M5.69 7.1l1.42 1.43A5.95 5.95 0 0 0 6.09 11H4.07c.18-1.46.76-2.79 1.62-3.9M6 13v2.5H4V13zm-2 7v-2.5h2V20zm12 0H8v-8c0-2.21 1.79-4 4-4s4 1.79 4 4zm.89-11.47l1.42-1.43a7.94 7.94 0 0 1 1.62 3.9h-2.02a5.95 5.95 0 0 0-1.02-2.47M18 13h2v2.5h-2zm0 7v-2.5h2V20z"></path>
       </svg>
     `
     : `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="4" y="5" width="16" height="14" rx="2.4"></rect>
-        <path d="M7.5 9.25 10.25 12 7.5 14.75"></path>
-        <path d="M12.25 15h4.25"></path>
-        <circle cx="17" cy="9" r="1.15" fill="currentColor" stroke="none"></circle>
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M5.126 18.874q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m-12-6q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m-12-6Q4.769 6.517 4.769 6t.357-.874T6 4.769t.874.357t.357.874t-.357.874T6 7.231t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357"></path>
       </svg>
     `;
   return `
@@ -845,6 +838,17 @@ function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
       <span class="host-section-icon">${iconMarkup}</span>
       <span>${escapeHtml(text)}</span>
     </span>
+  `;
+}
+
+function renderHostToggleIcon(isCollapsed: boolean): string {
+  const path = isCollapsed
+    ? 'm4 3.5l5 5l-5 5zM21 20v-2H3v2zm0-7v-2h-9v2zm0-7V4h-9v2z'
+    : 'M2 5h8l-4 5zM21 20v-2H3v2zm0-7v-2h-9v2zm0-7V4h-8v2z';
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="currentColor" d="${path}"></path>
+    </svg>
   `;
 }
 
@@ -1831,6 +1835,16 @@ function render(): void {
         <div class="host-panel-main">
           <div class="host-panel-title-wrap">
             <div class="host-panel-title">
+              <button
+                type="button"
+                class="host-toggle-btn"
+                data-action="toggle-host"
+                aria-expanded="${isCollapsed ? 'false' : 'true'}"
+                aria-label="${isCollapsed ? 'Expand host' : 'Collapse host'}"
+                title="${isCollapsed ? 'Expand host' : 'Collapse host'}"
+              >
+                <span class="host-toggle-icon">${renderHostToggleIcon(isCollapsed)}</span>
+              </button>
               <span class="host-panel-name">${hostName}</span>
               <span class="host-panel-count">(${tunnelCount} tunnel${tunnelCount === 1 ? '' : 's'} · ${serviceCount} service${serviceCount === 1 ? '' : 's'})</span>
             </div>
@@ -1838,16 +1852,6 @@ function render(): void {
           </div>
         </div>
         <div class="host-panel-actions row-actions">
-          <button
-            type="button"
-            class="host-toggle-btn"
-            data-action="toggle-host"
-            aria-expanded="${isCollapsed ? 'false' : 'true'}"
-            aria-label="${isCollapsed ? 'Expand host' : 'Collapse host'}"
-            title="${isCollapsed ? 'Expand host' : 'Collapse host'}"
-          >
-            <span class="host-toggle-icon">${isCollapsed ? '▸' : '▾'}</span>
-          </button>
           <button class="btn btn-secondary btn-sm" data-action="copy-host">${renderButtonContent('copy', 'Copy')}</button>
           <button class="btn btn-secondary btn-sm" data-action="edit-host">${renderButtonContent('edit', 'Edit Host')}</button>
           <button class="btn btn-danger btn-sm" data-action="delete-host">${renderButtonContent('delete', 'Delete Host')}</button>
