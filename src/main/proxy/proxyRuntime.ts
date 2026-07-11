@@ -133,9 +133,23 @@ export class ProxyRuntime extends EventEmitter {
   private systemProxyActive = false;
   private expectingExit = false;
   private tunSupport: ProxyTunSupport | undefined;
-  constructor(private readonly proxyDir: string) {
+  private lifecycleQueue: Promise<void> = Promise.resolve();
+  constructor(
+    private readonly proxyDir: string,
+    private readonly spawnProcess: typeof spawn = spawn,
+    private readonly getControllerPort: () => Promise<number> = getFreePort
+  ) {
     super();
     this.coreManager = new CoreManager(path.join(proxyDir, 'core'));
+  }
+
+  private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.lifecycleQueue.then(operation);
+    this.lifecycleQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   private get settingsPath(): string {
@@ -436,34 +450,54 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async start(): Promise<ProxyState> {
+    return this.enqueueLifecycle(() => this.startNow());
+  }
+
+  private async startNow(): Promise<ProxyState> {
     if (this.runStatus === 'running' || this.runStatus === 'starting') {
       return this.snapshot();
-    }
-    const installed = await this.coreManager.getInstalledInfo();
-    if (!installed) {
-      throw new Error('mihomo core is not installed. Download it first.');
     }
 
     this.setRunStatus('starting');
     try {
+      const installed = await this.coreManager.getInstalledInfo();
+      if (!installed) {
+        throw new Error('mihomo core is not installed. Download it first.');
+      }
       const subscription = await this.loadCachedSubscription();
       if (subscription.primaryGroup) {
         await this.migrateLegacySelection(subscription.primaryGroup);
       }
-      const controllerPort = await getFreePort();
+      const controllerPort = await this.getControllerPort();
       const secret = randomBytes(16).toString('hex');
       const config = buildRuntimeConfig(this.settings, subscription, { controllerPort, secret });
       await fs.writeFile(this.runtimeConfigPath, dumpRuntimeConfig(config), 'utf8');
 
       this.logLines = [];
       this.expectingExit = false;
-      const child = spawn(installed.binaryPath, ['-d', this.proxyDir, '-f', this.runtimeConfigPath], {
+      const child = this.spawnProcess(installed.binaryPath, ['-d', this.proxyDir, '-f', this.runtimeConfigPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.child = child;
+      let rejectSpawnFailure: (error: Error) => void = () => undefined;
+      const spawnFailure = new Promise<never>((_resolve, reject) => {
+        rejectSpawnFailure = reject;
+      });
       child.stdout?.on('data', (data: Buffer) => this.appendLog(data.toString()));
       child.stderr?.on('data', (data: Buffer) => this.appendLog(data.toString()));
+      child.on('error', (error) => {
+        if (this.child !== child) return;
+        this.child = null;
+        this.api = null;
+        if (this.runStatus === 'starting') {
+          rejectSpawnFailure(error);
+        } else if (!this.expectingExit) {
+          this.setRunStatus('error', error.message);
+          void this.deactivateSystemProxyIfNeeded();
+        }
+      });
       child.on('exit', (code) => {
+        if (this.child !== child) return;
         this.child = null;
         this.api = null;
         if (this.expectingExit) {
@@ -475,7 +509,7 @@ export class ProxyRuntime extends EventEmitter {
       });
 
       this.api = new MihomoApi(controllerPort, secret);
-      await this.waitForController();
+      await Promise.race([this.waitForController(), spawnFailure]);
       await this.applySelectionsQuietly();
       if (this.expectingExit || !this.child) {
         // stop() interrupted the startup while the controller was coming up.
@@ -562,6 +596,10 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async stop(): Promise<ProxyState> {
+    return this.enqueueLifecycle(() => this.stopNow());
+  }
+
+  private async stopNow(): Promise<ProxyState> {
     await this.setStartOnLaunch(false);
     if (this.runStatus === 'stopped' || this.runStatus === 'stopping') {
       return this.snapshot();
@@ -574,9 +612,13 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   private async restart(): Promise<void> {
+    await this.enqueueLifecycle(() => this.restartNow());
+  }
+
+  private async restartNow(): Promise<void> {
     await this.killChild();
     this.setRunStatus('stopped');
-    await this.start();
+    await this.startNow();
   }
 
   async setMode(mode: ProxyMode): Promise<ProxyState> {
@@ -751,6 +793,10 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async shutdown(): Promise<void> {
+    await this.enqueueLifecycle(() => this.shutdownNow());
+  }
+
+  private async shutdownNow(): Promise<void> {
     await this.deactivateSystemProxyIfNeeded();
     await this.killChild();
   }

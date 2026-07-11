@@ -65,6 +65,7 @@ Local proxy:
 - Only `Save & Fetch` fetches the remote URL and replaces the cache. It must not start or restart Mihomo; a running proxy must be manually stopped and started to apply the new cache. Ordinary startup/restart must read the parsed cache first and safely fall back to the retained source YAML when the parsed cache is absent or invalid.
 - Persist desired Proxy running state in `ProxySettings.startOnLaunch`. A successful Start enables it; only explicit Stop disables it. Application shutdown and unexpected Mihomo exit must preserve it.
 - Restore enabled running intent asynchronously after the main window and Proxy state broadcast are ready. Auto-start failure must not abort app startup; retain the intent, expose Proxy error state, log the failure, and retry on a later launch.
+- Serialize Proxy Start, explicit Stop, internal restart, and shutdown through one lifecycle queue so a later Stop/shutdown cannot be undone by an in-flight Start. Missing-core and child spawn failures must settle to renderer-visible Proxy error state without uncaught process errors.
 - The Proxy page must show only Mihomo runtime `Selector` strategy groups as manual controls. URL-test, fallback, load-balance, relay, and other automatic groups are not selectable in the UI.
 - A selector candidate can be a concrete node, `DIRECT`, `REJECT`, or another strategy group.
 - Persist manual choices in `ProxySettings.selectedProxies` as `Record<groupName, candidateName>` and restore each valid choice after startup.

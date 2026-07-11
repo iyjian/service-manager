@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const { promises: fs } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -487,6 +488,196 @@ test('ProxyRuntime restoreRunningIntent delegates only when enabled', async (t) 
   };
   await enabled.restoreRunningIntent();
   assert.equal(enabledStarts, 1);
+});
+
+test('ProxyRuntime serializes a later explicit Stop behind an in-flight Start', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-start-stop-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  const events = [];
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  runtime.startNow = async () => {
+    events.push('start:begin');
+    await startGate;
+    await runtime.setStartOnLaunch(true);
+    events.push('start:end');
+    return runtime.getState();
+  };
+  runtime.stopNow = async () => {
+    events.push('stop');
+    await runtime.setStartOnLaunch(false);
+    return runtime.getState();
+  };
+
+  const startPromise = runtime.start();
+  startPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const stopPromise = runtime.stop();
+  stopPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeRelease = [...events];
+  releaseStart();
+  const results = await Promise.allSettled([startPromise, stopPromise]);
+
+  assert.deepEqual(beforeRelease, ['start:begin']);
+  assert.ok(results.every((result) => result.status === 'fulfilled'));
+  assert.deepEqual(events, ['start:begin', 'start:end', 'stop']);
+  assert.equal((await runtime.getState()).settings.startOnLaunch, false);
+});
+
+test('ProxyRuntime serializes shutdown behind an in-flight Start', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-start-shutdown-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  const events = [];
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  runtime.startNow = async () => {
+    events.push('start:begin');
+    await startGate;
+    events.push('start:end');
+    return runtime.getState();
+  };
+  runtime.shutdownNow = async () => {
+    events.push('shutdown');
+  };
+
+  const startPromise = runtime.start();
+  startPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const shutdownPromise = runtime.shutdown();
+  shutdownPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeRelease = [...events];
+  releaseStart();
+  const results = await Promise.allSettled([startPromise, shutdownPromise]);
+
+  assert.deepEqual(beforeRelease, ['start:begin']);
+  assert.ok(results.every((result) => result.status === 'fulfilled'));
+  assert.deepEqual(events, ['start:begin', 'start:end', 'shutdown']);
+});
+
+test('ProxyRuntime reports missing core as Proxy error state', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-missing-core-state-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  await assert.rejects(runtime.start(), /mihomo core is not installed/);
+  const state = await runtime.getState();
+  assert.equal(state.running, 'error');
+  assert.match(state.error, /mihomo core is not installed/);
+  assert.equal(state.settings.startOnLaunch, false);
+});
+
+test('ProxyRuntime accepts an injected child-process spawn implementation', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-spawn-seam-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const spawnProcess = () => {
+    throw new Error('not called');
+  };
+  const getControllerPort = async () => 9123;
+
+  const runtime = new ProxyRuntime(proxyDir, spawnProcess, getControllerPort);
+
+  assert.equal(runtime.spawnProcess, spawnProcess);
+  assert.equal(runtime.getControllerPort, getControllerPort);
+});
+
+test('ProxyRuntime reports child spawn errors through Proxy error state', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-spawn-error-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const child = new EventEmitter();
+  child.stdout = null;
+  child.stderr = null;
+  child.kill = () => true;
+  const runtime = new ProxyRuntime(proxyDir, () => child, async () => 9123);
+  await runtime.init();
+  runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/missing/mihomo', version: 'test' });
+  runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
+  runtime.waitForController = async () => new Promise(() => undefined);
+
+  const startPromise = runtime.start();
+  const rejection = assert.rejects(startPromise, /injected spawn failure/);
+  for (let attempt = 0; attempt < 20 && child.listenerCount('error') === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(child.listenerCount('error') > 0);
+  child.emit('error', new Error('injected spawn failure'));
+  await rejection;
+
+  const state = await runtime.getState();
+  assert.equal(state.running, 'error');
+  assert.match(state.error, /injected spawn failure/);
+  assert.equal(state.settings.startOnLaunch, false);
+});
+
+test('ProxyRuntime successful public Start persists enabled intent', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-public-start-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const child = new EventEmitter();
+  child.pid = 12345;
+  child.stdout = null;
+  child.stderr = null;
+  child.kill = () => {
+    queueMicrotask(() => child.emit('exit', 0));
+    return true;
+  };
+  const runtime = new ProxyRuntime(proxyDir, () => child, async () => 9123);
+  await runtime.init();
+  runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/fake/mihomo', version: 'test' });
+  runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
+  runtime.waitForController = async () => undefined;
+  runtime.applySelectionsQuietly = async () => undefined;
+
+  const state = await runtime.start();
+
+  assert.equal(state.running, 'running');
+  assert.equal(state.settings.startOnLaunch, true);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).startOnLaunch,
+    true
+  );
+  await runtime.shutdown();
+});
+
+test('ProxyRuntime tears down a successful child when enabling intent cannot persist', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-start-persist-failure-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const child = new EventEmitter();
+  child.stdout = null;
+  child.stderr = null;
+  let killed = false;
+  child.kill = () => {
+    killed = true;
+    queueMicrotask(() => child.emit('exit', 0));
+    return true;
+  };
+  const runtime = new ProxyRuntime(proxyDir, () => child, async () => 9123);
+  await runtime.init();
+  runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/fake/mihomo', version: 'test' });
+  runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
+  runtime.waitForController = async () => undefined;
+  runtime.applySelectionsQuietly = async () => undefined;
+  runtime.persistSettings = async () => {
+    throw new Error('injected start intent persistence failure');
+  };
+
+  await assert.rejects(runtime.start(), /injected start intent persistence failure/);
+
+  const state = await runtime.getState();
+  assert.equal(killed, true);
+  assert.equal(state.running, 'error');
+  assert.equal(state.settings.startOnLaunch, false);
 });
 
 test('ProxyRuntime migrates legacy exceptions to Custom Rules and removes exceptions on the next settings write', async (t) => {

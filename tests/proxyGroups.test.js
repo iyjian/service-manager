@@ -163,3 +163,13 @@ test('project documentation describes Host-page local app memory totals', () => 
   assert.match(readme, /appMemory\.ts/);
   assert.match(agents, /appMemory\.ts/);
 });
+
+test('Proxy toggle routes starting state to Stop', () => {
+  const root = path.join(__dirname, '..');
+  const source = fs.readFileSync(path.join(root, 'src/renderer/proxyPage.ts'), 'utf8');
+
+  assert.match(
+    source,
+    /state\.running === 'running'\s*\|\|\s*state\.running === 'starting'[\s\S]{0,180}stopProxy\(\)/
+  );
+});

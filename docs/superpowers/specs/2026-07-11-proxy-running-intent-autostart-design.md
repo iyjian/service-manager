@@ -57,6 +57,8 @@ The child `exit` handler continues to report an unexpected exit as an error and 
 
 Internal restarts caused by settings changes remain running-intent preserving. They use the ordinary start path while the intent is already true.
 
+Start, explicit Stop, internal restart, and shutdown are serialized through one lifecycle queue. A Stop or shutdown requested during startup waits for that in-flight lifecycle action and then runs, so the later user/cleanup action remains authoritative and settings writes cannot race each other. The Proxy toggle routes both `starting` and `running` states to Stop.
+
 ## Application Startup Orchestration
 
 Add a `ProxyRuntime` method that reads the sanitized intent and either returns the current snapshot or calls the ordinary `start()` method.
@@ -68,6 +70,7 @@ The asynchronous rejection is logged through the existing main-process runtime-e
 ## Failure Semantics
 
 - Missing core, missing/invalid subscription cache, runtime-config failure, spawn failure, controller timeout, selection failure outside the existing tolerated cases, System Proxy activation failure, or intent-persistence failure follows the existing start error path.
+- Missing-core and child-process `error` events settle to renderer-visible Proxy error state. Spawn errors are raced against controller startup and are handled without reaching the process-level uncaught exception path.
 - A failed manual Start from disabled intent remains disabled.
 - A failed automatic Start from enabled intent remains enabled for a later launch retry.
 - A failed intent write during explicit Stop leaves Mihomo running and reports the persistence error.
@@ -87,6 +90,9 @@ Coverage will include:
 - failed persistence restores the prior in-memory intent;
 - automatic restoration is a no-op when disabled and delegates to ordinary Start when enabled;
 - main-process startup calls restoration non-blockingly and logs failure rather than rejecting application initialization;
+- concurrent Start/Stop and Start/shutdown calls preserve invocation order and leave the later Stop/shutdown authoritative;
+- missing-core and injected child spawn failures produce Proxy error state without enabling startup intent;
+- successful public Start persists enabled intent, while an intent write failure tears down the child and restores disabled intent;
 - existing subscription, System Proxy, TUN, selection, and restart tests remain green.
 
 The full `pnpm test` workflow must pass.

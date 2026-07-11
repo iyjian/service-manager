@@ -367,7 +367,7 @@ function bindEvents(): void {
   toggleButton.addEventListener('click', () => {
     void runAction(toggleButton, async () => {
       const state = currentState;
-      if (state && state.running === 'running') {
+      if (state && (state.running === 'running' || state.running === 'starting')) {
         renderState(await window.proxyApi.stopProxy());
         setMessage('Proxy stopped.', 'success');
       } else {
