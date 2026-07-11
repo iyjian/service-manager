@@ -126,6 +126,7 @@ Logs:
 
 - GitHub Actions must build macOS, Windows, and Linux artifacts.
 - Auto update uses `electron-updater` with state broadcast to renderer.
+- Automatic update checks retry transient network failures once and remain quiet after a failed retry; manual update-check failures use a top-right toast.
 - Manual update check belongs in the app menu as `Check for Updates...`, not as a home-page quick action.
 - README must include unsigned macOS install/quarantine guidance.
 - Runtime/build icons come from `assets/source.png` and generated `assets/icon.*` files.

@@ -230,7 +230,12 @@ function renderUpdateState(state: UpdateState): void {
     'update-status-error'
   );
 
-  if (state.status === 'idle' || state.status === 'unsupported' || state.status === 'up-to-date') {
+  if (
+    state.status === 'idle' ||
+    state.status === 'unsupported' ||
+    state.status === 'up-to-date' ||
+    (state.status === 'error' && state.trigger === 'manual')
+  ) {
     updateStatusHintElement.classList.add('hidden');
     updateStatusHintElement.textContent = '';
     return;
@@ -2276,6 +2281,9 @@ window.serviceApi.onForwardStatusChanged((change) => {
 window.serviceApi.onUpdateStateChanged((state) => {
   try {
     renderUpdateState(state);
+    if (state.status === 'error' && state.trigger === 'manual') {
+      setMessage(state.message ?? 'Update check failed.', 'error');
+    }
   } catch (error) {
     reportRendererError('update-state-changed', error, 'Unexpected updater status error.');
   }

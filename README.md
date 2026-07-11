@@ -174,6 +174,8 @@ Artifacts are generated under `release/`.
   - checks automatically after startup, then on interval
   - supports manual `Check for Updates...` from app menu (macOS style)
   - prompts for download and restart install
+- Automatic checks retry once after a transient network error. If the retry also fails, the app records the failure in its runtime log without interrupting the page.
+- A manual update check surfaces failures as a short-lived top-right notification.
 - Header update text is intentionally quiet for `unsupported` and `up-to-date` states; the header already shows the current app version.
 - In dev mode (unpackaged), updater state is unsupported but no header hint is shown.
 
