@@ -651,10 +651,12 @@ export class ProxyRuntime extends EventEmitter {
     this.settings.mixedPort = port;
     await this.persistSettings();
     if (this.runStatus === 'running') {
-      await this.restart();
-      if (systemProxyWasActive && this.runStatus === 'running' && this.settings.startOnLaunch) {
-        await this.activateSystemProxy();
-      }
+      await this.enqueueLifecycle(async () => {
+        await this.restartNow();
+        if (systemProxyWasActive && this.runStatus === 'running' && this.settings.startOnLaunch) {
+          await this.activateSystemProxy();
+        }
+      });
     }
     this.emitState();
     return this.snapshot();

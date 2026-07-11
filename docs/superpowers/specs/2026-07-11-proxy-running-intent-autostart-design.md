@@ -59,7 +59,7 @@ Internal restarts caused by settings changes remain running-intent preserving. T
 
 Start, explicit Stop, internal restart, shutdown, and complete System Proxy mutations are serialized through one lifecycle queue. A Stop or shutdown requested during startup or OS proxy activation waits for that in-flight lifecycle action and then runs, so the later user/cleanup action remains authoritative. Settings-file writes use a separate invocation-order queue, and an internal settings restart rechecks the current running state and intent before teardown so a later Stop cannot be undone. The Proxy toggle routes both `starting` and `running` states to Stop.
 
-Port changes restore System Proxy only when the internal restart leaves Proxy running with enabled intent. Save & Fetch commits only its subscription count and refresh timestamp into the current settings object; it never restores a full settings snapshot that could overwrite a concurrent explicit Stop.
+The complete port-change restart and conditional System Proxy restoration run as one lifecycle operation. Restoration occurs only when the internal restart leaves Proxy running with enabled intent, so a later Stop runs afterward and disables the OS proxy. Save & Fetch commits only its subscription count and refresh timestamp into the current settings object; it never restores a full settings snapshot that could overwrite a concurrent explicit Stop.
 
 ## Application Startup Orchestration
 
@@ -95,6 +95,7 @@ Coverage will include:
 - concurrent Start/Stop and Start/shutdown calls preserve invocation order and leave the later Stop/shutdown authoritative;
 - concurrent settings writes preserve invocation order, and a later Stop prevents a pending settings restart from starting Mihomo again;
 - a concurrent Stop prevents a pending port-change restart from reactivating System Proxy;
+- a Stop requested during post-port-change System Proxy activation runs afterward and disables it;
 - a concurrent Stop waits behind an in-flight System Proxy activation and disables it during teardown;
 - Save & Fetch preserves running intent changed by a concurrent explicit Stop;
 - missing-core and injected child spawn failures produce Proxy error state without enabling startup intent;

@@ -656,6 +656,57 @@ test('ProxyRuntime keeps a later Stop authoritative over a pending settings rest
   assert.equal(state.settings.startOnLaunch, false);
 });
 
+test('ProxyRuntime keeps a later Stop authoritative during post-port-change System Proxy activation', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-port-activation-stop-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  runtime.runStatus = 'running';
+  runtime.settings.startOnLaunch = true;
+  runtime.systemProxyActive = true;
+  runtime.persistSettingsNow = async () => {};
+  runtime.startNow = async () => {
+    runtime.runStatus = 'running';
+    return runtime.getState();
+  };
+
+  let activationStarted;
+  const activationStartedPromise = new Promise((resolve) => {
+    activationStarted = resolve;
+  });
+  let releaseActivation;
+  const activationGate = new Promise((resolve) => {
+    releaseActivation = resolve;
+  });
+  runtime.activateSystemProxy = async () => {
+    activationStarted();
+    await activationGate;
+    runtime.systemProxyActive = true;
+  };
+  runtime.deactivateSystemProxyIfNeeded = async () => {
+    if (runtime.systemProxyActive) runtime.systemProxyActive = false;
+  };
+
+  const portPromise = runtime.setMixedPort(7891);
+  portPromise.catch(() => undefined);
+  await activationStartedPromise;
+  let stopSettled = false;
+  const stopPromise = runtime.stop().finally(() => {
+    stopSettled = true;
+  });
+  stopPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const stopSettledBeforeRelease = stopSettled;
+  releaseActivation();
+  await Promise.all([portPromise, stopPromise]);
+
+  const state = await runtime.getState();
+  assert.equal(stopSettledBeforeRelease, false);
+  assert.equal(runtime.systemProxyActive, false);
+  assert.equal(state.running, 'stopped');
+  assert.equal(state.settings.startOnLaunch, false);
+});
+
 test('ProxyRuntime reports missing core as Proxy error state', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-missing-core-state-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
