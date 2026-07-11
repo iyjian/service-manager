@@ -32,6 +32,7 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/portForwardManager.ts`: service-owned local port forwarding.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
 - `src/main/proxy/proxyRuntime.ts`: local Mihomo lifecycle, parsed-cache loading/replacement, persisted settings and Custom Rule mutations, and system/TUN proxy controls.
+- `src/main/proxy/proxyAutoStart.ts`: non-blocking Proxy running-intent restoration and startup error routing.
 - `src/main/proxy/subscriptionCache.ts`: versioned parsed-subscription cache serialization and validation.
 - `src/main/proxy/proxyExceptions.ts`: Custom Rule validation, normalization, migration, and target-aware Mihomo rule generation.
 - `src/main/proxy/proxyGroups.ts`: pure Mihomo runtime group conversion, manual-selector validation, and saved-selection compatibility helpers.
@@ -62,6 +63,8 @@ Local proxy:
 - Preserve the subscription's proxies, proxy-groups, rules, proxy-providers, and rule-providers; override only local runtime control fields.
 - The Proxy page accepts a one-time subscription URL through `Save & Fetch`; it clears the input after a successful cache replacement and retains only `subscription.yaml`, validated `subscription.parsed.json`, node count, and fetch time, never the remote URL.
 - Only `Save & Fetch` fetches the remote URL and replaces the cache. It must not start or restart Mihomo; a running proxy must be manually stopped and started to apply the new cache. Ordinary startup/restart must read the parsed cache first and safely fall back to the retained source YAML when the parsed cache is absent or invalid.
+- Persist desired Proxy running state in `ProxySettings.startOnLaunch`. A successful Start enables it; only explicit Stop disables it. Application shutdown and unexpected Mihomo exit must preserve it.
+- Restore enabled running intent asynchronously after the main window and Proxy state broadcast are ready. Auto-start failure must not abort app startup; retain the intent, expose Proxy error state, log the failure, and retry on a later launch.
 - The Proxy page must show only Mihomo runtime `Selector` strategy groups as manual controls. URL-test, fallback, load-balance, relay, and other automatic groups are not selectable in the UI.
 - A selector candidate can be a concrete node, `DIRECT`, `REJECT`, or another strategy group.
 - Persist manual choices in `ProxySettings.selectedProxies` as `Record<groupName, candidateName>` and restore each valid choice after startup.

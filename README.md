@@ -116,6 +116,9 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
     - `Save & Fetch` accepts a one-time URL, clears it after successful cache replacement, and retains only the fetched source `subscription.yaml`, validated `subscription.parsed.json`, node count, and fetch time; it never persists the remote URL
     - only `Save & Fetch` fetches the remote URL and replaces the cache; it does not start or restart Mihomo. If the proxy is already running, manually stop and start it to apply the new cached subscription
     - ordinary startup and restart read the parsed cache first; if it is absent or invalid, the runtime safely falls back to the retained source YAML, rebuilds the parsed cache, and does not require a network request
+    - Proxy remembers desired running state in `ProxySettings.startOnLaunch`: a successful Start enables restoration, and an explicit Stop disables it
+    - application shutdown and unexpected Mihomo exit preserve enabled intent; on the next launch, Service Manager restores Mihomo asynchronously through the ordinary cached-subscription startup path
+    - auto-start failure leaves the application open, retains enabled intent for a later launch retry, and exposes the Proxy error state
     - `Strategy Groups` shows every manually selectable Mihomo `Selector` group from the running subscription, such as node selection, global direct, or final-match groups
     - each Strategy Group can independently select a node, `DIRECT`, `REJECT`, or another strategy group; automatic URL-test, fallback, load-balance, and relay groups remain non-interactive
     - selections persist per group and are restored after the core starts or the app is reopened; a removed group or candidate is skipped safely after a subscription refresh
