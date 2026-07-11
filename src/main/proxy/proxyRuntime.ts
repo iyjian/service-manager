@@ -732,6 +732,10 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async setSystemProxy(enabled: boolean): Promise<ProxyState> {
+    return this.enqueueLifecycle(() => this.setSystemProxyNow(enabled));
+  }
+
+  private async setSystemProxyNow(enabled: boolean): Promise<ProxyState> {
     if (enabled && this.runStatus !== 'running') {
       throw new Error('Start the proxy first. When its status is running, enable System Proxy.');
     }

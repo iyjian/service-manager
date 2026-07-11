@@ -847,6 +847,47 @@ test('ProxyRuntime rejects System Proxy activation before Mihomo has started wit
   );
 });
 
+test('ProxyRuntime serializes a later explicit Stop behind System Proxy activation', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-system-proxy-stop-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  runtime.runStatus = 'running';
+  runtime.settings.startOnLaunch = true;
+
+  let activationStarted;
+  const activationStartedPromise = new Promise((resolve) => {
+    activationStarted = resolve;
+  });
+  let releaseActivation;
+  const activationGate = new Promise((resolve) => {
+    releaseActivation = resolve;
+  });
+  runtime.activateSystemProxy = async () => {
+    activationStarted();
+    await activationGate;
+    runtime.systemProxyActive = true;
+  };
+  runtime.deactivateSystemProxyIfNeeded = async () => {
+    if (runtime.systemProxyActive) runtime.systemProxyActive = false;
+  };
+  runtime.persistSettingsNow = async () => {};
+
+  const activationPromise = runtime.setSystemProxy(true);
+  activationPromise.catch(() => undefined);
+  await activationStartedPromise;
+  const stopPromise = runtime.stop();
+  stopPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseActivation();
+  await Promise.all([activationPromise, stopPromise]);
+
+  const state = await runtime.getState();
+  assert.equal(runtime.systemProxyActive, false);
+  assert.equal(state.running, 'stopped');
+  assert.equal(state.settings.startOnLaunch, false);
+});
+
 test('saveAndFetchSubscription caches a fetched subscription without persisting its URL or restarting Mihomo', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-fetch-'));
   const originalFetch = globalThis.fetch;
