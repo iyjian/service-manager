@@ -63,6 +63,7 @@ const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
 const pageMessageTextElement = requireElement<HTMLElement>('#page-message-text');
 const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
 const pageVersionElement = requireElement<HTMLElement>('#page-version');
+const pageStatsElement = requireElement<HTMLElement>('#page-stats');
 const hostDialogMessageElement = requireElement<HTMLDivElement>('#host-dialog-message');
 const hostDialogMessageTextElement = requireElement<HTMLElement>('#host-dialog-message-text');
 const hostDialogMessageCloseButton = requireElement<HTMLButtonElement>('#host-dialog-message-close-btn');
@@ -385,6 +386,18 @@ function formatJumpChain(jumpHosts: JumpHostConfig[]): string {
     return '';
   }
   return ` · via ${jumpHosts.map((jumpHost) => `${jumpHost.username}@${jumpHost.sshHost}:${jumpHost.sshPort}`).join(' -> ')}`;
+}
+
+function hostHue(name: string): number {
+  let hue = 0;
+  for (const char of name) {
+    hue = (hue * 31 + (char.codePointAt(0) ?? 0)) % 360;
+  }
+  return hue;
+}
+
+function countRunning(items: ReadonlyArray<{ status: ServiceStatus | TunnelStatus }>): number {
+  return items.filter((item) => item.status === 'running').length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1811,8 +1824,27 @@ function renderServicePort(service: HostView['services'][number]): string {
   return `<span>${base}</span> <span class="forward-indicator pending" title="Forward pending">…</span>`;
 }
 
+function renderPageStats(): void {
+  if (hosts.length === 0) {
+    pageStatsElement.classList.add('hidden');
+    pageStatsElement.textContent = '';
+    return;
+  }
+  const tunnelTotal = hosts.reduce((sum, host) => sum + host.forwards.length, 0);
+  const tunnelRunning = hosts.reduce((sum, host) => sum + countRunning(host.forwards), 0);
+  const serviceTotal = hosts.reduce((sum, host) => sum + host.services.length, 0);
+  const serviceRunning = hosts.reduce((sum, host) => sum + countRunning(host.services), 0);
+  pageStatsElement.innerHTML = [
+    `${hosts.length} host${hosts.length === 1 ? '' : 's'}`,
+    `<span${tunnelRunning > 0 ? ' class="stat-up"' : ''}>${tunnelRunning}</span>/${tunnelTotal} tunnels`,
+    `<span${serviceRunning > 0 ? ' class="stat-up"' : ''}>${serviceRunning}</span>/${serviceTotal} services`,
+  ].join(' · ');
+  pageStatsElement.classList.remove('hidden');
+}
+
 function render(): void {
   hostTableBody.innerHTML = '';
+  renderPageStats();
 
   if (hosts.length === 0) {
     const row = document.createElement('tr');
@@ -1835,6 +1867,14 @@ function render(): void {
     const hostDesc = escapeHtml(`${host.username}@${host.sshHost}:${host.sshPort}${formatJumpChain(host.jumpHosts)}`);
     const tunnelCount = host.forwards.length;
     const serviceCount = host.services.length;
+    const tunnelRunning = countRunning(host.forwards);
+    const serviceRunning = countRunning(host.services);
+    const allUp =
+      tunnelRunning === tunnelCount && serviceRunning === serviceCount && tunnelCount + serviceCount > 0;
+    const hostInitial = escapeHtml(([...host.name.trim()][0] ?? '#').toUpperCase());
+    const countTitle = escapeAttribute(
+      `${tunnelRunning}/${tunnelCount} tunnels running · ${serviceRunning}/${serviceCount} services running`
+    );
     panel.innerHTML = `
       <div class="host-panel-head">
         <div class="host-panel-main">
@@ -1850,16 +1890,17 @@ function render(): void {
               >
                 <span class="host-toggle-icon">${renderHostToggleIcon(isCollapsed)}</span>
               </button>
+              <span class="host-identity" aria-hidden="true" style="background:hsl(${hostHue(host.name)} 60% 42%)">${hostInitial}</span>
               <span class="host-panel-name">${hostName}</span>
-              <span class="host-panel-count">(${tunnelCount} tunnel${tunnelCount === 1 ? '' : 's'} · ${serviceCount} service${serviceCount === 1 ? '' : 's'})</span>
+              <span class="host-panel-count${allUp ? ' all-up' : ''}" title="${countTitle}">⇄ ${tunnelRunning}/${tunnelCount} · ▶ ${serviceRunning}/${serviceCount}</span>
+              <span class="host-panel-desc">${hostDesc}</span>
             </div>
-            <div class="host-panel-desc">${hostDesc}</div>
           </div>
         </div>
         <div class="host-panel-actions row-actions">
-          <button class="btn btn-secondary btn-sm" data-action="copy-host">${renderButtonContent('copy', 'Copy')}</button>
-          <button class="btn btn-secondary btn-sm" data-action="edit-host">${renderButtonContent('edit', 'Edit Host')}</button>
-          <button class="btn btn-danger btn-sm" data-action="delete-host">${renderButtonContent('delete', 'Delete Host')}</button>
+          <button class="btn btn-secondary btn-sm btn-icon-only" data-action="copy-host" title="Copy host" aria-label="Copy host">${renderButtonContent('copy', 'Copy')}</button>
+          <button class="btn btn-secondary btn-sm btn-icon-only" data-action="edit-host" title="Edit host" aria-label="Edit host">${renderButtonContent('edit', 'Edit Host')}</button>
+          <button class="btn btn-danger btn-sm btn-icon-only" data-action="delete-host" title="Delete host" aria-label="Delete host">${renderButtonContent('delete', 'Delete Host')}</button>
         </div>
       </div>
       <div class="host-panel-body"></div>

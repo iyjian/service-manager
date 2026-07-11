@@ -98,6 +98,36 @@
   box-sizing: border-box;
 }
 
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+.terminal-log::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+}
+
+.terminal-log::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+::selection {
+  background: rgba(0, 112, 243, 0.18);
+}
+
 html.service-log-open,
 body.service-log-open {
   overflow: hidden;

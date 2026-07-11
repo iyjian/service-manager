@@ -7,11 +7,11 @@
   }
 
   .app-shell {
-    @apply mx-auto grid w-full max-w-[1180px] gap-5 px-5 py-6;
+    @apply mx-auto grid w-full max-w-[1280px] gap-3 px-4 py-4;
   }
 
   .page-head {
-    @apply sticky top-0 z-40 -mx-5 -mt-6 border-b border-zinc-200/80 bg-zinc-50/90 px-5 py-4 backdrop-blur-xl;
+    @apply sticky top-0 z-40 -mx-4 -mt-4 border-b border-zinc-200/80 bg-zinc-50/90 px-4 py-2.5 backdrop-blur-xl;
   }
 
   .page-head-main {
@@ -23,7 +23,7 @@
   }
 
   .page-logo {
-    @apply h-8 w-8 shrink-0 rounded-lg shadow-sm;
+    @apply h-7 w-7 shrink-0 rounded-lg shadow-sm;
   }
 
   .page-brand-copy {
@@ -35,7 +35,15 @@
   }
 
   .page-title {
-    @apply m-0 text-[22px] font-semibold tracking-[-0.03em] text-zinc-950;
+    @apply m-0 text-[17px] font-semibold tracking-[-0.03em] text-zinc-950;
+  }
+
+  .page-stats {
+    @apply inline-flex items-center whitespace-nowrap font-mono text-[12px] tabular-nums text-zinc-500;
+  }
+
+  .page-stats .stat-up {
+    @apply text-emerald-700;
   }
 
   .page-version {
@@ -66,11 +74,11 @@
   }
 
   .btn {
-    @apply inline-flex h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium outline-none transition disabled:cursor-not-allowed disabled:opacity-45;
+    @apply inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent px-3 text-[13px] font-medium outline-none transition disabled:cursor-not-allowed disabled:opacity-45;
   }
 
   .btn-sm {
-    @apply h-8 px-2.5 text-sm;
+    @apply h-7 px-2.5 text-[12.5px];
   }
 
   .btn-primary {
@@ -101,8 +109,16 @@
     @apply inline-flex items-center whitespace-nowrap;
   }
 
+  .btn-icon-only {
+    @apply w-7 px-0;
+  }
+
+  .btn-icon-only .btn-label {
+    @apply hidden;
+  }
+
   .icon-btn {
-    @apply inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-transparent text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950;
+    @apply inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950;
   }
 
   .icon-btn svg {
@@ -123,7 +139,7 @@
   }
 
   .table-empty {
-    @apply rounded-2xl border border-dashed border-zinc-300 bg-white px-5 py-10 text-center text-sm text-zinc-500;
+    @apply rounded-xl border border-dashed border-zinc-300 bg-white px-5 py-8 text-center text-[12.5px] text-zinc-500;
   }
 
   .host-panel-row {
@@ -131,15 +147,15 @@
   }
 
   .host-panel-cell {
-    @apply block pb-4;
+    @apply block pb-3;
   }
 
   .host-panel {
-    @apply overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm ring-1 ring-zinc-950/[0.02];
+    @apply overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm ring-1 ring-zinc-950/[0.02];
   }
 
   .host-panel-head {
-    @apply flex items-start justify-between gap-4 border-b border-zinc-100 px-4 py-3;
+    @apply flex items-center justify-between gap-3 border-b border-zinc-100 px-3.5 py-2;
   }
 
   .host-panel-main,
@@ -148,20 +164,32 @@
   }
 
   .host-panel-title {
-    @apply flex min-w-0 flex-wrap items-center gap-2;
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .host-identity {
+    @apply inline-flex h-6 w-6 shrink-0 select-none items-center justify-center rounded-md text-[11px] font-semibold text-white shadow-sm;
   }
 
   .host-panel-name {
-    @apply truncate font-mono text-[17px] font-semibold text-zinc-950;
+    @apply min-w-0 truncate font-mono text-[14px] font-semibold text-zinc-950;
   }
 
   .host-panel-count,
   .host-panel-desc {
-    @apply font-mono text-[13px] text-zinc-500;
+    @apply font-mono text-zinc-500;
+  }
+
+  .host-panel-count {
+    @apply shrink-0 whitespace-nowrap text-[11px] tabular-nums;
+  }
+
+  .host-panel-count.all-up {
+    @apply text-emerald-700;
   }
 
   .host-panel-desc {
-    @apply mt-1 truncate;
+    @apply min-w-0 shrink-[3] truncate text-[12px];
   }
 
   .host-toggle-btn {
@@ -176,7 +204,7 @@
   }
 
   .host-panel-body {
-    @apply px-4 py-3;
+    @apply px-3 py-2;
   }
 
   .host-panel-collapsed .host-panel-body {
@@ -184,11 +212,11 @@
   }
 
   .host-panel-body-two-col {
-    @apply grid grid-cols-2 gap-4;
+    @apply grid grid-cols-2 gap-3;
   }
 
   .runtime-section {
-    @apply min-w-0 rounded-xl border border-zinc-100 bg-zinc-50/70 p-3;
+    @apply min-w-0 rounded-lg border border-zinc-100 bg-zinc-50/70 p-2.5;
   }
 
   .runtime-section-services {
@@ -196,19 +224,19 @@
   }
 
   .runtime-section-title {
-    @apply mb-2 flex h-8 items-center font-mono text-[14px] font-semibold uppercase tracking-[0.14em] text-zinc-700;
+    @apply mb-1.5 flex h-6 items-center font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-700;
   }
 
   .host-section-label {
-    @apply inline-flex items-center gap-2.5;
+    @apply inline-flex items-center gap-2;
   }
 
   .host-section-icon {
-    @apply inline-flex h-6 w-6 items-center justify-center rounded-md border bg-white shadow-sm;
+    @apply inline-flex h-5 w-5 items-center justify-center rounded-md border bg-white shadow-sm;
   }
 
   .host-section-icon svg {
-    @apply h-5 w-5;
+    @apply h-3.5 w-3.5;
   }
 
   .host-section-label-tunnel .host-section-icon {
@@ -224,7 +252,7 @@
   }
 
   .runtime-row {
-    @apply grid min-h-9 items-center gap-3 rounded-lg px-2 py-1.5 font-mono text-[14px];
+    @apply grid min-h-[30px] items-center gap-2 rounded-lg px-2 py-0.5 font-mono text-[13px];
     grid-template-columns: minmax(0, 1.25fr) minmax(150px, 0.9fr) 42px;
   }
 
@@ -252,7 +280,7 @@
 
   .runtime-auto,
   .status-retry {
-    @apply ml-2 inline-flex rounded-full bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-600;
+    @apply ml-2 inline-flex rounded-full bg-zinc-200 px-1 py-px text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-600;
   }
 
   .status-retry {
@@ -285,7 +313,7 @@
   }
 
   .runtime-action-btn {
-    @apply relative inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border bg-white/70 shadow-sm outline-none transition-all duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-40;
+    @apply relative inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border bg-white/70 shadow-sm outline-none transition-all duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .runtime-action-btn:not(:disabled):hover {
@@ -317,12 +345,12 @@
   }
 
   .runtime-action-spinner {
-    @apply pointer-events-none absolute inset-1.5 rounded-full border-2 border-current border-t-transparent opacity-80;
+    @apply pointer-events-none absolute inset-1 rounded-full border-2 border-current border-t-transparent opacity-80;
     animation: runtime-spin 0.8s linear infinite;
   }
 
   .runtime-empty {
-    @apply rounded-lg border border-dashed border-zinc-200 bg-white/60 px-3 py-3 text-sm text-zinc-500;
+    @apply rounded-lg border border-dashed border-zinc-200 bg-white/60 px-3 py-2 text-[12.5px] text-zinc-500;
   }
 
   .forward-link {
@@ -419,7 +447,7 @@
   }
 
   .dialog-panel {
-    @apply max-h-[calc(100vh-40px)] w-full overflow-auto rounded-2xl border border-zinc-200 bg-white p-5 shadow-2xl;
+    @apply max-h-[calc(100vh-40px)] w-full overflow-auto rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl;
   }
 
   .service-log-panel {
@@ -427,19 +455,19 @@
   }
 
   .dialog-head {
-    @apply mb-4 flex items-center justify-between gap-3;
+    @apply mb-3 flex items-center justify-between gap-3;
   }
 
   .section-title {
-    @apply m-0 text-base font-semibold tracking-[-0.01em] text-zinc-950;
+    @apply m-0 text-[15px] font-semibold tracking-[-0.01em] text-zinc-950;
   }
 
   .form-stack {
-    @apply grid gap-4;
+    @apply grid gap-3;
   }
 
   .form-row {
-    @apply grid grid-cols-12 items-end gap-3;
+    @apply grid grid-cols-12 items-end gap-2.5;
   }
 
   .field {
@@ -447,7 +475,7 @@
   }
 
   .field-xs {
-    @apply text-sm font-medium text-zinc-700;
+    @apply text-[12.5px] font-medium text-zinc-700;
   }
 
   .field-name {
@@ -476,11 +504,11 @@
   }
 
   .input {
-    @apply h-9 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 hover:border-zinc-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10;
+    @apply h-8 w-full rounded-md border border-zinc-300 bg-white px-3 text-[13px] text-zinc-950 outline-none transition placeholder:text-zinc-400 hover:border-zinc-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10;
   }
 
   textarea.input {
-    @apply min-h-9 resize-none py-2 leading-5;
+    @apply min-h-8 resize-none py-1.5 leading-5;
   }
 
   .checkbox {
@@ -500,7 +528,7 @@
   }
 
   .private-key-label {
-    @apply text-sm font-medium text-zinc-700;
+    @apply text-[12.5px] font-medium text-zinc-700;
   }
 
   .private-key-source-status {
@@ -517,7 +545,7 @@
 
   .private-key-content textarea.input,
   .service-command-input {
-    @apply min-h-28 resize-y font-mono text-sm leading-6;
+    @apply min-h-24 resize-y font-mono text-[13px] leading-6;
   }
 
   .private-key-wrap {
@@ -529,11 +557,11 @@
   }
 
   .subcard {
-    @apply rounded-xl border border-zinc-200 bg-zinc-50/80 p-4;
+    @apply rounded-lg border border-zinc-200 bg-zinc-50/80 p-3;
   }
 
   .subcard-head {
-    @apply mb-3 flex items-center justify-between gap-3;
+    @apply mb-2 flex items-center justify-between gap-3;
   }
 
   .subcard-title {
@@ -541,20 +569,20 @@
   }
 
   .forward-list {
-    @apply grid gap-3;
+    @apply grid gap-2;
   }
 
   .forward-list:empty::before {
     content: attr(data-empty);
-    @apply block rounded-lg border border-dashed border-zinc-300 bg-white/70 px-3 py-3 text-sm text-zinc-500;
+    @apply block rounded-lg border border-dashed border-zinc-300 bg-white/70 px-3 py-2 text-[12.5px] text-zinc-500;
   }
 
   .forward-row {
-    @apply rounded-xl border border-zinc-200 bg-white shadow-sm;
+    @apply rounded-lg border border-zinc-200 bg-white shadow-sm;
   }
 
   .jump-host-editor-row {
-    @apply p-3;
+    @apply p-2.5;
   }
 
   .jump-host-editor-head {
@@ -574,7 +602,7 @@
   }
 
   .editor-summary {
-    @apply grid min-h-12 w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-3 py-2 text-left text-inherit transition hover:bg-zinc-50;
+    @apply grid min-h-10 w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-2.5 py-1.5 text-left text-inherit transition hover:bg-zinc-50;
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
@@ -583,7 +611,7 @@
   }
 
   .editor-summary-title {
-    @apply truncate text-sm font-semibold text-zinc-950;
+    @apply truncate text-[13px] font-semibold text-zinc-950;
   }
 
   .editor-summary-meta {
@@ -595,7 +623,7 @@
   }
 
   .editor-body {
-    @apply hidden border-t border-zinc-100 p-3;
+    @apply hidden border-t border-zinc-100 p-2.5;
   }
 
   .editor-row-expanded .editor-body {
@@ -647,7 +675,7 @@
   }
 
   .form-actions {
-    @apply sticky bottom-[-20px] z-10 -mx-5 -mb-5 mt-2 flex flex-wrap gap-2 border-t border-zinc-200 bg-white/95 px-5 py-3 backdrop-blur-xl;
+    @apply sticky bottom-[-16px] z-10 -mx-4 -mb-4 mt-2 flex flex-wrap gap-2 border-t border-zinc-200 bg-white/95 px-4 py-2.5 backdrop-blur-xl;
   }
 
   .message-banner {
@@ -675,7 +703,7 @@
   }
 
   .service-log-toolbar {
-    @apply mb-3 grid items-end gap-3;
+    @apply mb-2 grid items-end gap-2;
     grid-template-columns: minmax(0, auto) minmax(320px, 1.25fr) minmax(280px, 1fr);
   }
 
@@ -692,11 +720,11 @@
   }
 
   .service-log-search-status {
-    @apply inline-flex h-8 min-w-12 items-center justify-center whitespace-nowrap font-mono text-sm text-zinc-500;
+    @apply inline-flex h-8 min-w-12 items-center justify-center whitespace-nowrap font-mono text-[13px] text-zinc-500;
   }
 
   .terminal-log {
-    @apply min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-950 bg-zinc-950 p-4 font-mono text-base leading-7 text-zinc-200;
+    @apply min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-950 bg-zinc-950 p-3 font-mono text-[13px] leading-6 text-zinc-200;
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -730,14 +758,6 @@
   }
 
   @media (max-width: 900px) {
-    .app-shell {
-      @apply px-4 py-4;
-    }
-
-    .page-head {
-      @apply -mx-4 -mt-4;
-    }
-
     .page-head-main {
       @apply flex-col items-stretch;
     }
