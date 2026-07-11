@@ -345,6 +345,150 @@ test('ProxyRuntime init drops a legacy subscription URL and removes it after the
   assert.equal(persisted.mode, 'global');
 });
 
+test('ProxyRuntime sanitizes persisted startup intent', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-start-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const runtimeWithoutSetting = new ProxyRuntime(path.join(proxyDir, 'missing'));
+  await runtimeWithoutSetting.init();
+  assert.equal((await runtimeWithoutSetting.getState()).settings.startOnLaunch, false);
+
+  const malformedDir = path.join(proxyDir, 'malformed');
+  await fs.mkdir(malformedDir, { recursive: true });
+  await fs.writeFile(
+    path.join(malformedDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: 'yes' }),
+    'utf8'
+  );
+  const runtimeWithMalformedSetting = new ProxyRuntime(malformedDir);
+  await runtimeWithMalformedSetting.init();
+  assert.equal((await runtimeWithMalformedSetting.getState()).settings.startOnLaunch, false);
+
+  const enabledDir = path.join(proxyDir, 'enabled');
+  await fs.mkdir(enabledDir, { recursive: true });
+  await fs.writeFile(
+    path.join(enabledDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: true }),
+    'utf8'
+  );
+  const runtimeWithEnabledSetting = new ProxyRuntime(enabledDir);
+  await runtimeWithEnabledSetting.init();
+  assert.equal((await runtimeWithEnabledSetting.getState()).settings.startOnLaunch, true);
+});
+
+test('ProxyRuntime Stop clears enabled startup intent even when already stopped', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-stop-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(proxyDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: true }),
+    'utf8'
+  );
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  const state = await runtime.stop();
+
+  assert.equal(state.running, 'stopped');
+  assert.equal(state.settings.startOnLaunch, false);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).startOnLaunch,
+    false
+  );
+});
+
+test('ProxyRuntime shutdown preserves enabled startup intent', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-shutdown-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(proxyDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: true }),
+    'utf8'
+  );
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  await runtime.shutdown();
+
+  assert.equal((await runtime.getState()).settings.startOnLaunch, true);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).startOnLaunch,
+    true
+  );
+});
+
+test('ProxyRuntime restores startup intent in memory when Stop persistence fails', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-stop-rollback-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  await fs.writeFile(
+    path.join(proxyDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: true }),
+    'utf8'
+  );
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  runtime.persistSettings = async () => {
+    throw new Error('injected intent persistence failure');
+  };
+
+  await assert.rejects(runtime.stop(), /injected intent persistence failure/);
+  assert.equal((await runtime.getState()).settings.startOnLaunch, true);
+});
+
+test('ProxyRuntime persists enabled startup intent transactionally', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-enable-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  await runtime.setStartOnLaunch(true);
+  assert.equal((await runtime.getState()).settings.startOnLaunch, true);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).startOnLaunch,
+    true
+  );
+
+  await runtime.setStartOnLaunch(false);
+  runtime.persistSettings = async () => {
+    throw new Error('injected enable persistence failure');
+  };
+  await assert.rejects(runtime.setStartOnLaunch(true), /injected enable persistence failure/);
+  assert.equal((await runtime.getState()).settings.startOnLaunch, false);
+});
+
+test('ProxyRuntime restoreRunningIntent delegates only when enabled', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-restore-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const disabled = new ProxyRuntime(path.join(proxyDir, 'disabled'));
+  await disabled.init();
+  let disabledStarts = 0;
+  disabled.start = async () => {
+    disabledStarts += 1;
+    return disabled.getState();
+  };
+  await disabled.restoreRunningIntent();
+  assert.equal(disabledStarts, 0);
+
+  const enabledDir = path.join(proxyDir, 'enabled');
+  await fs.mkdir(enabledDir, { recursive: true });
+  await fs.writeFile(
+    path.join(enabledDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: true }),
+    'utf8'
+  );
+  const enabled = new ProxyRuntime(enabledDir);
+  await enabled.init();
+  let enabledStarts = 0;
+  enabled.start = async () => {
+    enabledStarts += 1;
+    return enabled.getState();
+  };
+  await enabled.restoreRunningIntent();
+  assert.equal(enabledStarts, 1);
+});
+
 test('ProxyRuntime migrates legacy exceptions to Custom Rules and removes exceptions on the next settings write', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-settings-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));

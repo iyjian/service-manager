@@ -227,6 +227,7 @@ export interface ProxyException extends ProxyExceptionDraft {
 export interface ProxySettings {
   subscriptionUpdatedAt?: string;
   proxyCount?: number;
+  startOnLaunch: boolean;
   mode: ProxyMode;
   mixedPort: number;
   tunEnabled: boolean;

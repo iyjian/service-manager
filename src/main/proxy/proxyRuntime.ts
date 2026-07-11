@@ -38,6 +38,7 @@ const MAX_LOG_LINES = 2000;
 const CONTROLLER_STARTUP_TIMEOUT_MS = 12000;
 
 const DEFAULT_SETTINGS: ProxySettings = {
+  startOnLaunch: false,
   mode: 'rule',
   mixedPort: 7890,
   tunEnabled: false,
@@ -88,11 +89,13 @@ function sanitizePersistedSettings(value: unknown): ProxySettings {
     subscriptionUrl: _legacySubscriptionUrl,
     exceptions: legacyExceptions,
     customRules,
+    startOnLaunch,
     ...persistedWithoutLegacyFields
   } = persisted;
   return {
     ...DEFAULT_SETTINGS,
     ...persistedWithoutLegacyFields,
+    startOnLaunch: startOnLaunch === true,
     customRules: Array.isArray(customRules)
       ? sanitizePersistedCustomRules(customRules)
       : sanitizePersistedLegacyExceptions(legacyExceptions),
@@ -247,6 +250,18 @@ export class ProxyRuntime extends EventEmitter {
   private async persistSettings(): Promise<void> {
     await fs.mkdir(this.proxyDir, { recursive: true });
     await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), 'utf8');
+  }
+
+  private async setStartOnLaunch(enabled: boolean): Promise<void> {
+    if (this.settings.startOnLaunch === enabled) return;
+    const previous = this.settings.startOnLaunch;
+    this.settings.startOnLaunch = enabled;
+    try {
+      await this.persistSettings();
+    } catch (error) {
+      this.settings.startOnLaunch = previous;
+      throw error;
+    }
   }
 
   private async readCacheForRollback(cachePath: string): Promise<string | undefined> {
@@ -472,6 +487,7 @@ export class ProxyRuntime extends EventEmitter {
       if (this.settings.systemProxyEnabled) {
         await this.activateSystemProxy();
       }
+      await this.setStartOnLaunch(true);
     } catch (error) {
       // If stop() interrupted the startup, report a clean stop, not an error.
       if (this.expectingExit || this.runStatus === 'stopping' || this.runStatus === 'stopped') {
@@ -546,6 +562,7 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async stop(): Promise<ProxyState> {
+    await this.setStartOnLaunch(false);
     if (this.runStatus === 'stopped' || this.runStatus === 'stopping') {
       return this.snapshot();
     }
@@ -724,6 +741,13 @@ export class ProxyRuntime extends EventEmitter {
     await this.refreshTunSupport();
     this.emitState();
     return this.snapshot();
+  }
+
+  async restoreRunningIntent(): Promise<ProxyState> {
+    if (!this.settings.startOnLaunch) {
+      return this.snapshot();
+    }
+    return this.start();
   }
 
   async shutdown(): Promise<void> {
