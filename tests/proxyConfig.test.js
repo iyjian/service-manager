@@ -607,6 +607,7 @@ test('ProxyRuntime keeps a later Stop authoritative over a pending settings rest
   await runtime.init();
   runtime.runStatus = 'running';
   runtime.settings.startOnLaunch = true;
+  runtime.systemProxyActive = true;
 
   const writeEvents = [];
   let writes = 0;
@@ -622,9 +623,17 @@ test('ProxyRuntime keeps a later Stop authoritative over a pending settings rest
     writeEvents.push(`${current}:end`);
   };
   let starts = 0;
+  let systemProxyActivations = 0;
   runtime.startNow = async () => {
     starts += 1;
     return runtime.getState();
+  };
+  runtime.deactivateSystemProxyIfNeeded = async () => {
+    runtime.systemProxyActive = false;
+  };
+  runtime.activateSystemProxy = async () => {
+    systemProxyActivations += 1;
+    runtime.systemProxyActive = true;
   };
 
   const portPromise = runtime.setMixedPort(7891);
@@ -641,6 +650,8 @@ test('ProxyRuntime keeps a later Stop authoritative over a pending settings rest
 
   const state = await runtime.getState();
   assert.equal(starts, 0);
+  assert.equal(systemProxyActivations, 0);
+  assert.equal(runtime.systemProxyActive, false);
   assert.equal(state.running, 'stopped');
   assert.equal(state.settings.startOnLaunch, false);
 });
@@ -863,6 +874,48 @@ test('saveAndFetchSubscription caches a fetched subscription without persisting 
     parseSubscriptionCache(await fs.readFile(path.join(proxyDir, 'subscription.parsed.json'), 'utf8')).proxies.length,
     2
   );
+});
+
+test('saveAndFetchSubscription preserves a concurrent explicit Stop intent', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-fetch-stop-order-'));
+  const originalFetch = globalThis.fetch;
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    await fs.rm(proxyDir, { recursive: true, force: true });
+  });
+  globalThis.fetch = async () => new Response(SAMPLE_SUBSCRIPTION, { status: 200 });
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  runtime.runStatus = 'running';
+  runtime.settings.startOnLaunch = true;
+
+  let replacementStarted;
+  const replacementStartedPromise = new Promise((resolve) => {
+    replacementStarted = resolve;
+  });
+  let releaseReplacement;
+  const replacementGate = new Promise((resolve) => {
+    releaseReplacement = resolve;
+  });
+  runtime.replaceSubscriptionCaches = async () => {
+    replacementStarted();
+    await replacementGate;
+  };
+
+  const fetchPromise = runtime.saveAndFetchSubscription('https://subscription.example.test/config');
+  fetchPromise.catch(() => undefined);
+  await replacementStartedPromise;
+  await runtime.stop();
+  releaseReplacement();
+  await fetchPromise;
+
+  const state = await runtime.getState();
+  const persistedSettings = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal(state.running, 'stopped');
+  assert.equal(state.settings.startOnLaunch, false);
+  assert.equal(persistedSettings.startOnLaunch, false);
+  assert.equal(state.settings.proxyCount, 2);
 });
 
 test('saveAndFetchSubscription restores caches and settings metadata when settings persistence fails', async (t) => {

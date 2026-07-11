@@ -59,6 +59,8 @@ Internal restarts caused by settings changes remain running-intent preserving. T
 
 Start, explicit Stop, internal restart, and shutdown are serialized through one lifecycle queue. A Stop or shutdown requested during startup waits for that in-flight lifecycle action and then runs, so the later user/cleanup action remains authoritative. Settings-file writes use a separate invocation-order queue, and an internal settings restart rechecks the current running state and intent before teardown so a later Stop cannot be undone. The Proxy toggle routes both `starting` and `running` states to Stop.
 
+Port changes restore System Proxy only when the internal restart leaves Proxy running with enabled intent. Save & Fetch commits only its subscription count and refresh timestamp into the current settings object; it never restores a full settings snapshot that could overwrite a concurrent explicit Stop.
+
 ## Application Startup Orchestration
 
 Add a `ProxyRuntime` method that reads the sanitized intent and either returns the current snapshot or calls the ordinary `start()` method.
@@ -92,6 +94,8 @@ Coverage will include:
 - main-process startup calls restoration non-blockingly and logs failure rather than rejecting application initialization;
 - concurrent Start/Stop and Start/shutdown calls preserve invocation order and leave the later Stop/shutdown authoritative;
 - concurrent settings writes preserve invocation order, and a later Stop prevents a pending settings restart from starting Mihomo again;
+- a concurrent Stop prevents a pending port-change restart from reactivating System Proxy;
+- Save & Fetch preserves running intent changed by a concurrent explicit Stop;
 - missing-core and injected child spawn failures produce Proxy error state without enabling startup intent;
 - successful public Start persists enabled intent, while an intent write failure tears down the child and restores disabled intent;
 - existing subscription, System Proxy, TUN, selection, and restart tests remain green.

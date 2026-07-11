@@ -318,14 +318,6 @@ export class ProxyRuntime extends EventEmitter {
     await this.restoreCacheFile(this.subscriptionCachePath, previousRaw);
   }
 
-  private cloneSettings(): ProxySettings {
-    return {
-      ...this.settings,
-      ...(this.settings.selectedProxies ? { selectedProxies: { ...this.settings.selectedProxies } } : {}),
-      ...(this.settings.customRules ? { customRules: this.settings.customRules.map((rule) => ({ ...rule })) } : {}),
-    };
-  }
-
   private async replaceSubscriptionCaches(raw: string, parsed: string): Promise<void> {
     const rawTemporaryPath = `${this.subscriptionCachePath}.tmp`;
     const parsedTemporaryPath = `${this.parsedSubscriptionCachePath}.tmp`;
@@ -413,17 +405,24 @@ export class ProxyRuntime extends EventEmitter {
       this.readCacheForRollback(this.subscriptionCachePath),
       this.readCacheForRollback(this.parsedSubscriptionCachePath),
     ]);
-    const previousSettings = this.cloneSettings();
+    const previousProxyCount = this.settings.proxyCount;
+    const previousSubscriptionUpdatedAt = this.settings.subscriptionUpdatedAt;
     await this.replaceSubscriptionCaches(text, serializeSubscriptionCache(info));
-    this.settings = {
-      ...previousSettings,
-      proxyCount: info.proxies.length,
-      subscriptionUpdatedAt: new Date().toISOString(),
-    };
+    this.settings.proxyCount = info.proxies.length;
+    this.settings.subscriptionUpdatedAt = new Date().toISOString();
     try {
       await this.persistSettings();
     } catch (error) {
-      this.settings = previousSettings;
+      if (previousProxyCount === undefined) {
+        delete this.settings.proxyCount;
+      } else {
+        this.settings.proxyCount = previousProxyCount;
+      }
+      if (previousSubscriptionUpdatedAt === undefined) {
+        delete this.settings.subscriptionUpdatedAt;
+      } else {
+        this.settings.subscriptionUpdatedAt = previousSubscriptionUpdatedAt;
+      }
       try {
         await this.restoreSubscriptionCaches(previousRaw, previousParsed);
       } catch (rollbackError) {
@@ -653,7 +652,7 @@ export class ProxyRuntime extends EventEmitter {
     await this.persistSettings();
     if (this.runStatus === 'running') {
       await this.restart();
-      if (systemProxyWasActive) {
+      if (systemProxyWasActive && this.runStatus === 'running' && this.settings.startOnLaunch) {
         await this.activateSystemProxy();
       }
     }
