@@ -30,6 +30,7 @@ import {
 import { RuntimeRegistry } from './runtimeRegistry';
 import { preserveServiceRuntimeFields, validateHostDraft } from './validation';
 import { ProxyRuntime } from './proxy/proxyRuntime';
+import { scheduleProxyAutoStart } from './proxy/proxyAutoStart';
 import { collectAppMemoryUsage } from './appMemory';
 import type { ProxyExceptionDraft, ProxyMode, ProxyState } from '../shared/types';
 
@@ -857,8 +858,9 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
-    proxyRuntime = new ProxyRuntime(path.join(app.getPath('userData'), 'proxy'));
-    await proxyRuntime.init();
+    const initializedProxyRuntime = new ProxyRuntime(path.join(app.getPath('userData'), 'proxy'));
+    proxyRuntime = initializedProxyRuntime;
+    await initializedProxyRuntime.init();
 
     applyAppIcon();
     registerIpcHandlers();
@@ -871,6 +873,7 @@ app.whenReady()
     }
     updater.start();
     createWindow();
+    scheduleProxyAutoStart(initializedProxyRuntime, (error) => logRuntimeError('proxy:auto-start', error));
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
