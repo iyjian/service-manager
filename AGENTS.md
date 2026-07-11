@@ -66,6 +66,7 @@ Local proxy:
 - Persist desired Proxy running state in `ProxySettings.startOnLaunch`. A successful Start enables it; only explicit Stop disables it. Application shutdown and unexpected Mihomo exit must preserve it.
 - Restore enabled running intent asynchronously after the main window and Proxy state broadcast are ready. Auto-start failure must not abort app startup; retain the intent, expose Proxy error state, log the failure, and retry on a later launch.
 - Serialize Proxy Start, explicit Stop, internal restart, and shutdown through one lifecycle queue so a later Stop/shutdown cannot be undone by an in-flight Start. Missing-core and child spawn failures must settle to renderer-visible Proxy error state without uncaught process errors.
+- Serialize Proxy settings-file writes in invocation order. Before an internal settings restart terminates Mihomo, recheck that Proxy is still running with enabled running intent so a later explicit Stop remains authoritative.
 - The Proxy page must show only Mihomo runtime `Selector` strategy groups as manual controls. URL-test, fallback, load-balance, relay, and other automatic groups are not selectable in the UI.
 - A selector candidate can be a concrete node, `DIRECT`, `REJECT`, or another strategy group.
 - Persist manual choices in `ProxySettings.selectedProxies` as `Record<groupName, candidateName>` and restore each valid choice after startup.

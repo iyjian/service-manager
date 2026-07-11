@@ -566,6 +566,85 @@ test('ProxyRuntime serializes shutdown behind an in-flight Start', async (t) => 
   assert.deepEqual(events, ['start:begin', 'start:end', 'shutdown']);
 });
 
+test('ProxyRuntime serializes settings file writes in invocation order', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-settings-write-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  const events = [];
+  let call = 0;
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  runtime.persistSettingsNow = async () => {
+    call += 1;
+    const current = call;
+    events.push(`${current}:begin`);
+    if (current === 1) await firstGate;
+    events.push(`${current}:end`);
+  };
+
+  const first = runtime.persistSettings();
+  first.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = runtime.persistSettings();
+  second.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeRelease = [...events];
+  releaseFirst();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(beforeRelease, ['1:begin']);
+  assert.deepEqual(events, ['1:begin', '1:end', '2:begin', '2:end']);
+});
+
+test('ProxyRuntime keeps a later Stop authoritative over a pending settings restart', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-setting-stop-order-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+  runtime.runStatus = 'running';
+  runtime.settings.startOnLaunch = true;
+
+  const writeEvents = [];
+  let writes = 0;
+  let releaseFirstWrite;
+  const firstWriteGate = new Promise((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  runtime.persistSettingsNow = async () => {
+    writes += 1;
+    const current = writes;
+    writeEvents.push(`${current}:begin`);
+    if (current === 1) await firstWriteGate;
+    writeEvents.push(`${current}:end`);
+  };
+  let starts = 0;
+  runtime.startNow = async () => {
+    starts += 1;
+    return runtime.getState();
+  };
+
+  const portPromise = runtime.setMixedPort(7891);
+  portPromise.catch(() => undefined);
+  for (let attempt = 0; attempt < 20 && writeEvents.length === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(writeEvents, ['1:begin']);
+  const stopPromise = runtime.stop();
+  stopPromise.catch(() => undefined);
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseFirstWrite();
+  await Promise.all([portPromise, stopPromise]);
+
+  const state = await runtime.getState();
+  assert.equal(starts, 0);
+  assert.equal(state.running, 'stopped');
+  assert.equal(state.settings.startOnLaunch, false);
+});
+
 test('ProxyRuntime reports missing core as Proxy error state', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-missing-core-state-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));

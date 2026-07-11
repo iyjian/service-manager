@@ -134,6 +134,7 @@ export class ProxyRuntime extends EventEmitter {
   private expectingExit = false;
   private tunSupport: ProxyTunSupport | undefined;
   private lifecycleQueue: Promise<void> = Promise.resolve();
+  private settingsWriteQueue: Promise<void> = Promise.resolve();
   constructor(
     private readonly proxyDir: string,
     private readonly spawnProcess: typeof spawn = spawn,
@@ -261,9 +262,18 @@ export class ProxyRuntime extends EventEmitter {
     }
   }
 
-  private async persistSettings(): Promise<void> {
+  private async persistSettingsNow(): Promise<void> {
     await fs.mkdir(this.proxyDir, { recursive: true });
     await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), 'utf8');
+  }
+
+  private persistSettings(): Promise<void> {
+    const result = this.settingsWriteQueue.then(() => this.persistSettingsNow());
+    this.settingsWriteQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   private async setStartOnLaunch(enabled: boolean): Promise<void> {
@@ -616,6 +626,9 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   private async restartNow(): Promise<void> {
+    if (this.runStatus !== 'running' || !this.settings.startOnLaunch) {
+      return;
+    }
     await this.killChild();
     this.setRunStatus('stopped');
     await this.startNow();

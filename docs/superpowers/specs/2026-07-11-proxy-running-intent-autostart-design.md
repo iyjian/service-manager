@@ -57,7 +57,7 @@ The child `exit` handler continues to report an unexpected exit as an error and 
 
 Internal restarts caused by settings changes remain running-intent preserving. They use the ordinary start path while the intent is already true.
 
-Start, explicit Stop, internal restart, and shutdown are serialized through one lifecycle queue. A Stop or shutdown requested during startup waits for that in-flight lifecycle action and then runs, so the later user/cleanup action remains authoritative and settings writes cannot race each other. The Proxy toggle routes both `starting` and `running` states to Stop.
+Start, explicit Stop, internal restart, and shutdown are serialized through one lifecycle queue. A Stop or shutdown requested during startup waits for that in-flight lifecycle action and then runs, so the later user/cleanup action remains authoritative. Settings-file writes use a separate invocation-order queue, and an internal settings restart rechecks the current running state and intent before teardown so a later Stop cannot be undone. The Proxy toggle routes both `starting` and `running` states to Stop.
 
 ## Application Startup Orchestration
 
@@ -91,6 +91,7 @@ Coverage will include:
 - automatic restoration is a no-op when disabled and delegates to ordinary Start when enabled;
 - main-process startup calls restoration non-blockingly and logs failure rather than rejecting application initialization;
 - concurrent Start/Stop and Start/shutdown calls preserve invocation order and leave the later Stop/shutdown authoritative;
+- concurrent settings writes preserve invocation order, and a later Stop prevents a pending settings restart from starting Mihomo again;
 - missing-core and injected child spawn failures produce Proxy error state without enabling startup intent;
 - successful public Start persists enabled intent, while an intent write failure tears down the child and restores disabled intent;
 - existing subscription, System Proxy, TUN, selection, and restart tests remain green.
