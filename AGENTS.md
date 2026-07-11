@@ -84,7 +84,8 @@ Services:
 - Start uses `systemd-run --user` transient units only. No raw background-process fallback.
 - Stop uses `systemctl --user stop`; there is no configurable stop command.
 - Commands must run through the remote account's login shell to preserve shell-managed PATH/runtime setup.
-- Resolve existing remote Service Manager units by the exact Service ID suffix within the target SSH account; do not require the unit's embedded Host ID to match the configured Host ID.
+- For app-generated canonical UUID identities, resolve existing remote Service Manager units by parsing the complete `service-manager-{hostUuid}-{serviceUuid}.service` shape within the target SSH account; compare the parsed Service UUID exactly and do not require the Host UUID to match the configured Host ID.
+- For arbitrary imported IDs, match only the exact conventional unit name. Do not use suffix-only matching because hyphenated or sanitized IDs can alias another service.
 - Keep `service-manager-{hostId}-{serviceId}.service` for creation when no existing Service ID match is loaded. Do not rename or migrate existing units.
 - Treat multiple matching units for one Service ID as an explicit ambiguity error and do not mutate a candidate automatically.
 - `systemd active` means running; missing/inactive units mean stopped.

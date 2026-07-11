@@ -137,25 +137,40 @@ export function parseSystemdUnitNames(raw: string): string[] {
     .map((line) => line.split(/\s+/, 1)[0]);
 }
 
+const CANONICAL_UUID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const CANONICAL_UUID_PATTERN = new RegExp(`^${CANONICAL_UUID_SOURCE}$`);
+const UUID_SYSTEMD_UNIT_PATTERN = new RegExp(
+  `^service-manager-(${CANONICAL_UUID_SOURCE})-(${CANONICAL_UUID_SOURCE})\\.service$`
+);
+
 export function selectSystemdUnitName(
   host: HostConfig,
   service: ServiceConfig,
   unitNames: string[]
 ): ResolvedSystemdUnitName {
-  const suffix = `-${safeUnitFragment(service.id)}.service`;
-  const matches = [...new Set(unitNames)]
-    .filter((unit) => unit.startsWith('service-manager-') && unit.endsWith(suffix))
-    .sort();
+  const conventionalUnit = buildSystemdUnitName(host, service);
+  const matches = new Set(unitNames.filter((unit) => unit === conventionalUnit));
 
-  if (matches.length > 1) {
-    throw new Error(`Multiple systemd units match service ID ${service.id}: ${matches.join(', ')}`);
+  if (CANONICAL_UUID_PATTERN.test(service.id)) {
+    for (const unit of unitNames) {
+      const parsed = UUID_SYSTEMD_UNIT_PATTERN.exec(unit);
+      if (parsed?.[2] === service.id) {
+        matches.add(unit);
+      }
+    }
   }
 
-  if (matches.length === 1) {
-    return { unit: matches[0], exists: true };
+  const sortedMatches = [...matches].sort();
+
+  if (sortedMatches.length > 1) {
+    throw new Error(`Multiple systemd units match service ID ${service.id}: ${sortedMatches.join(', ')}`);
   }
 
-  return { unit: buildSystemdUnitName(host, service), exists: false };
+  if (sortedMatches.length === 1) {
+    return { unit: sortedMatches[0], exists: true };
+  }
+
+  return { unit: conventionalUnit, exists: false };
 }
 
 export function shellQuoteSingle(raw: string): string {

@@ -71,14 +71,15 @@ test('parseSystemdUnitNames extracts the unit column and ignores blank output', 
 });
 
 test('selectSystemdUnitName matches service id under a different host id', () => {
+  const serviceId = '33333333-3333-4333-8333-333333333333';
   const resolved = selectSystemdUnitName(
-    { id: 'current-host', name: 'dev' },
-    { id: 'service-1', name: 'api' },
-    ['service-manager-old-host-service-1.service']
+    { id: '11111111-1111-4111-8111-111111111111', name: 'dev' },
+    { id: serviceId, name: 'api' },
+    [`service-manager-22222222-2222-4222-8222-222222222222-${serviceId}.service`]
   );
 
   assert.deepEqual(resolved, {
-    unit: 'service-manager-old-host-service-1.service',
+    unit: `service-manager-22222222-2222-4222-8222-222222222222-${serviceId}.service`,
     exists: true,
   });
 });
@@ -100,29 +101,60 @@ test('selectSystemdUnitName rejects similar suffixes and falls back to current h
 });
 
 test('selectSystemdUnitName rejects multiple units for the same service id', () => {
+  const serviceId = '33333333-3333-4333-8333-333333333333';
   assert.throws(
     () => selectSystemdUnitName(
-      { id: 'current-host', name: 'dev' },
-      { id: 'service-1', name: 'api' },
+      { id: '11111111-1111-4111-8111-111111111111', name: 'dev' },
+      { id: serviceId, name: 'api' },
       [
-        'service-manager-host-a-service-1.service',
-        'service-manager-host-b-service-1.service',
+        `service-manager-22222222-2222-4222-8222-222222222222-${serviceId}.service`,
+        `service-manager-44444444-4444-4444-8444-444444444444-${serviceId}.service`,
       ]
     ),
-    /Multiple systemd units match service ID service-1.*host-a.*host-b/
+    new RegExp(`Multiple systemd units match service ID ${serviceId}`)
   );
 });
 
 test('resolved old-host unit remains the selected lifecycle target', () => {
-  const host = { id: 'new-host', name: 'dev' };
-  const service = { id: 'stable-service-id', name: 'api' };
+  const host = { id: '11111111-1111-4111-8111-111111111111', name: 'dev' };
+  const service = { id: '33333333-3333-4333-8333-333333333333', name: 'api' };
   const resolved = selectSystemdUnitName(host, service, [
-    buildSystemdUnitName({ ...host, id: 'old-host' }, service),
+    buildSystemdUnitName({ ...host, id: '22222222-2222-4222-8222-222222222222' }, service),
   ]);
 
   assert.equal(resolved.exists, true);
-  assert.equal(resolved.unit, 'service-manager-old-host-stable-service-id.service');
+  assert.equal(
+    resolved.unit,
+    'service-manager-22222222-2222-4222-8222-222222222222-33333333-3333-4333-8333-333333333333.service'
+  );
   assert.notEqual(resolved.unit, buildSystemdUnitName(host, service));
+});
+
+test('selectSystemdUnitName does not suffix-match arbitrary imported service ids', () => {
+  const resolved = selectSystemdUnitName(
+    { id: 'current-host', name: 'dev' },
+    { id: 'bar', name: 'api' },
+    ['service-manager-22222222-2222-4222-8222-222222222222-foo-bar.service']
+  );
+
+  assert.deepEqual(resolved, {
+    unit: 'service-manager-current-host-bar.service',
+    exists: false,
+  });
+});
+
+test('selectSystemdUnitName rejects UUID suffixes on noncanonical candidate names', () => {
+  const serviceId = '33333333-3333-4333-8333-333333333333';
+  const resolved = selectSystemdUnitName(
+    { id: '11111111-1111-4111-8111-111111111111', name: 'dev' },
+    { id: serviceId, name: 'api' },
+    [`service-manager-imported-prefix-${serviceId}.service`]
+  );
+
+  assert.deepEqual(resolved, {
+    unit: `service-manager-11111111-1111-4111-8111-111111111111-${serviceId}.service`,
+    exists: false,
+  });
 });
 
 test('buildManagedShellLauncher launches command through login shell', () => {

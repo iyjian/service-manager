@@ -4,7 +4,7 @@
 
 Allow a configured service to recognize and manage its existing remote `systemd --user` transient unit when the configured Host ID has changed but the Service ID is unchanged.
 
-Service Manager will treat the Service ID as the remote service identity. Host ID remains part of the stored host record and the conventional unit name, but it will not participate in matching an existing unit.
+Service Manager will treat an app-generated canonical UUID Service ID as the remote service identity. Host ID remains part of the stored host record and the conventional unit name, but it will not participate in matching an existing canonical UUID unit. Arbitrary imported IDs retain exact conventional-name matching because the legacy hyphen-delimited name cannot encode them unambiguously.
 
 ## Current Problem
 
@@ -38,13 +38,15 @@ It does not change:
 
 Resolution happens only within the current host's SSH connection and remote user-level systemd manager. Units belonging to another machine or remote account are outside the lookup scope.
 
-For a configured Service ID, the runtime lists loaded user service units matching the Service Manager namespace and selects an exact sanitized Service ID suffix:
+For a configured canonical UUID Service ID, the runtime lists loaded user service units matching the Service Manager namespace and parses candidates only when the complete name has two canonical UUID fields:
 
 ```text
-service-manager-*-{serviceId}.service
+service-manager-{hostUuid}-{serviceUuid}.service
 ```
 
-The Host ID portion is treated as opaque and is not compared with the configured Host ID.
+The parsed Service UUID must exactly equal the configured Service ID. The parsed Host UUID is not compared with the configured Host ID. This fixed-width shape prevents `bar` from claiming a unit whose arbitrary Service ID is `foo-bar`, and prevents aliases introduced by unit-fragment sanitization.
+
+For a non-UUID imported Service ID, the runtime accepts only the exact unit name produced from the current Host ID and Service ID. Cross-Host discovery is intentionally unavailable for those legacy identities until a future unambiguous unit format exists.
 
 Resolution produces one of three outcomes:
 
@@ -95,7 +97,7 @@ Dynamic unit names and discovery patterns continue to use the existing shell-quo
 
 `src/main/serviceRuntime.ts` will gain small pure helpers for:
 
-- recognizing an exact Service ID suffix;
+- recognizing the complete canonical Host UUID plus Service UUID unit shape;
 - parsing unit names returned by systemd;
 - selecting zero, one, or ambiguous candidates.
 
@@ -107,6 +109,7 @@ Node built-in tests will cover:
 
 - matching the same Service ID under a different Host ID;
 - rejecting similar but non-identical Service ID suffixes;
+- rejecting suffix aliases from arbitrary imported IDs and noncanonical candidate names;
 - no-match fallback to the current conventional name;
 - ambiguity detection;
 - unit-name sanitization;
