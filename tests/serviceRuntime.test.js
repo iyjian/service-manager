@@ -113,6 +113,18 @@ test('selectSystemdUnitName rejects multiple units for the same service id', () 
   );
 });
 
+test('resolved old-host unit remains the selected lifecycle target', () => {
+  const host = { id: 'new-host', name: 'dev' };
+  const service = { id: 'stable-service-id', name: 'api' };
+  const resolved = selectSystemdUnitName(host, service, [
+    buildSystemdUnitName({ ...host, id: 'old-host' }, service),
+  ]);
+
+  assert.equal(resolved.exists, true);
+  assert.equal(resolved.unit, 'service-manager-old-host-stable-service-id.service');
+  assert.notEqual(resolved.unit, buildSystemdUnitName(host, service));
+});
+
 test('buildManagedShellLauncher launches command through login shell', () => {
   const launcher = buildManagedShellLauncher('cd /app && yarn dev');
 

@@ -296,10 +296,21 @@ async function ensureSystemdSupport(host: HostConfig): Promise<void> {
   systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS });
 }
 
-async function querySystemdServiceState(host: HostConfig, service: ServiceConfig): Promise<SystemdServiceState> {
+async function resolveSystemdUnitName(host: HostConfig, service: ServiceConfig): Promise<ResolvedSystemdUnitName> {
   await ensureSystemdSupport(host);
 
-  const unit = buildSystemdUnitName(host, service);
+  const listCmd = buildSystemdUnitListCommand(service);
+  const ret = await runSsh(host, `bash -lc ${shellQuoteSingle(listCmd)}`);
+  if (!ret.ok) {
+    throw new Error(formatCommandFailure('systemctl list-units', ret));
+  }
+
+  return selectSystemdUnitName(host, service, parseSystemdUnitNames(ret.stdout));
+}
+
+async function querySystemdUnitState(host: HostConfig, unit: string): Promise<SystemdServiceState> {
+  await ensureSystemdSupport(host);
+
   const showCmd = `systemctl --user show ${shellQuoteSingle(unit)} --no-pager --property=LoadState --property=ActiveState --property=SubState --property=Result --property=MainPID --property=InvocationID`;
   const ret = await runSsh(host, `bash -lc ${shellQuoteSingle(showCmd)}`);
 
@@ -319,16 +330,31 @@ async function querySystemdServiceState(host: HostConfig, service: ServiceConfig
   return state.exists ? state : { exists: false };
 }
 
+async function resolveSystemdServiceState(
+  host: HostConfig,
+  service: ServiceConfig
+): Promise<{ unit: string; state: SystemdServiceState }> {
+  const resolved = await resolveSystemdUnitName(host, service);
+  if (!resolved.exists) {
+    return { unit: resolved.unit, state: { exists: false } };
+  }
+
+  return {
+    unit: resolved.unit,
+    state: await querySystemdUnitState(host, resolved.unit),
+  };
+}
+
 async function waitForSystemdMainPid(
   host: HostConfig,
-  service: ServiceConfig,
+  unit: string,
   timeoutMs = 5000
 ): Promise<SystemdServiceState> {
   const startedAt = Date.now();
   let latest: SystemdServiceState = { exists: false };
 
   while (Date.now() - startedAt < timeoutMs) {
-    latest = await querySystemdServiceState(host, service);
+    latest = await querySystemdUnitState(host, unit);
     if (!latest.exists) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       continue;
@@ -347,14 +373,14 @@ async function waitForSystemdMainPid(
 
 async function waitForSystemdStop(
   host: HostConfig,
-  service: ServiceConfig,
+  unit: string,
   timeoutMs = 5000
 ): Promise<SystemdServiceState> {
   const startedAt = Date.now();
   let latest: SystemdServiceState = { exists: false };
 
   while (Date.now() - startedAt < timeoutMs) {
-    latest = await querySystemdServiceState(host, service);
+    latest = await querySystemdUnitState(host, unit);
     if (!latest.exists || latest.activeState === 'inactive' || latest.activeState === 'failed') {
       return latest;
     }
@@ -364,16 +390,14 @@ async function waitForSystemdStop(
   return latest;
 }
 
-function buildSystemdFailureMessage(host: HostConfig, service: ServiceConfig, state: SystemdServiceState): string {
-  const unit = buildSystemdUnitName(host, service);
+function buildSystemdFailureMessage(unit: string, state: SystemdServiceState): string {
   const result = state.result || state.subState || state.activeState || 'unknown';
   return `systemd unit ${unit} failed (${result}).`;
 }
 
 export async function startService(host: HostConfig, service: ServiceConfig): Promise<StartResult> {
   try {
-    const unit = buildSystemdUnitName(host, service);
-    const current = await querySystemdServiceState(host, service);
+    const { unit, state: current } = await resolveSystemdServiceState(host, service);
     if (current.exists && (current.activeState === 'active' || current.activeState === 'activating')) {
       return {
         ok: false,
@@ -395,7 +419,7 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
       };
     }
 
-    const state = await waitForSystemdMainPid(host, service);
+    const state = await waitForSystemdMainPid(host, unit);
     if (!state.exists) {
       return {
         ok: false,
@@ -405,7 +429,7 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
     if (state.activeState === 'failed') {
       return {
         ok: false,
-        error: buildSystemdFailureMessage(host, service, state),
+        error: buildSystemdFailureMessage(unit, state),
       };
     }
     if (!state.mainPid) {
@@ -429,8 +453,7 @@ export async function startService(host: HostConfig, service: ServiceConfig): Pr
 
 export async function stopService(host: HostConfig, service: ServiceConfig): Promise<{ ok: boolean; error?: string }> {
   try {
-    const unit = buildSystemdUnitName(host, service);
-    const state = await querySystemdServiceState(host, service);
+    const { unit, state } = await resolveSystemdServiceState(host, service);
     if (!state.exists || state.activeState === 'inactive') {
       return { ok: true };
     }
@@ -441,7 +464,7 @@ export async function stopService(host: HostConfig, service: ServiceConfig): Pro
       return { ok: false, error: formatCommandFailure(`systemctl stop ${unit}`, ret) };
     }
 
-    const stoppedState = await waitForSystemdStop(host, service);
+    const stoppedState = await waitForSystemdStop(host, unit);
     if (stoppedState.exists && stoppedState.activeState === 'failed') {
       const resetFailedCmd = `systemctl --user reset-failed ${shellQuoteSingle(unit)}`;
       const resetRet = await runSsh(host, `bash -lc ${shellQuoteSingle(resetFailedCmd)}`);
@@ -461,7 +484,7 @@ export async function checkServiceStatus(
   service: ServiceConfig
 ): Promise<{ status: ServiceStatus; pid?: number; error?: string }> {
   try {
-    const state = await querySystemdServiceState(host, service);
+    const { unit, state } = await resolveSystemdServiceState(host, service);
     if (!state.exists || state.activeState === 'inactive') {
       return { status: 'stopped' };
     }
@@ -478,7 +501,7 @@ export async function checkServiceStatus(
       return {
         status: 'error',
         pid: state.mainPid,
-        error: buildSystemdFailureMessage(host, service, state),
+        error: buildSystemdFailureMessage(unit, state),
       };
     }
 
@@ -501,8 +524,7 @@ export async function getServiceLogs(
   service: ServiceConfig,
   query?: ServiceLogsQuery
 ): Promise<ServiceLogsResult> {
-  const unit = buildSystemdUnitName(host, service);
-  const state = await querySystemdServiceState(host, service);
+  const { unit, state } = await resolveSystemdServiceState(host, service);
   const requestedLineLimit = Number.isFinite(query?.lineLimit) ? Math.trunc(query?.lineLimit as number) : 200;
   const lineLimit = Math.max(50, requestedLineLimit);
   const journalCmd = state.invocationId
