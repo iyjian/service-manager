@@ -113,6 +113,51 @@ export function buildSystemdUnitName(host: HostConfig, service: ServiceConfig): 
   return `service-manager-${safeUnitFragment(host.id)}-${safeUnitFragment(service.id)}.service`;
 }
 
+export interface ResolvedSystemdUnitName {
+  unit: string;
+  exists: boolean;
+}
+
+export function buildSystemdUnitSearchPattern(service: ServiceConfig): string {
+  return `service-manager-*-${safeUnitFragment(service.id)}.service`;
+}
+
+export function buildSystemdUnitListCommand(service: ServiceConfig): string {
+  return [
+    'systemctl --user list-units --all --type=service --full --plain --no-legend',
+    shellQuoteSingle(buildSystemdUnitSearchPattern(service)),
+  ].join(' ');
+}
+
+export function parseSystemdUnitNames(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/, 1)[0]);
+}
+
+export function selectSystemdUnitName(
+  host: HostConfig,
+  service: ServiceConfig,
+  unitNames: string[]
+): ResolvedSystemdUnitName {
+  const suffix = `-${safeUnitFragment(service.id)}.service`;
+  const matches = [...new Set(unitNames)]
+    .filter((unit) => unit.startsWith('service-manager-') && unit.endsWith(suffix))
+    .sort();
+
+  if (matches.length > 1) {
+    throw new Error(`Multiple systemd units match service ID ${service.id}: ${matches.join(', ')}`);
+  }
+
+  if (matches.length === 1) {
+    return { unit: matches[0], exists: true };
+  }
+
+  return { unit: buildSystemdUnitName(host, service), exists: false };
+}
+
 export function shellQuoteSingle(raw: string): string {
   return `'${raw.replace(/'/g, `'"'"'`)}'`;
 }
