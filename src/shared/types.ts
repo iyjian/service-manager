@@ -136,6 +136,10 @@ export interface UpdateState {
   rawMessage?: string;
 }
 
+export interface AppMemoryUsage {
+  bytes?: number;
+}
+
 export interface ConfirmDialogOptions {
   title: string;
   message: string;
@@ -187,10 +191,28 @@ export type ProxyExceptionType =
   | 'DST-PORT'
   | 'SRC-PORT';
 
+export type ProxyRuleTarget = 'PROXY' | 'DIRECT';
+
+export interface ProxyCustomRuleDraft {
+  id?: string;
+  type: ProxyExceptionType;
+  value: string;
+  target?: ProxyRuleTarget;
+}
+
+export interface ProxyCustomRule extends ProxyCustomRuleDraft {
+  id: string;
+  target: ProxyRuleTarget;
+}
+
+// Compatibility input for the stable addException/updateException IPC method
+// names. New calls may choose either target; persisted `exceptions` is legacy
+// Direct Exception input and is coerced during runtime migration.
 export interface ProxyExceptionDraft {
   id?: string;
   type: ProxyExceptionType;
   value: string;
+  target?: ProxyRuleTarget;
 }
 
 export interface ProxyException extends ProxyExceptionDraft {
@@ -211,6 +233,8 @@ export interface ProxySettings {
   systemProxyEnabled: boolean;
   selectedProxies?: Record<string, string>;
   selectedProxy?: string;
+  customRules?: ProxyCustomRule[];
+  // Legacy migration input only. Runtime state and new saved settings remove it.
   exceptions?: ProxyException[];
 }
 
@@ -275,6 +299,7 @@ export interface ProxyApi {
 
 export interface ServiceApi {
   listHosts: () => Promise<HostView[]>;
+  getAppMemoryUsage: () => Promise<AppMemoryUsage>;
   saveHost: (host: HostDraft) => Promise<HostView>;
   deleteHost: (id: string) => Promise<void>;
   deleteService: (hostId: string, serviceId: string) => Promise<void>;

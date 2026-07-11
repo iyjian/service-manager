@@ -1,6 +1,6 @@
 import yaml from 'js-yaml';
-import type { ProxyException, ProxySettings } from '../../shared/types';
-import { buildDirectExceptionRules } from './proxyExceptions';
+import type { ProxyCustomRule, ProxySettings } from '../../shared/types';
+import { buildCustomRuleRules } from './proxyExceptions';
 
 // Fallback group name when a subscription ships no proxy-groups of its own.
 export const PROXY_GROUP_MAIN = '代理';
@@ -131,17 +131,17 @@ function buildTun(): Record<string, unknown> {
   };
 }
 
-function buildPersistedDirectExceptionRules(exceptions: unknown): string[] {
-  if (!Array.isArray(exceptions)) {
+function buildPersistedCustomRuleRules(rules: unknown, proxyTarget: string | undefined): string[] {
+  if (!Array.isArray(rules)) {
     return [];
   }
 
-  return exceptions.flatMap((exception) => {
+  return rules.flatMap((rule) => {
     try {
-      return buildDirectExceptionRules([exception as ProxyException]);
+      return buildCustomRuleRules([rule as ProxyCustomRule], proxyTarget);
     } catch {
       // Settings are durable user data. A malformed legacy entry must not
-      // prevent the remaining validated exceptions or subscription from starting.
+      // prevent the remaining validated Custom Rules or subscription from starting.
       return [];
     }
   });
@@ -178,9 +178,10 @@ export function buildRuntimeConfig(
     ];
   }
 
-  const directExceptionRules = buildPersistedDirectExceptionRules(settings.exceptions);
+  const proxyTarget = subscription.primaryGroup ?? (subscription.synthesized ? PROXY_GROUP_MAIN : undefined);
+  const customRuleRules = buildPersistedCustomRuleRules(settings.customRules, proxyTarget);
   const existingRules = Array.isArray(config.rules) ? config.rules : [];
-  config.rules = [...directExceptionRules, ...existingRules];
+  config.rules = [...customRuleRules, ...existingRules];
 
   config['mixed-port'] = settings.mixedPort;
   config['allow-lan'] = false;

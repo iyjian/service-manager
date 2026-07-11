@@ -83,7 +83,7 @@ test('project documentation describes selectable subscription strategy groups', 
   assert.match(agents, /Selector/);
 });
 
-test('project documentation describes durable proxy cache, direct exceptions, and Proxy page constraints', () => {
+test('project documentation describes durable proxy cache, custom rules, and Proxy page constraints', () => {
   const root = path.join(__dirname, '..');
   const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
@@ -105,7 +105,15 @@ test('project documentation describes durable proxy cache, direct exceptions, an
     assert.match(document, /only.*Save & Fetch.*fetches.*replaces.*cache/i);
     assert.match(document, /parsed cache.*first/i);
     assert.match(document, /(?:fallback|fall(?:s)? back).*source YAML/i);
-    assert.match(document, /ProxySettings\.exceptions/);
+    assert.match(document, /Custom Rules/i);
+    assert.match(document, /Type, Target \(`PROXY` \/ `DIRECT`\), and Value/);
+    assert.match(document, /`PROXY`[\s\S]{0,120}primary selector/i);
+    assert.match(document, /app-created primary selector[\s\S]{0,120}synthesized/i);
+    assert.match(document, /skips if no selector exists/i);
+    assert.match(document, /Custom Rules[\s\S]{0,120}before[\s\S]{0,120}(?:subscription|synthesized) rules/i);
+    assert.match(document, /legacy Direct Exceptions[\s\S]{0,120}migrate[\s\S]{0,120}`DIRECT` custom rules/i);
+    assert.match(document, /subsequent settings writes[\s\S]{0,120}`customRules`/i);
+    assert.match(document, /top-right[\s\S]{0,120}manually dismissible[\s\S]{0,120}ten seconds/i);
     assert.match(document, /DIRECT/);
     assert.match(document, /before.*subscription.*rules/i);
     assert.match(document, /persist/i);
@@ -116,7 +124,7 @@ test('project documentation describes durable proxy cache, direct exceptions, an
 
   assert.match(readme, /subscriptionCache\.ts/);
   assert.match(readme, /proxyExceptions\.ts/);
-  assert.match(agents, /text-safe exception rendering/i);
+  assert.match(agents, /text-safe custom-rule rendering/i);
   assert.match(agents, /white Proxy content container/i);
   assert.match(agents, /no-duplicate-Host-logo/i);
 });
@@ -137,4 +145,21 @@ test('project documentation describes one-time Save & Fetch subscription applica
     );
     assert.doesNotMatch(document, /Proxy(?: page)?\s+`?Update`?\s+(?:action|button)/i);
   }
+});
+
+test('project documentation describes Host-page local app memory totals', () => {
+  const root = path.join(__dirname, '..');
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+
+  for (const document of [readme, agents]) {
+    assert.match(document, /Memory/);
+    assert.match(document, /app\.getAppMetrics\(\)/);
+    assert.match(document, /Mihomo/);
+    assert.match(document, /five seconds/i);
+    assert.match(document, /remote SSH services are excluded/i);
+  }
+
+  assert.match(readme, /appMemory\.ts/);
+  assert.match(agents, /appMemory\.ts/);
 });

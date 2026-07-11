@@ -13,6 +13,7 @@ import type {
 
 const api: ServiceApi = {
   listHosts: () => ipcRenderer.invoke('host:list'),
+  getAppMemoryUsage: () => ipcRenderer.invoke('app:memory-usage'),
   saveHost: (host: HostDraft) => ipcRenderer.invoke('host:save', host),
   deleteHost: (id: string) => ipcRenderer.invoke('host:delete', id),
   exportConfig: () => ipcRenderer.invoke('config:export'),

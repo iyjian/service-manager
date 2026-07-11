@@ -26,7 +26,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - home-page host blocks include a `Copy` action that writes the host config JSON to clipboard
    - Add Host dialog includes `Paste Config`, which reads one host config from clipboard and fills the form without auto-saving
    - user-facing buttons use local inline SVG icons matched to their actions, so recognition improves without introducing remote icon dependencies
-   - host dialog validation/import errors are surfaced inside the dialog itself, and page-level success/error notices use right-top toast messages that auto-dismiss after a short delay while still allowing manual close
+   - host dialog validation/import errors are surfaced inside the dialog itself, and page-level success/error notices use top-right, manually dismissible toast messages that remain visible for ten seconds
    - default desktop window size is `1230 x 820`, with minimum size kept at `900 x 620`
 2. Per-host configuration now has **two independent lists**:
    - `Forwarding Rules` (tunnel rules)
@@ -117,8 +117,11 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
     - `Strategy Groups` shows every manually selectable Mihomo `Selector` group from the running subscription, such as node selection, global direct, or final-match groups
     - each Strategy Group can independently select a node, `DIRECT`, `REJECT`, or another strategy group; automatic URL-test, fallback, load-balance, and relay groups remain non-interactive
     - selections persist per group and are restored after the core starts or the app is reopened; a removed group or candidate is skipped safely after a subscription refresh
-    - `Direct Exceptions` persist in `ProxySettings.exceptions`. They support `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`; every entry emits a `DIRECT` rule before subscription rules
-    - Proxy controls, Strategy Groups, and Direct Exceptions share one white content container; the Host page keeps the navigation logo only, without a duplicate page logo in its internal header
+    - `Custom Rules` persist in `ProxySettings.customRules`. Each rule contains Type, Target (`PROXY` / `DIRECT`), and Value, and supports `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`
+    - `DIRECT` emits a direct rule. `PROXY` dynamically resolves to the subscription primary selector, or the app-created primary selector for synthesized subscriptions; it skips if no selector exists
+    - Custom Rules run before subscription/synthesized rules. legacy Direct Exceptions migrate to `DIRECT` custom rules, and subsequent settings writes use only `customRules`
+    - Proxy controls, Strategy Groups, and Custom Rules share one white content container; the Host page keeps the navigation logo only, without a duplicate page logo in its internal header
+13. The Hosts header shows total local Service Manager Memory in GB. It aggregates every Electron `app.getAppMetrics()` process and local Mihomo RSS while running, refreshes every five seconds only while Hosts is active, and replaces the former host/tunnel/service count summary. Remote SSH services are excluded, along with system-wide memory.
 
 ## Tech Stack
 
@@ -141,10 +144,11 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/hostConnection.ts`: shared SSH endpoint/private-key resolution for service, tunnel, and forwarding paths
 - `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
 - `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime
-- `src/main/proxy/proxyRuntime.ts`: local Mihomo process lifecycle, parsed-cache loading/replacement, persisted proxy settings and Direct Exception mutations, and system/TUN proxy controls
+- `src/main/proxy/proxyRuntime.ts`: local Mihomo process lifecycle, parsed-cache loading/replacement, persisted proxy settings and Custom Rule mutations, and system/TUN proxy controls
 - `src/main/proxy/subscriptionCache.ts`: versioned parsed-subscription cache serialization and validation
-- `src/main/proxy/proxyExceptions.ts`: Direct Exception validation, normalization, and `DIRECT` rule generation
+- `src/main/proxy/proxyExceptions.ts`: Custom Rule validation, normalization, migration, and target-aware Mihomo rule generation
 - `src/main/proxy/proxyGroups.ts`: pure conversion, selection validation, and saved-selection compatibility helpers for Mihomo runtime groups
+- `src/main/appMemory.ts`: local Electron and Mihomo working-set collection for the Hosts header Memory total
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
 - `src/renderer/tailwind.css`: primary renderer visual layer built with Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers

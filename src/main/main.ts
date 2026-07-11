@@ -30,6 +30,7 @@ import {
 import { RuntimeRegistry } from './runtimeRegistry';
 import { preserveServiceRuntimeFields, validateHostDraft } from './validation';
 import { ProxyRuntime } from './proxy/proxyRuntime';
+import { collectAppMemoryUsage } from './appMemory';
 import type { ProxyExceptionDraft, ProxyMode, ProxyState } from '../shared/types';
 
 const IPC_CHANNELS = {
@@ -56,6 +57,7 @@ const IPC_CHANNELS = {
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
+  appMemoryUsage: 'app:memory-usage',
   proxyGetState: 'proxy:get-state',
   proxyDownloadCore: 'proxy:download-core',
   proxyStart: 'proxy:start',
@@ -109,20 +111,27 @@ function serviceForwardKey(hostId: string, serviceId: string): string {
 
 function validateProxyExceptionDraft(value: unknown): ProxyExceptionDraft {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('A direct exception type and value are required.');
+    throw new Error('A custom rule type and value are required.');
   }
 
-  const draft = value as { type?: unknown; value?: unknown };
+  const draft = value as { type?: unknown; value?: unknown; target?: unknown };
   if (typeof draft.type !== 'string' || typeof draft.value !== 'string') {
-    throw new Error('A direct exception type and value are required.');
+    throw new Error('A custom rule type and value are required.');
+  }
+  if (draft.target !== undefined && typeof draft.target !== 'string') {
+    throw new Error('A custom rule target must be a string.');
   }
 
-  return { type: draft.type as ProxyExceptionDraft['type'], value: draft.value };
+  return {
+    type: draft.type as ProxyExceptionDraft['type'],
+    value: draft.value,
+    ...(typeof draft.target === 'string' ? { target: draft.target as ProxyExceptionDraft['target'] } : {}),
+  };
 }
 
 function validateProxyExceptionId(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new Error('A direct exception ID is required.');
+    throw new Error('A custom rule ID is required.');
   }
   return value;
 }
@@ -758,6 +767,15 @@ function registerIpcHandlers(): void {
     }
     return proxyRuntime;
   };
+
+  ipcMain.handle(IPC_CHANNELS.appMemoryUsage, async () => {
+    const proxyState = await getProxyRuntime().getState();
+    return collectAppMemoryUsage({
+      metrics: () => app.getAppMetrics(),
+      platform: process.platform,
+      mihomoPid: proxyState.pid,
+    });
+  });
 
   ipcMain.handle(IPC_CHANNELS.proxyGetState, async () => getProxyRuntime().getState());
   ipcMain.handle(IPC_CHANNELS.proxyDownloadCore, async () => getProxyRuntime().downloadCore());

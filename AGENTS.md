@@ -31,10 +31,11 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, status checks, and journal log access.
 - `src/main/portForwardManager.ts`: service-owned local port forwarding.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
-- `src/main/proxy/proxyRuntime.ts`: local Mihomo lifecycle, parsed-cache loading/replacement, persisted settings and Direct Exception mutations, and system/TUN proxy controls.
+- `src/main/proxy/proxyRuntime.ts`: local Mihomo lifecycle, parsed-cache loading/replacement, persisted settings and Custom Rule mutations, and system/TUN proxy controls.
 - `src/main/proxy/subscriptionCache.ts`: versioned parsed-subscription cache serialization and validation.
-- `src/main/proxy/proxyExceptions.ts`: Direct Exception validation, normalization, and `DIRECT` rule generation.
+- `src/main/proxy/proxyExceptions.ts`: Custom Rule validation, normalization, migration, and target-aware Mihomo rule generation.
 - `src/main/proxy/proxyGroups.ts`: pure Mihomo runtime group conversion, manual-selector validation, and saved-selection compatibility helpers.
+- `src/main/appMemory.ts`: local Electron and Mihomo working-set collection for the Hosts header Memory total.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
 - `src/renderer/tailwind.css`: primary renderer visual layer using Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`.
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers.
@@ -54,6 +55,7 @@ Hosts:
 - Forwarding rules and services are optional and start empty.
 - Jump servers are configured inside Add/Edit Host as an ordered multi-hop chain.
 - Private-key auth supports pasted key content and imported key files; import should default to `~/.ssh` when possible.
+- The Hosts header shows the total local Service Manager Memory in GB. It aggregates all Electron `app.getAppMetrics()` processes and local Mihomo RSS when running, refreshes every five seconds only while Hosts is active, and replaces the old host/tunnel/service aggregate. Remote SSH services are excluded, as is system-wide memory.
 
 Local proxy:
 
@@ -65,7 +67,8 @@ Local proxy:
 - Persist manual choices in `ProxySettings.selectedProxies` as `Record<groupName, candidateName>` and restore each valid choice after startup.
 - Read the older `selectedProxy` field only to migrate its value to the detected primary selector group; all new writes use `selectedProxies`.
 - If a subscription refresh removes a group or candidate, skip its saved selection without preventing proxy startup.
-- Persist Direct Exceptions in `ProxySettings.exceptions` and restore them after reopen. Support exactly `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`; every validated exception must emit a `DIRECT` rule before subscription rules.
+- Persist Custom Rules in `ProxySettings.customRules` and restore them after reopen. Each rule contains Type, Target (`PROXY` / `DIRECT`), and Value. Support exactly `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`.
+- A `DIRECT` Custom Rule emits a direct rule. A `PROXY` Custom Rule dynamically resolves to the subscription primary selector, or the app-created primary selector for synthesized subscriptions; it skips if no selector exists. Custom Rules run before subscription/synthesized rules. legacy Direct Exceptions migrate to `DIRECT` custom rules, and subsequent settings writes use only `customRules`.
 
 Forwarding rules:
 
@@ -112,13 +115,13 @@ Logs:
 - Do not add whole-row hover highlights to runtime service/tunnel rows; keep feedback on the clickable service name and power action button.
 - Runtime power buttons must keep a stable outer hit area on hover/active; do not move or scale the button container because that can cause pointer flicker. Animate the inner icon instead.
 - Proxy Strategy Groups use compact per-group sections with a current selection and safe text-only rendering of dynamic group and candidate names.
-- Direct Exceptions use text-safe exception rendering for all dynamic rule values and actions.
-- Proxy controls, Strategy Groups, and Direct Exceptions must share one white Proxy content container that remains responsive on narrow windows.
+- Custom Rules use text-safe custom-rule rendering for all dynamic rule values and actions.
+- Proxy controls, Strategy Groups, and Custom Rules must share one white Proxy content container that remains responsive on narrow windows.
 - The Host page must retain the outer navigation logo but use no-duplicate-Host-logo behavior in its internal header.
 - Section header icons must be local inline SVGs with semantic shapes and enough visual weight to match their titles; the tunnel section should use the filled tunnel glyph, and the service section should use the filled process-grid glyph.
 - Empty tunnel/service columns should keep the two-column layout stable.
 - Use local inline icons/assets only; do not depend on remote icon assets.
-- Page-level notices should be top-right auto-dismiss toasts. Modal validation/import feedback stays inside the modal.
+- Page-level notices should be top-right, manually dismissible toasts that remain visible for ten seconds. Modal validation/import feedback stays inside the modal.
 
 ## Safety Requirements
 

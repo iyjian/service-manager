@@ -398,17 +398,8 @@
     @apply min-w-0 truncate font-mono text-[14px] font-semibold text-zinc-950;
   }
 
-  .host-panel-count,
   .host-panel-desc {
     @apply font-mono text-zinc-500;
-  }
-
-  .host-panel-count {
-    @apply shrink-0 whitespace-nowrap text-[11px] tabular-nums;
-  }
-
-  .host-panel-count.all-up {
-    @apply text-emerald-700;
   }
 
   .host-panel-desc {

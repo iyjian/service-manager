@@ -73,3 +73,11 @@ test('renderer shows manual update failures as a toast instead of a header error
   assert.match(renderer, /state\.status === 'error' && state\.trigger === 'manual'\)[\s\S]{0,80}setMessage\(state\.message \?\? 'Update check failed\.', 'error'\)/);
   assert.match(renderer, /state\.status === 'error' && state\.trigger === 'manual'\)[\s\S]{0,180}updateStatusHintElement\.classList\.add\('hidden'\)/);
 });
+
+test('compiled renderer keeps page toasts visible for exactly ten seconds and manually dismissible', async () => {
+  const renderer = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'renderer.js'), 'utf8');
+
+  assert.match(renderer, /const PAGE_TOAST_DURATION_MS = 10_?000;/);
+  assert.match(renderer, /window\.setTimeout\(\(\) => \{[\s\S]{0,180}\}, PAGE_TOAST_DURATION_MS\);/);
+  assert.match(renderer, /pageMessageCloseButton\.addEventListener\('click', \(\) => setMessage\(''\)\)/);
+});

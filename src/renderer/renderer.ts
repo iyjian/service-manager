@@ -1,4 +1,5 @@
 import type {
+  AppMemoryUsage,
   ConfigTransferResult,
   ForwardRuleDraft,
   HostDraft,
@@ -88,6 +89,7 @@ const serviceLogTerminal = requireElement<HTMLDivElement>('#service-log-terminal
 const serviceLogContent = requireElement<HTMLDivElement>('#service-log-content');
 
 const LOG_FETCH_CHUNK_LINES = 200;
+const APP_MEMORY_REFRESH_INTERVAL_MS = 5000;
 
 type LogLoadReason = 'refresh' | 'older';
 
@@ -97,6 +99,8 @@ let editingPrivateKeyPath: string | undefined;
 let activeLogTarget: { hostId: string; serviceId: string } | null = null;
 let logAutoRefreshTimer: number | null = null;
 let statusAutoRefreshTimer: number | null = null;
+let appMemoryRefreshTimer: number | null = null;
+let appMemoryUsage: AppMemoryUsage | null = null;
 let isAutoRefreshing = false;
 let lastLogLoadError: string | null = null;
 let currentLogText = '';
@@ -108,6 +112,7 @@ let logHasOlderHistory = true;
 let isLoadingOlderLogs = false;
 let pageMessageTimer: number | null = null;
 const collapsedHostIds = new Set<string>();
+const PAGE_TOAST_DURATION_MS = 10_000;
 
 type MessageLevel = 'default' | 'success' | 'error';
 
@@ -311,7 +316,7 @@ export function setMessage(text: string, level: MessageLevel = 'default'): void 
   pageMessageTimer = window.setTimeout(() => {
     pageMessageTimer = null;
     renderMessage(pageMessageView, '', 'default');
-  }, 1000);
+  }, PAGE_TOAST_DURATION_MS);
 }
 
 function setHostDialogMessage(text: string, level: MessageLevel = 'default'): void {
@@ -396,10 +401,6 @@ function hostHue(name: string): number {
     hue = (hue * 31 + (char.codePointAt(0) ?? 0)) % 360;
   }
   return hue;
-}
-
-function countRunning(items: ReadonlyArray<{ status: ServiceStatus | TunnelStatus }>): number {
-  return items.filter((item) => item.status === 'running').length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1827,21 +1828,36 @@ function renderServicePort(service: HostView['services'][number]): string {
 }
 
 function renderPageStats(): void {
-  if (hosts.length === 0) {
-    pageStatsElement.classList.add('hidden');
-    pageStatsElement.textContent = '';
-    return;
-  }
-  const tunnelTotal = hosts.reduce((sum, host) => sum + host.forwards.length, 0);
-  const tunnelRunning = hosts.reduce((sum, host) => sum + countRunning(host.forwards), 0);
-  const serviceTotal = hosts.reduce((sum, host) => sum + host.services.length, 0);
-  const serviceRunning = hosts.reduce((sum, host) => sum + countRunning(host.services), 0);
-  pageStatsElement.innerHTML = [
-    `${hosts.length} host${hosts.length === 1 ? '' : 's'}`,
-    `<span${tunnelRunning > 0 ? ' class="stat-up"' : ''}>${tunnelRunning}</span>/${tunnelTotal} tunnels`,
-    `<span${serviceRunning > 0 ? ' class="stat-up"' : ''}>${serviceRunning}</span>/${serviceTotal} services`,
-  ].join(' · ');
+  const bytes = appMemoryUsage?.bytes;
+  pageStatsElement.textContent = typeof bytes === 'number' && bytes >= 0
+    ? `Memory ${formatGigabytes(bytes)} GB`
+    : 'Memory unavailable';
   pageStatsElement.classList.remove('hidden');
+}
+
+function formatGigabytes(bytes: number): string {
+  return (bytes / 1_000_000_000).toFixed(2);
+}
+
+async function refreshAppMemoryUsage(): Promise<void> {
+  try {
+    appMemoryUsage = await window.serviceApi.getAppMemoryUsage();
+  } catch {
+    appMemoryUsage = null;
+  }
+  renderPageStats();
+}
+
+function startAppMemoryRefresh(): void {
+  if (appMemoryRefreshTimer !== null) return;
+  void refreshAppMemoryUsage();
+  appMemoryRefreshTimer = window.setInterval(() => void refreshAppMemoryUsage(), APP_MEMORY_REFRESH_INTERVAL_MS);
+}
+
+function stopAppMemoryRefresh(): void {
+  if (appMemoryRefreshTimer === null) return;
+  window.clearInterval(appMemoryRefreshTimer);
+  appMemoryRefreshTimer = null;
 }
 
 function render(): void {
@@ -1867,16 +1883,7 @@ function render(): void {
     panel.className = `host-panel${isCollapsed ? ' host-panel-collapsed' : ''}`;
     const hostName = escapeHtml(host.name);
     const hostDesc = escapeHtml(`${host.username}@${host.sshHost}:${host.sshPort}${formatJumpChain(host.jumpHosts)}`);
-    const tunnelCount = host.forwards.length;
-    const serviceCount = host.services.length;
-    const tunnelRunning = countRunning(host.forwards);
-    const serviceRunning = countRunning(host.services);
-    const allUp =
-      tunnelRunning === tunnelCount && serviceRunning === serviceCount && tunnelCount + serviceCount > 0;
     const hostInitial = escapeHtml(([...host.name.trim()][0] ?? '#').toUpperCase());
-    const countTitle = escapeAttribute(
-      `${tunnelRunning}/${tunnelCount} tunnels running · ${serviceRunning}/${serviceCount} services running`
-    );
     panel.innerHTML = `
       <div class="host-panel-head">
         <div class="host-panel-main">
@@ -1894,7 +1901,6 @@ function render(): void {
               </button>
               <span class="host-identity" aria-hidden="true" style="background:hsl(${hostHue(host.name)} 60% 42%)">${hostInitial}</span>
               <span class="host-panel-name">${hostName}</span>
-              <span class="host-panel-count${allUp ? ' all-up' : ''}" title="${countTitle}">⇄ ${tunnelRunning}/${tunnelCount} · ▶ ${serviceRunning}/${serviceCount}</span>
               <span class="host-panel-desc">${hostDesc}</span>
             </div>
           </div>
@@ -2070,7 +2076,13 @@ const HOSTS_NAV_ICON = `
   </svg>
 `;
 
-registerPage({ id: 'hosts', title: 'Hosts', icon: HOSTS_NAV_ICON });
+registerPage({
+  id: 'hosts',
+  title: 'Hosts',
+  icon: HOSTS_NAV_ICON,
+  onShow: startAppMemoryRefresh,
+  onHide: stopAppMemoryRefresh,
+});
 registerProxyPage();
 initNav('hosts');
 
@@ -2202,6 +2214,7 @@ document.addEventListener('selectionchange', () => {
 window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
   stopStatusAutoRefresh();
+  stopAppMemoryRefresh();
   setServiceLogPageScrollLock(false);
 });
 

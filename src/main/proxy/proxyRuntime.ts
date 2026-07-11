@@ -6,8 +6,9 @@ import net from 'node:net';
 import path from 'node:path';
 import type {
   ProxyGroupsInfo,
-  ProxyException,
   ProxyExceptionDraft,
+  ProxyCustomRule,
+  ProxyCustomRuleDraft,
   ProxyMode,
   ProxyRunStatus,
   ProxySettings,
@@ -29,7 +30,7 @@ import {
   normalizeSavedProxySelections,
   validSavedProxySelections,
 } from './proxyGroups';
-import { normalizeProxyExceptions } from './proxyExceptions';
+import { normalizeProxyCustomRules } from './proxyExceptions';
 import { applySystemProxy, readSystemProxy } from './systemProxy';
 import { checkTunSupport, grantTunPermission, revokeTunPermission } from './tunPermission';
 
@@ -41,16 +42,36 @@ const DEFAULT_SETTINGS: ProxySettings = {
   mixedPort: 7890,
   tunEnabled: false,
   systemProxyEnabled: false,
+  customRules: [],
 };
 
-function sanitizePersistedExceptions(value: unknown): ProxyException[] {
+function sanitizePersistedCustomRules(value: unknown): ProxyCustomRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((rule) => {
+    try {
+      return normalizeProxyCustomRules([rule as ProxyCustomRuleDraft]);
+    } catch {
+      return [];
+    }
+  });
+}
+
+function sanitizePersistedLegacyExceptions(value: unknown): ProxyCustomRule[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return value.flatMap((exception) => {
+    if (typeof exception !== 'object' || exception === null || Array.isArray(exception)) {
+      return [];
+    }
+
     try {
-      return normalizeProxyExceptions([exception as ProxyExceptionDraft]);
+      const { target: _legacyTarget, ...legacyRule } = exception as ProxyCustomRuleDraft;
+      return normalizeProxyCustomRules([legacyRule]);
     } catch {
       return [];
     }
@@ -59,15 +80,22 @@ function sanitizePersistedExceptions(value: unknown): ProxyException[] {
 
 function sanitizePersistedSettings(value: unknown): ProxySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return { ...DEFAULT_SETTINGS, exceptions: [] };
+    return { ...DEFAULT_SETTINGS, customRules: [] };
   }
 
   const persisted = value as Partial<ProxySettings> & { subscriptionUrl?: unknown };
-  const { subscriptionUrl: _legacySubscriptionUrl, ...persistedWithoutSubscriptionUrl } = persisted;
+  const {
+    subscriptionUrl: _legacySubscriptionUrl,
+    exceptions: legacyExceptions,
+    customRules,
+    ...persistedWithoutLegacyFields
+  } = persisted;
   return {
     ...DEFAULT_SETTINGS,
-    ...persistedWithoutSubscriptionUrl,
-    exceptions: sanitizePersistedExceptions(persisted.exceptions),
+    ...persistedWithoutLegacyFields,
+    customRules: Array.isArray(customRules)
+      ? sanitizePersistedCustomRules(customRules)
+      : sanitizePersistedLegacyExceptions(legacyExceptions),
   };
 }
 
@@ -129,7 +157,7 @@ export class ProxyRuntime extends EventEmitter {
       const raw = await fs.readFile(this.settingsPath, 'utf8');
       this.settings = sanitizePersistedSettings(JSON.parse(raw));
     } catch {
-      this.settings = { ...DEFAULT_SETTINGS, exceptions: [] };
+      this.settings = { ...DEFAULT_SETTINGS, customRules: [] };
     }
     const installed = await this.coreManager.getInstalledInfo();
     this.coreVersion = installed?.version;
@@ -169,18 +197,18 @@ export class ProxyRuntime extends EventEmitter {
     return this.logLines.join('\n');
   }
 
-  private currentExceptions(): ProxyException[] {
-    const exceptions = sanitizePersistedExceptions(this.settings.exceptions);
-    this.settings.exceptions = exceptions;
-    return exceptions;
+  private currentCustomRules(): ProxyCustomRule[] {
+    const customRules = sanitizePersistedCustomRules(this.settings.customRules);
+    this.settings.customRules = customRules;
+    return customRules;
   }
 
   private snapshot(): ProxyState {
-    const exceptions = this.currentExceptions();
+    const customRules = this.currentCustomRules();
     const settings: ProxySettings = {
       ...this.settings,
       ...(this.settings.selectedProxies ? { selectedProxies: { ...this.settings.selectedProxies } } : {}),
-      exceptions: exceptions.map((exception) => ({ ...exception })),
+      customRules: customRules.map((rule) => ({ ...rule })),
     };
 
     return {
@@ -255,7 +283,7 @@ export class ProxyRuntime extends EventEmitter {
     return {
       ...this.settings,
       ...(this.settings.selectedProxies ? { selectedProxies: { ...this.settings.selectedProxies } } : {}),
-      ...(this.settings.exceptions ? { exceptions: this.settings.exceptions.map((exception) => ({ ...exception })) } : {}),
+      ...(this.settings.customRules ? { customRules: this.settings.customRules.map((rule) => ({ ...rule })) } : {}),
     };
   }
 
@@ -578,8 +606,8 @@ export class ProxyRuntime extends EventEmitter {
     return this.snapshot();
   }
 
-  private async saveExceptions(exceptions: ProxyException[]): Promise<ProxyState> {
-    this.settings.exceptions = exceptions;
+  private async saveCustomRules(customRules: ProxyCustomRule[]): Promise<ProxyState> {
+    this.settings.customRules = customRules;
     await this.persistSettings();
     if (this.runStatus === 'running') {
       await this.restart();
@@ -589,32 +617,32 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async addException(draft: ProxyExceptionDraft): Promise<ProxyState> {
-    const [exception] = normalizeProxyExceptions([
-      { id: randomUUID(), type: draft.type, value: draft.value },
+    const [rule] = normalizeProxyCustomRules([
+      { id: randomUUID(), type: draft.type, value: draft.value, target: draft.target },
     ]);
-    return this.saveExceptions([...this.currentExceptions(), exception]);
+    return this.saveCustomRules([...this.currentCustomRules(), rule]);
   }
 
   async updateException(id: string, draft: ProxyExceptionDraft): Promise<ProxyState> {
-    const exceptions = this.currentExceptions();
-    const index = exceptions.findIndex((exception) => exception.id === id);
+    const customRules = this.currentCustomRules();
+    const index = customRules.findIndex((rule) => rule.id === id);
     if (index === -1) {
-      throw new Error('Proxy exception was not found.');
+      throw new Error('Custom rule was not found.');
     }
 
-    const [exception] = normalizeProxyExceptions([{ id, type: draft.type, value: draft.value }]);
-    const updated = [...exceptions];
-    updated[index] = exception;
-    return this.saveExceptions(updated);
+    const [rule] = normalizeProxyCustomRules([{ id, type: draft.type, value: draft.value, target: draft.target }]);
+    const updated = [...customRules];
+    updated[index] = rule;
+    return this.saveCustomRules(updated);
   }
 
   async deleteException(id: string): Promise<ProxyState> {
-    const exceptions = this.currentExceptions();
-    if (!exceptions.some((exception) => exception.id === id)) {
-      throw new Error('Proxy exception was not found.');
+    const customRules = this.currentCustomRules();
+    if (!customRules.some((rule) => rule.id === id)) {
+      throw new Error('Custom rule was not found.');
     }
 
-    return this.saveExceptions(exceptions.filter((exception) => exception.id !== id));
+    return this.saveCustomRules(customRules.filter((rule) => rule.id !== id));
   }
 
   private async activateSystemProxy(): Promise<void> {
@@ -634,7 +662,7 @@ export class ProxyRuntime extends EventEmitter {
 
   async setSystemProxy(enabled: boolean): Promise<ProxyState> {
     if (enabled && this.runStatus !== 'running') {
-      throw new Error('Start the proxy before enabling the system proxy.');
+      throw new Error('Start the proxy first. When its status is running, enable System Proxy.');
     }
     if (enabled) {
       await this.activateSystemProxy();

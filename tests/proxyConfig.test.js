@@ -24,9 +24,9 @@ try {
   // The RED test run intentionally starts before the exception module exists.
 }
 
-function getProxyExceptions() {
-  assert.equal(typeof proxyExceptions.normalizeProxyExceptions, 'function');
-  assert.equal(typeof proxyExceptions.buildDirectExceptionRules, 'function');
+function getProxyCustomRules() {
+  assert.equal(typeof proxyExceptions.normalizeProxyCustomRules, 'function');
+  assert.equal(typeof proxyExceptions.buildCustomRuleRules, 'function');
   return proxyExceptions;
 }
 
@@ -71,9 +71,9 @@ const BASE_SETTINGS = {
   systemProxyEnabled: false,
 };
 
-test('normalizeProxyExceptions normalizes every supported exception type', () => {
-  const { normalizeProxyExceptions } = getProxyExceptions();
-  const exceptions = normalizeProxyExceptions([
+test('normalizeProxyCustomRules normalizes every supported match type with a DIRECT legacy default', () => {
+  const { normalizeProxyCustomRules } = getProxyCustomRules();
+  const rules = normalizeProxyCustomRules([
     { type: 'DOMAIN', value: ' example.com ' },
     { type: 'DOMAIN-SUFFIX', value: ' example.org ' },
     { type: 'DOMAIN-KEYWORD', value: ' internal ' },
@@ -85,64 +85,82 @@ test('normalizeProxyExceptions normalizes every supported exception type', () =>
     { type: 'SRC-PORT', value: ' 53 ' },
   ]);
 
-  assert.equal(exceptions.length, 9);
-  assert.ok(exceptions.every((exception) => typeof exception.id === 'string' && exception.id.length > 0));
+  assert.equal(rules.length, 9);
+  assert.ok(rules.every((rule) => typeof rule.id === 'string' && rule.id.length > 0));
   assert.deepEqual(
-    exceptions.map(({ id, ...exception }) => exception),
+    rules.map(({ id, ...rule }) => rule),
     [
-      { type: 'DOMAIN', value: 'example.com' },
-      { type: 'DOMAIN-SUFFIX', value: 'example.org' },
-      { type: 'DOMAIN-KEYWORD', value: 'internal' },
-      { type: 'IP-CIDR', value: '192.0.2.0/24' },
-      { type: 'IP-CIDR6', value: '2001:db8::/32' },
-      { type: 'SRC-IP-CIDR', value: '10.0.0.0/8' },
-      { type: 'GEOIP', value: 'CN' },
-      { type: 'DST-PORT', value: '8000-8080' },
-      { type: 'SRC-PORT', value: '53' },
+      { type: 'DOMAIN', value: 'example.com', target: 'DIRECT' },
+      { type: 'DOMAIN-SUFFIX', value: 'example.org', target: 'DIRECT' },
+      { type: 'DOMAIN-KEYWORD', value: 'internal', target: 'DIRECT' },
+      { type: 'IP-CIDR', value: '192.0.2.0/24', target: 'DIRECT' },
+      { type: 'IP-CIDR6', value: '2001:db8::/32', target: 'DIRECT' },
+      { type: 'SRC-IP-CIDR', value: '10.0.0.0/8', target: 'DIRECT' },
+      { type: 'GEOIP', value: 'CN', target: 'DIRECT' },
+      { type: 'DST-PORT', value: '8000-8080', target: 'DIRECT' },
+      { type: 'SRC-PORT', value: '53', target: 'DIRECT' },
     ]
   );
 });
 
-test('normalizeProxyExceptions rejects malformed IPv4 CIDR and out-of-range port', () => {
-  const { normalizeProxyExceptions } = getProxyExceptions();
+test('normalizeProxyCustomRules accepts PROXY and rejects malformed targets and values', () => {
+  const { normalizeProxyCustomRules } = getProxyCustomRules();
+
+  assert.deepEqual(
+    normalizeProxyCustomRules([{ id: 'proxy-rule', type: 'DOMAIN', value: ' example.com ', target: 'PROXY' }]),
+    [{ id: 'proxy-rule', type: 'DOMAIN', value: 'example.com', target: 'PROXY' }]
+  );
+  assert.throws(
+    () => normalizeProxyCustomRules([{ type: 'DOMAIN', value: 'example.com', target: 'REJECT' }]),
+    /target/
+  );
 
   assert.throws(
-    () => normalizeProxyExceptions([{ type: 'IP-CIDR', value: '192.0.2.1/33' }]),
+    () => normalizeProxyCustomRules([{ type: 'IP-CIDR', value: '192.0.2.1/33' }]),
     /IPv4 CIDR/
   );
   assert.throws(
-    () => normalizeProxyExceptions([{ type: 'DST-PORT', value: '65536' }]),
+    () => normalizeProxyCustomRules([{ type: 'DST-PORT', value: '65536' }]),
     /port/
   );
 });
 
-test('normalizeProxyExceptions rejects commas and newlines before trimming values', () => {
-  const { normalizeProxyExceptions } = getProxyExceptions();
+test('normalizeProxyCustomRules rejects commas and newlines before trimming values', () => {
+  const { normalizeProxyCustomRules } = getProxyCustomRules();
 
   assert.throws(
-    () => normalizeProxyExceptions([{ type: 'DOMAIN', value: 'example.com\n' }]),
+    () => normalizeProxyCustomRules([{ type: 'DOMAIN', value: 'example.com\n' }]),
     /commas or newlines/
   );
   assert.throws(
-    () => normalizeProxyExceptions([{ type: 'DOMAIN', value: 'example,com' }]),
+    () => normalizeProxyCustomRules([{ type: 'DOMAIN', value: 'example,com' }]),
     /commas or newlines/
   );
 });
 
-test('buildDirectExceptionRules converts a suffix exception to a DIRECT rule', () => {
-  const { normalizeProxyExceptions, buildDirectExceptionRules } = getProxyExceptions();
-  const exceptions = normalizeProxyExceptions([{ type: 'DOMAIN-SUFFIX', value: ' example.com ' }]);
+test('buildCustomRuleRules resolves PROXY and DIRECT targets', () => {
+  const { normalizeProxyCustomRules, buildCustomRuleRules } = getProxyCustomRules();
+  const rules = normalizeProxyCustomRules([
+    { type: 'DOMAIN-SUFFIX', value: ' example.com ', target: 'PROXY' },
+    { type: 'DOMAIN', value: ' direct.example ', target: 'DIRECT' },
+  ]);
 
-  assert.deepEqual(buildDirectExceptionRules(exceptions), ['DOMAIN-SUFFIX,example.com,DIRECT']);
+  assert.deepEqual(buildCustomRuleRules(rules, '🚀 节点选择'), [
+    'DOMAIN-SUFFIX,example.com,🚀 节点选择',
+    'DOMAIN,direct.example,DIRECT',
+  ]);
 });
 
-test('buildRuntimeConfig prepends direct exception rules before subscription rules', () => {
-  const { normalizeProxyExceptions } = getProxyExceptions();
+test('buildRuntimeConfig prepends Custom Rules before subscription rules', () => {
+  const { normalizeProxyCustomRules } = getProxyCustomRules();
   const subscription = parseSubscription(FULL_SUBSCRIPTION);
   const config = buildRuntimeConfig(
     {
       ...BASE_SETTINGS,
-      exceptions: normalizeProxyExceptions([{ type: 'DOMAIN-SUFFIX', value: ' example.com ' }]),
+      customRules: normalizeProxyCustomRules([
+        { type: 'DOMAIN-SUFFIX', value: ' example.com ', target: 'PROXY' },
+        { type: 'DOMAIN', value: ' direct.example ', target: 'DIRECT' },
+      ]),
     },
     subscription,
     { controllerPort: 9123, secret: 'abc' }
@@ -150,16 +168,19 @@ test('buildRuntimeConfig prepends direct exception rules before subscription rul
 
   const firstSubscriptionRule = config.rules.indexOf('DOMAIN-SUFFIX,tracker.example.com,REJECT');
   assert.ok(firstSubscriptionRule > 0);
-  assert.equal(config.rules[0], 'DOMAIN-SUFFIX,example.com,DIRECT');
+  assert.deepEqual(config.rules.slice(0, 2), [
+    'DOMAIN-SUFFIX,example.com,🚀 节点选择',
+    'DOMAIN,direct.example,DIRECT',
+  ]);
 });
 
-test('buildRuntimeConfig skips malformed persisted exceptions while retaining valid direct precedence', () => {
+test('buildRuntimeConfig skips malformed persisted Custom Rules while retaining valid precedence', () => {
   const subscription = parseSubscription(FULL_SUBSCRIPTION);
   const config = buildRuntimeConfig(
     {
       ...BASE_SETTINGS,
-      exceptions: [
-        { id: 'valid', type: 'DOMAIN-SUFFIX', value: 'example.com' },
+      customRules: [
+        { id: 'valid', type: 'DOMAIN-SUFFIX', value: 'example.com', target: 'DIRECT' },
         { id: 'wrong-family', type: 'IP-CIDR', value: '2001:db8::/32' },
         { id: 'injected', type: 'DOMAIN', value: 'example,com' },
         null,
@@ -173,6 +194,20 @@ test('buildRuntimeConfig skips malformed persisted exceptions while retaining va
   assert.ok(firstSubscriptionRule > 0);
   assert.equal(config.rules[0], 'DOMAIN-SUFFIX,example.com,DIRECT');
   assert.equal(config.rules.length, 4);
+});
+
+test('buildRuntimeConfig omits PROXY Custom Rules without a selectable proxy group', () => {
+  const subscription = parseSubscription(AUTOMATIC_GROUPS_ONLY_SUBSCRIPTION);
+  const config = buildRuntimeConfig(
+    {
+      ...BASE_SETTINGS,
+      customRules: [{ id: 'proxy-only', type: 'DOMAIN-SUFFIX', value: 'example.com', target: 'PROXY' }],
+    },
+    subscription,
+    { controllerPort: 9123, secret: 'abc' }
+  );
+
+  assert.deepEqual(config.rules, ['MATCH,自动选择']);
 });
 
 test('parseSubscription extracts proxies from Clash YAML', () => {
@@ -266,7 +301,7 @@ test('loadCachedSubscription rebuilds an invalid parsed cache from raw YAML', as
   assert.equal(parseSubscriptionCache(await fs.readFile(path.join(proxyDir, 'subscription.parsed.json'), 'utf8')).proxies.length, 2);
 });
 
-test('ProxyRuntime init sanitizes a non-array persisted exceptions value before state snapshot', async (t) => {
+test('ProxyRuntime init removes a malformed legacy exceptions value from its state snapshot', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-settings-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   await fs.writeFile(
@@ -279,7 +314,8 @@ test('ProxyRuntime init sanitizes a non-array persisted exceptions value before 
   await runtime.init();
   const state = await runtime.getState();
 
-  assert.deepEqual(state.settings.exceptions, []);
+  assert.equal('exceptions' in state.settings, false);
+  assert.deepEqual(state.settings.customRules, []);
   const config = buildRuntimeConfig(state.settings, parseSubscription(FULL_SUBSCRIPTION), {
     controllerPort: 9123,
     secret: 'abc',
@@ -309,7 +345,7 @@ test('ProxyRuntime init drops a legacy subscription URL and removes it after the
   assert.equal(persisted.mode, 'global');
 });
 
-test('ProxyRuntime mutations clean mixed persisted exceptions and preserve valid DIRECT precedence', async (t) => {
+test('ProxyRuntime migrates legacy exceptions to Custom Rules and removes exceptions on the next settings write', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-settings-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   await fs.writeFile(
@@ -317,7 +353,9 @@ test('ProxyRuntime mutations clean mixed persisted exceptions and preserve valid
     JSON.stringify({
       ...BASE_SETTINGS,
       exceptions: [
-        { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'saved.example' },
+        // `exceptions` is the historical Direct Exceptions field. Even a manually
+        // edited legacy record must not acquire the new PROXY behavior.
+        { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'saved.example', target: 'PROXY' },
         null,
         { id: 'saved-invalid', type: 'IP-CIDR', value: '2001:db8::/32' },
       ],
@@ -327,26 +365,37 @@ test('ProxyRuntime mutations clean mixed persisted exceptions and preserve valid
 
   const runtime = new ProxyRuntime(proxyDir);
   await runtime.init();
-  assert.deepEqual((await runtime.getState()).settings.exceptions, [
-    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'saved.example' },
+  assert.deepEqual((await runtime.getState()).settings.customRules, [
+    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'saved.example', target: 'DIRECT' },
+  ]);
+  assert.equal('exceptions' in (await runtime.getState()).settings, false);
+
+  await runtime.setMode('global');
+  const migratedSettings = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal('exceptions' in migratedSettings, false);
+  assert.deepEqual(migratedSettings.customRules, [
+    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'saved.example', target: 'DIRECT' },
   ]);
 
-  const afterAdd = await runtime.addException({ type: 'DOMAIN', value: 'added.example' });
-  const added = afterAdd.settings.exceptions.find((exception) => exception.value === 'added.example');
+  const afterAdd = await runtime.addException({ type: 'DOMAIN', value: 'added.example', target: 'PROXY' });
+  const added = afterAdd.settings.customRules.find((rule) => rule.value === 'added.example');
   assert.ok(added);
+  assert.equal(added.target, 'PROXY');
 
   const afterUpdate = await runtime.updateException('saved-valid', {
     type: 'DOMAIN-SUFFIX',
     value: 'updated.example',
   });
-  assert.equal(afterUpdate.settings.exceptions.find((exception) => exception.id === 'saved-valid').value, 'updated.example');
+  assert.equal(afterUpdate.settings.customRules.find((rule) => rule.id === 'saved-valid').value, 'updated.example');
 
   const afterDelete = await runtime.deleteException(added.id);
-  assert.deepEqual(afterDelete.settings.exceptions, [
-    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'updated.example' },
+  assert.deepEqual(afterDelete.settings.customRules, [
+    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'updated.example', target: 'DIRECT' },
   ]);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).exceptions, [
-    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'updated.example' },
+  const persisted = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal('exceptions' in persisted, false);
+  assert.deepEqual(persisted.customRules, [
+    { id: 'saved-valid', type: 'DOMAIN-SUFFIX', value: 'updated.example', target: 'DIRECT' },
   ]);
 
   const config = buildRuntimeConfig(afterDelete.settings, parseSubscription(FULL_SUBSCRIPTION), {
@@ -355,6 +404,22 @@ test('ProxyRuntime mutations clean mixed persisted exceptions and preserve valid
   });
   assert.equal(config.rules[0], 'DOMAIN-SUFFIX,updated.example,DIRECT');
   assert.equal(config.rules[1], 'DOMAIN-SUFFIX,tracker.example.com,REJECT');
+});
+
+test('ProxyRuntime rejects System Proxy activation before Mihomo has started with setup guidance', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-system-proxy-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  await assert.rejects(
+    runtime.setSystemProxy(true),
+    (error) => {
+      assert.equal(error.message, 'Start the proxy first. When its status is running, enable System Proxy.');
+      return true;
+    }
+  );
 });
 
 test('saveAndFetchSubscription caches a fetched subscription without persisting its URL or restarting Mihomo', async (t) => {

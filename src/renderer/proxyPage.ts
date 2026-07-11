@@ -1,4 +1,12 @@
-import type { ProxyException, ProxyExceptionDraft, ProxyExceptionType, ProxyGroupsInfo, ProxyMode, ProxyState } from '../shared/types';
+import type {
+  ProxyCustomRule,
+  ProxyCustomRuleDraft,
+  ProxyExceptionType,
+  ProxyGroupsInfo,
+  ProxyMode,
+  ProxyRuleTarget,
+  ProxyState,
+} from '../shared/types';
 import { registerPage } from './nav.js';
 import { setMessage } from './renderer.js';
 
@@ -38,6 +46,7 @@ const refreshGroupsButton = requireElement<HTMLButtonElement>('#proxy-refresh-gr
 const groupList = requireElement<HTMLDivElement>('#proxy-group-list');
 const exceptionForm = requireElement<HTMLFormElement>('#proxy-exception-form');
 const exceptionTypeSelect = requireElement<HTMLSelectElement>('#proxy-exception-type');
+const ruleTargetSelect = requireElement<HTMLSelectElement>('#proxy-rule-target');
 const exceptionValueInput = requireElement<HTMLInputElement>('#proxy-exception-value');
 const saveExceptionButton = requireElement<HTMLButtonElement>('#proxy-save-exception-btn');
 const cancelExceptionButton = requireElement<HTMLButtonElement>('#proxy-cancel-exception-btn');
@@ -51,6 +60,18 @@ const logContent = requireElement<HTMLDivElement>('#proxy-log-content');
 let currentState: ProxyState | null = null;
 let logRefreshTimer: number | null = null;
 let editingExceptionId: string | null = null;
+
+const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
+  DOMAIN: 'example.com',
+  'DOMAIN-SUFFIX': 'example.com',
+  'DOMAIN-KEYWORD': 'stream',
+  'IP-CIDR': '203.0.113.0/24',
+  'IP-CIDR6': '2001:db8::/32',
+  'SRC-IP-CIDR': '10.0.0.0/8',
+  GEOIP: 'CN',
+  'DST-PORT': '443',
+  'SRC-PORT': '443',
+};
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -158,27 +179,35 @@ function renderState(state: ProxyState): void {
     groupList.replaceChildren();
   }
 
-  renderExceptions(state.settings.exceptions ?? []);
+  renderExceptions(state.settings.customRules ?? []);
+}
+
+function syncRuleValuePlaceholder(): void {
+  exceptionValueInput.placeholder = RULE_VALUE_PLACEHOLDERS[exceptionTypeSelect.value as ProxyExceptionType];
 }
 
 function clearExceptionEditor(): void {
   editingExceptionId = null;
   exceptionTypeSelect.value = 'DOMAIN';
+  ruleTargetSelect.value = 'PROXY';
   exceptionValueInput.value = '';
-  saveExceptionButton.textContent = 'Add Exception';
+  syncRuleValuePlaceholder();
+  saveExceptionButton.textContent = 'Add Custom Rule';
   cancelExceptionButton.classList.add('hidden');
 }
 
-function startEditingException(exception: ProxyException): void {
+function startEditingException(exception: ProxyCustomRule): void {
   editingExceptionId = exception.id;
   exceptionTypeSelect.value = exception.type;
+  ruleTargetSelect.value = exception.target ?? 'DIRECT';
   exceptionValueInput.value = exception.value;
-  saveExceptionButton.textContent = 'Save Exception';
+  syncRuleValuePlaceholder();
+  saveExceptionButton.textContent = 'Save Custom Rule';
   cancelExceptionButton.classList.remove('hidden');
   exceptionValueInput.focus();
 }
 
-function renderExceptions(exceptions: ProxyException[]): void {
+function renderExceptions(exceptions: ProxyCustomRule[]): void {
   exceptionList.replaceChildren();
   for (const exception of exceptions) {
     const row = document.createElement('div');
@@ -188,6 +217,10 @@ function renderExceptions(exceptions: ProxyException[]): void {
     const type = document.createElement('span');
     type.className = 'proxy-exception-type';
     type.append(document.createTextNode(exception.type));
+
+    const target = document.createElement('span');
+    target.className = 'proxy-exception-type';
+    target.append(document.createTextNode(exception.target));
 
     const value = document.createElement('span');
     value.className = 'proxy-exception-value';
@@ -199,14 +232,14 @@ function renderExceptions(exceptions: ProxyException[]): void {
     editButton.type = 'button';
     editButton.className = 'btn btn-secondary btn-sm';
     editButton.textContent = 'Edit';
-    editButton.setAttribute('aria-label', 'Edit direct exception');
+    editButton.setAttribute('aria-label', 'Edit custom rule');
     editButton.addEventListener('click', () => startEditingException(exception));
 
     const deleteButton = document.createElement('button');
     deleteButton.type = 'button';
     deleteButton.className = 'btn btn-danger btn-sm';
     deleteButton.textContent = 'Delete';
-    deleteButton.setAttribute('aria-label', 'Delete direct exception');
+    deleteButton.setAttribute('aria-label', 'Delete custom rule');
     deleteButton.addEventListener('click', () => {
       void runAction(deleteButton, async () => {
         const state = await window.proxyApi.deleteException(exception.id);
@@ -215,12 +248,12 @@ function renderExceptions(exceptions: ProxyException[]): void {
         if (state.running === 'running') {
           await refreshGroups();
         }
-        setMessage('Direct exception deleted.', 'success');
+        setMessage('Custom rule deleted.', 'success');
       });
     });
 
     actions.append(editButton, deleteButton);
-    row.append(type, value, actions);
+    row.append(type, target, value, actions);
     exceptionList.appendChild(row);
   }
 }
@@ -455,8 +488,9 @@ function bindEvents(): void {
     event.preventDefault();
     void runAction(saveExceptionButton, async () => {
       const exceptionId = editingExceptionId;
-      const draft: ProxyExceptionDraft = {
+      const draft: ProxyCustomRuleDraft = {
         type: exceptionTypeSelect.value as ProxyExceptionType,
+        target: ruleTargetSelect.value as ProxyRuleTarget,
         value: exceptionValueInput.value,
       };
       const state = exceptionId
@@ -467,11 +501,12 @@ function bindEvents(): void {
       if (state.running === 'running') {
         await refreshGroups();
       }
-      setMessage(exceptionId ? 'Direct exception saved.' : 'Direct exception added.', 'success');
+      setMessage(exceptionId ? 'Custom rule saved.' : 'Custom rule added.', 'success');
     });
   });
 
   cancelExceptionButton.addEventListener('click', clearExceptionEditor);
+  exceptionTypeSelect.addEventListener('change', syncRuleValuePlaceholder);
 
   refreshGroupsButton.addEventListener('click', () => {
     void runAction(refreshGroupsButton, () => refreshGroups());
@@ -487,6 +522,7 @@ function bindEvents(): void {
 }
 
 export function registerProxyPage(): void {
+  clearExceptionEditor();
   bindEvents();
   registerPage({
     id: 'proxy',

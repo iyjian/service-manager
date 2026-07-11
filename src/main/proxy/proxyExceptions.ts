@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import type { ProxyException, ProxyExceptionDraft, ProxyExceptionType } from '../../shared/types';
+import type {
+  ProxyCustomRule,
+  ProxyCustomRuleDraft,
+  ProxyException,
+  ProxyExceptionDraft,
+  ProxyExceptionType,
+  ProxyRuleTarget,
+} from '../../shared/types';
 
 const EXCEPTION_TYPES = new Set<ProxyExceptionType>([
   'DOMAIN',
@@ -16,6 +23,16 @@ const EXCEPTION_TYPES = new Set<ProxyExceptionType>([
 
 function isProxyExceptionType(value: unknown): value is ProxyExceptionType {
   return typeof value === 'string' && EXCEPTION_TYPES.has(value as ProxyExceptionType);
+}
+
+function normalizeTarget(value: unknown): ProxyRuleTarget {
+  if (value === undefined) {
+    return 'DIRECT';
+  }
+  if (value === 'PROXY' || value === 'DIRECT') {
+    return value;
+  }
+  throw new Error('Custom rule target must be PROXY or DIRECT.');
 }
 
 function normalizeCidr(value: string, family: 4 | 6, label: string): string {
@@ -80,32 +97,49 @@ function normalizeValue(type: ProxyExceptionType, value: string): string {
   }
 }
 
-export function normalizeProxyExceptions(drafts: ProxyExceptionDraft[]): ProxyException[] {
+export function normalizeProxyCustomRules(drafts: ProxyCustomRuleDraft[]): ProxyCustomRule[] {
   if (!Array.isArray(drafts)) {
-    throw new Error('Proxy exceptions must be a list.');
+    throw new Error('Custom rules must be a list.');
   }
 
   return drafts.map((draft) => {
     if (!draft || !isProxyExceptionType(draft.type) || typeof draft.value !== 'string') {
-      throw new Error('Each proxy exception requires a supported type and string value.');
+      throw new Error('Each custom rule requires a supported type and string value.');
     }
 
     if (/[\r\n,]/.test(draft.value)) {
-      throw new Error('Proxy exception values cannot contain commas or newlines.');
+      throw new Error('Custom rule values cannot contain commas or newlines.');
     }
     const value = draft.value.trim();
     if (!value) {
-      throw new Error('Proxy exception values cannot be empty.');
+      throw new Error('Custom rule values cannot be empty.');
     }
 
     return {
       id: typeof draft.id === 'string' && draft.id.length > 0 ? draft.id : randomUUID(),
       type: draft.type,
       value: normalizeValue(draft.type, value),
+      target: normalizeTarget(draft.target),
     };
   });
 }
 
+export function buildCustomRuleRules(rules: ProxyCustomRuleDraft[], proxyTarget: string | undefined): string[] {
+  return normalizeProxyCustomRules(rules).flatMap((rule) => {
+    if (rule.target === 'DIRECT') {
+      return `${rule.type},${rule.value},DIRECT`;
+    }
+    return proxyTarget ? `${rule.type},${rule.value},${proxyTarget}` : [];
+  });
+}
+
+// Compatibility aliases retain the stable internal IPC method names. Callers
+// may supply either target; only persisted ProxySettings.exceptions records are
+// historical Direct Exceptions and are coerced during runtime migration.
+export function normalizeProxyExceptions(drafts: ProxyExceptionDraft[]): ProxyCustomRule[] {
+  return normalizeProxyCustomRules(drafts);
+}
+
 export function buildDirectExceptionRules(exceptions: ProxyException[]): string[] {
-  return normalizeProxyExceptions(exceptions).map((exception) => `${exception.type},${exception.value},DIRECT`);
+  return buildCustomRuleRules(exceptions, undefined);
 }

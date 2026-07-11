@@ -143,9 +143,9 @@
           ></div>
         </section>
 
-        <section class="subcard proxy-card" aria-label="Direct exceptions">
+        <section class="subcard proxy-card" aria-label="Custom rules">
           <div class="subcard-head">
-            <h3 class="subcard-title">Direct Exceptions</h3>
+            <h3 class="subcard-title">自定义规则</h3>
           </div>
           <form id="proxy-exception-form" class="proxy-exception-form">
             <label class="field field-xs">
@@ -163,13 +163,20 @@
               </select>
             </label>
             <label class="field field-xs">
-              Value
-              <input id="proxy-exception-value" class="input" type="text" required spellcheck="false" />
+              Target
+              <select id="proxy-rule-target" class="input">
+                <option value="PROXY">PROXY</option>
+                <option value="DIRECT">DIRECT</option>
+              </select>
             </label>
-            <button id="proxy-save-exception-btn" type="submit" class="btn btn-primary btn-sm btn-nowrap">Add Exception</button>
+            <label class="field field-xs">
+              Value
+              <input id="proxy-exception-value" class="input" type="text" placeholder="example.com" required spellcheck="false" />
+            </label>
+            <button id="proxy-save-exception-btn" type="submit" class="btn btn-primary btn-sm btn-nowrap">Add Custom Rule</button>
             <button id="proxy-cancel-exception-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap hidden">Cancel Edit</button>
           </form>
-          <div id="proxy-exception-list" class="proxy-exception-list" data-empty="No direct exceptions configured." role="list"></div>
+          <div id="proxy-exception-list" class="proxy-exception-list" data-empty="No custom rules configured." role="list"></div>
         </section>
       </div>
     </main>

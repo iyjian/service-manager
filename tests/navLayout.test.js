@@ -4,6 +4,7 @@ const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 
 const rendererDir = path.join(__dirname, '..', 'dist', 'renderer');
+const mainDir = path.join(__dirname, '..', 'dist', 'main');
 
 test('home layout renders the nav rail with per-page shells', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
@@ -47,25 +48,30 @@ test('Save & Fetch is the sole subscription action and only clears its URL after
   assert.match(proxyPage, /setTun\(enabled\)[\s\S]{0,160}await refreshGroups\(\)/);
 });
 
-test('proxy controls keep all user-facing text in English', async () => {
+test('proxy controls keep user-facing text in English apart from the approved Custom Rules heading', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
   const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
 
-  assert.doesNotMatch(html, /规则|全局|直连/);
+  assert.doesNotMatch(html, /全局|直连/);
   assert.doesNotMatch(proxyPage, /授权|撤销|内核/);
 });
 
-test('proxy page provides direct-exception controls in its shared content container', async () => {
+test('proxy page provides Custom Rules controls in its shared content container', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
   const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
   const styles = await readFile(path.join(rendererDir, 'tailwind.css'), 'utf8');
 
   assert.match(html, /class="proxy-page-container"/);
-  assert.match(html, /aria-label="Direct exceptions"/);
+  assert.match(html, /aria-label="Custom rules"/);
   assert.match(html, /id="proxy-exception-type"/);
+  assert.match(html, /id="proxy-rule-target"/);
   assert.match(html, /id="proxy-exception-value"/);
   assert.match(html, /id="proxy-exception-list"/);
-  assert.match(html, />Direct Exceptions</);
+  assert.match(html, />自定义规则</);
+  assert.doesNotMatch(html, />Direct Exceptions</);
+  assert.match(html, /<option value="PROXY">PROXY<\/option>/);
+  assert.match(html, /<option value="DIRECT">DIRECT<\/option>/);
+  assert.match(html, /placeholder="example\.com"/);
   for (const type of [
     'DOMAIN',
     'DOMAIN-SUFFIX',
@@ -82,6 +88,10 @@ test('proxy page provides direct-exception controls in its shared content contai
   assert.match(proxyPage, /proxyApi\.addException/);
   assert.match(proxyPage, /proxyApi\.updateException/);
   assert.match(proxyPage, /proxyApi\.deleteException/);
+  assert.match(proxyPage, /const RULE_VALUE_PLACEHOLDERS/);
+  assert.match(proxyPage, /target: ruleTargetSelect\.value/);
+  assert.match(proxyPage, /document\.createTextNode\(exception\.target\)/);
+  assert.doesNotMatch(proxyPage, /innerHTML\s*=\s*[^;]*(?:exception|rule)\.(?:type|target|value)/);
   assert.match(
     proxyPage,
     /deleteException\(exception\.id\)[\s\S]{0,160}renderState\(state\);\s*clearExceptionEditor\(\);/
@@ -97,4 +107,33 @@ test('compiled tailwind styles cover the nav rail and proxy page', async () => {
   assert.match(styles, /\.seg-item-active/);
   assert.match(styles, /\.proxy-node/);
   assert.match(styles, /\.proxy-strategy-group/);
+});
+
+test('Host header shows live total app memory instead of host runtime totals', async () => {
+  const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
+  const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
+  const preload = await readFile(path.join(mainDir, 'preload.js'), 'utf8');
+  const main = await readFile(path.join(mainDir, 'main.js'), 'utf8');
+
+  assert.match(html, /id="page-stats"/);
+  assert.match(renderer, /Memory \$\{formatGigabytes\(bytes\)\} GB/);
+  assert.match(renderer, /getAppMemoryUsage\(\)/);
+  assert.match(renderer, /const APP_MEMORY_REFRESH_INTERVAL_MS = 5000/);
+  assert.match(renderer, /window\.setInterval\(\(\) => void refreshAppMemoryUsage\(\), APP_MEMORY_REFRESH_INTERVAL_MS\)/);
+  assert.match(preload, /getAppMemoryUsage/);
+  assert.match(main, /app:memory-usage/);
+  assert.doesNotMatch(renderer, /\$\{hosts\.length\} host/);
+  assert.doesNotMatch(renderer, /tunnels`,[\s\S]{0,80}services/);
+  assert.doesNotMatch(renderer, /stat-up/);
+});
+
+test('host cards omit aggregate runtime counts while retaining individual row statuses', async () => {
+  const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
+  const oldHostHeaderSummary = /⇄ \$\{tunnelRunning\}\/\$\{tunnelCount\} · ▶ \$\{serviceRunning\}\/\$\{serviceCount\}/;
+
+  assert.doesNotMatch(renderer, /host-panel-count/);
+  assert.match('⇄ ${tunnelRunning}/${tunnelCount} · ▶ ${serviceRunning}/${serviceCount}', oldHostHeaderSummary);
+  assert.doesNotMatch(renderer, oldHostHeaderSummary);
+  assert.match(renderer, /formatStatus\(forward\.status\)/);
+  assert.match(renderer, /formatStatus\(service\.status\)/);
 });
