@@ -29,6 +29,8 @@ import {
 } from './configTransfer';
 import { RuntimeRegistry } from './runtimeRegistry';
 import { preserveServiceRuntimeFields, validateHostDraft } from './validation';
+import { ProxyRuntime } from './proxy/proxyRuntime';
+import type { ProxyExceptionDraft, ProxyMode, ProxyState } from '../shared/types';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -54,10 +56,29 @@ const IPC_CHANNELS = {
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
+  proxyGetState: 'proxy:get-state',
+  proxyDownloadCore: 'proxy:download-core',
+  proxyStart: 'proxy:start',
+  proxyStop: 'proxy:stop',
+  proxySaveAndFetchSubscription: 'proxy:save-and-fetch-subscription',
+  proxySetMode: 'proxy:set-mode',
+  proxySetMixedPort: 'proxy:set-mixed-port',
+  proxySetSystemProxy: 'proxy:set-system-proxy',
+  proxySetTun: 'proxy:set-tun',
+  proxyAddException: 'proxy:add-exception',
+  proxyUpdateException: 'proxy:update-exception',
+  proxyDeleteException: 'proxy:delete-exception',
+  proxyGrantTun: 'proxy:grant-tun',
+  proxyRevokeTun: 'proxy:revoke-tun',
+  proxyListProxies: 'proxy:list-proxies',
+  proxySelectProxy: 'proxy:select-proxy',
+  proxyGetLogs: 'proxy:get-logs',
+  proxyStateChanged: 'proxy:state',
 } as const;
 
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
+let proxyRuntime: ProxyRuntime | null = null;
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
@@ -84,6 +105,26 @@ function serviceKey(hostId: string, serviceId: string): string {
 
 function serviceForwardKey(hostId: string, serviceId: string): string {
   return serviceKey(hostId, serviceId);
+}
+
+function validateProxyExceptionDraft(value: unknown): ProxyExceptionDraft {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('A direct exception type and value are required.');
+  }
+
+  const draft = value as { type?: unknown; value?: unknown };
+  if (typeof draft.type !== 'string' || typeof draft.value !== 'string') {
+    throw new Error('A direct exception type and value are required.');
+  }
+
+  return { type: draft.type as ProxyExceptionDraft['type'], value: draft.value };
+}
+
+function validateProxyExceptionId(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('A direct exception ID is required.');
+  }
+  return value;
 }
 
 function createWindow(): BrowserWindow {
@@ -710,6 +751,62 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.checkUpdates, async () => {
     return updater.checkForUpdates('manual');
   });
+
+  const getProxyRuntime = (): ProxyRuntime => {
+    if (!proxyRuntime) {
+      throw new Error('Proxy runtime is not initialized.');
+    }
+    return proxyRuntime;
+  };
+
+  ipcMain.handle(IPC_CHANNELS.proxyGetState, async () => getProxyRuntime().getState());
+  ipcMain.handle(IPC_CHANNELS.proxyDownloadCore, async () => getProxyRuntime().downloadCore());
+  ipcMain.handle(IPC_CHANNELS.proxyStart, async () => getProxyRuntime().start());
+  ipcMain.handle(IPC_CHANNELS.proxyStop, async () => getProxyRuntime().stop());
+  ipcMain.handle(IPC_CHANNELS.proxySaveAndFetchSubscription, async (_event, url: string) =>
+    getProxyRuntime().saveAndFetchSubscription(url)
+  );
+  ipcMain.handle(IPC_CHANNELS.proxySetMode, async (_event, mode: ProxyMode) => getProxyRuntime().setMode(mode));
+  ipcMain.handle(IPC_CHANNELS.proxySetMixedPort, async (_event, port: number) =>
+    getProxyRuntime().setMixedPort(port)
+  );
+  ipcMain.handle(IPC_CHANNELS.proxySetSystemProxy, async (_event, enabled: boolean) =>
+    getProxyRuntime().setSystemProxy(enabled)
+  );
+  ipcMain.handle(IPC_CHANNELS.proxySetTun, async (_event, enabled: boolean) => getProxyRuntime().setTun(enabled));
+  ipcMain.handle(IPC_CHANNELS.proxyAddException, async (_event, draft: unknown) =>
+    getProxyRuntime().addException(validateProxyExceptionDraft(draft))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.proxyUpdateException,
+    async (_event, payload: { id?: unknown; draft?: unknown }) =>
+      getProxyRuntime().updateException(
+        validateProxyExceptionId(payload?.id),
+        validateProxyExceptionDraft(payload?.draft)
+      )
+  );
+  ipcMain.handle(IPC_CHANNELS.proxyDeleteException, async (_event, id: unknown) =>
+    getProxyRuntime().deleteException(validateProxyExceptionId(id))
+  );
+  ipcMain.handle(IPC_CHANNELS.proxyGrantTun, async () => getProxyRuntime().grantTun());
+  ipcMain.handle(IPC_CHANNELS.proxyRevokeTun, async () => getProxyRuntime().revokeTun());
+  ipcMain.handle(IPC_CHANNELS.proxyListProxies, async () => getProxyRuntime().listProxies());
+  ipcMain.handle(
+    IPC_CHANNELS.proxySelectProxy,
+    async (_event, selection: { groupName?: unknown; optionName?: unknown }) => {
+      if (typeof selection?.groupName !== 'string' || typeof selection.optionName !== 'string') {
+        throw new Error('A strategy group and candidate name are required.');
+      }
+      return getProxyRuntime().selectProxy(selection.groupName, selection.optionName);
+    }
+  );
+  ipcMain.handle(IPC_CHANNELS.proxyGetLogs, async () => getProxyRuntime().getLogs());
+}
+
+function wireProxyStateBroadcast(): void {
+  proxyRuntime?.on('state-changed', (state: ProxyState) => {
+    broadcast(IPC_CHANNELS.proxyStateChanged, state);
+  });
 }
 
 function wireForwardStatusBroadcast(): void {
@@ -742,10 +839,14 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
+    proxyRuntime = new ProxyRuntime(path.join(app.getPath('userData'), 'proxy'));
+    await proxyRuntime.init();
+
     applyAppIcon();
     registerIpcHandlers();
     wireForwardStatusBroadcast();
     wireUpdaterBroadcast();
+    wireProxyStateBroadcast();
     applyAppMenu();
     for (const host of hosts) {
       await autoStartHostRules(host);
@@ -770,11 +871,13 @@ app.whenReady()
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll()]).finally(() => app.quit());
+    void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll(), proxyRuntime?.shutdown()]).finally(() =>
+      app.quit()
+    );
   }
 });
 
 app.on('before-quit', () => {
   updater.stop();
-  void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll()]);
+  void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll(), proxyRuntime?.shutdown()]);
 });

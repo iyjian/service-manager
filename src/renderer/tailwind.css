@@ -6,8 +6,231 @@
     @apply m-0 bg-zinc-50 font-sans text-zinc-700 antialiased;
   }
 
+  .app-layout {
+    @apply flex min-h-screen;
+  }
+
+  .nav-rail {
+    @apply sticky top-0 z-50 flex h-screen w-12 shrink-0 flex-col items-center gap-1 border-r border-zinc-200 bg-zinc-50 py-2.5;
+  }
+
+  .nav-logo {
+    @apply mb-2 h-7 w-7 shrink-0 rounded-lg shadow-sm;
+  }
+
+  .nav-item {
+    @apply relative inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-800 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .nav-item svg {
+    @apply h-5 w-5;
+  }
+
+  .nav-item-active {
+    @apply border-zinc-200 bg-white text-zinc-950 shadow-sm;
+  }
+
+  .nav-item-active::before {
+    content: '';
+    @apply absolute -left-1 bottom-2 top-2 w-0.5 rounded-full bg-zinc-950;
+  }
+
+  .app-content {
+    @apply min-w-0 flex-1;
+  }
+
   .app-shell {
     @apply mx-auto grid w-full max-w-[1280px] gap-3 px-4 py-4;
+  }
+
+  .proxy-grid {
+    @apply grid grid-cols-2 items-start gap-3;
+  }
+
+  .proxy-page-container {
+    @apply grid gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm ring-1 ring-zinc-950/[0.02];
+  }
+
+  .proxy-card {
+    @apply bg-white;
+  }
+
+  .proxy-status-badge {
+    @apply inline-flex h-6 items-center rounded-full border border-zinc-200 bg-white px-2 font-mono text-[12px] uppercase tracking-[0.08em] shadow-sm;
+  }
+
+  .proxy-meta-line {
+    @apply mt-2 font-mono text-[12px] leading-5 text-zinc-500;
+  }
+
+  .proxy-controls {
+    @apply mt-3 grid gap-2.5;
+  }
+
+  .proxy-control-row {
+    @apply flex min-h-8 flex-wrap items-center gap-2.5;
+  }
+
+  .proxy-control-label {
+    @apply w-24 shrink-0 text-[12.5px] font-medium text-zinc-700;
+  }
+
+  .subcard-actions .proxy-control-label {
+    @apply w-auto;
+  }
+
+  .proxy-hint {
+    @apply text-[12px] text-zinc-400;
+  }
+
+  .proxy-port-input {
+    /* .input applies w-full and is declared later in this file; win with ! */
+    @apply h-7 !w-24 text-[12.5px];
+  }
+
+  .seg {
+    @apply inline-flex items-center gap-0.5 rounded-md border border-zinc-200 bg-zinc-100 p-0.5;
+  }
+
+  .seg-item {
+    @apply inline-flex h-6 cursor-pointer items-center justify-center rounded-[5px] border-0 bg-transparent px-2.5 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:text-zinc-800 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .seg-item-active {
+    @apply bg-white text-zinc-950 shadow-sm;
+  }
+
+  .switch {
+    @apply relative inline-flex shrink-0 cursor-pointer items-center;
+  }
+
+  .switch input {
+    @apply sr-only;
+  }
+
+  .switch-track {
+    @apply block h-[18px] w-8 rounded-full bg-zinc-300 transition-colors duration-150;
+  }
+
+  .switch input:checked + .switch-track {
+    @apply bg-zinc-950;
+  }
+
+  .switch input:focus-visible + .switch-track {
+    @apply ring-2 ring-zinc-300;
+  }
+
+  .switch input:disabled + .switch-track {
+    @apply cursor-not-allowed opacity-40;
+  }
+
+  .switch-track::after {
+    content: '';
+    @apply absolute left-[2px] top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-150;
+  }
+
+  .switch input:checked + .switch-track::after {
+    transform: translateX(14px);
+  }
+
+  .icon-btn-warn {
+    @apply text-amber-500 hover:bg-amber-50 hover:text-amber-600;
+  }
+
+  .icon-btn-accent {
+    @apply text-blue-600 hover:bg-blue-50 hover:text-blue-700;
+  }
+
+  .proxy-sub-row {
+    @apply flex items-center gap-2;
+  }
+
+  .proxy-sub-row .input {
+    @apply h-8 flex-1 font-mono text-[12.5px];
+  }
+
+  .proxy-node-list {
+    @apply grid gap-1;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  }
+
+  .proxy-group-list {
+    @apply grid gap-3;
+  }
+
+  .proxy-exception-form {
+    @apply grid items-end gap-2.5;
+    grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.7fr) auto auto;
+  }
+
+  .proxy-exception-list {
+    @apply mt-3 grid gap-1.5;
+  }
+
+  .proxy-exception-list:empty::before {
+    content: attr(data-empty);
+    @apply block rounded-lg border border-dashed border-zinc-300 bg-white/70 px-3 py-2 text-[12.5px] text-zinc-500;
+  }
+
+  .proxy-exception-row {
+    @apply flex min-w-0 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 font-mono text-[12.5px];
+  }
+
+  .proxy-exception-type {
+    @apply shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-600;
+  }
+
+  .proxy-exception-value {
+    @apply min-w-0 flex-1 truncate text-zinc-800;
+  }
+
+  .proxy-exception-actions {
+    @apply ml-auto flex shrink-0 items-center gap-1.5;
+  }
+
+  .proxy-group-list:empty::before {
+    content: attr(data-empty);
+    @apply block rounded-lg border border-dashed border-zinc-300 bg-white/70 px-3 py-3 text-[12.5px] text-zinc-500;
+  }
+
+  .proxy-strategy-group {
+    @apply grid gap-2 rounded-lg border border-zinc-200 bg-zinc-50/60 p-2.5;
+  }
+
+  .proxy-strategy-head {
+    @apply flex min-w-0 items-center justify-between gap-3 font-mono text-[12.5px];
+  }
+
+  .proxy-strategy-name {
+    @apply min-w-0 truncate font-semibold text-zinc-800;
+  }
+
+  .proxy-strategy-current {
+    @apply shrink-0 truncate text-zinc-500;
+  }
+
+  .proxy-node {
+    @apply flex min-h-8 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1 text-left font-mono text-[12.5px] text-zinc-700 outline-none transition hover:border-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .proxy-node-active {
+    @apply border-zinc-950 text-zinc-950;
+  }
+
+  .proxy-node-marker {
+    @apply shrink-0 text-[11px] text-zinc-400;
+  }
+
+  .proxy-node-active .proxy-node-marker {
+    @apply text-emerald-600;
+  }
+
+  .proxy-node-name {
+    @apply min-w-0 flex-1 truncate;
+  }
+
+  .proxy-node-meta {
+    @apply shrink-0 whitespace-nowrap text-[11px] text-zinc-400;
   }
 
   .page-head {
@@ -808,6 +1031,18 @@
 
     .service-log-toolbar {
       @apply grid-cols-1;
+    }
+
+    .proxy-grid {
+      @apply grid-cols-1;
+    }
+
+    .proxy-exception-form {
+      @apply grid-cols-1;
+    }
+
+    .proxy-exception-form .btn {
+      @apply w-full;
     }
   }
 }

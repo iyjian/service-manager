@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { HostDraft, ServiceApi, ServiceStatusChange, TunnelStatusChange, UpdateState } from '../shared/types';
+import type {
+  HostDraft,
+  ProxyApi,
+  ProxyExceptionDraft,
+  ProxyMode,
+  ProxyState,
+  ServiceApi,
+  ServiceStatusChange,
+  TunnelStatusChange,
+  UpdateState,
+} from '../shared/types';
 
 const api: ServiceApi = {
   listHosts: () => ipcRenderer.invoke('host:list'),
@@ -54,4 +64,34 @@ const api: ServiceApi = {
   },
 };
 
+const proxyApi: ProxyApi = {
+  getState: () => ipcRenderer.invoke('proxy:get-state'),
+  downloadCore: () => ipcRenderer.invoke('proxy:download-core'),
+  startProxy: () => ipcRenderer.invoke('proxy:start'),
+  stopProxy: () => ipcRenderer.invoke('proxy:stop'),
+  saveAndFetchSubscription: (url: string) => ipcRenderer.invoke('proxy:save-and-fetch-subscription', url),
+  setMode: (mode: ProxyMode) => ipcRenderer.invoke('proxy:set-mode', mode),
+  setMixedPort: (port: number) => ipcRenderer.invoke('proxy:set-mixed-port', port),
+  setSystemProxy: (enabled: boolean) => ipcRenderer.invoke('proxy:set-system-proxy', enabled),
+  setTun: (enabled: boolean) => ipcRenderer.invoke('proxy:set-tun', enabled),
+  addException: (draft: ProxyExceptionDraft) => ipcRenderer.invoke('proxy:add-exception', draft),
+  updateException: (id: string, draft: ProxyExceptionDraft) =>
+    ipcRenderer.invoke('proxy:update-exception', { id, draft }),
+  deleteException: (id: string) => ipcRenderer.invoke('proxy:delete-exception', id),
+  grantTunPermission: () => ipcRenderer.invoke('proxy:grant-tun'),
+  revokeTunPermission: () => ipcRenderer.invoke('proxy:revoke-tun'),
+  listProxies: () => ipcRenderer.invoke('proxy:list-proxies'),
+  selectProxy: (groupName: string, optionName: string) =>
+    ipcRenderer.invoke('proxy:select-proxy', { groupName, optionName }),
+  getProxyLogs: () => ipcRenderer.invoke('proxy:get-logs'),
+  onProxyStateChanged: (listener: (state: ProxyState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: ProxyState): void => {
+      listener(state);
+    };
+    ipcRenderer.on('proxy:state', wrapped);
+    return () => ipcRenderer.removeListener('proxy:state', wrapped);
+  },
+};
+
 contextBridge.exposeInMainWorld('serviceApi', api);
+contextBridge.exposeInMainWorld('proxyApi', proxyApi);

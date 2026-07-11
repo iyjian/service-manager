@@ -104,10 +104,21 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - import dialog defaults to `~/.ssh` directory
    - Add/Edit Host shows the current key source in a compact summary and keeps pasted key content collapsed until needed
 10. Config transfer:
-   - `Import Config` from JSON
-   - `Export Config` to JSON
-   - includes hosts, jump-server chain settings, forwarding rules, and services
+    - `Import Config` from JSON
+    - `Export Config` to JSON
+    - includes hosts, jump-server chain settings, forwarding rules, and services
 11. Destructive deletes (`Delete Host`, `Delete` rule) always prompt for confirmation.
+12. Local Clash-compatible proxy runtime:
+    - downloads and runs the platform-specific Mihomo core locally, with one-time `Save & Fetch` subscription input, mode, mixed port, system proxy, TUN, and log controls
+    - preserves a Clash-format subscription's proxies, proxy-groups, rules, and providers while overriding only the local runtime controls owned by the app
+    - `Save & Fetch` accepts a one-time URL, clears it after successful cache replacement, and retains only the fetched source `subscription.yaml`, validated `subscription.parsed.json`, node count, and fetch time; it never persists the remote URL
+    - only `Save & Fetch` fetches the remote URL and replaces the cache; it does not start or restart Mihomo. If the proxy is already running, manually stop and start it to apply the new cached subscription
+    - ordinary startup and restart read the parsed cache first; if it is absent or invalid, the runtime safely falls back to the retained source YAML, rebuilds the parsed cache, and does not require a network request
+    - `Strategy Groups` shows every manually selectable Mihomo `Selector` group from the running subscription, such as node selection, global direct, or final-match groups
+    - each Strategy Group can independently select a node, `DIRECT`, `REJECT`, or another strategy group; automatic URL-test, fallback, load-balance, and relay groups remain non-interactive
+    - selections persist per group and are restored after the core starts or the app is reopened; a removed group or candidate is skipped safely after a subscription refresh
+    - `Direct Exceptions` persist in `ProxySettings.exceptions`. They support `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`; every entry emits a `DIRECT` rule before subscription rules
+    - Proxy controls, Strategy Groups, and Direct Exceptions share one white content container; the Host page keeps the navigation logo only, without a duplicate page logo in its internal header
 
 ## Tech Stack
 
@@ -130,6 +141,10 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/hostConnection.ts`: shared SSH endpoint/private-key resolution for service, tunnel, and forwarding paths
 - `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
 - `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime
+- `src/main/proxy/proxyRuntime.ts`: local Mihomo process lifecycle, parsed-cache loading/replacement, persisted proxy settings and Direct Exception mutations, and system/TUN proxy controls
+- `src/main/proxy/subscriptionCache.ts`: versioned parsed-subscription cache serialization and validation
+- `src/main/proxy/proxyExceptions.ts`: Direct Exception validation, normalization, and `DIRECT` rule generation
+- `src/main/proxy/proxyGroups.ts`: pure conversion, selection validation, and saved-selection compatibility helpers for Mihomo runtime groups
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
 - `src/renderer/tailwind.css`: primary renderer visual layer built with Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers
@@ -300,6 +315,7 @@ journalctl --user -u <unit-name> -n 200 --no-pager
 - Renderer now guards repeated dialog open/close calls, catches global `error` / `unhandledrejection`, surfaces failures through the page toast, and escapes dynamic host/service/error text before writing HTML so bad runtime payloads do not break the page.
 - Main process now logs top-level `uncaughtException` / `unhandledRejection`, renderer-process exits, and IPC broadcast failures to make crash diagnosis visible.
 - Main-process validation, config transfer, runtime-state assembly, SSH endpoint resolution, and service-operation serialization are split into focused modules so they can be tested without launching Electron.
+    - Proxy subscriptions keep their own routing policy. The Proxy page surfaces only runtime Mihomo `Selector` Strategy Groups as manual controls, and stores their choices as a group-name-to-candidate map so `全球直连`, `漏网之鱼`, and other independent policy groups retain separate selections.
 - Unit tests use Node's built-in test runner against compiled `dist/main/*` output; no extra test framework dependency is required.
 - `Add/Edit Host` now has hierarchical editing structure:
   - Forwarding Rules section

@@ -11,6 +11,8 @@ import type {
   UpdateState,
 } from '../shared/types';
 import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
+import { initNav, registerPage } from './nav.js';
+import { registerProxyPage } from './proxyPage.js';
 import {
   canStartForward,
   canStartService,
@@ -294,7 +296,7 @@ function renderMessage(view: MessageView, text: string, level: MessageLevel): vo
   view.text.textContent = text;
 }
 
-function setMessage(text: string, level: MessageLevel = 'default'): void {
+export function setMessage(text: string, level: MessageLevel = 'default'): void {
   if (pageMessageTimer !== null) {
     window.clearTimeout(pageMessageTimer);
     pageMessageTimer = null;
@@ -2058,6 +2060,19 @@ function render(): void {
     hostTableBody.appendChild(row);
   });
 }
+
+const HOSTS_NAV_ICON = `
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="2.5" y="2.5" width="11" height="4.5" rx="1"></rect>
+    <rect x="2.5" y="9" width="11" height="4.5" rx="1"></rect>
+    <path d="M5 4.75h.01"></path>
+    <path d="M5 11.25h.01"></path>
+  </svg>
+`;
+
+registerPage({ id: 'hosts', title: 'Hosts', icon: HOSTS_NAV_ICON });
+registerProxyPage();
+initNav('hosts');
 
 applyStaticButtonIcons();
 resetServiceLogState();

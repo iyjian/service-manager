@@ -1,8 +1,9 @@
-import type { ServiceApi } from '../shared/types';
+import type { ProxyApi, ServiceApi } from '../shared/types';
 
 declare global {
   interface Window {
     serviceApi: ServiceApi;
+    proxyApi: ProxyApi;
   }
 }
 

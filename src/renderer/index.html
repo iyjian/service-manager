@@ -8,11 +8,15 @@
     <link rel="stylesheet" href="./tailwind.css" />
   </head>
   <body>
-    <main class="app-shell">
+    <div class="app-layout">
+      <nav id="nav-rail" class="nav-rail" aria-label="Primary">
+        <img class="nav-logo" src="../../assets/icon-64.png" alt="Service Manager" />
+      </nav>
+      <div class="app-content">
+    <main class="app-shell" data-page="hosts">
       <header class="page-head">
         <div class="page-head-main">
           <div class="page-brand">
-            <img class="page-logo" src="../../assets/icon-64.png" alt="Service Manager logo" />
             <div class="page-brand-copy">
               <div class="page-title-row">
                 <h1 class="page-title">Service Manager</h1>
@@ -39,6 +43,138 @@
         </div>
       </section>
     </main>
+
+    <main class="app-shell hidden" data-page="proxy">
+      <header class="page-head">
+        <div class="page-head-main">
+          <div class="page-brand">
+            <div class="page-brand-copy">
+              <div class="page-title-row">
+                <h1 class="page-title">Proxy</h1>
+                <span id="proxy-core-badge" class="page-version hidden"></span>
+                <span id="proxy-status-badge" class="proxy-status-badge status-stopped">stopped</span>
+              </div>
+            </div>
+          </div>
+          <div class="page-actions">
+            <button id="proxy-toggle-btn" type="button" class="btn btn-primary btn-sm">Start</button>
+            <button id="proxy-logs-btn" type="button" class="btn btn-secondary btn-sm">Logs</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="proxy-page-container">
+        <section class="proxy-grid" aria-label="Proxy settings">
+          <div class="subcard proxy-card">
+            <div class="subcard-head">
+              <h3 class="subcard-title">Core &amp; Runtime</h3>
+              <button id="proxy-download-core-btn" type="button" class="btn btn-secondary btn-sm">Download Core</button>
+            </div>
+            <div id="proxy-core-status" class="proxy-meta-line">Core not installed</div>
+            <div class="proxy-controls">
+              <div class="proxy-control-row">
+                <span class="proxy-control-label">Mode</span>
+                <div id="proxy-mode-seg" class="seg" role="group" aria-label="Proxy mode">
+                  <button type="button" class="seg-item" data-mode="rule" title="Route traffic using the subscription's rules">Rule</button>
+                  <button type="button" class="seg-item" data-mode="global" title="Route all traffic through the selected proxy">Global</button>
+                  <button type="button" class="seg-item" data-mode="direct" title="Route all traffic directly without a proxy">Direct</button>
+                </div>
+              </div>
+              <div class="proxy-control-row">
+                <span class="proxy-control-label">Mixed Port</span>
+                <input id="proxy-mixed-port" class="input proxy-port-input" type="number" min="1" max="65535" value="7890" />
+                <button id="proxy-apply-port-btn" type="button" class="btn btn-secondary btn-sm">Apply</button>
+              </div>
+              <div class="proxy-control-row">
+                <span class="proxy-control-label">System Proxy</span>
+                <label class="switch">
+                  <input id="proxy-system-toggle" type="checkbox" />
+                  <span class="switch-track" aria-hidden="true"></span>
+                </label>
+                <span class="proxy-hint">Sets OS-level HTTP/HTTPS/SOCKS proxy</span>
+              </div>
+              <div class="proxy-control-row">
+                <span class="proxy-control-label">TUN Mode</span>
+                <label class="switch">
+                  <input id="proxy-tun-toggle" type="checkbox" />
+                  <span class="switch-track" aria-hidden="true"></span>
+                </label>
+                <button id="proxy-tun-warn" type="button" class="icon-btn icon-btn-warn hidden" aria-label="TUN unavailable">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5 14.5 13.5H1.5L8 2.5z"></path><path d="M8 6.5v3"></path><path d="M8 11.5h.01"></path></svg>
+                </button>
+                <button id="proxy-tun-install" type="button" class="icon-btn icon-btn-accent hidden" aria-label="Grant TUN privileges">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5a3.5 3.5 0 0 0-3.3 4.63L2.5 11.8v1.7h1.7l4.67-4.7A3.5 3.5 0 1 0 10.5 2.5z"></path></svg>
+                </button>
+                <button id="proxy-tun-revoke" type="button" class="icon-btn hidden" aria-label="Revoke TUN privileges">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.75 13.5 4v3.75c0 3.3-2.3 5.6-5.5 6.5-3.2-.9-5.5-3.2-5.5-6.5V4L8 1.75z"></path><path d="M5.75 7.75 8 10l3-3.5"></path></svg>
+                </button>
+                <span id="proxy-tun-hint" class="proxy-hint">Virtual NIC mode</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="subcard proxy-card">
+            <div class="subcard-head">
+              <h3 class="subcard-title">Subscription</h3>
+            </div>
+            <div class="proxy-sub-row">
+              <input
+                id="proxy-sub-url"
+                class="input"
+                type="text"
+                placeholder="https://example.com/subscription.yaml"
+                spellcheck="false"
+              />
+              <button id="proxy-save-sub-btn" type="button" class="btn btn-primary btn-sm btn-nowrap">Save &amp; Fetch</button>
+            </div>
+            <div id="proxy-sub-meta" class="proxy-meta-line">No subscription configured</div>
+          </div>
+        </section>
+
+        <section class="subcard proxy-card" aria-label="Strategy groups">
+          <div class="subcard-head">
+            <h3 class="subcard-title">Strategy Groups</h3>
+            <button id="proxy-refresh-groups-btn" type="button" class="btn btn-secondary btn-sm">Refresh</button>
+          </div>
+          <div
+            id="proxy-group-list"
+            class="proxy-group-list"
+            data-empty="Start the proxy to load selectable strategy groups."
+          ></div>
+        </section>
+
+        <section class="subcard proxy-card" aria-label="Direct exceptions">
+          <div class="subcard-head">
+            <h3 class="subcard-title">Direct Exceptions</h3>
+          </div>
+          <form id="proxy-exception-form" class="proxy-exception-form">
+            <label class="field field-xs">
+              Type
+              <select id="proxy-exception-type" class="input">
+                <option value="DOMAIN">DOMAIN</option>
+                <option value="DOMAIN-SUFFIX">DOMAIN-SUFFIX</option>
+                <option value="DOMAIN-KEYWORD">DOMAIN-KEYWORD</option>
+                <option value="IP-CIDR">IP-CIDR</option>
+                <option value="IP-CIDR6">IP-CIDR6</option>
+                <option value="SRC-IP-CIDR">SRC-IP-CIDR</option>
+                <option value="GEOIP">GEOIP</option>
+                <option value="DST-PORT">DST-PORT</option>
+                <option value="SRC-PORT">SRC-PORT</option>
+              </select>
+            </label>
+            <label class="field field-xs">
+              Value
+              <input id="proxy-exception-value" class="input" type="text" required spellcheck="false" />
+            </label>
+            <button id="proxy-save-exception-btn" type="submit" class="btn btn-primary btn-sm btn-nowrap">Add Exception</button>
+            <button id="proxy-cancel-exception-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap hidden">Cancel Edit</button>
+          </form>
+          <div id="proxy-exception-list" class="proxy-exception-list" data-empty="No direct exceptions configured." role="list"></div>
+        </section>
+      </div>
+    </main>
+      </div>
+    </div>
 
     <div id="page-message" class="message-banner message-toast message-default hidden" role="status" aria-live="polite">
       <span id="page-message-text" class="message-text"></span>
@@ -95,6 +231,24 @@
         </div>
         <div id="service-log-terminal" class="terminal-log">
           <div id="service-log-content" class="terminal-log-content"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="proxy-log-dialog" class="host-dialog service-log-dialog">
+      <div class="dialog-panel service-log-panel">
+        <div class="dialog-head">
+          <h2 class="section-title">Proxy Logs</h2>
+          <div class="dialog-head-actions">
+            <label class="forward-auto">
+              <input id="proxy-log-auto-scroll" type="checkbox" class="checkbox" checked />
+              Auto Scroll
+            </label>
+            <button id="close-proxy-log-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
+          </div>
+        </div>
+        <div id="proxy-log-terminal" class="terminal-log">
+          <div id="proxy-log-content" class="terminal-log-content"></div>
         </div>
       </div>
     </dialog>
