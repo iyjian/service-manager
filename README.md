@@ -49,6 +49,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - `active` -> `running`
    - `inactive` or missing unit -> `stopped`
    - while start/stop command is in progress: `starting` / `stopping`
+   - remote service identity is the Service ID within the target SSH account; status, start, stop, and log operations discover an existing `service-manager-*-{serviceId}.service` unit without requiring its embedded Host ID to match the current host configuration.
    - start flow uses `systemd-run --user` and returns as soon as `MainPID` is available; port-listen/forward checks are handled asynchronously by refresh cycle.
    - when service `exposed port` is `0`, app skips port listen checks and disables service forwarding.
 6. Service runtime stores the current `pid`; clicking the service name opens a terminal-like log view.
@@ -91,6 +92,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - empty `Tunnel List` or `Service List` columns remain visible with a compact empty state, so the two-column structure stays stable
 8. Service actions in list: `Start`, `Stop`.
    - `Start` creates a dedicated `systemd-run --user` transient unit per host/service.
+   - if no existing unit matches the Service ID, `Start` keeps the conventional `service-manager-{hostId}-{serviceId}.service` name; existing units are not renamed or migrated.
    - the managed command is launched through the remote account's login shell so user-level PATH/runtime initialization (for example `nvm`, `conda`, shell-managed Node/Yarn installs) is closer to an interactive SSH session.
    - `Stop` uses `systemctl --user stop` on that transient unit; there is no stop-command config and no legacy PID-group fallback.
    - service `Start` / `Stop` / background `Refresh` / `Delete` operations are serialized per host/service key, so a background refresh cannot race a user action and overwrite its transition state.
@@ -307,6 +309,8 @@ journalctl --user -u <unit-name> -n 200 --no-pager
 - SSH command execution now uses `ssh2` directly (not shelling out to system `ssh`).
 - In `Add/Edit Host`, private key auth includes `Private Key` + optional `Passphrase`, and supports `Import` file action.
 - Service lifecycle is managed only through `systemd-run --user`, `systemctl --user`, and `journalctl --user`; there is no fallback to raw background shell processes.
+- A Host ID change does not detach a configured service from its existing unit as long as the Service ID and target SSH account remain unchanged.
+- Multiple units with the same Service ID in one remote user manager are treated as ambiguous and are not mutated automatically.
 - Service commands are executed through the remote account's detected login shell; this improves compatibility with shell-managed runtimes, but absolute binary paths are still the most stable choice for production services.
 - Transient units are intentionally kept inspectable after exit/failure; the app does not use `systemd-run --collect`, so `systemctl --user status` and `journalctl --user -u <unit>` remain useful for debugging startup failures.
 - Manual `Stop` waits for the transient unit to deactivate and clears any temporary failed state caused by the termination signal, so an intentional stop settles back to `stopped` instead of surfacing as an error.
