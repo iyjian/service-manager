@@ -135,7 +135,6 @@ const kubernetesApi: KubernetesApi = {
   getRelatedResources: (request: KubernetesRelatedResourceRequest) =>
     ipcRenderer.invoke('kubernetes:related-resources', request),
   openLogs: (input: KubernetesPodTarget) => ipcRenderer.invoke('kubernetes:open-logs', input),
-  loadOlderLogs: (id: string) => ipcRenderer.invoke('kubernetes:load-older-logs', id),
   setLogFollowing: (id: string, following: boolean) => ipcRenderer.invoke('kubernetes:set-log-following', { id, following }),
   clearLogs: (id: string) => ipcRenderer.invoke('kubernetes:clear-logs', id),
   closeLogs: (id: string) => ipcRenderer.invoke('kubernetes:close-logs', id),

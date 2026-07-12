@@ -487,7 +487,7 @@ test('classifyKubernetesConnectionError recognizes transport, authentication, TL
   assert.equal(classifyKubernetesConnectionError(new Error('unexpected')), 'other');
 });
 
-test('mapKubernetesResourceSummary exposes only display metadata and strips Secret payloads', () => {
+test('mapKubernetesResourceSummary normalizes Date creation timestamps and strips Secret payloads', () => {
   const summary = mapKubernetesResourceSummary('secrets', {
     apiVersion: 'v1',
     kind: 'Secret',
@@ -496,7 +496,7 @@ test('mapKubernetesResourceSummary exposes only display metadata and strips Secr
       name: 'database',
       namespace: 'apps',
       resourceVersion: '12',
-      creationTimestamp: '2026-07-12T00:00:00.000Z',
+      creationTimestamp: new Date('2026-07-12T08:00:00+08:00'),
     },
     type: 'Opaque',
     data: { password: 'c2VjcmV0' },
@@ -513,6 +513,35 @@ test('mapKubernetesResourceSummary exposes only display metadata and strips Secr
     columns: { type: 'Opaque' },
   });
   assert.doesNotMatch(JSON.stringify(summary), /c2VjcmV0|"password":"secret"/);
+});
+
+test('mapKubernetesResourceSummary normalizes valid string creation timestamps to ISO', () => {
+  const summary = mapKubernetesResourceSummary('pods', {
+    metadata: {
+      uid: 'pod-uid',
+      name: 'web',
+      namespace: 'apps',
+      resourceVersion: '13',
+      creationTimestamp: '2026-07-12T08:00:00+08:00',
+    },
+  });
+
+  assert.equal(summary.createdAt, '2026-07-12T00:00:00.000Z');
+});
+
+test('mapKubernetesResourceSummary omits invalid creation timestamps', () => {
+  for (const creationTimestamp of ['not-a-timestamp', new Date('not-a-timestamp')]) {
+    const summary = mapKubernetesResourceSummary('pods', {
+      metadata: {
+        uid: 'pod-uid',
+        name: 'web',
+        resourceVersion: '14',
+        creationTimestamp,
+      },
+    });
+
+    assert.equal(Object.hasOwn(summary, 'createdAt'), false);
+  }
 });
 
 test('mapCustomResourceDefinitions exposes only served Group Version Kind plural and scope', () => {

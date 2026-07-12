@@ -35,8 +35,13 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
     assert.match(document, /active(?:-view| view) Watch/i);
     assert.match(document, /2,000(?:-line| lines?) log/i);
     assert.match(document, /Pod logs.*automatically|automatically.*Pod logs/i);
+    assert.match(document, /Logs.*search.*Follow.*Clear|search.*Follow.*Clear.*Logs/i);
     assert.match(document, /Overview.*single-line|single-line.*Overview/i);
+    assert.match(document, /Age.*creation timestamp|creation timestamp.*Age/i);
+    assert.match(document, /table-header.*sort|sort.*table-header/i);
+    assert.match(document, /Custom Resources.*(?:directly|immediately).*select|select.*(?:directly|immediately).*Custom Resources/i);
     assert.match(document, /terminal.*(?:(?:focus|focused).*(?:visible|view)|(?:visible|view).*(?:focus|focused))/i);
+    assert.match(document, /terminal input.*(?:spaces|whitespace).*Enter|(?:spaces|whitespace).*Enter.*terminal input/i);
     assert.match(document, /ten (?:active )?port forwards|10 (?:active )?port forwards/i);
     assert.match(document, /Secret.*(?:never|not).*persist|Secret.*non-persist/i);
     assert.match(document, /pnpm install.*(?:Kubernetes|xterm)|(?:Kubernetes|xterm).*pnpm install/i);
@@ -132,7 +137,7 @@ test('Kubernetes renderer keeps dynamic resource names text-safe and debounces l
 
   assert.match(page, /SEARCH_DEBOUNCE_MS = 200/);
   assert.match(page, /nameFilter:/);
-  assert.match(page, /Sorted loaded items only/);
+  assert.doesNotMatch(page, /Sorted loaded items only/);
   assert.match(page, /const fields = \[item\.name,/);
   assert.match(page, /cell\.textContent = value/);
   assert.doesNotMatch(page, /innerHTML\s*=\s*[^;]*(?:item|summary)\.(?:name|namespace)/);
@@ -141,6 +146,44 @@ test('Kubernetes renderer keeps dynamic resource names text-safe and debounces l
   assert.match(table, /total \* options\.rowHeight/);
   assert.match(table, /onWindowChange/);
   assert.doesNotMatch(table, /localeCompare/);
+});
+
+test('Kubernetes table sorting is controlled by accessible header icons', async () => {
+  const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
+  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+
+  assert.deepEqual(page.nextKubernetesSort({ column: 'name', direction: 'asc' }, 'name'), {
+    column: 'name',
+    direction: 'desc',
+  });
+  assert.deepEqual(page.nextKubernetesSort({ column: 'name', direction: 'desc' }, 'name'), {
+    column: 'name',
+    direction: 'asc',
+  });
+  assert.deepEqual(page.nextKubernetesSort({ column: 'name', direction: 'desc' }, 'age'), {
+    column: 'age',
+    direction: 'asc',
+  });
+  for (const column of ['name', 'namespace', 'status', 'age']) {
+    assert.match(html, new RegExp(`data-kubernetes-sort="${column}"`));
+  }
+  assert.match(html, /class="kubernetes-sort-icon"/);
+  assert.match(pageSource, /aria-sort/);
+  assert.match(pageSource, /nextKubernetesSort/);
+  assert.match(styles, /\.kubernetes-table-sort\s*\{/);
+  assert.match(styles, /\.kubernetes-sort-icon\s*\{/);
+  assert.doesNotMatch(html, /kubernetes-sort-column|kubernetes-sort-direction|kubernetes-sort-hint|Sorted loaded items only/);
+});
+
+test('Custom Resources opens its discovery select without a redundant resource tab', async () => {
+  const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
+  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+
+  assert.equal(page.categoryUsesResourceTabs('Workloads'), true);
+  assert.equal(page.categoryUsesResourceTabs('Custom Resources'), false);
+  assert.match(html, /id="kubernetes-custom-resource-select"/);
 });
 
 test('Kubernetes virtual table renders a bounded main-process window for ten thousand loaded rows', async () => {
@@ -354,10 +397,19 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const terminal = await readFile(path.join(distRenderer, 'kubernetesTerminal.js'), 'utf8');
+  const preload = await readFile(path.join(__dirname, '..', 'dist', 'main', 'preload.js'), 'utf8');
+  const sharedTypes = await readFile(path.join(__dirname, '..', 'src', 'shared', 'types.ts'), 'utf8');
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
 
   assert.match(html, /id="kubernetes-log-panel"/);
+  const logHeadStart = html.indexOf('<header class="kubernetes-log-head">');
+  const logHead = html.slice(logHeadStart, html.indexOf('</header>', logHeadStart));
+  assert.ok(logHeadStart >= 0);
+  assert.match(logHead, /id="kubernetes-log-search"/);
+  assert.match(logHead, /id="kubernetes-log-follow"/);
+  assert.match(logHead, /id="kubernetes-log-clear"/);
   assert.doesNotMatch(html, /500 initial lines|2,000 retained lines|Search current 2,000-line buffer/);
+  assert.doesNotMatch(html, /kubernetes-log-load-older|Load older 500/);
   assert.doesNotMatch(html, /id="kubernetes-log-open"|>Open logs</i);
   assert.ok(html.indexOf('id="kubernetes-detail-pod-actions"') < html.indexOf('id="kubernetes-log-panel"'));
   assert.match(html, /id="kubernetes-terminal-drawer"/);
@@ -365,7 +417,9 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
   assert.match(html, /id="kubernetes-port-forwards"/);
   assert.match(page, /setLogFollowing/);
-  assert.match(page, /loadOlderLogs/);
+  assert.doesNotMatch(page, /loadOlderLogs/);
+  assert.doesNotMatch(preload, /loadOlderLogs|kubernetes:load-older-logs/);
+  assert.doesNotMatch(sharedTypes, /interface KubernetesLogApi \{[\s\S]*?loadOlderLogs/);
   assert.match(page, /clearLogs/);
   assert.match(page, /closeLogs/);
   assert.match(page, /void this\.openLogsForSelectedContainer\(\)/);

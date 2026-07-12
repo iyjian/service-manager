@@ -48,6 +48,7 @@ import { collectAppMemoryUsage } from './appMemory';
 import type { ProxyExceptionDraft, ProxyMode, ProxyState, ProxyTraffic } from '../shared/types';
 import { KubernetesRuntime } from './kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from './kubernetes/contextPreference';
+import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -1180,7 +1181,7 @@ function registerIpcHandlers(): void {
       if (!isRecord(payload)) throw new Error('Kubernetes terminal input is invalid.');
       return getKubernetesRuntime().writeTerminal(
         validateKubernetesText(payload.id, 'terminal ID'),
-        validateKubernetesText(payload.data, 'terminal input', 65_536)
+        validateKubernetesTerminalInput(payload.data)
       );
     }
   );

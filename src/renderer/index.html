@@ -230,31 +230,34 @@
             Search loaded resources
             <input id="kubernetes-resource-search" class="input" type="search" placeholder="Filter by name" spellcheck="false" />
           </label>
-          <label class="field field-xs kubernetes-sort-field">
-            Sort
-            <select id="kubernetes-sort-column" class="input">
-              <option value="name">Name</option>
-              <option value="namespace">Namespace</option>
-              <option value="status">Status</option>
-              <option value="age">Age</option>
-            </select>
-          </label>
-          <label class="field field-xs kubernetes-sort-direction">
-            Direction
-            <select id="kubernetes-sort-direction" class="input">
-              <option value="asc">Ascending</option>
-              <option value="desc">Descending</option>
-            </select>
-          </label>
-          <span id="kubernetes-sort-hint" class="kubernetes-sort-hint">Sorted loaded items only</span>
         </div>
 
         <div class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list">
-          <div class="kubernetes-table-header" role="row">
-            <span role="columnheader">Name</span>
-            <span role="columnheader">Namespace</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Age</span>
+          <div id="kubernetes-table-header" class="kubernetes-table-header" role="row">
+            <span role="columnheader" aria-sort="ascending">
+              <button type="button" class="kubernetes-table-sort kubernetes-table-sort-active" data-kubernetes-sort="name" data-sort-label="Name" data-direction="asc" aria-label="Sort by Name, currently ascending">
+                <span>Name</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="namespace" data-sort-label="Namespace" aria-label="Sort by Namespace">
+                <span>Namespace</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="status" data-sort-label="Status" aria-label="Sort by Status">
+                <span>Status</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="age" data-sort-label="Age" aria-label="Sort by Age">
+                <span>Age</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
           </div>
           <div id="kubernetes-table-viewport" class="kubernetes-table-viewport" role="rowgroup">
             <div id="kubernetes-table-spacer" class="kubernetes-table-spacer"></div>
@@ -301,13 +304,12 @@
           <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
             <header class="kubernetes-log-head">
               <h3 class="subcard-title">Logs</h3>
+              <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
               <div class="dialog-head-actions">
                 <button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button>
-                <button id="kubernetes-log-load-older" type="button" class="btn btn-secondary btn-sm">Load older 500</button>
                 <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
               </div>
             </header>
-            <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
             <pre id="kubernetes-log-output" class="kubernetes-log-output"></pre>
           </section>
         </section>

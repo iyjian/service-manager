@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   mergeResourcePage,
+  projectLoadedResourceItems,
   projectVirtualWindow,
   resourceQueryKey,
   sanitizeSecretForCache,
@@ -85,6 +86,24 @@ test('mergeResourcePage replaces matching UIDs and preserves first-seen order', 
     summary('c', '1'),
   ]);
   assert.deepEqual(current, [summary('a', '1'), summary('b', '1')]);
+});
+
+test('projectLoadedResourceItems sorts Age by the visible duration semantics', () => {
+  const oldest = { ...summary('oldest', '1'), createdAt: '2026-07-10T00:00:00.000Z' };
+  const newest = { ...summary('newest', '1'), createdAt: '2026-07-12T00:00:00.000Z' };
+  const items = [oldest, newest];
+
+  assert.deepEqual(
+    projectLoadedResourceItems(items, { ...POD_QUERY, sort: { column: 'age', direction: 'asc' } })
+      .map((item) => item.name),
+    ['newest', 'oldest']
+  );
+  assert.deepEqual(
+    projectLoadedResourceItems(items, { ...POD_QUERY, sort: { column: 'age', direction: 'desc' } })
+      .map((item) => item.name),
+    ['oldest', 'newest']
+  );
+  assert.deepEqual(items, [oldest, newest]);
 });
 
 test('projectVirtualWindow renders only a bounded slice of 10,000 rows', () => {

@@ -255,7 +255,6 @@ export interface KubernetesLogState {
 
 /** Renderer-safe contract for one bounded Pod log viewer. */
 export interface KubernetesLogApi {
-  loadOlderLogs(id: string): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): Promise<KubernetesLogState>;
   closeLogs(id: string): Promise<void>;

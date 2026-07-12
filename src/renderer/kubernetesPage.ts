@@ -47,6 +47,12 @@ const VIRTUAL_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 8;
 
 type KubernetesCategory = keyof typeof RESOURCE_CATEGORIES;
+type KubernetesSortColumn = 'name' | 'namespace' | 'status' | 'age';
+
+interface KubernetesSortState {
+  column: KubernetesSortColumn;
+  direction: 'asc' | 'desc';
+}
 
 interface KubernetesPageController {
   show(): void;
@@ -61,7 +67,7 @@ interface DetailBackStack {
   selectedUid: string;
   scrollTop: number;
   search: string;
-  sort: { column: string; direction: 'asc' | 'desc' };
+  sort: KubernetesSortState;
 }
 
 interface ActiveDetail {
@@ -158,6 +164,25 @@ export function shouldCloseNamespaceMenu(
   target: Node | null,
 ): boolean {
   return target !== null && !control.contains(target);
+}
+
+export function nextKubernetesSort(
+  current: KubernetesSortState,
+  column: KubernetesSortColumn,
+): KubernetesSortState {
+  return current.column === column
+    ? { column, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+    : { column, direction: 'asc' };
+}
+
+export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
+  return category !== 'Custom Resources';
+}
+
+function kubernetesSortColumn(value: string | undefined): KubernetesSortColumn | undefined {
+  return value === 'name' || value === 'namespace' || value === 'status' || value === 'age'
+    ? value
+    : undefined;
 }
 
 function sameQuery(left: KubernetesResourceQuery, right: KubernetesResourceQuery): boolean {
@@ -325,9 +350,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly customResourceControl = requireElement<HTMLElement>('#kubernetes-custom-resource-control');
   private readonly customResourceSelect = requireElement<HTMLSelectElement>('#kubernetes-custom-resource-select');
   private readonly searchInput = requireElement<HTMLInputElement>('#kubernetes-resource-search');
-  private readonly sortColumn = requireElement<HTMLSelectElement>('#kubernetes-sort-column');
-  private readonly sortDirection = requireElement<HTMLSelectElement>('#kubernetes-sort-direction');
-  private readonly sortHint = requireElement<HTMLElement>('#kubernetes-sort-hint');
+  private readonly tableHeader = requireElement<HTMLElement>('#kubernetes-table-header');
   private readonly loadedCount = requireElement<HTMLElement>('#kubernetes-loaded-count');
   private readonly tableViewport = requireElement<HTMLDivElement>('#kubernetes-table-viewport');
   private readonly emptyState = requireElement<HTMLElement>('#kubernetes-empty-state');
@@ -353,7 +376,6 @@ class KubernetesPage implements KubernetesPageController {
   private readonly servicePortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-service-port-forward-open');
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
-  private readonly logLoadOlderButton = requireElement<HTMLButtonElement>('#kubernetes-log-load-older');
   private readonly logClearButton = requireElement<HTMLButtonElement>('#kubernetes-log-clear');
   private readonly logSearch = requireElement<HTMLInputElement>('#kubernetes-log-search');
   private readonly logOutput = requireElement<HTMLPreElement>('#kubernetes-log-output');
@@ -372,6 +394,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private category: KubernetesCategory = 'Workloads';
   private resourceKind: KubernetesResourceKind = 'pods';
+  private sort: KubernetesSortState = { column: 'name', direction: 'asc' };
   private customDefinitions: KubernetesCustomResourceDefinition[] = [];
   private customDefinitionsContext: string | undefined;
   private selectedCustomDefinition: KubernetesCustomResourceDefinition | undefined;
@@ -495,8 +518,16 @@ class KubernetesPage implements KubernetesPageController {
       if (shouldCloseNamespaceMenu(this.namespaceControl, target)) this.namespaceMenu.classList.add('hidden');
     });
     this.searchInput.addEventListener('input', () => this.debounceSearch());
-    this.sortColumn.addEventListener('change', () => { void this.activateCurrentList(); });
-    this.sortDirection.addEventListener('change', () => { void this.activateCurrentList(); });
+    this.tableHeader.addEventListener('click', (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest<HTMLButtonElement>('[data-kubernetes-sort]')
+        : null;
+      const column = kubernetesSortColumn(button?.dataset.kubernetesSort);
+      if (!column) return;
+      this.sort = nextKubernetesSort(this.sort, column);
+      this.renderSortHeaders();
+      void this.activateCurrentList();
+    });
     this.customResourceSelect.addEventListener('change', () => this.selectCustomResourceDefinition());
     this.detailBackButton.addEventListener('click', () => { void this.closeDetail(); });
     this.detailCopyButton.addEventListener('click', () => { void this.copyActiveDetail(); });
@@ -511,7 +542,6 @@ class KubernetesPage implements KubernetesPageController {
       void this.openLogsForSelectedContainer();
     });
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
-    this.logLoadOlderButton.addEventListener('click', () => { void this.loadOlderLogs(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
     this.logSearch.addEventListener('input', () => this.renderLogPanel());
     this.terminalOpenButton.addEventListener('click', () => { void this.openTerminal(); });
@@ -523,6 +553,7 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.portForwardCancel.addEventListener('click', () => this.closePortForwardDialog());
     this.portForwardCancelSecondary.addEventListener('click', () => this.closePortForwardDialog());
+    this.renderSortHeaders();
   }
 
   private ensureTerminalDrawer(): void {
@@ -728,17 +759,41 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderResourceTabs(): void {
     this.resourceTabs.replaceChildren();
-    for (const kind of RESOURCE_CATEGORIES[this.category]) {
-      const resourceKind = kind as KubernetesResourceKind;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'kubernetes-resource-tab';
-      button.classList.toggle('kubernetes-tab-active', resourceKind === this.resourceKind);
-      button.textContent = resourceLabel(resourceKind);
-      button.addEventListener('click', () => this.selectResource(resourceKind));
-      this.resourceTabs.appendChild(button);
+    const showTabs = categoryUsesResourceTabs(this.category);
+    this.resourceTabs.classList.toggle('hidden', !showTabs);
+    if (showTabs) {
+      for (const kind of RESOURCE_CATEGORIES[this.category]) {
+        const resourceKind = kind as KubernetesResourceKind;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'kubernetes-resource-tab';
+        button.classList.toggle('kubernetes-tab-active', resourceKind === this.resourceKind);
+        button.textContent = resourceLabel(resourceKind);
+        button.addEventListener('click', () => this.selectResource(resourceKind));
+        this.resourceTabs.appendChild(button);
+      }
     }
     this.renderCustomResourceControl();
+  }
+
+  private renderSortHeaders(): void {
+    const buttons = Array.from(this.tableHeader.querySelectorAll<HTMLButtonElement>('[data-kubernetes-sort]'));
+    for (const button of buttons) {
+      const column = kubernetesSortColumn(button.dataset.kubernetesSort);
+      if (!column) continue;
+      const active = column === this.sort.column;
+      const direction = active ? this.sort.direction : undefined;
+      button.classList.toggle('kubernetes-table-sort-active', active);
+      if (direction) button.dataset.direction = direction;
+      else delete button.dataset.direction;
+      const header = button.closest('[role="columnheader"]') as HTMLElement | null;
+      header?.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none');
+      const label = button.dataset.sortLabel ?? column;
+      button.setAttribute(
+        'aria-label',
+        direction ? `Sort by ${label}, currently ${direction === 'asc' ? 'ascending' : 'descending'}` : `Sort by ${label}`,
+      );
+    }
   }
 
   private renderCustomResourceControl(): void {
@@ -840,7 +895,7 @@ class KubernetesPage implements KubernetesPageController {
         scope: definition.scope,
         namespaceScope: definition.scope === 'cluster' ? { mode: 'all', namespaces: [] } : this.currentScope(),
         ...(this.searchInput.value.trim() ? { nameFilter: this.searchInput.value.trim() } : {}),
-        sort: { column: this.sortColumn.value, direction: this.sortDirection.value === 'desc' ? 'desc' : 'asc' },
+        sort: { ...this.sort },
       };
     }
     const namespaceScope = isClusterScoped(this.resourceKind)
@@ -852,10 +907,7 @@ class KubernetesPage implements KubernetesPageController {
       ...(isClusterScoped(this.resourceKind) ? { scope: 'cluster' as const } : { scope: 'namespaced' as const }),
       namespaceScope,
       ...(this.searchInput.value.trim() ? { nameFilter: this.searchInput.value.trim() } : {}),
-      sort: {
-        column: this.sortColumn.value,
-        direction: this.sortDirection.value === 'desc' ? 'desc' : 'asc',
-      },
+      sort: { ...this.sort },
     };
   }
 
@@ -1008,7 +1060,7 @@ class KubernetesPage implements KubernetesPageController {
     if (!snapshot || !query || !sameQuery(snapshot.query, query)) return;
     this.clearTransientStates();
     this.table?.setWindow(snapshot);
-    this.sortHint.textContent = 'Sorted loaded items only';
+    this.renderSortHeaders();
     this.loadedCount.textContent = snapshot.continueToken
       ? `Loaded ${snapshot.loadedCount} ${resourceLabel(query.kind)} · more available`
       : `Loaded ${snapshot.loadedCount} ${resourceLabel(query.kind)}`;
@@ -1082,10 +1134,7 @@ class KubernetesPage implements KubernetesPageController {
       selectedUid: summary.uid,
       scrollTop: this.tableViewport.scrollTop,
       search: this.searchInput.value,
-      sort: {
-        column: this.sortColumn.value,
-        direction: this.sortDirection.value === 'desc' ? 'desc' : 'asc',
-      },
+      sort: { ...this.sort },
     };
     this.listPage.classList.add('hidden');
     this.detailPage.classList.remove('hidden');
@@ -1127,8 +1176,8 @@ class KubernetesPage implements KubernetesPageController {
     this.detailBackStack = undefined;
     if (!backStack) return;
     this.searchInput.value = backStack.search;
-    this.sortColumn.value = backStack.sort.column;
-    this.sortDirection.value = backStack.sort.direction;
+    this.sort = { ...backStack.sort };
+    this.renderSortHeaders();
     this.renderList();
     window.requestAnimationFrame(() => {
       this.tableViewport.scrollTop = backStack.scrollTop;
@@ -1510,7 +1559,6 @@ class KubernetesPage implements KubernetesPageController {
   private renderLogPanel(): void {
     const log = this.activeLog();
     this.logFollowButton.disabled = !log;
-    this.logLoadOlderButton.disabled = !log?.hasOlder;
     this.logClearButton.disabled = !log;
     this.logFollowButton.textContent = log?.following ? 'Pause Follow' : 'Resume Follow';
     if (!log) {
@@ -1565,18 +1613,6 @@ class KubernetesPage implements KubernetesPageController {
     if (!log) return;
     try {
       const next = await window.kubernetesApi.setLogFollowing(log.sessionId, !log.following);
-      this.logsByContainer.set(next.container, next);
-      this.renderLogPanel();
-    } catch (error) {
-      setMessage(toErrorMessage(error), 'error');
-    }
-  }
-
-  private async loadOlderLogs(): Promise<void> {
-    const log = this.activeLog();
-    if (!log) return;
-    try {
-      const next = await window.kubernetesApi.loadOlderLogs(log.sessionId);
       this.logsByContainer.set(next.container, next);
       this.renderLogPanel();
     } catch (error) {

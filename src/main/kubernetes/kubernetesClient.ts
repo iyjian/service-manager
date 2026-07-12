@@ -314,6 +314,17 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function timestampValue(value: unknown): string | undefined {
+  const timestamp = value instanceof Date
+    ? value
+    : typeof value === 'string'
+      ? new Date(value)
+      : undefined;
+  return timestamp && !Number.isNaN(timestamp.getTime())
+    ? timestamp.toISOString()
+    : undefined;
+}
+
 function numericValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -406,6 +417,7 @@ export function mapKubernetesResourceSummary(
   kind: KubernetesResourceKind | 'events',
   value: Record<string, unknown>
 ): KubernetesResourceSummary {
+  const createdAt = timestampValue(objectValue(value, 'metadata').creationTimestamp);
   const source = kind === 'secrets' ? sanitizeSecretForCache(value) : value;
   const metadata = objectValue(source, 'metadata');
   const uid = stringValue(metadata.uid);
@@ -432,7 +444,7 @@ export function mapKubernetesResourceSummary(
     name,
     ...(stringValue(metadata.namespace) ? { namespace: stringValue(metadata.namespace) } : {}),
     resourceVersion,
-    ...(stringValue(metadata.creationTimestamp) ? { createdAt: stringValue(metadata.creationTimestamp) } : {}),
+    ...(createdAt ? { createdAt } : {}),
     ...(status ? { status } : {}),
     columns,
   };

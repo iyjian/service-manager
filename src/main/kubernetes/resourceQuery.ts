@@ -169,7 +169,10 @@ export function projectLoadedResourceItems(
 
   const { column, direction } = query.sort;
   return projected.sort((left, right) => {
-    const result = valueForSort(left, column).localeCompare(valueForSort(right, column));
+    const lexical = valueForSort(left, column).localeCompare(valueForSort(right, column));
+    // A newer creation timestamp represents a smaller visible Age. Reverse
+    // timestamp chronology so the arrow describes the displayed duration.
+    const result = column === 'age' ? -lexical : lexical;
     return direction === 'asc' ? result : -result;
   });
 }
