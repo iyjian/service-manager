@@ -46,6 +46,8 @@ export type KubeconfigCredentialPreflight =
 function contextSignature(context: KubernetesContextInfo): string {
   return JSON.stringify([
     context.name,
+    context.contextName,
+    context.displayName,
     context.clusterName,
     context.userName,
     context.supported,
@@ -65,6 +67,8 @@ export function classifyKubeconfig(document: KubeconfigDocument): KubernetesCont
 
     return {
       name,
+      contextName: name,
+      displayName: name,
       clusterName: context.cluster,
       userName: context.user,
       supported: unsupportedReason === undefined,

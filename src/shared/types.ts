@@ -204,7 +204,12 @@ export type KubernetesConnectionState =
   | 'unsupported-auth';
 
 export interface KubernetesContextInfo {
+  /** Stable renderer-safe selection identity. It is not the source Context name. */
   name: string;
+  /** Original Context name inside its source kubeconfig. */
+  contextName: string;
+  /** Text-only selector label, qualified by filename only when names collide. */
+  displayName: string;
   clusterName: string;
   userName: string;
   supported: boolean;

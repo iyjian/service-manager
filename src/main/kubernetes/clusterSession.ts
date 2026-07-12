@@ -101,6 +101,8 @@ export function classifyKubernetesConnectionError(error: unknown): KubernetesCon
 function copyContext(context: KubernetesContextInfo): KubernetesContextInfo {
   return {
     name: context.name,
+    contextName: context.contextName,
+    displayName: context.displayName,
     clusterName: context.clusterName,
     userName: context.userName,
     supported: context.supported,
