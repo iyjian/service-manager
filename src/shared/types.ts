@@ -182,6 +182,231 @@ export interface ServiceLogsQuery {
   lineLimit?: number;
 }
 
+export type KubernetesResourceKind =
+  | 'pods'
+  | 'deployments'
+  | 'statefulsets'
+  | 'services'
+  | 'ingresses'
+  | 'configmaps'
+  | 'secrets'
+  | 'persistentvolumeclaims'
+  | 'nodes'
+  | 'namespaces'
+  | 'custom-resources';
+
+export type KubernetesConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+  | 'unsupported-auth';
+
+export interface KubernetesContextInfo {
+  name: string;
+  clusterName: string;
+  userName: string;
+  supported: boolean;
+  unsupportedReason?: 'exec-auth' | 'missing-auth' | 'unsupported-auth';
+  tlsVerificationDisabled: boolean;
+}
+
+export interface KubernetesNamespaceScope {
+  mode: 'all' | 'selected';
+  namespaces: string[];
+}
+
+export interface KubernetesState {
+  contexts: KubernetesContextInfo[];
+  selectedContext?: string;
+  connection: KubernetesConnectionState;
+  error?: string;
+  kubeconfigReloadAvailable: boolean;
+  /** The active renderer selection; it contains names only, never credentials. */
+  namespaceScope?: KubernetesNamespaceScope;
+}
+
+export interface KubernetesApiBase {
+  getState(): Promise<KubernetesState>;
+  selectContext(name: string): Promise<KubernetesState>;
+  /** Explicit read-only reconnection for a disconnected selected Context. */
+  reconnect(): Promise<KubernetesState>;
+  reloadKubeconfig(): Promise<KubernetesState>;
+  deactivatePage(): Promise<void>;
+  onStateChanged(listener: (state: KubernetesState) => void): () => void;
+}
+
+/** Display-safe state only. Kubernetes stream transports remain in main. */
+export interface KubernetesLogState {
+  sessionId: string;
+  podName: string;
+  namespace: string;
+  container: string;
+  lines: string[];
+  following: boolean;
+  hasOlder: boolean;
+}
+
+/** Renderer-safe contract for one bounded Pod log viewer. */
+export interface KubernetesLogApi {
+  loadOlderLogs(id: string): Promise<KubernetesLogState>;
+  setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
+  clearLogs(id: string): Promise<KubernetesLogState>;
+  closeLogs(id: string): Promise<void>;
+}
+
+/** Renderer-safe resource query. It is validated again in the main process. */
+export interface KubernetesResourceQuery {
+  context: string;
+  kind: KubernetesResourceKind;
+  apiVersion?: string;
+  plural?: string;
+  scope?: 'namespaced' | 'cluster';
+  namespaceScope: KubernetesNamespaceScope;
+  labelSelector?: string;
+  fieldSelector?: string;
+  nameFilter?: string;
+  sort?: {
+    column: string;
+    direction: 'asc' | 'desc';
+  };
+}
+
+export interface KubernetesResourceSummary {
+  uid: string;
+  name: string;
+  namespace?: string;
+  resourceVersion: string;
+  createdAt?: string;
+  status?: string;
+  columns: Record<string, string>;
+}
+
+/** Safe CRD metadata used only to construct a read-only CustomObjects query. */
+export interface KubernetesCustomResourceDefinition {
+  group: string;
+  version: string;
+  kind: string;
+  plural: string;
+  scope: 'namespaced' | 'cluster';
+}
+
+/** A renderer request for one bounded virtual-table range. */
+export interface KubernetesResourceWindowRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Small display-safe relationships loaded only after a detail page expands
+ * them. These summaries never contain raw endpoint addresses or credentials.
+ */
+export interface KubernetesRelatedResources {
+  pods?: KubernetesResourceSummary[];
+  endpoints?: KubernetesResourceSummary[];
+  endpointSlices?: KubernetesResourceSummary[];
+}
+
+/** A narrow, read-only detail relationship request. */
+export interface KubernetesRelatedResourceRequest {
+  kind: 'service' | 'deployment' | 'statefulset';
+  namespace: string;
+  name: string;
+  selector?: string;
+}
+
+export interface KubernetesListSnapshot {
+  query: KubernetesResourceQuery;
+  /** Absolute loaded-only projection indexes; end is exclusive. */
+  start: number;
+  end: number;
+  /** Total rows in the main-process loaded-only projection. */
+  total: number;
+  /** Always bounded to the requested virtual range, never the full list. */
+  items: KubernetesResourceSummary[];
+  loadedCount: number;
+  continueToken?: string;
+  resourceVersion: string;
+  watchActive: boolean;
+  permissionDenied?: boolean;
+  error?: string;
+}
+
+export interface KubernetesPodTarget {
+  namespace: string;
+  podName: string;
+  container: string;
+}
+
+export interface KubernetesPortForwardInput {
+  targetKind: 'pod' | 'service';
+  namespace: string;
+  targetName: string;
+  remotePort: number;
+  localPort?: number;
+}
+
+/** Display-safe terminal session metadata. */
+export interface KubernetesTerminalState {
+  id: string;
+  podName: string;
+  namespace: string;
+  container: string;
+  shell: string;
+  state: 'connecting' | 'open' | 'closed' | 'error';
+  error?: string;
+}
+
+/**
+ * One bounded terminal-output chunk. It is delivered only while the owning
+ * page-scoped terminal session remains active and is never cached.
+ */
+export interface KubernetesTerminalOutput {
+  id: string;
+  data: string;
+}
+
+export interface KubernetesPortForwardState {
+  id: string;
+  targetKind: 'pod' | 'service';
+  targetName: string;
+  namespace: string;
+  remotePort: number;
+  localPort: number;
+  state: 'starting' | 'running' | 'stopped' | 'error';
+  error?: string;
+}
+
+/**
+ * The complete renderer bridge for Kubernetes. Every input is revalidated by
+ * the main-process IPC handler; this contract intentionally contains no
+ * kubeconfig bytes, credentials, raw API transports, or WebSocket handles.
+ */
+export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
+  setNamespaceScope(scope: KubernetesNamespaceScope): Promise<KubernetesState>;
+  listResources(query: KubernetesResourceQuery): Promise<KubernetesListSnapshot>;
+  getResourceWindow(query: KubernetesResourceQuery, range: KubernetesResourceWindowRange): Promise<KubernetesListSnapshot>;
+  loadMoreResources(query: KubernetesResourceQuery): Promise<KubernetesListSnapshot>;
+  listCustomResourceDefinitions(): Promise<KubernetesCustomResourceDefinition[]>;
+  getResourceDetail(query: KubernetesResourceQuery, name: string, namespace?: string): Promise<Record<string, unknown>>;
+  getResourceEvents(uid: string, namespace?: string): Promise<KubernetesResourceSummary[]>;
+  getRelatedResources(request: KubernetesRelatedResourceRequest): Promise<KubernetesRelatedResources>;
+  openLogs(input: KubernetesPodTarget): Promise<KubernetesLogState>;
+  openTerminal(input: KubernetesPodTarget): Promise<KubernetesTerminalState>;
+  writeTerminal(id: string, data: string): Promise<void>;
+  resizeTerminal(id: string, cols: number, rows: number): Promise<void>;
+  closeTerminal(id: string): Promise<void>;
+  startPortForward(input: KubernetesPortForwardInput): Promise<KubernetesPortForwardState>;
+  stopPortForward(id: string): Promise<void>;
+  listPortForwards(): Promise<KubernetesPortForwardState[]>;
+  onListChanged(listener: (snapshot: KubernetesListSnapshot) => void): () => void;
+  onLogChanged(listener: (state: KubernetesLogState) => void): () => void;
+  onTerminalChanged(listener: (state: KubernetesTerminalState) => void): () => void;
+  onTerminalOutput(listener: (output: KubernetesTerminalOutput) => void): () => void;
+  onPortForwardChanged(listener: (state: KubernetesPortForwardState) => void): () => void;
+}
+
 export type ProxyMode = 'direct' | 'rule' | 'global';
 export type ProxyRunStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
 export type ProxyCoreStatus = 'not-installed' | 'downloading' | 'installed';

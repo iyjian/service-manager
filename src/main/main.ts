@@ -13,6 +13,17 @@ import type {
   ServiceStatus,
   TunnelStatusChange,
   UpdateState,
+  KubernetesLogState,
+  KubernetesNamespaceScope,
+  KubernetesPodTarget,
+  KubernetesPortForwardInput,
+  KubernetesRelatedResourceRequest,
+  KubernetesResourceQuery,
+  KubernetesState,
+  KubernetesTerminalState,
+  KubernetesTerminalOutput,
+  KubernetesListSnapshot,
+  KubernetesPortForwardState,
 } from '../shared/types';
 import { ServiceStore } from './store';
 import { checkServiceStatus, getServiceLogs, setServiceRuntimeDiagnostics, startService, stopService } from './serviceRuntime';
@@ -35,6 +46,8 @@ import { ProxyRuntime } from './proxy/proxyRuntime';
 import { scheduleProxyAutoStart } from './proxy/proxyAutoStart';
 import { collectAppMemoryUsage } from './appMemory';
 import type { ProxyExceptionDraft, ProxyMode, ProxyState, ProxyTraffic } from '../shared/types';
+import { KubernetesRuntime } from './kubernetes/kubernetesRuntime';
+import { FileKubernetesContextPreference } from './kubernetes/contextPreference';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -80,11 +93,43 @@ const IPC_CHANNELS = {
   proxyGetLogs: 'proxy:get-logs',
   proxyStateChanged: 'proxy:state',
   proxyTrafficChanged: 'proxy:traffic',
+  kubernetesGetState: 'kubernetes:get-state',
+  kubernetesSelectContext: 'kubernetes:select-context',
+  kubernetesReconnect: 'kubernetes:reconnect',
+  kubernetesReloadKubeconfig: 'kubernetes:reload-kubeconfig',
+  kubernetesSetNamespaceScope: 'kubernetes:set-namespace-scope',
+  kubernetesListResources: 'kubernetes:list-resources',
+  kubernetesGetResourceWindow: 'kubernetes:get-resource-window',
+  kubernetesLoadMoreResources: 'kubernetes:load-more-resources',
+  kubernetesListCustomResourceDefinitions: 'kubernetes:list-custom-resource-definitions',
+  kubernetesGetResourceDetail: 'kubernetes:get-resource-detail',
+  kubernetesGetResourceEvents: 'kubernetes:get-resource-events',
+  kubernetesGetRelatedResources: 'kubernetes:related-resources',
+  kubernetesOpenLogs: 'kubernetes:open-logs',
+  kubernetesLoadOlderLogs: 'kubernetes:load-older-logs',
+  kubernetesSetLogFollowing: 'kubernetes:set-log-following',
+  kubernetesClearLogs: 'kubernetes:clear-logs',
+  kubernetesCloseLogs: 'kubernetes:close-logs',
+  kubernetesOpenTerminal: 'kubernetes:open-terminal',
+  kubernetesWriteTerminal: 'kubernetes:write-terminal',
+  kubernetesResizeTerminal: 'kubernetes:resize-terminal',
+  kubernetesCloseTerminal: 'kubernetes:close-terminal',
+  kubernetesStartPortForward: 'kubernetes:start-port-forward',
+  kubernetesStopPortForward: 'kubernetes:stop-port-forward',
+  kubernetesListPortForwards: 'kubernetes:list-port-forwards',
+  kubernetesDeactivatePage: 'kubernetes:deactivate-page',
+  kubernetesStateChanged: 'kubernetes:state',
+  kubernetesListChanged: 'kubernetes:list',
+  kubernetesLogChanged: 'kubernetes:log',
+  kubernetesTerminalChanged: 'kubernetes:terminal',
+  kubernetesTerminalOutput: 'kubernetes:terminal-output',
+  kubernetesPortForwardChanged: 'kubernetes:port-forward',
 } as const;
 
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
+let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
 let allowQuitAfterRuntimeShutdown = false;
 let quitShutdownPromise: Promise<void> | null = null;
@@ -149,6 +194,139 @@ function validateProxyMixedPort(value: unknown): number {
     throw new Error('Mixed port must be an integer between 1 and 65535.');
   }
   return value;
+}
+
+const KUBERNETES_RESOURCE_KINDS = new Set([
+  'pods', 'deployments', 'statefulsets', 'services', 'ingresses', 'configmaps',
+  'secrets', 'persistentvolumeclaims', 'nodes', 'namespaces', 'custom-resources',
+]);
+const KUBERNETES_CUSTOM_RESOURCE_PART = /^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/;
+const KUBERNETES_CUSTOM_RESOURCE_VERSION = /^v[0-9]+(?:alpha[0-9]+|beta[0-9]+)?$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateKubernetesText(value: unknown, label: string, maximum = 16_384): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > maximum) {
+    throw new Error(`Kubernetes ${label} is required and must be within the allowed size.`);
+  }
+  return value;
+}
+
+function validateKubernetesNamespaceScope(value: unknown): KubernetesNamespaceScope {
+  if (!isRecord(value) || (value.mode !== 'all' && value.mode !== 'selected') || !Array.isArray(value.namespaces)) {
+    throw new Error('Kubernetes Namespace scope is invalid.');
+  }
+  if (value.namespaces.some((namespace) => typeof namespace !== 'string' || namespace.length > 253)) {
+    throw new Error('Kubernetes Namespace names must be text within the allowed size.');
+  }
+  return { mode: value.mode, namespaces: [...value.namespaces] as string[] };
+}
+
+function validateKubernetesQuery(value: unknown): KubernetesResourceQuery {
+  if (!isRecord(value) || !KUBERNETES_RESOURCE_KINDS.has(value.kind as string)) {
+    throw new Error('Kubernetes resource query is invalid.');
+  }
+  const query: KubernetesResourceQuery = {
+    context: validateKubernetesText(value.context, 'Context name'),
+    kind: value.kind as KubernetesResourceQuery['kind'],
+    namespaceScope: validateKubernetesNamespaceScope(value.namespaceScope),
+  };
+  for (const field of ['apiVersion', 'plural', 'labelSelector', 'fieldSelector', 'nameFilter'] as const) {
+    if (value[field] !== undefined) {
+      query[field] = validateKubernetesText(value[field], field);
+    }
+  }
+  if (value.scope !== undefined) {
+    if (value.scope !== 'namespaced' && value.scope !== 'cluster') {
+      throw new Error('Kubernetes resource scope is invalid.');
+    }
+    query.scope = value.scope;
+  }
+  if (value.sort !== undefined) {
+    if (!isRecord(value.sort) || (value.sort.direction !== 'asc' && value.sort.direction !== 'desc')) {
+      throw new Error('Kubernetes resource sort is invalid.');
+    }
+    query.sort = { column: validateKubernetesText(value.sort.column, 'sort column'), direction: value.sort.direction };
+  }
+  if (query.kind === 'custom-resources') {
+    const apiVersion = validateKubernetesText(query.apiVersion, 'custom resource API version');
+    const plural = validateKubernetesText(query.plural, 'custom resource plural');
+    const [group, version, ...extra] = apiVersion.split('/');
+    if (!group || !version || extra.length > 0 || !KUBERNETES_CUSTOM_RESOURCE_PART.test(group)
+      || !KUBERNETES_CUSTOM_RESOURCE_VERSION.test(version) || !KUBERNETES_CUSTOM_RESOURCE_PART.test(plural)) {
+      throw new Error('Kubernetes custom resource query is invalid.');
+    }
+  }
+  return query;
+}
+
+function validateKubernetesWindowRange(value: unknown): { start: number; end: number } {
+  if (!isRecord(value)) {
+    throw new Error('Kubernetes resource window is invalid.');
+  }
+  const start = value.start;
+  const end = value.end;
+  if (typeof start !== 'number' || typeof end !== 'number'
+    || !Number.isInteger(start) || !Number.isInteger(end)
+    || start < 0 || end < start || end - start > 256) {
+    throw new Error('Kubernetes resource window is invalid.');
+  }
+  return { start, end };
+}
+
+function validateKubernetesPodTarget(value: unknown): KubernetesPodTarget {
+  if (!isRecord(value)) {
+    throw new Error('Kubernetes Pod target is invalid.');
+  }
+  return {
+    namespace: validateKubernetesText(value.namespace, 'Namespace'),
+    podName: validateKubernetesText(value.podName, 'Pod name'),
+    container: validateKubernetesText(value.container, 'container'),
+  };
+}
+
+function validateKubernetesPortForward(value: unknown): KubernetesPortForwardInput {
+  if (!isRecord(value) || (value.targetKind !== 'pod' && value.targetKind !== 'service')) {
+    throw new Error('Kubernetes port forward is invalid.');
+  }
+  if (typeof value.remotePort !== 'number' || !Number.isInteger(value.remotePort)
+    || value.remotePort < 1 || value.remotePort > 65_535) {
+    throw new Error('Kubernetes remote port must be an integer between 1 and 65535.');
+  }
+  const remotePort = value.remotePort;
+  const input: KubernetesPortForwardInput = {
+    targetKind: value.targetKind,
+    namespace: validateKubernetesText(value.namespace, 'Namespace'),
+    targetName: validateKubernetesText(value.targetName, 'port forward target name'),
+    remotePort,
+  };
+  if (value.localPort !== undefined) {
+    if (typeof value.localPort !== 'number' || !Number.isInteger(value.localPort) || value.localPort < 0 || value.localPort > 65_535) {
+      throw new Error('Kubernetes local port must be an integer between 0 and 65535.');
+    }
+    input.localPort = value.localPort;
+  }
+  return input;
+}
+
+function validateKubernetesRelatedResourceRequest(value: unknown): KubernetesRelatedResourceRequest {
+  if (!isRecord(value) || (value.kind !== 'service' && value.kind !== 'deployment' && value.kind !== 'statefulset')) {
+    throw new Error('Kubernetes related resource request is invalid.');
+  }
+  const request: KubernetesRelatedResourceRequest = {
+    kind: value.kind,
+    namespace: validateKubernetesText(value.namespace, 'Namespace'),
+    name: validateKubernetesText(value.name, 'resource name'),
+  };
+  if (value.selector !== undefined) {
+    request.selector = validateKubernetesText(value.selector, 'Workload selector');
+  }
+  if ((request.kind === 'deployment' || request.kind === 'statefulset') && !request.selector) {
+    throw new Error('Kubernetes Workload selector is required.');
+  }
+  return request;
 }
 
 function createWindow(): BrowserWindow {
@@ -315,6 +493,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     Promise.resolve().then(() => portForwardManager.stopAll()),
     Promise.resolve().then(() => tunnelManager.stopAll()),
     Promise.resolve().then(() => proxyRuntime?.shutdown()),
+    Promise.resolve().then(() => kubernetesRuntime?.shutdown()),
   ]);
   for (const result of shutdownResults) {
     if (result.status === 'rejected') {
@@ -858,6 +1037,13 @@ function registerIpcHandlers(): void {
     return proxyRuntime;
   };
 
+  const getKubernetesRuntime = (): KubernetesRuntime => {
+    if (!kubernetesRuntime) {
+      throw new Error('Kubernetes runtime is not initialized.');
+    }
+    return kubernetesRuntime;
+  };
+
   ipcMain.handle(IPC_CHANNELS.appMemoryUsage, async () => {
     const proxyState = await getProxyRuntime().getState();
     return collectAppMemoryUsage({
@@ -909,6 +1095,116 @@ function registerIpcHandlers(): void {
     }
   );
   ipcMain.handle(IPC_CHANNELS.proxyGetLogs, async () => getProxyRuntime().getLogs());
+
+  ipcMain.handle(IPC_CHANNELS.kubernetesGetState, async () => getKubernetesRuntime().getState());
+  ipcMain.handle(IPC_CHANNELS.kubernetesSelectContext, async (_event, name: unknown) =>
+    getKubernetesRuntime().selectContext(validateKubernetesText(name, 'Context name'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesReconnect, async () => getKubernetesRuntime().reconnect());
+  ipcMain.handle(IPC_CHANNELS.kubernetesReloadKubeconfig, async () => getKubernetesRuntime().reloadKubeconfig());
+  ipcMain.handle(IPC_CHANNELS.kubernetesSetNamespaceScope, async (_event, scope: unknown) =>
+    getKubernetesRuntime().setNamespaceScope(validateKubernetesNamespaceScope(scope))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesListResources, async (_event, query: unknown) =>
+    getKubernetesRuntime().listResources(validateKubernetesQuery(query))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesGetResourceWindow, async (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Kubernetes resource window request is invalid.');
+    return getKubernetesRuntime().getResourceWindow(
+      validateKubernetesQuery(payload.query),
+      validateKubernetesWindowRange(payload.range)
+    );
+  });
+  ipcMain.handle(IPC_CHANNELS.kubernetesLoadMoreResources, async (_event, query: unknown) =>
+    getKubernetesRuntime().loadMoreResources(validateKubernetesQuery(query))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesListCustomResourceDefinitions, async () =>
+    getKubernetesRuntime().listCustomResourceDefinitions()
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesGetResourceDetail,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload)) throw new Error('Kubernetes resource detail request is invalid.');
+      return getKubernetesRuntime().getResourceDetail(
+        validateKubernetesQuery(payload.query),
+        validateKubernetesText(payload.name, 'resource name'),
+        payload.namespace === undefined ? undefined : validateKubernetesText(payload.namespace, 'Namespace')
+      );
+    }
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesGetResourceEvents,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload)) throw new Error('Kubernetes Events request is invalid.');
+      return getKubernetesRuntime().getResourceEvents(
+        validateKubernetesText(payload.uid, 'resource UID'),
+        payload.namespace === undefined ? undefined : validateKubernetesText(payload.namespace, 'Namespace')
+      );
+    }
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesGetRelatedResources,
+    async (_event, request: unknown) => getKubernetesRuntime().getRelatedResources(
+      validateKubernetesRelatedResourceRequest(request)
+    )
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesOpenLogs, async (_event, input: unknown) =>
+    getKubernetesRuntime().openLogs(validateKubernetesPodTarget(input))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesLoadOlderLogs, async (_event, id: unknown) =>
+    getKubernetesRuntime().loadOlderLogs(validateKubernetesText(id, 'log session ID'))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesSetLogFollowing,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload) || typeof payload.following !== 'boolean') throw new Error('Kubernetes log following request is invalid.');
+      return getKubernetesRuntime().setLogFollowing(validateKubernetesText(payload.id, 'log session ID'), payload.following);
+    }
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesClearLogs, async (_event, id: unknown) =>
+    getKubernetesRuntime().clearLogs(validateKubernetesText(id, 'log session ID'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesCloseLogs, async (_event, id: unknown) =>
+    getKubernetesRuntime().closeLogs(validateKubernetesText(id, 'log session ID'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesOpenTerminal, async (_event, input: unknown) =>
+    getKubernetesRuntime().openTerminal(validateKubernetesPodTarget(input))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesWriteTerminal,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload)) throw new Error('Kubernetes terminal input is invalid.');
+      return getKubernetesRuntime().writeTerminal(
+        validateKubernetesText(payload.id, 'terminal ID'),
+        validateKubernetesText(payload.data, 'terminal input', 65_536)
+      );
+    }
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesResizeTerminal,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload) || typeof payload.cols !== 'number' || !Number.isInteger(payload.cols) || payload.cols < 1
+        || typeof payload.rows !== 'number' || !Number.isInteger(payload.rows) || payload.rows < 1) {
+        throw new Error('Kubernetes terminal dimensions are invalid.');
+      }
+      return getKubernetesRuntime().resizeTerminal(
+        validateKubernetesText(payload.id, 'terminal ID'),
+        payload.cols,
+        payload.rows
+      );
+    }
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesCloseTerminal, async (_event, id: unknown) =>
+    getKubernetesRuntime().closeTerminal(validateKubernetesText(id, 'terminal ID'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesStartPortForward, async (_event, input: unknown) =>
+    getKubernetesRuntime().startPortForward(validateKubernetesPortForward(input))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesStopPortForward, async (_event, id: unknown) =>
+    getKubernetesRuntime().stopPortForward(validateKubernetesText(id, 'port forward ID'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesListPortForwards, async () => getKubernetesRuntime().listPortForwards());
+  ipcMain.handle(IPC_CHANNELS.kubernetesDeactivatePage, async () => getKubernetesRuntime().deactivatePage());
 }
 
 function wireProxyStateBroadcast(): void {
@@ -917,6 +1213,27 @@ function wireProxyStateBroadcast(): void {
   });
   proxyRuntime?.on('traffic-changed', (traffic: ProxyTraffic | null) => {
     broadcast(IPC_CHANNELS.proxyTrafficChanged, traffic);
+  });
+}
+
+function wireKubernetesBroadcast(): void {
+  kubernetesRuntime?.onStateChanged((state: KubernetesState) => {
+    broadcast(IPC_CHANNELS.kubernetesStateChanged, state);
+  });
+  kubernetesRuntime?.onListChanged((snapshot: KubernetesListSnapshot) => {
+    broadcast(IPC_CHANNELS.kubernetesListChanged, snapshot);
+  });
+  kubernetesRuntime?.onLogChanged((state: KubernetesLogState) => {
+    broadcast(IPC_CHANNELS.kubernetesLogChanged, state);
+  });
+  kubernetesRuntime?.onTerminalChanged((state: KubernetesTerminalState) => {
+    broadcast(IPC_CHANNELS.kubernetesTerminalChanged, state);
+  });
+  kubernetesRuntime?.onTerminalOutput((output: KubernetesTerminalOutput) => {
+    broadcast(IPC_CHANNELS.kubernetesTerminalOutput, output);
+  });
+  kubernetesRuntime?.onPortForwardChanged((state: KubernetesPortForwardState) => {
+    broadcast(IPC_CHANNELS.kubernetesPortForwardChanged, state);
   });
 }
 
@@ -974,11 +1291,22 @@ app.whenReady()
     proxyRuntime = initializedProxyRuntime;
     await initializedProxyRuntime.init();
 
+    const initializedKubernetesRuntime = new KubernetesRuntime({
+      kubeconfigPath: path.join(app.getPath('home'), '.kube', 'config'),
+      contextPreference: new FileKubernetesContextPreference(
+        path.join(app.getPath('userData'), 'kubernetes-context.json')
+      ),
+      onDiagnostic: (scope, error, context) => logRuntimeError(scope, error, context),
+    });
+    kubernetesRuntime = initializedKubernetesRuntime;
+    await initializedKubernetesRuntime.init();
+
     applyAppIcon();
     registerIpcHandlers();
     wireForwardStatusBroadcast();
     wireUpdaterBroadcast();
     wireProxyStateBroadcast();
+    wireKubernetesBroadcast();
     applyAppMenu();
     for (const host of hosts) {
       await autoStartHostRules(host);

@@ -6,6 +6,7 @@
     <title>Service Manager</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./tailwind.css" />
+    <link rel="stylesheet" href="./xterm.css" />
   </head>
   <body>
     <div class="app-layout">
@@ -181,6 +182,157 @@
         </section>
       </div>
     </main>
+
+    <main class="app-shell hidden" data-page="kubernetes">
+      <header class="page-head">
+        <div class="page-head-main">
+          <div class="page-brand">
+            <div class="page-brand-copy">
+              <div class="page-title-row">
+                <h1 class="page-title">Kubernetes</h1>
+                <span id="kubernetes-connection" class="kubernetes-connection kubernetes-connection-idle">idle</span>
+                <span id="kubernetes-tls-warning" class="kubernetes-tls-warning hidden"></span>
+              </div>
+            </div>
+          </div>
+          <div class="page-actions">
+            <button id="kubernetes-reconnect" type="button" class="btn btn-secondary btn-sm hidden">Reconnect</button>
+            <button id="kubernetes-reload-kubeconfig" type="button" class="btn btn-secondary btn-sm hidden">Reload kubeconfig</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="kubernetes-page" aria-label="Kubernetes resources">
+        <div id="kubernetes-list-page">
+        <div class="kubernetes-toolbar">
+          <label class="field field-xs kubernetes-context-field">
+            Context
+            <select id="kubernetes-context" class="input" aria-label="Kubernetes Context"></select>
+          </label>
+          <div class="kubernetes-namespace-control">
+            <span class="kubernetes-control-label">Namespace</span>
+            <button id="kubernetes-namespace-toggle" type="button" class="btn btn-secondary btn-sm">All Namespaces</button>
+            <div id="kubernetes-namespace-tags" class="kubernetes-namespace-tags" aria-live="polite"></div>
+            <div id="kubernetes-namespace-menu" class="kubernetes-namespace-menu hidden" aria-label="Namespaces"></div>
+            <div class="kubernetes-namespace-add-row">
+              <input id="kubernetes-namespace-add" class="input" type="text" placeholder="Add Namespace" spellcheck="false" />
+              <button id="kubernetes-namespace-add-btn" type="button" class="btn btn-secondary btn-sm">Add</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="kubernetes-category-tabs" class="kubernetes-category-tabs" role="tablist" aria-label="Resource categories"></div>
+        <div id="kubernetes-resource-tabs" class="kubernetes-resource-tabs" role="tablist" aria-label="Resource types"></div>
+        <label id="kubernetes-custom-resource-control" class="field field-xs kubernetes-custom-resource-control hidden">
+          <span>Custom Resource</span>
+          <select id="kubernetes-custom-resource-select" class="input" aria-label="Custom Resource Definition">
+            <option value="">Select a discovered Custom Resource</option>
+          </select>
+        </label>
+
+        <div class="kubernetes-list-toolbar">
+          <label class="field field-xs kubernetes-search-field">
+            Search loaded resources
+            <input id="kubernetes-resource-search" class="input" type="search" placeholder="Filter by name" spellcheck="false" />
+          </label>
+          <label class="field field-xs kubernetes-sort-field">
+            Sort
+            <select id="kubernetes-sort-column" class="input">
+              <option value="name">Name</option>
+              <option value="namespace">Namespace</option>
+              <option value="status">Status</option>
+              <option value="age">Age</option>
+            </select>
+          </label>
+          <label class="field field-xs kubernetes-sort-direction">
+            Direction
+            <select id="kubernetes-sort-direction" class="input">
+              <option value="asc">Ascending</option>
+              <option value="desc">Descending</option>
+            </select>
+          </label>
+          <span id="kubernetes-sort-hint" class="kubernetes-sort-hint">Sorted loaded items only</span>
+        </div>
+
+        <div class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list">
+          <div class="kubernetes-table-header" role="row">
+            <span role="columnheader">Name</span>
+            <span role="columnheader">Namespace</span>
+            <span role="columnheader">Status</span>
+            <span role="columnheader">Age</span>
+          </div>
+          <div id="kubernetes-table-viewport" class="kubernetes-table-viewport" role="rowgroup">
+            <div id="kubernetes-table-spacer" class="kubernetes-table-spacer"></div>
+            <div id="kubernetes-table-rows" class="kubernetes-table-rows"></div>
+          </div>
+        </div>
+        <div id="kubernetes-empty-state" class="kubernetes-empty-state hidden"></div>
+        <div id="kubernetes-no-permission" class="kubernetes-state kubernetes-no-permission hidden">No permission</div>
+        <div id="kubernetes-error-state" class="kubernetes-state kubernetes-error-state hidden"></div>
+        <footer id="kubernetes-loaded-count" class="kubernetes-loaded-count" aria-live="polite">Choose a Kubernetes Context to load resources.</footer>
+        </div>
+
+        <section id="kubernetes-detail-page" class="kubernetes-detail-page hidden" aria-label="Kubernetes resource detail">
+          <header class="kubernetes-detail-head">
+            <button id="kubernetes-detail-back" type="button" class="btn btn-secondary btn-sm">Back to list</button>
+            <div class="kubernetes-detail-title-wrap">
+              <h2 id="kubernetes-detail-title" class="section-title">Resource detail</h2>
+              <p id="kubernetes-detail-subtitle" class="kubernetes-detail-subtitle"></p>
+            </div>
+            <button id="kubernetes-detail-copy" type="button" class="btn btn-secondary btn-sm">Copy</button>
+          </header>
+          <div id="kubernetes-detail-tabs" class="kubernetes-detail-tabs" role="tablist" aria-label="Resource detail sections">
+            <button type="button" class="kubernetes-detail-tab kubernetes-detail-tab-active" data-detail-tab="overview">Overview</button>
+            <button type="button" class="kubernetes-detail-tab" data-detail-tab="yaml">YAML</button>
+            <button type="button" class="kubernetes-detail-tab" data-detail-tab="events">Events</button>
+          </div>
+          <section id="kubernetes-detail-overview" class="kubernetes-detail-content" aria-label="Overview"></section>
+          <section id="kubernetes-detail-yaml-section" class="kubernetes-detail-content hidden" aria-label="YAML">
+            <pre id="kubernetes-detail-yaml" class="kubernetes-detail-code"></pre>
+          </section>
+          <section id="kubernetes-detail-events" class="kubernetes-detail-content hidden" aria-label="Events"></section>
+          <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
+          <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
+            <header class="kubernetes-log-head">
+              <div>
+                <h3 class="subcard-title">Logs</h3>
+                <p class="kubernetes-detail-subtitle">500 initial lines · 2,000 retained lines</p>
+              </div>
+              <div class="dialog-head-actions">
+                <button id="kubernetes-log-open" type="button" class="btn btn-secondary btn-sm">Open logs</button>
+                <button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button>
+                <button id="kubernetes-log-load-older" type="button" class="btn btn-secondary btn-sm">Load older 500</button>
+                <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
+              </div>
+            </header>
+            <label class="field field-xs kubernetes-log-search-field">
+              Search current 2,000-line buffer
+              <input id="kubernetes-log-search" class="input" type="search" placeholder="Find in current log buffer" spellcheck="false" />
+            </label>
+            <pre id="kubernetes-log-output" class="kubernetes-log-output"></pre>
+          </section>
+          <section id="kubernetes-detail-pod-actions" class="kubernetes-detail-actions hidden" aria-label="Pod actions">
+            <label class="field field-xs kubernetes-container-field">
+              Container
+              <select id="kubernetes-container-select" class="input"></select>
+            </label>
+            <button id="kubernetes-terminal-open" type="button" class="btn btn-secondary btn-sm">Open Terminal</button>
+            <button id="kubernetes-port-forward-open" type="button" class="btn btn-secondary btn-sm">Port Forward</button>
+          </section>
+          <section id="kubernetes-detail-service-actions" class="kubernetes-detail-actions hidden" aria-label="Service actions">
+            <button id="kubernetes-service-port-forward-open" type="button" class="btn btn-secondary btn-sm">Port Forward</button>
+          </section>
+        </section>
+
+        <section id="kubernetes-port-forwards" class="kubernetes-port-forwards" aria-label="Port Forwards">
+          <header class="subcard-head">
+            <h3 class="subcard-title">Port Forwards</h3>
+          </header>
+          <div id="kubernetes-port-forward-list" class="kubernetes-port-forward-list" data-empty="No active port forwards."></div>
+        </section>
+        <aside id="kubernetes-terminal-drawer" class="kubernetes-terminal-drawer hidden" aria-label="Pod terminal sessions"></aside>
+      </section>
+    </main>
       </div>
     </div>
 
@@ -259,6 +411,29 @@
           <div id="proxy-log-content" class="terminal-log-content"></div>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="kubernetes-port-forward-dialog" class="host-dialog kubernetes-port-forward-dialog">
+      <form id="kubernetes-port-forward-form" class="dialog-panel form-stack" method="dialog">
+        <div class="dialog-head">
+          <h2 id="kubernetes-port-forward-title" class="section-title">Port Forward</h2>
+          <button id="kubernetes-port-forward-cancel" type="button" class="icon-btn" aria-label="Close">×</button>
+        </div>
+        <p id="kubernetes-port-forward-target" class="kubernetes-detail-subtitle"></p>
+        <label class="field field-xs">
+          Remote Port
+          <input id="kubernetes-port-forward-remote-port" class="input" type="number" min="1" max="65535" required />
+        </label>
+        <label class="field field-xs">
+          Local Port (optional)
+          <input id="kubernetes-port-forward-local-port" class="input" type="number" min="1" max="65535" placeholder="Auto allocate" />
+        </label>
+        <p id="kubernetes-port-forward-error" class="kubernetes-port-forward-error hidden" aria-live="polite"></p>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Start Port Forward</button>
+          <button id="kubernetes-port-forward-cancel-secondary" type="button" class="btn btn-secondary">Cancel</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="host-dialog" class="host-dialog">
@@ -397,6 +572,9 @@
       </div>
     </dialog>
 
+    <script src="./js-yaml.umd.min.js"></script>
+    <script src="./xterm.js"></script>
+    <script src="./xterm-fit.js"></script>
     <script type="module" src="./renderer.js"></script>
   </body>
 </html>

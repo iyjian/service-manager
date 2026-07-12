@@ -1,6 +1,20 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   HostDraft,
+  KubernetesApi,
+  KubernetesListSnapshot,
+  KubernetesLogState,
+  KubernetesNamespaceScope,
+  KubernetesPodTarget,
+  KubernetesPortForwardInput,
+  KubernetesPortForwardState,
+  KubernetesRelatedResourceRequest,
+  KubernetesResourceQuery,
+  KubernetesResourceWindowRange,
+  KubernetesResourceSummary,
+  KubernetesState,
+  KubernetesTerminalState,
+  KubernetesTerminalOutput,
   ProxyApi,
   ProxyExceptionDraft,
   ProxyMode,
@@ -102,5 +116,51 @@ const proxyApi: ProxyApi = {
   },
 };
 
+const kubernetesApi: KubernetesApi = {
+  getState: () => ipcRenderer.invoke('kubernetes:get-state'),
+  selectContext: (name: string) => ipcRenderer.invoke('kubernetes:select-context', name),
+  reconnect: () => ipcRenderer.invoke('kubernetes:reconnect'),
+  reloadKubeconfig: () => ipcRenderer.invoke('kubernetes:reload-kubeconfig'),
+  setNamespaceScope: (scope: KubernetesNamespaceScope) => ipcRenderer.invoke('kubernetes:set-namespace-scope', scope),
+  listResources: (query: KubernetesResourceQuery) => ipcRenderer.invoke('kubernetes:list-resources', query),
+  getResourceWindow: (query: KubernetesResourceQuery, range: KubernetesResourceWindowRange) =>
+    ipcRenderer.invoke('kubernetes:get-resource-window', { query, range }),
+  loadMoreResources: (query: KubernetesResourceQuery) => ipcRenderer.invoke('kubernetes:load-more-resources', query),
+  listCustomResourceDefinitions: () => ipcRenderer.invoke('kubernetes:list-custom-resource-definitions'),
+  getResourceDetail: (query: KubernetesResourceQuery, name: string, namespace?: string) =>
+    ipcRenderer.invoke('kubernetes:get-resource-detail', { query, name, ...(namespace ? { namespace } : {}) }),
+  getResourceEvents: (uid: string, namespace?: string) =>
+    ipcRenderer.invoke('kubernetes:get-resource-events', { uid, ...(namespace ? { namespace } : {}) }),
+  getRelatedResources: (request: KubernetesRelatedResourceRequest) =>
+    ipcRenderer.invoke('kubernetes:related-resources', request),
+  openLogs: (input: KubernetesPodTarget) => ipcRenderer.invoke('kubernetes:open-logs', input),
+  loadOlderLogs: (id: string) => ipcRenderer.invoke('kubernetes:load-older-logs', id),
+  setLogFollowing: (id: string, following: boolean) => ipcRenderer.invoke('kubernetes:set-log-following', { id, following }),
+  clearLogs: (id: string) => ipcRenderer.invoke('kubernetes:clear-logs', id),
+  closeLogs: (id: string) => ipcRenderer.invoke('kubernetes:close-logs', id),
+  openTerminal: (input: KubernetesPodTarget) => ipcRenderer.invoke('kubernetes:open-terminal', input),
+  writeTerminal: (id: string, data: string) => ipcRenderer.invoke('kubernetes:write-terminal', { id, data }),
+  resizeTerminal: (id: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('kubernetes:resize-terminal', { id, cols, rows }),
+  closeTerminal: (id: string) => ipcRenderer.invoke('kubernetes:close-terminal', id),
+  startPortForward: (input: KubernetesPortForwardInput) => ipcRenderer.invoke('kubernetes:start-port-forward', input),
+  stopPortForward: (id: string) => ipcRenderer.invoke('kubernetes:stop-port-forward', id),
+  listPortForwards: () => ipcRenderer.invoke('kubernetes:list-port-forwards'),
+  deactivatePage: () => ipcRenderer.invoke('kubernetes:deactivate-page'),
+  onStateChanged: (listener: (state: KubernetesState) => void) => subscribe('kubernetes:state', listener),
+  onListChanged: (listener: (snapshot: KubernetesListSnapshot) => void) => subscribe('kubernetes:list', listener),
+  onLogChanged: (listener: (state: KubernetesLogState) => void) => subscribe('kubernetes:log', listener),
+  onTerminalChanged: (listener: (state: KubernetesTerminalState) => void) => subscribe('kubernetes:terminal', listener),
+  onTerminalOutput: (listener: (output: KubernetesTerminalOutput) => void) => subscribe('kubernetes:terminal-output', listener),
+  onPortForwardChanged: (listener: (state: KubernetesPortForwardState) => void) => subscribe('kubernetes:port-forward', listener),
+};
+
+function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
+  const wrapped = (_event: Electron.IpcRendererEvent, value: T): void => listener(value);
+  ipcRenderer.on(channel, wrapped);
+  return () => ipcRenderer.removeListener(channel, wrapped);
+}
+
 contextBridge.exposeInMainWorld('serviceApi', api);
 contextBridge.exposeInMainWorld('proxyApi', proxyApi);
+contextBridge.exposeInMainWorld('kubernetesApi', kubernetesApi);

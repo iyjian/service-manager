@@ -137,6 +137,20 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
     - Proxy controls, Strategy Groups, and Custom Rules share one white content container; the Host page keeps the navigation logo only, without a duplicate page logo in its internal header
     - terminal `Ctrl+C` (`SIGINT`) and `SIGTERM` share the normal orderly shutdown path: Service Manager stops owned runtime resources, waits for Mihomo to exit and release its Mixed Port, flushes runtime diagnostics, and then exits without clearing the saved running intent
 13. The Hosts header shows total local Service Manager Memory in GB. It aggregates every Electron `app.getAppMetrics()` process and local Mihomo RSS while running, refreshes every five seconds only while Hosts is active, and replaces the former host/tunnel/service count summary. Remote SSH services are excluded, along with system-wide memory.
+14. Kubernetes is a local-kubeconfig, strictly read-only cluster browser for Kubernetes 1.28+:
+    - it reads only the local `~/.kube/config` and presents every Context in a selector; one active Context is connected at a time and the last choice is restored from a user-data preference containing only its Context name, never credentials
+    - authentication supports either a token or a complete matching client-certificate/client-key pair, supplied as inline data or matching file paths. `exec` and `auth-provider` authentication are not supported and are rejected before Kubernetes client construction or execution; such Contexts stay visible with an actionable unsupported-authentication state
+    - kubeconfig TLS settings are respected. A Context using `insecure-skip-tls-verify` continuously displays `TLS verification disabled`; a kubeconfig file change prompts for explicit `Reload kubeconfig` confirmation before new credentials or Context metadata are used
+    - resource APIs are strictly read-only: there are no create, delete, patch, Apply, Scale, Restart, or Pod lifecycle controls
+    - the page groups Pods, Deployments, StatefulSets, Services, Ingresses, ConfigMaps, Secrets, PVCs, Nodes, Namespaces, and dynamically discovered Custom Resources under Workloads, Network, Configuration, Storage, Cluster, and Custom Resources categories. Custom Resource Definitions are discovered on demand through the read-only ApiextensionsV1 API; choose a Group/Version/Kind before any instances are listed
+    - Namespace scope supports multiple selected Namespaces or the mutually-exclusive `All Namespaces` scope. Nodes and Namespaces remain cluster-scoped regardless of this selection
+    - a resource type without RBAC read permission remains visible as `No permission`; that local error does not disconnect the Context or block other resource types
+    - each list uses 200-item paging and virtual scrolling. Kubernetes lists are cached only in memory for a short period, while the active-view Watch belongs only to the currently displayed resource type and Namespace scope; the renderer requests only its current bounded virtual range rather than receiving every loaded row on list or Watch updates. This avoids subscribing to every resource in every Namespace and keeps large Pod lists responsive
+    - resource details are full-page, read-only views with Overview, YAML, and on-demand Events. Deployment/StatefulSet related Pods and Service Endpoints/EndpointSlices load only after expansion and never add a Watch
+    - Pod logs load 500 initial lines, follow by default, and keep a 2,000-line log cap per viewer. Log streams and terminal sessions close when leaving the Kubernetes page, switching/disconnecting the Context, or exiting the application
+    - the global terminal drawer can hold multiple Pod sessions and tries `/bin/sh`, then `ash`, then `bash`. Pod and Service forwards can use an automatic or selected local port; at most ten active port forwards are allowed. Forwards survive a detail-page close, but stop on Context switch, disconnect, or application exit
+    - Secret list caches remove `data` and `stringData`. Decoded Secret detail values exist only in the active viewer and Secret data never persists to settings, caches, logs, diagnostics, or disk
+    - a transport disconnect (including an unexpectedly closed Watch stream) closes Watches, log/terminal streams, and forwards; the current resource page reconnects with bounded exponential backoff and reloads after success, but forwards are never recreated automatically. A supported disconnected Context also exposes a manual `Reconnect` action; it only reconnects and reloads the active read-only view
 
 ## Tech Stack
 
@@ -145,6 +159,8 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - Tailwind CSS renderer component/utilities layer (`tailwind.css`, preflight disabled)
 - `ssh2` (SSH connection and remote command execution)
 - `asn1` (explicit dependency required by ssh2 stack in this project)
+- `@kubernetes/client-node` (main-process read-only Kubernetes REST, Watch, log, exec, and port-forward client)
+- `@xterm/xterm` and `@xterm/addon-fit` (Kubernetes terminal drawer)
 - Base renderer CSS for local fonts, CSS variables, and terminal ANSI log colors
 - Local JSON persistence in Electron userData
 
@@ -164,14 +180,25 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/proxy/proxyExceptions.ts`: Custom Rule validation, normalization, migration, and target-aware Mihomo rule generation
 - `src/main/proxy/proxyGroups.ts`: pure conversion, selection validation, and saved-selection compatibility helpers for Mihomo runtime groups
 - `src/main/appMemory.ts`: local Electron and Mihomo working-set collection for the Hosts header Memory total
+- `src/main/kubernetes/kubeconfigStore.ts`: local kubeconfig classification, safe Context metadata, Namespace normalization, and reload detection
+- `src/main/kubernetes/contextPreference.ts`: durable Context-name-only user-data preference; no kubeconfig credentials or resources persist here
+- `src/main/kubernetes/kubernetesClient.ts`: main-process-only Kubernetes client adapter for read/list/watch/detail/events, on-demand CRD discovery, logs, Pod exec, port forwards, and on-demand related-resource reads
+- `src/main/kubernetes/clusterSession.ts`: one active Context connection, categorized reconnect behavior, and ordered resource disposal
+- `src/main/kubernetes/resourceQuery.ts` / `src/main/kubernetes/resourceCache.ts`: normalized query keys, loaded-only projection, virtual-window primitives, and bounded in-memory request/cache deduplication
+- `src/main/kubernetes/resourceCoordinator.ts`: 200-item active-view LIST paging, shared Watch lifecycle, resourceVersion reconciliation, and 410 relist recovery
+- `src/main/kubernetes/podInteractions.ts`: bounded logs, terminal shell fallback/session lifecycle, and ten-forward ownership
+- `src/main/kubernetes/kubernetesRuntime.ts`: renderer-safe Kubernetes lifecycle facade, Context-preference restore, bounded resource-window IPC, and resource interactions
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
+- `src/renderer/kubernetesPage.ts`: Kubernetes Context/scope controls, category lists, full-page details, text-safe browser-YAML rendering/copy, on-demand relations, logs, and forwards UI
+- `src/renderer/kubernetesVirtualTable.ts`: fixed-row virtual scrolling and request-animation-frame bounded range requests
+- `src/renderer/kubernetesTerminal.ts`: global xterm terminal drawer and session bridge
 - `src/renderer/tailwind.css`: primary renderer visual layer built with Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering helpers
 - `src/renderer/status.ts`: shared renderer status formatting and action-state helpers
 - `tailwind.config.cjs`: Tailwind content/theme configuration; preflight is disabled to avoid global reset drift
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm and `js-yaml` browser assets
 - `src/shared/types.ts`: shared type contracts
 - `tests/*.test.js`: Node built-in test runner coverage for extracted main-process pure/runtime helpers
 - `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build
@@ -183,6 +210,8 @@ Install dependencies manually (as requested):
 
 1. `pnpm install`
 2. `pnpm dev`
+
+When Kubernetes/xterm dependency versions change, update the manifest and have the user run `pnpm install` before building or running the app. Do not install dependencies automatically.
 
 Build & run workflow:
 

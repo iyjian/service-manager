@@ -54,6 +54,7 @@ test('nav module registers pages and persists the active page', async () => {
   const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
   assert.match(renderer, /from ['"]\.\/nav\.js['"]/);
   assert.match(renderer, /from ['"]\.\/proxyPage\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/kubernetesPage\.js['"]/);
   assert.match(renderer, /initNav\('hosts'\)/);
 });
 

@@ -15,8 +15,10 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 
 - Keep the app consistent in English UI tone, modal host editing, grouped host lists, and `tsc` build-to-`dist` workflow.
 - Use `ssh2` for SSH connections and remote command execution; do not shell out to system `ssh`.
+- Use `@kubernetes/client-node` for Kubernetes operations; do not shell out to `kubectl` or another system command.
 - Keep `asn1` explicitly declared as a dependency.
 - Do not install dependencies yourself. If dependencies are needed, stop and ask the user to run `pnpm install`.
+- When Kubernetes/xterm dependency versions change, update the manifest and require the user to run `pnpm install` before build or runtime work resumes.
 - Important changes must update both `README.md` and `AGENTS.md` when they affect features, architecture, runtime behavior, command flow, data model, limits, or developer workflow.
 - Prefer incremental changes with tests.
 
@@ -40,14 +42,26 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/proxy/proxyExceptions.ts`: Custom Rule validation, normalization, migration, and target-aware Mihomo rule generation.
 - `src/main/proxy/proxyGroups.ts`: pure Mihomo runtime group conversion, manual-selector validation, and saved-selection compatibility helpers.
 - `src/main/appMemory.ts`: local Electron and Mihomo working-set collection for the Hosts header Memory total.
+- `src/main/kubernetes/kubeconfigStore.ts`: safe local kubeconfig Context/auth/TLS classification, Namespace-scope normalization, and file-reload detection.
+- `src/main/kubernetes/contextPreference.ts`: durable user-data Context-name preference only; it never stores kubeconfig credentials or resource data.
+- `src/main/kubernetes/kubernetesClient.ts`: main-process Kubernetes REST, CRD discovery, Watch, log, exec, port-forward, and on-demand relation adapter.
+- `src/main/kubernetes/clusterSession.ts`: one active Context session, categorized reconnect/retry, and ordered owned-resource disposal.
+- `src/main/kubernetes/resourceQuery.ts`: stable resource keys, safe resource summaries, loaded-only projection, and virtual-window primitives.
+- `src/main/kubernetes/resourceCache.ts`: two-minute bounded in-memory LRU and in-flight request deduplication.
+- `src/main/kubernetes/resourceCoordinator.ts`: 200-item active-view LIST paging, shared Watch lifecycle, resourceVersion reconciliation, and 410 relist recovery.
+- `src/main/kubernetes/podInteractions.ts`: 2,000-line bounded logs, terminal shell fallback/session ownership, and ten-forward lifecycle.
+- `src/main/kubernetes/kubernetesRuntime.ts`: display-safe facade composing kubeconfig, persisted Context preference, session, resources, and Pod interactions for IPC.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
+- `src/renderer/kubernetesPage.ts`: Context/Namespace controls, category tables, full-page details, text-safe browser-YAML rendering/copy, Events, on-demand relations, logs, and forward UI.
+- `src/renderer/kubernetesVirtualTable.ts`: fixed-row virtual scrolling with request-animation-frame range requests; it never owns the complete loaded resource array.
+- `src/renderer/kubernetesTerminal.ts`: global xterm terminal drawer and terminal session bridge.
 - `src/renderer/tailwind.css`: primary renderer visual layer using Tailwind `@layer components` and `@apply`; generated output is `dist/renderer/tailwind.css`.
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers.
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering.
 - `src/renderer/status.ts`: renderer status formatting and action-state helpers.
 - `tailwind.config.cjs`: Tailwind content/theme configuration with preflight disabled to avoid global reset drift.
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper.
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper.
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm and `js-yaml` browser assets.
 - `src/shared/types.ts`: shared IPC/data contracts.
 - `tests/*.test.js`: Node built-in tests against compiled `dist` output.
 
@@ -86,6 +100,24 @@ Local proxy:
 - If a subscription refresh removes a group or candidate, skip its saved selection without preventing proxy startup.
 - Persist Custom Rules in `ProxySettings.customRules` and restore them after reopen. Each rule contains Type, Target (`PROXY` / `DIRECT`), and Value. Support exactly `DOMAIN`, `DOMAIN-SUFFIX`, `DOMAIN-KEYWORD`, `IP-CIDR`, `IP-CIDR6`, `SRC-IP-CIDR`, `GEOIP`, `DST-PORT`, and `SRC-PORT`.
 - A `DIRECT` Custom Rule emits a direct rule. A `PROXY` Custom Rule dynamically resolves to the subscription primary selector, or the app-created primary selector for synthesized subscriptions; it skips if no selector exists. Custom Rules run before subscription/synthesized rules. legacy Direct Exceptions migrate to `DIRECT` custom rules, and subsequent settings writes use only `customRules`.
+
+Kubernetes:
+
+- Support Kubernetes 1.28+ through the Kubernetes tab. It reads only local `~/.kube/config`; one active Context is connected at a time, and the saved user-data Context preference contains only a Context name, never credentials.
+- Support either kubeconfig token authentication or a complete matching client-certificate/client-key pair, supplied as inline data or matching file paths. Detect `exec` and `auth-provider` authentication as not supported; reject them before Kubernetes client construction or execution, and leave the Context visible with an actionable unsupported-auth state.
+- Honor `insecure-skip-tls-verify` but display a persistent `TLS verification disabled` warning. Watch kubeconfig changes and require explicit reload confirmation before applying any changed Context or credential data.
+- Kubernetes resource APIs are strictly read-only. Do not add create, delete, patch, edit, Apply, Scale, Restart, or Pod lifecycle controls.
+- Categories are Workloads (Pods, Deployments, StatefulSets), Network (Services, Ingresses), Configuration (ConfigMaps, Secrets), Storage (PVC), Cluster (Nodes, Namespaces), and dynamically discovered Custom Resources. Discover CRDs only when that category is active, through read-only ApiextensionsV1 API; select a Group/Version/Kind before listing its instances.
+- Namespace scope accepts multiple selected Namespaces or mutually-exclusive `All Namespaces`. All Namespaces uses one active scope-wide Watch for the current resource type only; Nodes and Namespaces remain cluster-scoped.
+- Each resource query key includes Context, group/version/kind, Namespace scope, and server-side label/field selectors. Identical in-flight requests are deduplicated. Initial and continuation requests use 200-item paging; inactive query/cache entries are in-memory only, bounded by LRU, and expire after two minutes.
+- Lists must use virtual scrolling. Search and local sort apply only to loaded items in the main process after a 200 ms debounce; the renderer requests/coalesces bounded current virtual windows and never receives or clones a complete loaded collection on a Watch/list update.
+- Only the current resource page owns an active-view Watch. Leaving the resource type/Kubernetes page stops its Watch; Context switch, disconnect, and application shutdown close Watch transports, logs, terminal sessions, and port forwards. A 410/expired Watch relists the active query before restart; another Watch ERROR, including a client-node `done(null)` stream closure, stops that Watch, reports local 401/403 as `No permission`, and routes a recoverable transport failure through Context reconnect.
+- A resource-level RBAC 401/403 is a local `No permission` state and never marks the entire Context unavailable. Transport failures retry with bounded exponential backoff, reload the active resource page after reconnect, and never recreate forwards automatically. A supported disconnected Context exposes a manual read-only `Reconnect` action; it reconnects and restores only the active view.
+- Details are full-page, read-only Overview/YAML/Events views. Events, Service Endpoints/EndpointSlices, and Workload selector-matched Pods are on-demand reads only and never create a Watch.
+- Pod logs start with 500 lines, follow by default, and retain at most 2,000-line log entries per viewer. The log buffer, all Pod terminal sessions, and their streams are disposed on page leave, Context switch, disconnect, and shutdown.
+- The global terminal drawer supports multiple sessions and tries `/bin/sh`, then `ash`, then `bash`; it exposes no shell credentials to the renderer beyond display-safe output/events.
+- Pod and Service port forwarding supports an auto-selected or manually chosen local port, with at most ten active port forwards. A forward survives detail close but stops on manual stop, Context switch, disconnect, or app shutdown; no unrelated process is terminated for a port conflict.
+- Secret list summaries strip `data` and `stringData`. Decoded Secret detail exists only in the active viewer and Secret data never persists to settings, caches, runtime logs, diagnostics, or disk.
 
 Forwarding rules:
 
@@ -141,6 +173,10 @@ Logs:
 - Proxy Strategy Groups use compact per-group sections with a current selection and safe text-only rendering of dynamic group and candidate names.
 - Custom Rules use text-safe custom-rule rendering for all dynamic rule values and actions.
 - Proxy controls, Strategy Groups, and Custom Rules must share one white Proxy content container that remains responsive on narrow windows.
+- The Kubernetes tab follows the existing white content-container style: Context selector, TLS/disconnect state, selected Namespace scope, category tabs, and virtual resource tables. Resource details are full-page and preserve the originating list's loaded pages, filters, sort, and scroll position on return.
+- Kubernetes dynamic values, including resource names, labels, YAML, Events, logs, and terminal output, must use DOM nodes and `textContent`; never insert Kubernetes-derived values with `innerHTML`.
+- Kubernetes YAML uses the copied local `js-yaml` browser asset. It renders through `textContent`, and Copy writes the same YAML text. Decoded Secret YAML remains only in the active detail DOM and is cleared when that detail closes or changes.
+- Kubernetes terminals belong in the global Kubernetes drawer. Leaving the Kubernetes tab stops Watches, logs, and terminal sessions, while explicit port forwards remain until their Context lifecycle ends.
 - The Host page must retain the outer navigation logo but use no-duplicate-Host-logo behavior in its internal header.
 - Section header icons must be local inline SVGs with semantic shapes and enough visual weight to match their titles; the tunnel section should use the filled tunnel glyph, and the service section should use the filled process-grid glyph.
 - Empty tunnel/service columns should keep the two-column layout stable.
@@ -153,6 +189,8 @@ Logs:
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
 - Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
+- Kubeconfig bytes, tokens, client certificates/keys, client transport handles, and terminal/port-forward credentials stay in the main process and never cross renderer IPC.
+- Kubernetes Secret `data`/`stringData` must be absent from list/cache/diagnostic/settings data. Decode only for the active resource-detail viewer, clear it when that viewer closes or changes, and never log it.
 - Dialog open/close paths must be idempotent.
 - Missing remote `systemd --user` support must fail explicitly with setup guidance; never silently switch to an unmanaged process model.
 
@@ -161,6 +199,7 @@ Logs:
 - Run `pnpm test` after behavioral or architecture changes.
 - `pnpm test` must build first, then run `node --test tests/*.test.js`.
 - Add `node:test` coverage for extracted pure logic, runtime orchestration helpers, import/export behavior, and command-building logic.
+- Kubernetes changes need coverage for safe kubeconfig classification, query/cache deduplication, 200-item paging, virtual scrolling, Watch cleanup/410 recovery, logs/terminals/forwards, Secret non-persistence, local RBAC failure, and renderer-safe IPC.
 - No extra test framework should be introduced unless there is a clear need and the user installs it.
 
 ## Remote Host Documentation

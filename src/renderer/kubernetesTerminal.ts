@@ -1,0 +1,142 @@
+import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
+import type { Terminal as XtermTerminal } from '@xterm/xterm';
+import type { KubernetesTerminalState } from '../shared/types';
+
+type XtermConstructor = new (options?: ConstructorParameters<typeof XtermTerminal>[0]) => XtermTerminal;
+type FitAddonConstructor = new () => XtermFitAddon;
+
+interface XtermGlobals {
+  Terminal?: XtermConstructor;
+  FitAddon?: { FitAddon?: FitAddonConstructor };
+}
+
+interface TerminalSessionView {
+  host: HTMLElement;
+  terminal: XtermTerminal;
+  fit: XtermFitAddon;
+  resize: () => void;
+}
+
+export interface KubernetesTerminalDrawer {
+  open(state: KubernetesTerminalState): void;
+  write(id: string, data: string): void;
+  close(id: string): void;
+  dispose(): void;
+}
+
+function xtermGlobals(): XtermGlobals {
+  return window as unknown as XtermGlobals;
+}
+
+function terminalRuntime(): { Terminal: XtermConstructor; FitAddon: FitAddonConstructor } | undefined {
+  const globals = xtermGlobals();
+  const Terminal = globals.Terminal;
+  const FitAddon = globals.FitAddon?.FitAddon;
+  return Terminal && FitAddon ? { Terminal, FitAddon } : undefined;
+}
+
+function sessionTitle(state: KubernetesTerminalState): string {
+  return `${state.namespace}/${state.podName} · ${state.container}`;
+}
+
+/**
+ * The xterm renderer is intentionally owned by this small UI boundary. Raw
+ * output is passed to xterm only through `terminal.write`, never HTML.
+ */
+export function createKubernetesTerminalDrawer(options: {
+  root: HTMLElement;
+  onInput: (id: string, data: string) => Promise<void>;
+  onResize: (id: string, cols: number, rows: number) => Promise<void>;
+  onClose: (id: string) => Promise<void>;
+}): KubernetesTerminalDrawer {
+  const sessions = new Map<string, TerminalSessionView>();
+  const finalizedIds = new Set<string>();
+
+  const removeSession = (id: string, notify: boolean): void => {
+    const session = sessions.get(id);
+    if (!session) return;
+    sessions.delete(id);
+    window.removeEventListener('resize', session.resize);
+    session.terminal.dispose();
+    session.host.remove();
+    if (sessions.size === 0) options.root.classList.add('hidden');
+    if (notify) void options.onClose(id).catch(() => undefined);
+  };
+
+  const open = (state: KubernetesTerminalState): void => {
+    if (state.state === 'closed' || state.state === 'error') {
+      finalizedIds.add(state.id);
+      removeSession(state.id, false);
+      return;
+    }
+    if (finalizedIds.has(state.id) || sessions.has(state.id)) return;
+
+    const runtime = terminalRuntime();
+    options.root.classList.remove('hidden');
+    const session = document.createElement('section');
+    session.className = 'kubernetes-terminal-session';
+    const header = document.createElement('header');
+    header.className = 'kubernetes-terminal-session-head';
+    const title = document.createElement('span');
+    title.textContent = sessionTitle(state);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'icon-btn';
+    closeButton.setAttribute('aria-label', `Close terminal ${sessionTitle(state)}`);
+    closeButton.textContent = '×';
+    header.append(title, closeButton);
+    const host = document.createElement('div');
+    host.className = 'kubernetes-terminal-host';
+    session.append(header, host);
+    options.root.appendChild(session);
+
+    if (!runtime) {
+      const unavailable = document.createElement('p');
+      unavailable.className = 'kubernetes-terminal-unavailable';
+      unavailable.textContent = 'Terminal renderer is unavailable.';
+      host.appendChild(unavailable);
+      closeButton.addEventListener('click', () => removeSession(state.id, true));
+      return;
+    }
+
+    const terminal = new runtime.Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      theme: { background: '#18181b', foreground: '#f4f4f5' },
+    });
+    const fit = new runtime.FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(host);
+    const resize = (): void => {
+      fit.fit();
+      if (terminal.cols > 0 && terminal.rows > 0) {
+        void options.onResize(state.id, terminal.cols, terminal.rows).catch(() => undefined);
+      }
+    };
+    terminal.onData((data) => {
+      void options.onInput(state.id, data).catch(() => undefined);
+    });
+    window.addEventListener('resize', resize);
+    sessions.set(state.id, { host: session, terminal, fit, resize });
+    closeButton.addEventListener('click', () => removeSession(state.id, true));
+    window.requestAnimationFrame(resize);
+  };
+
+  return {
+    open,
+    write(id: string, data: string): void {
+      const terminal = sessions.get(id)?.terminal;
+      if (terminal && data) terminal.write(data);
+    },
+    close(id: string): void {
+      removeSession(id, true);
+    },
+    dispose(): void {
+      for (const id of [...sessions.keys()]) removeSession(id, true);
+      options.root.replaceChildren();
+      options.root.classList.add('hidden');
+    },
+  };
+}

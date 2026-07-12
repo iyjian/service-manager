@@ -81,6 +81,9 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "adm-zip": "^0.6.0",
     "asn1": "^0.2.6",
     "electron-updater": "^6.6.2",

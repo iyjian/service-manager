@@ -11,6 +11,24 @@ test('compiled renderer uses browser-resolvable module specifiers', async () => 
   assert.doesNotMatch(renderer, /from ['"]\.\/(?:html|status)['"]/);
 });
 
+test('compiled Kubernetes bridge exposes only typed renderer-safe channels', async () => {
+  const dist = path.join(__dirname, '..', 'dist');
+  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+
+  assert.match(preload, /const kubernetesApi =/);
+  assert.match(preload, /kubernetes:get-state/);
+  assert.match(preload, /kubernetes:reconnect/);
+  assert.match(preload, /kubernetes:state/);
+  assert.match(preload, /onTerminalOutput/);
+  assert.match(preload, /kubernetes:terminal-output/);
+  assert.match(main, /kubernetes:get-state/);
+  assert.match(main, /kubernetes:reconnect/);
+  assert.match(main, /kubernetes:state/);
+  assert.match(main, /kubernetes:terminal-output/);
+  assert.doesNotMatch(preload, /client-certificate-data|exec\.command|token/);
+});
+
 test('compiled Proxy traffic contract keeps Mihomo controller data in the main process', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');

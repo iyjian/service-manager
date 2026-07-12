@@ -13,6 +13,7 @@ import type {
 } from '../shared/types';
 import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
 import { initNav, registerPage } from './nav.js';
+import { registerKubernetesPage } from './kubernetesPage.js';
 import { registerProxyPage } from './proxyPage.js';
 import {
   canStartForward,
@@ -318,6 +319,15 @@ export function setMessage(text: string, level: MessageLevel = 'default'): void 
     renderMessage(pageMessageView, '', 'default');
   }, PAGE_TOAST_DURATION_MS);
 }
+
+window.addEventListener('service-manager:toast', (event) => {
+  const detail = event instanceof CustomEvent ? event.detail : undefined;
+  if (!detail || typeof detail !== 'object') return;
+  const value = detail as { text?: unknown; level?: unknown };
+  if (typeof value.text !== 'string') return;
+  const level: MessageLevel = value.level === 'success' || value.level === 'error' ? value.level : 'default';
+  setMessage(value.text, level);
+});
 
 function setHostDialogMessage(text: string, level: MessageLevel = 'default'): void {
   renderMessage(hostDialogMessageView, text, level);
@@ -2084,6 +2094,7 @@ registerPage({
   onHide: stopAppMemoryRefresh,
 });
 registerProxyPage();
+registerKubernetesPage();
 initNav('hosts');
 
 applyStaticButtonIcons();
