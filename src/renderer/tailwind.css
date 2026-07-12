@@ -533,7 +533,7 @@
   }
 
   .kubernetes-related-pod-link {
-    @apply cursor-pointer outline-none transition hover:border-zinc-300 hover:bg-white focus-visible:ring-2 focus-visible:ring-zinc-300;
+    @apply cursor-pointer outline-none transition hover:border-zinc-300 hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-zinc-300;
   }
 
   .kubernetes-log-panel {

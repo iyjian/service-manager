@@ -21,6 +21,7 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
     assert.match(document, /Namespace.*multi-select|multi-select.*Namespace/i);
     assert.match(document, /All Namespaces/);
     assert.match(document, /no manual Namespace|manual Namespace.*removed|without manual Namespace/i);
+    assert.match(document, /Namespace.*(?:(?:outside.*(?:close|dismiss))|(?:(?:close|dismiss).*outside))/i);
     assert.match(document, /token.*client-certificate|client-certificate.*token/i);
     assert.match(document, /token(?: authentication)? or (?:a )?complete matching client-certificate\/client-key pair/i);
     assert.match(document, /exec.*not supported|not supported.*exec/i);
@@ -33,6 +34,9 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
     assert.match(document, /virtual (?:scrolling|table|list)/i);
     assert.match(document, /active(?:-view| view) Watch/i);
     assert.match(document, /2,000(?:-line| lines?) log/i);
+    assert.match(document, /Pod logs.*automatically|automatically.*Pod logs/i);
+    assert.match(document, /Overview.*single-line|single-line.*Overview/i);
+    assert.match(document, /terminal.*(?:(?:focus|focused).*(?:visible|view)|(?:visible|view).*(?:focus|focused))/i);
     assert.match(document, /ten (?:active )?port forwards|10 (?:active )?port forwards/i);
     assert.match(document, /Secret.*(?:never|not).*persist|Secret.*non-persist/i);
     assert.match(document, /pnpm install.*(?:Kubernetes|xterm)|(?:Kubernetes|xterm).*pnpm install/i);
