@@ -98,6 +98,7 @@ const IPC_CHANNELS = {
   kubernetesReconnect: 'kubernetes:reconnect',
   kubernetesReloadKubeconfig: 'kubernetes:reload-kubeconfig',
   kubernetesSetNamespaceScope: 'kubernetes:set-namespace-scope',
+  kubernetesListNamespaces: 'kubernetes:list-namespaces',
   kubernetesListResources: 'kubernetes:list-resources',
   kubernetesGetResourceWindow: 'kubernetes:get-resource-window',
   kubernetesLoadMoreResources: 'kubernetes:load-more-resources',
@@ -1104,6 +1105,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.kubernetesReloadKubeconfig, async () => getKubernetesRuntime().reloadKubeconfig());
   ipcMain.handle(IPC_CHANNELS.kubernetesSetNamespaceScope, async (_event, scope: unknown) =>
     getKubernetesRuntime().setNamespaceScope(validateKubernetesNamespaceScope(scope))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesListNamespaces, async () =>
+    getKubernetesRuntime().listNamespaces()
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesListResources, async (_event, query: unknown) =>
     getKubernetesRuntime().listResources(validateKubernetesQuery(query))

@@ -18,11 +18,13 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
 
   assert.match(preload, /const kubernetesApi =/);
   assert.match(preload, /kubernetes:get-state/);
+  assert.match(preload, /kubernetes:list-namespaces/);
   assert.match(preload, /kubernetes:reconnect/);
   assert.match(preload, /kubernetes:state/);
   assert.match(preload, /onTerminalOutput/);
   assert.match(preload, /kubernetes:terminal-output/);
   assert.match(main, /kubernetes:get-state/);
+  assert.match(main, /kubernetes:list-namespaces/);
   assert.match(main, /kubernetes:reconnect/);
   assert.match(main, /kubernetes:state/);
   assert.match(main, /kubernetes:terminal-output/);

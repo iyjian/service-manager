@@ -464,6 +464,44 @@ export class KubernetesRuntime {
     return state;
   }
 
+  /** Loads selector metadata on demand without replacing the active list or opening a Watch. */
+  public async listNamespaces(): Promise<string[]> {
+    this.assertUsable();
+    this.assertConnected();
+    const context = this.session.getState().selectedContext;
+    if (!context) {
+      throw new Error('No active Kubernetes Context is connected.');
+    }
+    const names = new Set<string>();
+    const seenContinuationTokens = new Set<string>();
+    let continueToken: string | undefined;
+    try {
+      do {
+        const page = await this.observedClient().list({
+          context,
+          kind: 'namespaces',
+          scope: 'cluster',
+          namespaceScope: { mode: 'all', namespaces: [] },
+        }, continueToken);
+        for (const item of page.items) {
+          const name = item.name.trim();
+          if (name) names.add(name);
+        }
+        continueToken = page.continueToken;
+        if (continueToken) {
+          if (seenContinuationTokens.has(continueToken)) {
+            throw new Error('Kubernetes Namespace paging returned a repeated continuation token.');
+          }
+          seenContinuationTokens.add(continueToken);
+        }
+      } while (continueToken);
+      return [...names].sort();
+    } catch (error) {
+      this.onOperationFailure(error);
+      throw error;
+    }
+  }
+
   /**
    * Explicit user recovery for a previously disconnected Context. This never
    * mutates cluster resources and does not recreate an old port forward.

@@ -122,6 +122,7 @@ const kubernetesApi: KubernetesApi = {
   reconnect: () => ipcRenderer.invoke('kubernetes:reconnect'),
   reloadKubeconfig: () => ipcRenderer.invoke('kubernetes:reload-kubeconfig'),
   setNamespaceScope: (scope: KubernetesNamespaceScope) => ipcRenderer.invoke('kubernetes:set-namespace-scope', scope),
+  listNamespaces: () => ipcRenderer.invoke('kubernetes:list-namespaces'),
   listResources: (query: KubernetesResourceQuery) => ipcRenderer.invoke('kubernetes:list-resources', query),
   getResourceWindow: (query: KubernetesResourceQuery, range: KubernetesResourceWindowRange) =>
     ipcRenderer.invoke('kubernetes:get-resource-window', { query, range }),

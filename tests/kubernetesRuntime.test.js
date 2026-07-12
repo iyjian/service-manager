@@ -281,6 +281,54 @@ test('KubernetesRuntime discovers Custom Resources on demand and shares the acti
   await runtime.shutdown();
 });
 
+test('KubernetesRuntime lists every Namespace page without activating the resource coordinator', async () => {
+  const listCalls = [];
+  const client = {
+    async list(query, continueToken) {
+      listCalls.push({ query, continueToken });
+      if (!continueToken) {
+        return {
+          items: [
+            { uid: 'default', name: 'default', resourceVersion: '1', columns: {} },
+            { uid: 'apps', name: ' apps ', resourceVersion: '1', columns: {} },
+          ],
+          continueToken: 'next',
+          resourceVersion: '1',
+        };
+      }
+      return {
+        items: [
+          { uid: 'apps-copy', name: 'apps', resourceVersion: '2', columns: {} },
+          { uid: 'monitoring', name: 'monitoring', resourceVersion: '2', columns: {} },
+          { uid: 'empty', name: ' ', resourceVersion: '2', columns: {} },
+        ],
+        resourceVersion: '2',
+      };
+    },
+  };
+  const { runtime, calls } = createRuntime({ client });
+
+  assert.deepEqual(await runtime.listNamespaces(), ['apps', 'default', 'monitoring']);
+  assert.deepEqual(listCalls.map(({ query, continueToken }) => ({
+    kind: query.kind,
+    context: query.context,
+    scope: query.scope,
+    namespaceScope: query.namespaceScope,
+    continueToken,
+  })), [
+    {
+      kind: 'namespaces', context: 'development', scope: 'cluster',
+      namespaceScope: { mode: 'all', namespaces: [] }, continueToken: undefined,
+    },
+    {
+      kind: 'namespaces', context: 'development', scope: 'cluster',
+      namespaceScope: { mode: 'all', namespaces: [] }, continueToken: 'next',
+    },
+  ]);
+  assert.equal(calls.some((call) => call.startsWith('activate:')), false);
+  await runtime.shutdown();
+});
+
 test('KubernetesRuntime lists selector-matched Workload Pods once without a Watch and keeps 403 relation failures local', async () => {
   const relationRequests = [];
   const client = {

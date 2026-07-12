@@ -93,7 +93,7 @@ git commit -m "fix: preserve Kubernetes API method receivers"
 - Modify: `src/main/main.ts`
 - Modify: `src/main/preload.ts`
 - Modify: `tests/kubernetesRuntime.test.js`
-- Modify: `tests/rendererApi.test.js`
+- Modify: `tests/rendererModules.test.js`
 
 **Interfaces:**
 - Adds `KubernetesApi.listNamespaces(): Promise<string[]>`.
@@ -114,7 +114,7 @@ Bridge test asserts compiled preload exposes only `ipcRenderer.invoke('kubernete
 
 - [ ] **Step 2: Verify RED**
 
-Run: build, then `node --test tests/kubernetesRuntime.test.js tests/rendererApi.test.js`.
+Run: build, then `node --test tests/kubernetesRuntime.test.js tests/rendererModules.test.js`.
 
 Expected: FAIL because `listNamespaces` and its IPC channel do not exist.
 
@@ -159,7 +159,7 @@ Expected: all pass; no coordinator activation or Watch occurs.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/shared/types.ts src/main/kubernetes/kubernetesRuntime.ts src/main/main.ts src/main/preload.ts tests/kubernetesRuntime.test.js tests/rendererApi.test.js
+git add src/shared/types.ts src/main/kubernetes/kubernetesRuntime.ts src/main/main.ts src/main/preload.ts tests/kubernetesRuntime.test.js tests/rendererModules.test.js
 git commit -m "feat: list Kubernetes Namespaces read-only"
 ```
 

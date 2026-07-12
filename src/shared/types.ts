@@ -390,6 +390,7 @@ export interface KubernetesPortForwardState {
  */
 export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
   setNamespaceScope(scope: KubernetesNamespaceScope): Promise<KubernetesState>;
+  listNamespaces(): Promise<string[]>;
   listResources(query: KubernetesResourceQuery): Promise<KubernetesListSnapshot>;
   getResourceWindow(query: KubernetesResourceQuery, range: KubernetesResourceWindowRange): Promise<KubernetesListSnapshot>;
   loadMoreResources(query: KubernetesResourceQuery): Promise<KubernetesListSnapshot>;
