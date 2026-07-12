@@ -253,17 +253,24 @@
     @apply grid min-w-0 gap-3 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm ring-1 ring-zinc-950/[0.02];
   }
 
-  .kubernetes-toolbar,
+  .kubernetes-toolbar {
+    @apply flex min-w-0 items-end gap-2.5;
+  }
+
   .kubernetes-list-toolbar {
     @apply flex min-w-0 flex-wrap items-end gap-2.5;
   }
 
   .kubernetes-context-field {
-    @apply min-w-[240px] flex-1;
+    @apply min-w-0 flex-1;
   }
 
   .kubernetes-namespace-control {
-    @apply relative grid min-w-[250px] flex-1 gap-1;
+    @apply relative grid min-w-0 flex-1 gap-1;
+  }
+
+  .kubernetes-namespace-control > .btn {
+    @apply w-full min-w-0 justify-start overflow-hidden text-ellipsis whitespace-nowrap;
   }
 
   .kubernetes-control-label {
@@ -271,7 +278,7 @@
   }
 
   .kubernetes-namespace-menu {
-    @apply absolute left-0 top-[58px] z-20 grid min-w-[240px] gap-1 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg;
+    @apply absolute left-0 top-full z-20 mt-1 grid max-h-72 min-w-full overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-lg;
   }
 
   .kubernetes-namespace-option {
@@ -282,24 +289,8 @@
     @apply h-3.5 w-3.5 shrink-0 accent-zinc-950;
   }
 
-  .kubernetes-namespace-add-row {
-    @apply flex min-w-0 items-center gap-2;
-  }
-
-  .kubernetes-namespace-tags {
-    @apply flex min-h-6 flex-wrap items-center gap-1;
-  }
-
-  .kubernetes-namespace-tag {
-    @apply inline-flex min-w-0 items-center gap-1 rounded bg-zinc-100 py-0.5 pl-1.5 pr-1 font-mono text-[11px] text-zinc-600;
-  }
-
-  .kubernetes-namespace-tag-remove {
-    @apply inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-zinc-400 outline-none transition hover:bg-zinc-200 hover:text-zinc-800 focus-visible:ring-2 focus-visible:ring-zinc-300;
-  }
-
-  .kubernetes-namespace-add-row .input {
-    @apply h-7 min-w-0 font-mono text-[12.5px];
+  .kubernetes-namespace-status {
+    @apply px-1.5 py-1 text-[12px] text-zinc-500;
   }
 
   .kubernetes-category-tabs,
@@ -1369,8 +1360,6 @@
       @apply grid-cols-1;
     }
 
-    .kubernetes-context-field,
-    .kubernetes-namespace-control,
     .kubernetes-search-field {
       @apply min-w-0 w-full;
     }

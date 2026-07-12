@@ -136,6 +136,23 @@ function sameScope(left: KubernetesNamespaceScope, right: KubernetesNamespaceSco
   return left.mode === right.mode && left.namespaces.join('\u0000') === right.namespaces.join('\u0000');
 }
 
+export function updateNamespaceSelection(
+  selected: Iterable<string>,
+  namespace: string,
+  checked: boolean,
+): KubernetesNamespaceScope {
+  const next = new Set([...selected].map((name) => name.trim()).filter(Boolean));
+  const value = namespace.trim();
+  if (value) {
+    if (checked) next.add(value);
+    else next.delete(value);
+  }
+  const namespaces = [...next].sort();
+  return namespaces.length > 0
+    ? { mode: 'selected', namespaces }
+    : { mode: 'all', namespaces: [] };
+}
+
 function sameQuery(left: KubernetesResourceQuery, right: KubernetesResourceQuery): boolean {
   return left.context === right.context
     && left.kind === right.kind
@@ -294,10 +311,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly reconnectButton = requireElement<HTMLButtonElement>('#kubernetes-reconnect');
   private readonly reloadButton = requireElement<HTMLButtonElement>('#kubernetes-reload-kubeconfig');
   private readonly namespaceToggle = requireElement<HTMLButtonElement>('#kubernetes-namespace-toggle');
-  private readonly namespaceTags = requireElement<HTMLDivElement>('#kubernetes-namespace-tags');
   private readonly namespaceMenu = requireElement<HTMLDivElement>('#kubernetes-namespace-menu');
-  private readonly namespaceAddInput = requireElement<HTMLInputElement>('#kubernetes-namespace-add');
-  private readonly namespaceAddButton = requireElement<HTMLButtonElement>('#kubernetes-namespace-add-btn');
   private readonly categoryTabs = requireElement<HTMLDivElement>('#kubernetes-category-tabs');
   private readonly resourceTabs = requireElement<HTMLDivElement>('#kubernetes-resource-tabs');
   private readonly customResourceControl = requireElement<HTMLElement>('#kubernetes-custom-resource-control');
@@ -365,6 +379,10 @@ class KubernetesPage implements KubernetesPageController {
   private reconnecting = false;
   private requestGeneration = 0;
   private selectedNamespaces = new Set<string>();
+  private availableNamespaces: string[] = [];
+  private namespaceContext: string | undefined;
+  private namespaceLoadingContext: string | undefined;
+  private namespaceRequestGeneration = 0;
   private unsubscribeState: (() => void) | undefined;
   private unsubscribeList: (() => void) | undefined;
   private unsubscribeLog: (() => void) | undefined;
@@ -409,6 +427,7 @@ class KubernetesPage implements KubernetesPageController {
     this.visible = false;
     this.pageGeneration += 1;
     this.requestGeneration += 1;
+    this.invalidateNamespaceOptions();
     this.loadingMore = false;
     this.requestedContinuation = undefined;
     this.requestedWindow = undefined;
@@ -460,13 +479,6 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.namespaceToggle.addEventListener('click', () => {
       this.namespaceMenu.classList.toggle('hidden');
-    });
-    this.namespaceAddButton.addEventListener('click', () => this.addNamespace());
-    this.namespaceAddInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        this.addNamespace();
-      }
     });
     this.searchInput.addEventListener('input', () => this.debounceSearch());
     this.sortColumn.addEventListener('change', () => { void this.activateCurrentList(); });
@@ -539,6 +551,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private onStateChanged(state: KubernetesState): void {
+    if (this.state?.selectedContext !== state.selectedContext) this.invalidateNamespaceOptions();
     if (this.customDefinitionsContext !== state.selectedContext) {
       this.customDefinitions = [];
       this.customDefinitionsContext = undefined;
@@ -548,6 +561,11 @@ class KubernetesPage implements KubernetesPageController {
     const scope = state.namespaceScope ?? { mode: 'all', namespaces: [] };
     this.selectedNamespaces = new Set(scope.namespaces);
     this.renderState();
+    if (this.visible && state.connection === 'connected' && state.selectedContext
+      && this.namespaceContext !== state.selectedContext
+      && this.namespaceLoadingContext !== state.selectedContext) {
+      void this.loadNamespaces(state.selectedContext);
+    }
     if (this.visible && this.resourceKind === 'custom-resources' && state.connection === 'connected'
       && this.customDefinitionsContext !== state.selectedContext) {
       void this.loadCustomResourceDefinitions();
@@ -601,6 +619,8 @@ class KubernetesPage implements KubernetesPageController {
     this.reconnectButton.disabled = !canReconnect || this.reconnecting;
     this.reconnectButton.textContent = this.reconnecting ? 'Reconnecting…' : 'Reconnect';
     this.reloadButton.classList.toggle('hidden', !state?.kubeconfigReloadAvailable);
+    this.namespaceToggle.disabled = state?.connection !== 'connected' || !state?.selectedContext;
+    if (this.namespaceToggle.disabled) this.namespaceMenu.classList.add('hidden');
     this.renderNamespaceMenu();
     this.renderCategoryTabs();
     this.renderResourceTabs();
@@ -623,8 +643,9 @@ class KubernetesPage implements KubernetesPageController {
     const scope = this.currentScope();
     this.namespaceToggle.textContent = scope.mode === 'all'
       ? 'All Namespaces'
-      : `${scope.namespaces.length} Namespace${scope.namespaces.length === 1 ? '' : 's'}`;
-    this.renderNamespaceTags(scope);
+      : scope.namespaces.length === 1
+        ? scope.namespaces[0]
+        : `${scope.namespaces.length} Namespaces`;
 
     const allLabel = document.createElement('label');
     allLabel.className = 'kubernetes-namespace-option';
@@ -644,47 +665,37 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.namespaceMenu.appendChild(allLabel);
 
-    for (const namespace of scope.namespaces) {
+    if (this.namespaceLoadingContext === this.state?.selectedContext) {
+      const status = document.createElement('p');
+      status.className = 'kubernetes-namespace-status';
+      status.textContent = 'Loading Namespaces…';
+      this.namespaceMenu.appendChild(status);
+      return;
+    }
+
+    const namespaces = [...new Set([...this.availableNamespaces, ...scope.namespaces])].sort();
+    if (namespaces.length === 0) {
+      const status = document.createElement('p');
+      status.className = 'kubernetes-namespace-status';
+      status.textContent = 'No Namespaces available';
+      this.namespaceMenu.appendChild(status);
+      return;
+    }
+
+    for (const namespace of namespaces) {
       const label = document.createElement('label');
       label.className = 'kubernetes-namespace-option';
       const input = document.createElement('input');
       input.type = 'checkbox';
-      input.checked = true;
+      input.checked = scope.mode === 'selected' && this.selectedNamespaces.has(namespace);
       input.dataset.namespace = namespace;
       label.append(input, document.createTextNode(namespace));
       input.addEventListener('change', () => {
-        this.selectedNamespaces.delete(namespace);
-        void this.setNamespaceScope(this.currentScope());
+        const next = updateNamespaceSelection(this.selectedNamespaces, namespace, input.checked);
+        this.selectedNamespaces = new Set(next.namespaces);
+        void this.setNamespaceScope(next);
       });
       this.namespaceMenu.appendChild(label);
-    }
-  }
-
-  private renderNamespaceTags(scope: KubernetesNamespaceScope): void {
-    this.namespaceTags.replaceChildren();
-    if (scope.mode === 'all') {
-      const tag = document.createElement('span');
-      tag.className = 'kubernetes-namespace-tag';
-      tag.textContent = 'All Namespaces';
-      this.namespaceTags.appendChild(tag);
-      return;
-    }
-    for (const namespace of scope.namespaces) {
-      const tag = document.createElement('span');
-      tag.className = 'kubernetes-namespace-tag';
-      const name = document.createElement('span');
-      name.textContent = namespace;
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'kubernetes-namespace-tag-remove';
-      remove.setAttribute('aria-label', `Remove ${namespace}`);
-      remove.textContent = '×';
-      remove.addEventListener('click', () => {
-        this.selectedNamespaces.delete(namespace);
-        void this.setNamespaceScope(this.currentScope());
-      });
-      tag.append(name, remove);
-      this.namespaceTags.appendChild(tag);
     }
   }
 
@@ -851,6 +862,7 @@ class KubernetesPage implements KubernetesPageController {
       const state = await window.kubernetesApi.reloadKubeconfig();
       if (!this.visible) return;
       this.snapshot = undefined;
+      this.invalidateNamespaceOptions();
       this.onStateChanged(state);
       await this.activateCurrentList();
     } catch (error) {
@@ -867,6 +879,7 @@ class KubernetesPage implements KubernetesPageController {
     try {
       const state = await window.kubernetesApi.reconnect();
       if (!this.visible) return;
+      this.invalidateNamespaceOptions();
       this.onStateChanged(state);
       if (state.connection !== 'connected' && state.error) {
         this.showError(state.error);
@@ -879,12 +892,34 @@ class KubernetesPage implements KubernetesPageController {
     }
   }
 
-  private addNamespace(): void {
-    const namespace = this.namespaceAddInput.value.trim();
-    if (!namespace) return;
-    this.namespaceAddInput.value = '';
-    this.selectedNamespaces.add(namespace);
-    void this.setNamespaceScope(this.currentScope());
+  private invalidateNamespaceOptions(): void {
+    this.namespaceRequestGeneration += 1;
+    this.availableNamespaces = [];
+    this.namespaceContext = undefined;
+    this.namespaceLoadingContext = undefined;
+  }
+
+  private async loadNamespaces(context: string): Promise<void> {
+    const generation = ++this.namespaceRequestGeneration;
+    this.namespaceLoadingContext = context;
+    this.renderNamespaceMenu();
+    try {
+      const namespaces = await window.kubernetesApi.listNamespaces();
+      if (!this.visible || generation !== this.namespaceRequestGeneration
+        || this.state?.selectedContext !== context) return;
+      this.availableNamespaces = [...new Set(namespaces.map((name) => name.trim()).filter(Boolean))].sort();
+      this.namespaceContext = context;
+    } catch (error) {
+      if (this.visible && generation === this.namespaceRequestGeneration
+        && this.state?.selectedContext === context) {
+        setMessage(`Unable to load Namespaces: ${toErrorMessage(error)}`, 'error');
+      }
+    } finally {
+      if (generation === this.namespaceRequestGeneration) {
+        this.namespaceLoadingContext = undefined;
+        if (this.visible) this.renderNamespaceMenu();
+      }
+    }
   }
 
   private async setNamespaceScope(scope: KubernetesNamespaceScope): Promise<void> {

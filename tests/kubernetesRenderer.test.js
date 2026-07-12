@@ -18,6 +18,9 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
     assert.match(document, /first level.*direct regular files|direct regular files.*first level|first-level.*regular files/i);
     assert.match(document, /duplicate Context.*filename|filename.*duplicate Context/i);
     assert.match(document, /Windows/);
+    assert.match(document, /Namespace.*multi-select|multi-select.*Namespace/i);
+    assert.match(document, /All Namespaces/);
+    assert.match(document, /no manual Namespace|manual Namespace.*removed|without manual Namespace/i);
     assert.match(document, /token.*client-certificate|client-certificate.*token/i);
     assert.match(document, /token(?: authentication)? or (?:a )?complete matching client-certificate\/client-key pair/i);
     assert.match(document, /exec.*not supported|not supported.*exec/i);
@@ -45,6 +48,7 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(html, /id="kubernetes-context"/);
   assert.match(html, /id="kubernetes-reconnect"/);
   assert.match(html, /id="kubernetes-namespace-menu"/);
+  assert.doesNotMatch(html, /kubernetes-namespace-add|kubernetes-namespace-tags/);
   assert.match(html, /All Namespaces/);
   assert.match(html, /id="kubernetes-category-tabs"/);
   assert.match(html, /id="kubernetes-resource-tabs"/);
@@ -61,6 +65,9 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /window\.kubernetesApi\.reconnect\(\)/);
   assert.match(page, /state\?\.connection === 'disconnected'/);
   assert.match(page, /this\.reconnecting/);
+  assert.match(page, /window\.kubernetesApi\.listNamespaces\(\)/);
+  assert.match(page, /Loading Namespaces/);
+  assert.match(page, /input\.type = 'checkbox'/);
   assert.match(page, /context\.supported \? context\.displayName : `\$\{context\.displayName\} \(unsupported\)`/);
   assert.doesNotMatch(page, /option\.textContent = context\.supported \? context\.name/);
   assert.match(page, /listCustomResourceDefinitions\(\)/);
@@ -69,6 +76,23 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
     assert.doesNotMatch(html, new RegExp(`>${mutation}<`));
     assert.doesNotMatch(page, new RegExp(`['\"]${mutation}['\"]`));
   }
+});
+
+test('Kubernetes Namespace multi-selection is sorted and falls back to All Namespaces', async () => {
+  const { updateNamespaceSelection } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+
+  assert.deepEqual(updateNamespaceSelection(['monitoring'], 'apps', true), {
+    mode: 'selected',
+    namespaces: ['apps', 'monitoring'],
+  });
+  assert.deepEqual(updateNamespaceSelection(['apps'], 'apps', false), {
+    mode: 'all',
+    namespaces: [],
+  });
+  assert.deepEqual(updateNamespaceSelection(['apps'], 'monitoring', false), {
+    mode: 'selected',
+    namespaces: ['apps'],
+  });
 });
 
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {
