@@ -352,7 +352,6 @@ class KubernetesPage implements KubernetesPageController {
   private readonly podPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-port-forward-open');
   private readonly servicePortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-service-port-forward-open');
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
-  private readonly logOpenButton = requireElement<HTMLButtonElement>('#kubernetes-log-open');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
   private readonly logLoadOlderButton = requireElement<HTMLButtonElement>('#kubernetes-log-load-older');
   private readonly logClearButton = requireElement<HTMLButtonElement>('#kubernetes-log-clear');
@@ -409,6 +408,8 @@ class KubernetesPage implements KubernetesPageController {
   private detailEventsLoaded = false;
   private selectedContainer: string | undefined;
   private readonly logsByContainer = new Map<string, KubernetesLogState>();
+  private readonly openingLogs = new Set<string>();
+  private readonly logErrorsByContainer = new Map<string, string>();
   private terminalDrawer: KubernetesTerminalDrawer | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
@@ -507,8 +508,8 @@ class KubernetesPage implements KubernetesPageController {
     this.containerSelect.addEventListener('change', () => {
       this.selectedContainer = this.containerSelect.value || undefined;
       this.renderLogPanel();
+      void this.openLogsForSelectedContainer();
     });
-    this.logOpenButton.addEventListener('click', () => { void this.openLogsForSelectedContainer(); });
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
     this.logLoadOlderButton.addEventListener('click', () => { void this.loadOlderLogs(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
@@ -1255,10 +1256,10 @@ class KubernetesPage implements KubernetesPageController {
     for (const name of containers.init) this.appendContainerOption(name, `Init: ${name}`, true);
     this.containerSelect.value = this.selectedContainer ?? '';
     const enabled = Boolean(this.selectedContainer && active.summary.namespace);
-    this.logOpenButton.disabled = !enabled;
     this.terminalOpenButton.disabled = !enabled;
     this.podPortForwardButton.disabled = !enabled;
     this.renderLogPanel();
+    if (enabled) void this.openLogsForSelectedContainer();
   }
 
   private appendContainerOption(value: string, label: string, init: boolean): void {
@@ -1508,7 +1509,9 @@ class KubernetesPage implements KubernetesPageController {
     this.logClearButton.disabled = !log;
     this.logFollowButton.textContent = log?.following ? 'Pause Follow' : 'Resume Follow';
     if (!log) {
-      this.logOutput.textContent = 'Open logs for the selected container.';
+      this.logOutput.textContent = this.selectedContainer
+        ? this.logErrorsByContainer.get(this.selectedContainer) ?? 'Loading logs…'
+        : 'No container is available.';
       return;
     }
     const search = this.logSearch.value.trim().toLocaleLowerCase();
@@ -1524,12 +1527,31 @@ class KubernetesPage implements KubernetesPageController {
       this.renderLogPanel();
       return;
     }
+    const openingKey = `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
+    if (this.openingLogs.has(openingKey)) return;
+    const active = this.activeDetail;
+    const detailGeneration = this.detailGeneration;
+    this.openingLogs.add(openingKey);
+    this.logErrorsByContainer.delete(target.container);
+    this.renderLogPanel();
     try {
       const state = await window.kubernetesApi.openLogs(target);
+      if (!this.visible || this.activeDetail !== active || this.detailGeneration !== detailGeneration
+        || this.selectedContainer !== target.container) {
+        await window.kubernetesApi.closeLogs(state.sessionId).catch(() => undefined);
+        return;
+      }
       this.logsByContainer.set(target.container, state);
+      this.logErrorsByContainer.delete(target.container);
       this.renderLogPanel();
     } catch (error) {
-      setMessage(toErrorMessage(error), 'error');
+      if (this.activeDetail === active && this.detailGeneration === detailGeneration) {
+        this.logErrorsByContainer.set(target.container, `Unable to load logs: ${toErrorMessage(error)}`);
+        this.renderLogPanel();
+        setMessage(toErrorMessage(error), 'error');
+      }
+    } finally {
+      this.openingLogs.delete(openingKey);
     }
   }
 
@@ -1572,6 +1594,8 @@ class KubernetesPage implements KubernetesPageController {
   private async closeDetailLogs(): Promise<void> {
     const logs = [...this.logsByContainer.values()];
     this.logsByContainer.clear();
+    this.openingLogs.clear();
+    this.logErrorsByContainer.clear();
     this.logSearch.value = '';
     this.renderLogPanel();
     await Promise.all(logs.map((log) => window.kubernetesApi.closeLogs(log.sessionId).catch(() => undefined)));

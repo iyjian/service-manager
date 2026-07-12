@@ -287,45 +287,38 @@
           </section>
           <section id="kubernetes-detail-events" class="kubernetes-detail-content hidden" aria-label="Events"></section>
           <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
-          <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
-            <header class="kubernetes-log-head">
-              <div>
-                <h3 class="subcard-title">Logs</h3>
-                <p class="kubernetes-detail-subtitle">500 initial lines · 2,000 retained lines</p>
-              </div>
-              <div class="dialog-head-actions">
-                <button id="kubernetes-log-open" type="button" class="btn btn-secondary btn-sm">Open logs</button>
-                <button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button>
-                <button id="kubernetes-log-load-older" type="button" class="btn btn-secondary btn-sm">Load older 500</button>
-                <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
-              </div>
-            </header>
-            <label class="field field-xs kubernetes-log-search-field">
-              Search current 2,000-line buffer
-              <input id="kubernetes-log-search" class="input" type="search" placeholder="Find in current log buffer" spellcheck="false" />
-            </label>
-            <pre id="kubernetes-log-output" class="kubernetes-log-output"></pre>
-          </section>
           <section id="kubernetes-detail-pod-actions" class="kubernetes-detail-actions hidden" aria-label="Pod actions">
             <label class="field field-xs kubernetes-container-field">
               Container
               <select id="kubernetes-container-select" class="input"></select>
             </label>
-            <button id="kubernetes-terminal-open" type="button" class="btn btn-secondary btn-sm">Open Terminal</button>
-            <button id="kubernetes-port-forward-open" type="button" class="btn btn-secondary btn-sm">Port Forward</button>
+            <button id="kubernetes-terminal-open" type="button" class="btn btn-secondary">Open Terminal</button>
+            <button id="kubernetes-port-forward-open" type="button" class="btn btn-secondary">Port Forward</button>
           </section>
           <section id="kubernetes-detail-service-actions" class="kubernetes-detail-actions hidden" aria-label="Service actions">
-            <button id="kubernetes-service-port-forward-open" type="button" class="btn btn-secondary btn-sm">Port Forward</button>
+            <button id="kubernetes-service-port-forward-open" type="button" class="btn btn-secondary">Port Forward</button>
+          </section>
+          <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
+            <header class="kubernetes-log-head">
+              <h3 class="subcard-title">Logs</h3>
+              <div class="dialog-head-actions">
+                <button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button>
+                <button id="kubernetes-log-load-older" type="button" class="btn btn-secondary btn-sm">Load older 500</button>
+                <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
+              </div>
+            </header>
+            <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
+            <pre id="kubernetes-log-output" class="kubernetes-log-output"></pre>
           </section>
         </section>
 
+        <aside id="kubernetes-terminal-drawer" class="kubernetes-terminal-drawer hidden" aria-label="Pod terminal sessions"></aside>
         <section id="kubernetes-port-forwards" class="kubernetes-port-forwards" aria-label="Port Forwards">
           <header class="subcard-head">
             <h3 class="subcard-title">Port Forwards</h3>
           </header>
           <div id="kubernetes-port-forward-list" class="kubernetes-port-forward-list" data-empty="No active port forwards."></div>
         </section>
-        <aside id="kubernetes-terminal-drawer" class="kubernetes-terminal-drawer hidden" aria-label="Pod terminal sessions"></aside>
       </section>
     </main>
       </div>

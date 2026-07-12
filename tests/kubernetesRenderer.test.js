@@ -353,15 +353,18 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
 
   assert.match(html, /id="kubernetes-log-panel"/);
-  assert.match(html, /500 initial lines/);
-  assert.match(html, /2,000 retained lines/);
+  assert.doesNotMatch(html, /500 initial lines|2,000 retained lines|Search current 2,000-line buffer/);
+  assert.doesNotMatch(html, /id="kubernetes-log-open"|>Open logs</i);
+  assert.ok(html.indexOf('id="kubernetes-detail-pod-actions"') < html.indexOf('id="kubernetes-log-panel"'));
   assert.match(html, /id="kubernetes-terminal-drawer"/);
+  assert.ok(html.indexOf('id="kubernetes-terminal-drawer"') < html.indexOf('id="kubernetes-port-forwards"'));
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
   assert.match(html, /id="kubernetes-port-forwards"/);
   assert.match(page, /setLogFollowing/);
   assert.match(page, /loadOlderLogs/);
   assert.match(page, /clearLogs/);
   assert.match(page, /closeLogs/);
+  assert.match(page, /void this\.openLogsForSelectedContainer\(\)/);
   assert.match(page, /openTerminal/);
   assert.match(page, /startPortForward/);
   assert.match(page, /stopPortForward/);
