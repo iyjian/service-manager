@@ -596,6 +596,56 @@ test('KubernetesClient discovers CRDs through ApiextensionsV1Api without opening
   await client.close();
 });
 
+test('KubernetesClient preserves generated Object API receivers for read-only lists', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-bound-kubernetes-api-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const kubeconfigPath = path.join(directory, 'config.yaml');
+  await fs.writeFile(kubeconfigPath, [
+    'apiVersion: v1', 'kind: Config',
+    'clusters:', '- name: local', '  cluster:', '    server: https://127.0.0.1:6443',
+    'users:', '- name: token-user', '  user:', '    token: test-token',
+    'contexts:', '- name: token', '  context:', '    cluster: local', '    user: token-user', '',
+  ].join('\n'));
+  const calls = [];
+  const core = {
+    marker: 'bound',
+    async listServiceForAllNamespaces(params) {
+      assert.equal(this.marker, 'bound');
+      calls.push(params);
+      return { items: [], metadata: { resourceVersion: '7' } };
+    },
+  };
+  class CoreV1Api {}
+  class KubeConfig {
+    loadFromString() {}
+    makePathsAbsolute() {}
+    setCurrentContext() {}
+    getContextObject() { return { name: 'token' }; }
+    getCurrentUser() { return { token: 'test-token' }; }
+    makeApiClient(Api) { return Api === CoreV1Api ? core : {}; }
+  }
+  const client = await createKubernetesClient({ kubeconfigPath, context: 'token' }, {
+    loadKubernetesNode: async () => ({
+      KubeConfig, CoreV1Api,
+      DiscoveryV1Api: class DiscoveryV1Api {}, AppsV1Api: class AppsV1Api {},
+      NetworkingV1Api: class NetworkingV1Api {}, ApiextensionsV1Api: class ApiextensionsV1Api {},
+      CustomObjectsApi: class CustomObjectsApi {}, Watch: class Watch {}, Log: class Log {},
+      Exec: class Exec {}, PortForward: class PortForward {},
+    }),
+  });
+
+  const page = await client.list({
+    context: 'token',
+    kind: 'services',
+    scope: 'namespaced',
+    namespaceScope: { mode: 'all', namespaces: [] },
+  });
+
+  assert.equal(page.resourceVersion, '7');
+  assert.deepEqual(calls, [{ limit: 200 }]);
+  await client.close();
+});
+
 test('KubernetesClient reads Service backends and Workload Pods on demand without creating a Watch', async (t) => {
   const calls = { endpointCalls: [], endpointSliceCalls: [], podCalls: [] };
   const client = await createRelatedResourceClient(t, calls);

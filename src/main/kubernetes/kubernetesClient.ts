@@ -1302,7 +1302,7 @@ class KubernetesClientAdapter implements KubernetesClient {
     if (!operation) {
       throw new Error(`Kubernetes client does not provide ${method}.`);
     }
-    return operation(params);
+    return operation.call(api, params);
   }
 
   private assertPodStreamRequest(request: {
