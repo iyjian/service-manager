@@ -377,6 +377,27 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /xterm\.css/);
 });
 
+test('Kubernetes list and detail layout use aligned controls and a compact visual hierarchy', async () => {
+  const root = path.join(__dirname, '..');
+  const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const styles = await readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8');
+
+  assert.match(html, /id="kubernetes-list-page" class="kubernetes-list-page"/);
+  assert.match(page, /description\.title = value/);
+  assert.match(styles, /\.kubernetes-list-page\s*\{[\s\S]*?@apply[^;]*grid[^;]*gap-3/);
+  assert.match(styles, /\.kubernetes-detail-page\s*\{[\s\S]*?@apply[^;]*bg-zinc-100\/70/);
+  assert.match(styles, /\.kubernetes-detail-overview-grid\s*\{[\s\S]*?@apply[^;]*m-0/);
+  assert.match(styles, /\.kubernetes-detail-overview-grid > div\s*\{[\s\S]*?grid-cols-\[max-content_minmax\(0,1fr\)\]/);
+  assert.match(styles, /\.kubernetes-detail-overview-grid dt\s*\{[\s\S]*?whitespace-nowrap/);
+  assert.match(styles, /\.kubernetes-detail-overview-grid dd\s*\{[\s\S]*?m-0[^;]*whitespace-nowrap/);
+  assert.match(styles, /\.kubernetes-namespace-control > \.btn\s*\{[\s\S]*?h-8/);
+  assert.match(styles, /\.kubernetes-detail-actions\s*\{[\s\S]*?items-end/);
+  assert.match(styles, /\.kubernetes-related-list\s*\{/);
+  assert.match(styles, /\.kubernetes-related-row\s*\{/);
+  assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
+});
+
 test('Kubernetes terminal drawer disposes final closed or errored sessions and ignores late revival events', async () => {
   const originalWindow = global.window;
   const originalDocument = global.document;

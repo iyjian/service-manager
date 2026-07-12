@@ -1194,6 +1194,7 @@ class KubernetesPage implements KubernetesPageController {
       term.textContent = label;
       const description = document.createElement('dd');
       description.textContent = value;
+      description.title = value;
       item.append(term, description);
       list.appendChild(item);
     }
@@ -1281,6 +1282,9 @@ class KubernetesPage implements KubernetesPageController {
     if (!state) return;
 
     const section = document.createElement('section');
+    section.className = 'kubernetes-related-section';
+    const header = document.createElement('header');
+    header.className = 'kubernetes-related-head';
     const heading = document.createElement('h3');
     heading.className = 'subcard-title';
     heading.textContent = active.query.kind === 'services' ? 'Backend resources' : 'Related Pods';
@@ -1297,7 +1301,8 @@ class KubernetesPage implements KubernetesPageController {
         void this.loadRelatedResources(active, state);
       }
     });
-    section.append(heading, toggle);
+    header.append(heading, toggle);
+    section.appendChild(header);
 
     if (!state.expanded) {
       this.detailRelated.appendChild(section);
