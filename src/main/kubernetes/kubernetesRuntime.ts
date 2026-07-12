@@ -268,11 +268,6 @@ function throwCleanupFailures(failures: unknown[], fallback: string): void {
   }
 }
 
-/** A parent-directory target survives editor/credential-helper atomic replaces. */
-export function kubeconfigWatchTarget(kubeconfigPath: string): { directory: string; filename: string } {
-  return { directory: path.dirname(kubeconfigPath), filename: path.basename(kubeconfigPath) };
-}
-
 interface PendingListActivation {
   key: string;
   generation: number;

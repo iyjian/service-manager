@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { KubernetesRuntime, kubeconfigWatchTarget } = require('../dist/main/kubernetes/kubernetesRuntime');
+const { KubernetesRuntime } = require('../dist/main/kubernetes/kubernetesRuntime');
 const { catalogFromDocument } = require('../dist/main/kubernetes/kubeconfigCatalog');
 const { PodInteractionManager } = require('../dist/main/kubernetes/podInteractions');
 
@@ -882,13 +882,6 @@ test('KubernetesRuntime marks content-only kubeconfig credential, certificate, C
     assert.doesNotMatch(JSON.stringify(state), /rotated-|initial-token|initial-key-data|example\.test/);
     await runtime.shutdown();
   }
-});
-
-test('KubernetesRuntime watches the kubeconfig parent directory to survive an atomic replacement', () => {
-  assert.deepEqual(
-    kubeconfigWatchTarget('/Users/example/.kube/config'),
-    { directory: '/Users/example/.kube', filename: 'config' }
-  );
 });
 
 test('KubernetesRuntime resolves duplicate Context selections to their own kubeconfig source files', async (t) => {

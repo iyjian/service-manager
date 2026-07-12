@@ -45,6 +45,29 @@ export function toKubeconfigDocument(value: unknown): KubeconfigDocument {
   if (!Array.isArray(record.contexts) || !Array.isArray(record.users) || !Array.isArray(record.clusters)) {
     throw new Error('The local Kubernetes kubeconfig is invalid.');
   }
+  const isRecord = (entry: unknown): entry is Record<string, unknown> => (
+    Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)
+  );
+  const hasNameAndRecord = (entry: unknown, field: string): boolean => (
+    isRecord(entry)
+    && typeof entry.name === 'string'
+    && entry.name.trim().length > 0
+    && isRecord(entry[field])
+  );
+  if (
+    !record.clusters.every((entry) => hasNameAndRecord(entry, 'cluster'))
+    || !record.users.every((entry) => hasNameAndRecord(entry, 'user'))
+    || !record.contexts.every((entry) => (
+      hasNameAndRecord(entry, 'context')
+      && typeof entry.context.cluster === 'string'
+      && entry.context.cluster.trim().length > 0
+      && typeof entry.context.user === 'string'
+      && entry.context.user.trim().length > 0
+    ))
+    || (record['current-context'] !== undefined && typeof record['current-context'] !== 'string')
+  ) {
+    throw new Error('The local Kubernetes kubeconfig is invalid.');
+  }
   return value as KubeconfigDocument;
 }
 

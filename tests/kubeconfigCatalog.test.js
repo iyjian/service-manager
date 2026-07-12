@@ -54,6 +54,11 @@ test('scanKubeconfigDirectory discovers direct valid files and safely disambigua
   ], 'token-west-secret'));
   await fs.writeFile(path.join(directory, 'certificate.pem'), '-----BEGIN CERTIFICATE-----\nsecret\n');
   await fs.writeFile(path.join(directory, 'broken.yaml'), 'contexts: [unterminated');
+  await fs.writeFile(path.join(directory, 'invalid-structure.json'), JSON.stringify({
+    clusters: [{ name: 'invalid-cluster', cluster: {} }],
+    users: [{ name: 'invalid-user', user: { token: 'invalid-secret' } }],
+    contexts: [{ context: { cluster: 'invalid-cluster', user: 'invalid-user' } }],
+  }));
   await fs.mkdir(path.join(directory, 'cache'));
   await fs.writeFile(path.join(directory, 'cache', 'ignored.config'), kubeconfig([
     { name: 'nested', cluster: 'nested-cluster', user: 'nested-user' },
