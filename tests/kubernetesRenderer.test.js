@@ -95,6 +95,17 @@ test('Kubernetes Namespace multi-selection is sorted and falls back to All Names
   });
 });
 
+test('Kubernetes Namespace menu closes only for an outside pointer target', async () => {
+  const { shouldCloseNamespaceMenu } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const inside = {};
+  const outside = {};
+  const control = { contains: (target) => target === inside };
+
+  assert.equal(shouldCloseNamespaceMenu(control, inside), false);
+  assert.equal(shouldCloseNamespaceMenu(control, outside), true);
+  assert.equal(shouldCloseNamespaceMenu(control, null), false);
+});
+
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {
   const { calculateVirtualWindow } = await import(path.join(distRenderer, 'kubernetesVirtualTable.js'));
   const window = calculateVirtualWindow({

@@ -153,6 +153,13 @@ export function updateNamespaceSelection(
     : { mode: 'all', namespaces: [] };
 }
 
+export function shouldCloseNamespaceMenu(
+  control: Pick<HTMLElement, 'contains'>,
+  target: Node | null,
+): boolean {
+  return target !== null && !control.contains(target);
+}
+
 function sameQuery(left: KubernetesResourceQuery, right: KubernetesResourceQuery): boolean {
   return left.context === right.context
     && left.kind === right.kind
@@ -311,6 +318,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly reconnectButton = requireElement<HTMLButtonElement>('#kubernetes-reconnect');
   private readonly reloadButton = requireElement<HTMLButtonElement>('#kubernetes-reload-kubeconfig');
   private readonly namespaceToggle = requireElement<HTMLButtonElement>('#kubernetes-namespace-toggle');
+  private readonly namespaceControl = requireElement<HTMLElement>('.kubernetes-namespace-control');
   private readonly namespaceMenu = requireElement<HTMLDivElement>('#kubernetes-namespace-menu');
   private readonly categoryTabs = requireElement<HTMLDivElement>('#kubernetes-category-tabs');
   private readonly resourceTabs = requireElement<HTMLDivElement>('#kubernetes-resource-tabs');
@@ -479,6 +487,11 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.namespaceToggle.addEventListener('click', () => {
       this.namespaceMenu.classList.toggle('hidden');
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (this.namespaceMenu.classList.contains('hidden')) return;
+      const target = event.target instanceof Node ? event.target : null;
+      if (shouldCloseNamespaceMenu(this.namespaceControl, target)) this.namespaceMenu.classList.add('hidden');
     });
     this.searchInput.addEventListener('input', () => this.debounceSearch());
     this.sortColumn.addEventListener('change', () => { void this.activateCurrentList(); });
