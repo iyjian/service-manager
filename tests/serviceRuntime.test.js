@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const { readFile } = require('node:fs/promises');
+const path = require('node:path');
 const test = require('node:test');
 
 const {
@@ -6,14 +8,107 @@ const {
   buildSystemdUnitListCommand,
   buildSystemdUnitName,
   buildSystemdUnitSearchPattern,
+  classifySystemdSupportFailure,
   parseSystemdState,
   parseSystemdUnitNames,
   selectSystemdUnitName,
   shellQuoteSingle,
+  shouldRetrySystemdSupportCheck,
 } = require('../dist/main/serviceRuntime');
 
 test('shellQuoteSingle quotes single quotes safely for shell commands', () => {
   assert.equal(shellQuoteSingle("cd '/tmp/app' && yarn dev"), `'cd '"'"'/tmp/app'"'"' && yarn dev'`);
+});
+
+test('classifySystemdSupportFailure preserves an SSH timeout instead of calling it a user session failure', () => {
+  assert.match(
+    classifySystemdSupportFailure('user-manager', { code: -1, stderr: 'SSH command timeout', stdout: '', ok: false }),
+    /Remote SSH check timed out/
+  );
+});
+
+test('classifySystemdSupportFailure recognizes ssh2 handshake timeout wording', () => {
+  assert.match(
+    classifySystemdSupportFailure('user-manager', {
+      code: -1,
+      stderr: 'Timed out while waiting for handshake',
+      stdout: '',
+      ok: false,
+    }),
+    /Remote SSH check timed out/
+  );
+});
+
+test('classifySystemdSupportFailure recognizes SSH ETIMEDOUT failures', () => {
+  assert.match(
+    classifySystemdSupportFailure('user-manager', { code: -1, stderr: 'connect ETIMEDOUT 192.0.2.10:22', stdout: '', ok: false }),
+    /Remote SSH check timed out/
+  );
+});
+
+test('classifySystemdSupportFailure keeps non-timeout SSH failures distinct', () => {
+  assert.match(
+    classifySystemdSupportFailure('user-manager', { code: -1, stderr: 'All configured authentication methods failed', stdout: '', ok: false }),
+    /Remote SSH check failed/
+  );
+  assert.doesNotMatch(
+    classifySystemdSupportFailure('user-manager', { code: -1, stderr: 'All configured authentication methods failed', stdout: '', ok: false }),
+    /timed out/i
+  );
+});
+
+test('classifySystemdSupportFailure distinguishes missing tooling, user-bus failure, and linger failure', () => {
+  assert.match(
+    classifySystemdSupportFailure('tools', { code: 127, stderr: 'systemd-run journalctl', stdout: '', ok: false }),
+    /missing required systemd tools: systemd-run, journalctl/i
+  );
+  assert.match(
+    classifySystemdSupportFailure('user-manager', { code: 1, stderr: 'Failed to connect to bus: No medium found', stdout: '', ok: false }),
+    /systemd user session is unavailable/i
+  );
+  assert.match(
+    classifySystemdSupportFailure('linger', { code: 1, stderr: 'Access denied', stdout: '', ok: false }),
+    /linger check failed/i
+  );
+  assert.match(
+    classifySystemdSupportFailure('tools', { code: 1, stderr: 'Access denied', stdout: '', ok: false }),
+    /systemd tooling check failed/i
+  );
+});
+
+test('classifySystemdSupportFailure applies runtime-log redaction to linger diagnostics', () => {
+  const failure = classifySystemdSupportFailure('linger', {
+    code: 1,
+    stderr: 'loginctl access denied for --token supersecret; systemd-run failed: pnpm run serve --api-token another-secret',
+    stdout: '',
+    ok: false,
+  });
+
+  assert.match(failure, /Remote linger check failed/i);
+  assert.match(failure, /--token=\[redacted\]/i);
+  assert.match(failure, /systemd-run failed: \[redacted-command\]/i);
+  assert.doesNotMatch(failure, /pnpm run serve|supersecret|another-secret/i);
+});
+
+test('compiled service runtime keeps linger probe stderr for safe failure classification', async () => {
+  const runtime = await readFile(path.join(__dirname, '..', 'dist', 'main', 'serviceRuntime.js'), 'utf8');
+  const lingerProbeStart = runtime.indexOf('loginctl show-user');
+  const lingerProbe = runtime.slice(lingerProbeStart, lingerProbeStart + 400);
+
+  assert.ok(lingerProbeStart >= 0);
+  assert.match(lingerProbe, /loginctl show-user/);
+  assert.doesNotMatch(lingerProbe, /2>\/dev\/null/);
+});
+
+test('only transient user-manager transport or user-bus failures are retryable', () => {
+  assert.equal(
+    shouldRetrySystemdSupportCheck('user-manager', { code: -1, stderr: 'SSH command timeout', stdout: '', ok: false }),
+    true
+  );
+  assert.equal(
+    shouldRetrySystemdSupportCheck('user-manager', { code: 1, stderr: 'Failed to connect to bus', stdout: '', ok: false }), true);
+  assert.equal(shouldRetrySystemdSupportCheck('tools', { code: -1, stderr: 'SSH command timeout', stdout: '', ok: false }), false);
+  assert.equal(shouldRetrySystemdSupportCheck('linger', { code: 1, stderr: 'Access denied', stdout: '', ok: false }), false);
 });
 
 test('parseSystemdState extracts systemd show output', () => {

@@ -28,7 +28,8 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/runtimeRegistry.ts`: in-memory service/forward runtime state and `HostView` assembly.
 - `src/main/operationQueue.ts`: per-host/service async serialization for service mutations.
 - `src/main/hostConnection.ts`: shared SSH endpoint and private-key resolution.
-- `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, status checks, and journal log access.
+- `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, categorized preflight checks, status checks, and journal log access.
+- `src/main/runtimeLog.ts`: serialized, redacted local runtime diagnostic JSONL writer with 1 MiB current-file rotation.
 - `src/main/portForwardManager.ts`: service-owned local port forwarding.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
 - `src/main/proxy/proxyRuntime.ts`: local Mihomo lifecycle, parsed-cache loading/replacement, persisted settings and Custom Rule mutations, and system/TUN proxy controls.
@@ -67,7 +68,10 @@ Local proxy:
 - Restore enabled running intent asynchronously after the main window and Proxy state broadcast are ready. Auto-start failure must not abort app startup; retain the intent, expose Proxy error state, log the failure, and retry on a later launch.
 - Serialize Proxy Start, explicit Stop, internal restart, shutdown, and complete System Proxy mutations through one lifecycle queue so a later Stop/shutdown cannot be undone by an in-flight Start or OS proxy activation. Missing-core and child spawn failures must settle to renderer-visible Proxy error state without uncaught process errors.
 - Serialize Proxy settings-file writes in invocation order. Before an internal settings restart terminates Mihomo, recheck that Proxy is still running with enabled running intent so a later explicit Stop remains authoritative.
-- Keep the complete port-change restart and conditional System Proxy reactivation inside one lifecycle operation; reactivate only when Proxy is still running with enabled running intent. Subscription refresh must merge only its metadata into current settings and must not restore a stale full-settings snapshot over a concurrent explicit Stop.
+- Choose Mixed Port while Proxy is stopped, before starting it; the selected port takes effect only on Start. While Proxy is `starting`, `running`, or `stopping`, the port cannot change.
+- Before Mihomo spawn, Start probes `127.0.0.1:<port>` for availability. If the port is occupied, it does not start Mihomo and does not overwrite the last saved port.
+- Only a successful Start persists the selected port with enabled `startOnLaunch`; a failed start or persistence retains the prior port and settings values.
+- Subscription refresh must merge only its metadata into current settings and must not restore a stale full-settings snapshot over a concurrent explicit Stop.
 - The Proxy page must show only Mihomo runtime `Selector` strategy groups as manual controls. URL-test, fallback, load-balance, relay, and other automatic groups are not selectable in the UI.
 - A selector candidate can be a concrete node, `DIRECT`, `REJECT`, or another strategy group.
 - Persist manual choices in `ProxySettings.selectedProxies` as `Record<groupName, candidateName>` and restore each valid choice after startup.
@@ -99,6 +103,7 @@ Services:
 - Do not use `systemd-run --collect`; failed/exited units must remain inspectable.
 - Intentional stop should settle to `stopped`, even if systemd briefly reports failed due to termination signal.
 - Service `start`, `stop`, background `refresh`, and `delete` must be serialized per host/service key.
+- Categorize systemd preflight failures as SSH timeout/failure, missing tools, unavailable user-manager D-Bus, tooling/user-manager check failures, or linger failures. Retry only a transient user-manager transport or D-Bus failure once; never mask the final categorized error.
 
 Logs:
 
@@ -107,6 +112,7 @@ Logs:
 - Preserve stdout/stderr ordering as a single terminal-like stream.
 - Render ANSI colors, auto-refresh, auto-scroll toggle, older-line loading, search, and filter.
 - Log dialog is read-only and must catch failures without uncaught renderer promises.
+- Local runtime diagnostics for later intermittent SSH/systemd troubleshooting are written under Electron `<userData>/logs/runtime.jsonl`. Rotate the active file to `runtime.previous.jsonl` before it exceeds 1 MiB, retaining only those two files. Store only a redacted, safe diagnostic scope and context; omit or redact credentials, keys, tokens, URLs, and command text.
 
 ## UI Principles
 
@@ -124,6 +130,7 @@ Logs:
 - Keep dense runtime rows scannable: compact monospace layout, aligned port text, status by name color, and power-icon start/stop actions with clear hover, active, focus, disabled, and busy feedback.
 - Do not add whole-row hover highlights to runtime service/tunnel rows; keep feedback on the clickable service name and power action button.
 - Runtime power buttons must keep a stable outer hit area on hover/active; do not move or scale the button container because that can cause pointer flicker. Animate the inner icon instead.
+- Keep background service-refresh failures inline on the affected row; manual service-action failures also receive top-right toast feedback.
 - Proxy Strategy Groups use compact per-group sections with a current selection and safe text-only rendering of dynamic group and candidate names.
 - Custom Rules use text-safe custom-rule rendering for all dynamic rule values and actions.
 - Proxy controls, Strategy Groups, and Custom Rules must share one white Proxy content container that remains responsive on narrow windows.
@@ -138,6 +145,7 @@ Logs:
 - Renderer must escape dynamic HTML derived from host, service, tunnel, log, or error data before injecting into the DOM.
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
+- Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
 - Dialog open/close paths must be idempotent.
 - Missing remote `systemd --user` support must fail explicitly with setup guidance; never silently switch to an unmanaged process model.
 

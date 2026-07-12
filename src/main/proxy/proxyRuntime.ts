@@ -458,17 +458,71 @@ export class ProxyRuntime extends EventEmitter {
     return subscription;
   }
 
-  async start(): Promise<ProxyState> {
-    return this.enqueueLifecycle(() => this.startNow());
+  async start(mixedPort?: number): Promise<ProxyState> {
+    this.assertMixedPortCanChangeWhileActive(mixedPort);
+    return this.enqueueLifecycle(() => this.startNow(mixedPort));
   }
 
-  private async startNow(): Promise<ProxyState> {
-    if (this.runStatus === 'running' || this.runStatus === 'starting') {
+  private assertMixedPortCanChangeWhileActive(mixedPort: number | undefined): void {
+    if (
+      mixedPort !== undefined &&
+      mixedPort !== this.settings.mixedPort &&
+      (this.runStatus === 'running' || this.runStatus === 'starting' || this.runStatus === 'stopping')
+    ) {
+      throw new Error('Stop the proxy before changing the Mixed Port.');
+    }
+  }
+
+  private async assertMixedPortAvailable(port: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const server = net.createServer();
+      server.once('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') {
+          reject(new Error(`Mixed port ${port} is already in use. Stop the process using it or choose another port.`));
+          return;
+        }
+        reject(error);
+      });
+      server.listen(port, '127.0.0.1', () => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    });
+  }
+
+  private async persistStartedSettings(mixedPort: number): Promise<void> {
+    const previousMixedPort = this.settings.mixedPort;
+    const previousStartOnLaunch = this.settings.startOnLaunch;
+    this.settings.mixedPort = mixedPort;
+    this.settings.startOnLaunch = true;
+    try {
+      await this.persistSettings();
+    } catch (error) {
+      this.settings.mixedPort = previousMixedPort;
+      this.settings.startOnLaunch = previousStartOnLaunch;
+      throw error;
+    }
+  }
+
+  private async startNow(mixedPort?: number): Promise<ProxyState> {
+    this.assertMixedPortCanChangeWhileActive(mixedPort);
+    if (this.runStatus === 'running' || this.runStatus === 'starting' || this.runStatus === 'stopping') {
       return this.snapshot();
+    }
+
+    const candidateMixedPort = mixedPort ?? this.settings.mixedPort;
+    if (!Number.isInteger(candidateMixedPort) || candidateMixedPort < 1 || candidateMixedPort > 65535) {
+      throw new Error('Port must be an integer between 1 and 65535.');
     }
 
     this.setRunStatus('starting');
     try {
+      await this.assertMixedPortAvailable(candidateMixedPort);
       const installed = await this.coreManager.getInstalledInfo();
       if (!installed) {
         throw new Error('mihomo core is not installed. Download it first.');
@@ -479,7 +533,10 @@ export class ProxyRuntime extends EventEmitter {
       }
       const controllerPort = await this.getControllerPort();
       const secret = randomBytes(16).toString('hex');
-      const config = buildRuntimeConfig(this.settings, subscription, { controllerPort, secret });
+      const config = buildRuntimeConfig({ ...this.settings, mixedPort: candidateMixedPort }, subscription, {
+        controllerPort,
+        secret,
+      });
       await fs.writeFile(this.runtimeConfigPath, dumpRuntimeConfig(config), 'utf8');
 
       this.logLines = [];
@@ -525,15 +582,15 @@ export class ProxyRuntime extends EventEmitter {
         this.setRunStatus('stopped');
         return this.snapshot();
       }
+      await this.persistStartedSettings(candidateMixedPort);
       this.setRunStatus('running');
 
       if (this.settings.systemProxyEnabled) {
         await this.activateSystemProxy();
       }
-      await this.setStartOnLaunch(true);
     } catch (error) {
-      // If stop() interrupted the startup, report a clean stop, not an error.
-      if (this.expectingExit || this.runStatus === 'stopping' || this.runStatus === 'stopped') {
+      // An expected child exit or an already-settled stop remains a clean stop.
+      if (this.expectingExit || this.runStatus === 'stopped') {
         this.setRunStatus('stopped');
         return this.snapshot();
       }
@@ -638,25 +695,6 @@ export class ProxyRuntime extends EventEmitter {
     await this.persistSettings();
     if (this.api && this.runStatus === 'running') {
       await this.api.patchConfigs({ mode });
-    }
-    this.emitState();
-    return this.snapshot();
-  }
-
-  async setMixedPort(port: number): Promise<ProxyState> {
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error('Port must be an integer between 1 and 65535.');
-    }
-    const systemProxyWasActive = this.systemProxyActive;
-    this.settings.mixedPort = port;
-    await this.persistSettings();
-    if (this.runStatus === 'running') {
-      await this.enqueueLifecycle(async () => {
-        await this.restartNow();
-        if (systemProxyWasActive && this.runStatus === 'running' && this.settings.startOnLaunch) {
-          await this.activateSystemProxy();
-        }
-      });
     }
     this.emitState();
     return this.snapshot();

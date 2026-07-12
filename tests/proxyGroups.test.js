@@ -114,6 +114,13 @@ test('project documentation describes durable proxy cache, custom rules, and Pro
     assert.match(document, /legacy Direct Exceptions[\s\S]{0,120}migrate[\s\S]{0,120}`DIRECT` custom rules/i);
     assert.match(document, /subsequent settings writes[\s\S]{0,120}`customRules`/i);
     assert.match(document, /top-right[\s\S]{0,120}manually dismissible[\s\S]{0,120}ten seconds/i);
+    assert.match(document, /Mixed Port[\s\S]{0,160}before starting/i);
+    assert.match(document, /(?:starting|running|stopping)[\s\S]{0,160}(?:cannot|not).*change/i);
+    assert.match(document, /127\.0\.0\.1:[^\s`]*port[\s\S]{0,160}occupied/i);
+    assert.match(document, /occupied[\s\S]{0,160}(?:does not start|without starting)[\s\S]{0,160}(?:does not overwrite|without overwriting)/i);
+    assert.match(document, /successful Start[\s\S]{0,160}persist/i);
+    assert.doesNotMatch(document, /port-change restart/i);
+    assert.doesNotMatch(document, /port-change[\s\S]{0,120}reactivat/i);
     assert.match(document, /DIRECT/);
     assert.match(document, /before.*subscription.*rules/i);
     assert.match(document, /persist/i);

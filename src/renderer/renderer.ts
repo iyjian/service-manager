@@ -1333,7 +1333,7 @@ async function refreshAllServices(silent = false): Promise<void> {
       for (const service of host.services) {
         if (service.status === 'starting' || service.status === 'stopping') continue;
         try {
-          await window.serviceApi.refreshService(host.id, service.id);
+          await window.serviceApi.refreshService(host.id, service.id, { silent });
         } catch (error) {
           if (!silent) setMessage((error as Error).message, 'error');
         }
@@ -2319,7 +2319,7 @@ window.serviceApi.onServiceStatusChanged((change) => {
     service.forwardError = change.forwardError;
     renderSafely('service-status-changed');
     const serviceError = change.error;
-    if (change.status === 'error' && serviceError && shouldPromoteServiceError(serviceError)) {
+    if (!change.silent && change.status === 'error' && serviceError && shouldPromoteServiceError(serviceError)) {
       setMessage(serviceError, 'error');
     }
 

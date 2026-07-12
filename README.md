@@ -62,6 +62,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
    - background refresh avoids disrupting active text selection, so copying log snippets is no longer interrupted by periodic updates.
    - log view provides `Search` with previous/next match navigation and `Filter` to only show matching lines, similar to a lightweight grep view.
    - service status itself is auto-refreshed in background (no manual refresh button in list).
+   - a background refresh failure stays inline on the affected service row; an error from a manual service action is also promoted to a top-right toast so the user receives immediate feedback.
    - log open/refresh failures are caught in renderer so transient SSH errors, missing systemd support, or deleted targets do not surface as uncaught promise crashes; the error is shown through the page toast instead.
 7. Tunnel list and service list are rendered under each host on home page:
    - the page header is sticky, so branding and quick actions remain available while long host lists scroll
@@ -119,7 +120,11 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
     - Proxy remembers desired running state in `ProxySettings.startOnLaunch`: a successful Start enables restoration, and an explicit Stop disables it
     - application shutdown and unexpected Mihomo exit preserve enabled intent; on the next launch, Service Manager restores Mihomo asynchronously through the ordinary cached-subscription startup path
     - auto-start failure leaves the application open, retains enabled intent for a later launch retry, and exposes the Proxy error state
-    - Proxy Start, Stop, internal restart, shutdown, System Proxy mutations, and the complete port-change restart/reactivation flow are serialized; settings-file writes are also serialized, and a queued settings restart rechecks the current running intent so a later Stop remains authoritative. Save & Fetch merges only subscription metadata so it cannot restore stale running intent. Child spawn failures surface as Proxy errors instead of uncaught process errors
+    - Proxy Start, Stop, internal restart, shutdown, and System Proxy mutations are serialized; settings-file writes are also serialized, and a queued settings restart rechecks the current running intent so a later Stop remains authoritative. Child spawn failures surface as Proxy errors instead of uncaught process errors
+    - choose `Mixed Port` while Proxy is stopped, before starting it; the selected port takes effect only on Start. While Proxy is `starting`, `running`, or `stopping`, the port cannot change
+    - before Mihomo spawn, Start probes `127.0.0.1:<port>` for availability. If the port is occupied, it does not start Mihomo and does not overwrite the last saved port
+    - only a successful Start persists the selected port with enabled `startOnLaunch`; a failed start or persistence retains the prior port and settings values
+    - Save & Fetch merges only subscription metadata so it cannot restore stale running intent
     - `Strategy Groups` shows every manually selectable Mihomo `Selector` group from the running subscription, such as node selection, global direct, or final-match groups
     - each Strategy Group can independently select a node, `DIRECT`, `REJECT`, or another strategy group; automatic URL-test, fallback, load-balance, and relay groups remain non-interactive
     - selections persist per group and are restored after the core starts or the app is reopened; a removed group or candidate is skipped safely after a subscription refresh
@@ -253,8 +258,9 @@ Expected result:
 - command exits successfully and prints user manager environment
 
 If it fails:
-- the remote host does not have a usable `systemd --user` session for that account
-- fix the host's `systemd` user-session configuration before using service management
+- the app distinguishes an SSH timeout or other SSH failure from an unavailable `systemd --user` D-Bus session and from another `systemctl --user` check failure
+- a transient user-manager transport or D-Bus failure receives one retry before the operation fails
+- fix the reported remote user-session configuration before using service management
 
 3. Check that lingering is enabled for the SSH account:
 
@@ -276,6 +282,14 @@ Then re-check:
 ```bash
 loginctl show-user "$USER" -p Linger --value
 ```
+
+## Service Runtime Diagnostics
+
+For later troubleshooting of intermittent SSH or `systemd` service failures, the app records structured local diagnostics in Electron's user-data directory at `logs/runtime.jsonl` (that is, `<userData>/logs/runtime.jsonl`). When the active file would exceed 1 MiB, it is rotated to `runtime.previous.jsonl`; only the current file and one previous file are retained.
+
+These diagnostics are deliberately narrow: they capture app/runtime and `systemd` preflight failure scope, category, attempt, timing, and other safe context needed to investigate a later failure. Sensitive material—including passwords, passphrases, private keys, tokens, authorization/cookie data, subscription URLs, and command text—is redacted or omitted. This local diagnostic stream is not a replacement for the service's `journalctl --user` logs.
+
+Remote service preflight reports differentiated failures for SSH timeout/connection errors, missing required systemd tools, unavailable user-manager D-Bus sessions, other tooling or user-manager check failures, and lingering failures. A disabled linger setting continues to provide the `sudo loginctl enable-linger <username>` setup guidance.
 
 4. Check that the SSH account can access the service directory and execute the start command:
 

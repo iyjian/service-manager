@@ -32,7 +32,6 @@ const downloadCoreButton = requireElement<HTMLButtonElement>('#proxy-download-co
 const coreStatusLine = requireElement<HTMLElement>('#proxy-core-status');
 const modeSeg = requireElement<HTMLElement>('#proxy-mode-seg');
 const mixedPortInput = requireElement<HTMLInputElement>('#proxy-mixed-port');
-const applyPortButton = requireElement<HTMLButtonElement>('#proxy-apply-port-btn');
 const systemProxyToggle = requireElement<HTMLInputElement>('#proxy-system-toggle');
 const tunToggle = requireElement<HTMLInputElement>('#proxy-tun-toggle');
 const tunWarnButton = requireElement<HTMLButtonElement>('#proxy-tun-warn');
@@ -42,7 +41,6 @@ const tunHint = requireElement<HTMLElement>('#proxy-tun-hint');
 const subUrlInput = requireElement<HTMLInputElement>('#proxy-sub-url');
 const saveSubButton = requireElement<HTMLButtonElement>('#proxy-save-sub-btn');
 const subMetaLine = requireElement<HTMLElement>('#proxy-sub-meta');
-const refreshGroupsButton = requireElement<HTMLButtonElement>('#proxy-refresh-groups-btn');
 const groupList = requireElement<HTMLDivElement>('#proxy-group-list');
 const exceptionForm = requireElement<HTMLFormElement>('#proxy-exception-form');
 const exceptionTypeSelect = requireElement<HTMLSelectElement>('#proxy-exception-type');
@@ -60,6 +58,7 @@ const logContent = requireElement<HTMLDivElement>('#proxy-log-content');
 let currentState: ProxyState | null = null;
 let logRefreshTimer: number | null = null;
 let editingExceptionId: string | null = null;
+let mixedPortDraft: string | null = null;
 
 const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
   DOMAIN: 'example.com',
@@ -143,7 +142,9 @@ function renderState(state: ProxyState): void {
   for (const item of Array.from(modeSeg.querySelectorAll<HTMLButtonElement>('.seg-item'))) {
     item.classList.toggle('seg-item-active', item.dataset.mode === state.settings.mode);
   }
-  if (document.activeElement !== mixedPortInput) {
+  const isMixedPortEditable = state.running === 'stopped' || state.running === 'error';
+  mixedPortInput.disabled = !isMixedPortEditable;
+  if (mixedPortDraft === null) {
     mixedPortInput.value = String(state.settings.mixedPort);
   }
   systemProxyToggle.checked = state.settings.systemProxyEnabled;
@@ -174,7 +175,6 @@ function renderState(state: ProxyState): void {
     tunHint.textContent = tun?.hint ?? 'Requires elevated privileges';
   }
 
-  refreshGroupsButton.disabled = !isRunning;
   if (!isRunning) {
     groupList.replaceChildren();
   }
@@ -371,7 +371,10 @@ function bindEvents(): void {
         renderState(await window.proxyApi.stopProxy());
         setMessage('Proxy stopped.', 'success');
       } else {
-        renderState(await window.proxyApi.startProxy());
+        const port = Number(mixedPortInput.value);
+        const state = await window.proxyApi.startProxy(port);
+        mixedPortDraft = null;
+        renderState(state);
         setMessage('Proxy started.', 'success');
         await refreshGroups();
       }
@@ -394,13 +397,8 @@ function bindEvents(): void {
     });
   });
 
-  applyPortButton.addEventListener('click', () => {
-    void runAction(applyPortButton, async () => {
-      const port = Number(mixedPortInput.value);
-      renderState(await window.proxyApi.setMixedPort(port));
-      await refreshGroups();
-      setMessage(`Mixed port set to ${port}.`, 'success');
-    });
+  mixedPortInput.addEventListener('input', () => {
+    mixedPortDraft = mixedPortInput.value;
   });
 
   systemProxyToggle.addEventListener('change', () => {
@@ -507,10 +505,6 @@ function bindEvents(): void {
 
   cancelExceptionButton.addEventListener('click', clearExceptionEditor);
   exceptionTypeSelect.addEventListener('change', syncRuleValuePlaceholder);
-
-  refreshGroupsButton.addEventListener('click', () => {
-    void runAction(refreshGroupsButton, () => refreshGroups());
-  });
 
   logsButton.addEventListener('click', openLogDialog);
   closeLogDialogButton.addEventListener('click', closeLogDialog);

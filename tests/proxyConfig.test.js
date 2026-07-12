@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { promises: fs } = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -600,111 +601,68 @@ test('ProxyRuntime serializes settings file writes in invocation order', async (
   assert.deepEqual(events, ['1:begin', '1:end', '2:begin', '2:end']);
 });
 
-test('ProxyRuntime keeps a later Stop authoritative over a pending settings restart', async (t) => {
-  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-setting-stop-order-'));
+test('ProxyRuntime rejects an occupied Mixed Port before spawning Mihomo', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-occupied-port-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+  const occupiedServer = net.createServer();
+  await new Promise((resolve, reject) => {
+    occupiedServer.once('error', reject);
+    occupiedServer.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => new Promise((resolve) => occupiedServer.close(resolve)));
+  const occupiedAddress = occupiedServer.address();
+  assert.ok(occupiedAddress && typeof occupiedAddress === 'object');
+  const occupiedPort = occupiedAddress.port;
+  let spawnCalls = 0;
+  const child = new EventEmitter();
+  child.stdout = null;
+  child.stderr = null;
+  const runtime = new ProxyRuntime(proxyDir, () => {
+    spawnCalls += 1;
+    return child;
+  }, async () => 9123);
+  await fs.writeFile(
+    path.join(proxyDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: false }),
+    'utf8'
+  );
+  await runtime.init();
+  runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/fake/mihomo', version: 'test' });
+  runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
+  runtime.waitForController = async () => undefined;
+  runtime.applySelectionsQuietly = async () => undefined;
+
+  await assert.rejects(
+    runtime.start(occupiedPort),
+    new RegExp(`Mixed port ${occupiedPort} is already in use\\. Stop the process using it or choose another port\\.`)
+  );
+
+  const state = await runtime.getState();
+  const persisted = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal(spawnCalls, 0);
+  assert.equal(state.settings.mixedPort, 7890);
+  assert.equal(state.settings.startOnLaunch, false);
+  assert.equal(persisted.mixedPort, 7890);
+  assert.equal(persisted.startOnLaunch, false);
+});
+
+test('ProxyRuntime rejects Mixed Port changes while active without starting', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-active-port-change-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   const runtime = new ProxyRuntime(proxyDir);
   await runtime.init();
-  runtime.runStatus = 'running';
-  runtime.settings.startOnLaunch = true;
-  runtime.systemProxyActive = true;
-
-  const writeEvents = [];
-  let writes = 0;
-  let releaseFirstWrite;
-  const firstWriteGate = new Promise((resolve) => {
-    releaseFirstWrite = resolve;
-  });
-  runtime.persistSettingsNow = async () => {
-    writes += 1;
-    const current = writes;
-    writeEvents.push(`${current}:begin`);
-    if (current === 1) await firstWriteGate;
-    writeEvents.push(`${current}:end`);
-  };
   let starts = 0;
-  let systemProxyActivations = 0;
   runtime.startNow = async () => {
     starts += 1;
     return runtime.getState();
   };
-  runtime.deactivateSystemProxyIfNeeded = async () => {
-    runtime.systemProxyActive = false;
-  };
-  runtime.activateSystemProxy = async () => {
-    systemProxyActivations += 1;
-    runtime.systemProxyActive = true;
-  };
 
-  const portPromise = runtime.setMixedPort(7891);
-  portPromise.catch(() => undefined);
-  for (let attempt = 0; attempt < 20 && writeEvents.length === 0; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (const status of ['running', 'starting', 'stopping']) {
+    runtime.runStatus = status;
+    await assert.rejects(runtime.start(7891), /Stop the proxy before changing the Mixed Port\./);
   }
-  assert.deepEqual(writeEvents, ['1:begin']);
-  const stopPromise = runtime.stop();
-  stopPromise.catch(() => undefined);
-  await new Promise((resolve) => setImmediate(resolve));
-  releaseFirstWrite();
-  await Promise.all([portPromise, stopPromise]);
 
-  const state = await runtime.getState();
   assert.equal(starts, 0);
-  assert.equal(systemProxyActivations, 0);
-  assert.equal(runtime.systemProxyActive, false);
-  assert.equal(state.running, 'stopped');
-  assert.equal(state.settings.startOnLaunch, false);
-});
-
-test('ProxyRuntime keeps a later Stop authoritative during post-port-change System Proxy activation', async (t) => {
-  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-port-activation-stop-order-'));
-  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
-  const runtime = new ProxyRuntime(proxyDir);
-  await runtime.init();
-  runtime.runStatus = 'running';
-  runtime.settings.startOnLaunch = true;
-  runtime.systemProxyActive = true;
-  runtime.persistSettingsNow = async () => {};
-  runtime.startNow = async () => {
-    runtime.runStatus = 'running';
-    return runtime.getState();
-  };
-
-  let activationStarted;
-  const activationStartedPromise = new Promise((resolve) => {
-    activationStarted = resolve;
-  });
-  let releaseActivation;
-  const activationGate = new Promise((resolve) => {
-    releaseActivation = resolve;
-  });
-  runtime.activateSystemProxy = async () => {
-    activationStarted();
-    await activationGate;
-    runtime.systemProxyActive = true;
-  };
-  runtime.deactivateSystemProxyIfNeeded = async () => {
-    if (runtime.systemProxyActive) runtime.systemProxyActive = false;
-  };
-
-  const portPromise = runtime.setMixedPort(7891);
-  portPromise.catch(() => undefined);
-  await activationStartedPromise;
-  let stopSettled = false;
-  const stopPromise = runtime.stop().finally(() => {
-    stopSettled = true;
-  });
-  stopPromise.catch(() => undefined);
-  await new Promise((resolve) => setImmediate(resolve));
-  const stopSettledBeforeRelease = stopSettled;
-  releaseActivation();
-  await Promise.all([portPromise, stopPromise]);
-
-  const state = await runtime.getState();
-  assert.equal(stopSettledBeforeRelease, false);
-  assert.equal(runtime.systemProxyActive, false);
-  assert.equal(state.running, 'stopped');
-  assert.equal(state.settings.startOnLaunch, false);
 });
 
 test('ProxyRuntime reports missing core as Proxy error state', async (t) => {
@@ -712,6 +670,7 @@ test('ProxyRuntime reports missing core as Proxy error state', async (t) => {
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   const runtime = new ProxyRuntime(proxyDir);
   await runtime.init();
+  runtime.assertMixedPortAvailable = async () => undefined;
 
   await assert.rejects(runtime.start(), /mihomo core is not installed/);
   const state = await runtime.getState();
@@ -734,6 +693,16 @@ test('ProxyRuntime accepts an injected child-process spawn implementation', asyn
   assert.equal(runtime.getControllerPort, getControllerPort);
 });
 
+test('ProxyRuntime does not expose the obsolete setMixedPort API', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-no-set-mixed-port-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const runtime = new ProxyRuntime(proxyDir);
+  await runtime.init();
+
+  assert.equal(typeof runtime.setMixedPort, 'undefined');
+});
+
 test('ProxyRuntime reports child spawn errors through Proxy error state', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-spawn-error-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
@@ -746,6 +715,7 @@ test('ProxyRuntime reports child spawn errors through Proxy error state', async 
   runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/missing/mihomo', version: 'test' });
   runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
   runtime.waitForController = async () => new Promise(() => undefined);
+  runtime.assertMixedPortAvailable = async () => undefined;
 
   const startPromise = runtime.start();
   const rejection = assert.rejects(startPromise, /injected spawn failure/);
@@ -762,7 +732,7 @@ test('ProxyRuntime reports child spawn errors through Proxy error state', async 
   assert.equal(state.settings.startOnLaunch, false);
 });
 
-test('ProxyRuntime successful public Start persists enabled intent', async (t) => {
+test('ProxyRuntime Start persists its requested Mixed Port and enabled intent after controller readiness', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-public-start-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   const child = new EventEmitter();
@@ -779,19 +749,20 @@ test('ProxyRuntime successful public Start persists enabled intent', async (t) =
   runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
   runtime.waitForController = async () => undefined;
   runtime.applySelectionsQuietly = async () => undefined;
+  runtime.assertMixedPortAvailable = async () => undefined;
 
-  const state = await runtime.start();
+  const state = await runtime.start(7891);
 
   assert.equal(state.running, 'running');
+  assert.equal(state.settings.mixedPort, 7891);
   assert.equal(state.settings.startOnLaunch, true);
-  assert.equal(
-    JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8')).startOnLaunch,
-    true
-  );
+  const persisted = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal(persisted.mixedPort, 7891);
+  assert.equal(persisted.startOnLaunch, true);
   await runtime.shutdown();
 });
 
-test('ProxyRuntime tears down a successful child when enabling intent cannot persist', async (t) => {
+test('ProxyRuntime restores its saved Mixed Port and disabled intent when Start persistence fails', async (t) => {
   const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-start-persist-failure-'));
   t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
   const child = new EventEmitter();
@@ -804,21 +775,35 @@ test('ProxyRuntime tears down a successful child when enabling intent cannot per
     return true;
   };
   const runtime = new ProxyRuntime(proxyDir, () => child, async () => 9123);
+  await fs.writeFile(
+    path.join(proxyDir, 'proxy-config.json'),
+    JSON.stringify({ ...BASE_SETTINGS, startOnLaunch: false }),
+    'utf8'
+  );
   await runtime.init();
   runtime.coreManager.getInstalledInfo = async () => ({ binaryPath: '/fake/mihomo', version: 'test' });
   runtime.loadCachedSubscription = async () => parseSubscription(SAMPLE_SUBSCRIPTION);
   runtime.waitForController = async () => undefined;
   runtime.applySelectionsQuietly = async () => undefined;
+  runtime.assertMixedPortAvailable = async () => undefined;
+  let persistenceAttempt;
   runtime.persistSettings = async () => {
+    persistenceAttempt = { ...runtime.settings };
     throw new Error('injected start intent persistence failure');
   };
 
-  await assert.rejects(runtime.start(), /injected start intent persistence failure/);
+  await assert.rejects(runtime.start(7891), /injected start intent persistence failure/);
 
   const state = await runtime.getState();
   assert.equal(killed, true);
   assert.equal(state.running, 'error');
+  assert.equal(persistenceAttempt.mixedPort, 7891);
+  assert.equal(persistenceAttempt.startOnLaunch, true);
+  assert.equal(state.settings.mixedPort, 7890);
   assert.equal(state.settings.startOnLaunch, false);
+  const persisted = JSON.parse(await fs.readFile(path.join(proxyDir, 'proxy-config.json'), 'utf8'));
+  assert.equal(persisted.mixedPort, 7890);
+  assert.equal(persisted.startOnLaunch, false);
 });
 
 test('ProxyRuntime migrates legacy exceptions to Custom Rules and removes exceptions on the next settings write', async (t) => {

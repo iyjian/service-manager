@@ -8,13 +8,15 @@ import type {
   HostConfig,
   HostDraft,
   PrivateKeyImportResult,
+  ServiceRefreshOptions,
   ServiceLogsResult,
   ServiceStatus,
   TunnelStatusChange,
   UpdateState,
 } from '../shared/types';
 import { ServiceStore } from './store';
-import { checkServiceStatus, getServiceLogs, startService, stopService } from './serviceRuntime';
+import { checkServiceStatus, getServiceLogs, setServiceRuntimeDiagnostics, startService, stopService } from './serviceRuntime';
+import { RuntimeLogWriter } from './runtimeLog';
 import { PortForwardManager } from './portForwardManager';
 import { TunnelManager } from './tunnelManager';
 import { AppUpdater } from './updater';
@@ -65,7 +67,6 @@ const IPC_CHANNELS = {
   proxyStop: 'proxy:stop',
   proxySaveAndFetchSubscription: 'proxy:save-and-fetch-subscription',
   proxySetMode: 'proxy:set-mode',
-  proxySetMixedPort: 'proxy:set-mixed-port',
   proxySetSystemProxy: 'proxy:set-system-proxy',
   proxySetTun: 'proxy:set-tun',
   proxyAddException: 'proxy:add-exception',
@@ -82,6 +83,9 @@ const IPC_CHANNELS = {
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
+let runtimeLogWriter: RuntimeLogWriter | null = null;
+let allowQuitAfterRuntimeShutdown = false;
+let quitShutdownPromise: Promise<void> | null = null;
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
@@ -133,6 +137,13 @@ function validateProxyExceptionDraft(value: unknown): ProxyExceptionDraft {
 function validateProxyExceptionId(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error('A custom rule ID is required.');
+  }
+  return value;
+}
+
+function validateProxyMixedPort(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error('Mixed port must be an integer between 1 and 65535.');
   }
   return value;
 }
@@ -251,14 +262,21 @@ function toView(hosts: HostConfig[]) {
   return runtimeRegistry.toView(hosts, (forwardId) => tunnelManager.getStatus(forwardId));
 }
 
-function emitStatus(hostId: string, serviceId: string, status: ServiceStatus, pid?: number, error?: string): void {
+function emitStatus(
+  hostId: string,
+  serviceId: string,
+  status: ServiceStatus,
+  pid?: number,
+  error?: string,
+  silent = false
+): void {
   const payload = runtimeRegistry.setServiceStatus(hostId, serviceId, status, pid, error);
-  broadcast(IPC_CHANNELS.serviceStatusChanged, payload);
+  broadcast(IPC_CHANNELS.serviceStatusChanged, silent ? { ...payload, silent: true } : payload);
 }
 
-function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string): void {
+function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string, silent = false): void {
   const current = runtimeRegistry.setServiceForwardStatus(hostId, serviceId, state, error);
-  emitStatus(hostId, serviceId, current.status, current.pid, current.error);
+  emitStatus(hostId, serviceId, current.status, current.pid, current.error, silent);
 }
 
 function logRuntimeError(scope: string, error: unknown, context?: Record<string, unknown>): void {
@@ -267,6 +285,56 @@ function logRuntimeError(scope: string, error: unknown, context?: Record<string,
   if (error instanceof Error && error.stack) {
     console.error(error.stack);
   }
+
+  try {
+    void runtimeLogWriter?.record(scope, error, context).catch(() => undefined);
+  } catch {
+    // Runtime logging is best effort and must not disrupt the app lifecycle.
+  }
+}
+
+async function flushRuntimeLog(): Promise<void> {
+  try {
+    await runtimeLogWriter?.flush();
+  } catch (error) {
+    console.error('[runtime-log:flush]', error);
+  }
+}
+
+async function shutdownRuntimesForQuit(): Promise<void> {
+  try {
+    updater.stop();
+  } catch (error) {
+    logRuntimeError('app:shutdown', error, { operation: 'updater-stop' });
+  }
+
+  const shutdownResults = await Promise.allSettled([
+    Promise.resolve().then(() => portForwardManager.stopAll()),
+    Promise.resolve().then(() => tunnelManager.stopAll()),
+    Promise.resolve().then(() => proxyRuntime?.shutdown()),
+  ]);
+  for (const result of shutdownResults) {
+    if (result.status === 'rejected') {
+      logRuntimeError('app:shutdown', result.reason, { operation: 'runtime-stop' });
+    }
+  }
+
+  await flushRuntimeLog();
+}
+
+function requestQuitAfterRuntimeShutdown(): void {
+  if (allowQuitAfterRuntimeShutdown || quitShutdownPromise) {
+    return;
+  }
+
+  quitShutdownPromise = shutdownRuntimesForQuit().catch(async (error) => {
+    logRuntimeError('app:shutdown', error, { operation: 'runtime-stop' });
+    await flushRuntimeLog();
+  });
+  void quitShutdownPromise.then(() => {
+    allowQuitAfterRuntimeShutdown = true;
+    app.quit();
+  });
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -580,53 +648,66 @@ function registerIpcHandlers(): void {
     await tunnelManager.stop(forward.id);
   });
 
-  ipcMain.handle(IPC_CHANNELS.refreshService, async (_event, payload: { hostId: string; serviceId: string }) => {
-    return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
-      try {
-        const host = getStore().findHostById(payload.hostId);
-        if (!host) throw new Error('Host not found.');
-        const service = host.services.find((item) => item.id === payload.serviceId);
-        if (!service) throw new Error('Service not found.');
-        const currentState = runtimeRegistry.getServiceStatus(host.id, service.id, service.pid);
+  ipcMain.handle(
+    IPC_CHANNELS.refreshService,
+    async (_event, payload: { hostId: string; serviceId: string } & ServiceRefreshOptions) => {
+      return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
+        try {
+          const host = getStore().findHostById(payload.hostId);
+          if (!host) throw new Error('Host not found.');
+          const service = host.services.find((item) => item.id === payload.serviceId);
+          if (!service) throw new Error('Service not found.');
+          const currentState = runtimeRegistry.getServiceStatus(host.id, service.id, service.pid);
 
-        const result = await checkServiceStatus(host, service);
-        if (currentState?.status === 'starting' && result.status === 'stopped') {
-          emitStatus(host.id, service.id, 'starting', service.pid);
-          return;
-        }
-        if (result.pid && result.pid !== service.pid) {
-          service.pid = result.pid;
-          await getStore().upsertHost(host);
-        }
-        if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
-          try {
-            await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-            emitForwardStatus(host.id, service.id, 'ok');
-          } catch (error) {
-            logRuntimeError('port-forward:start', error, {
-              hostId: host.id,
-              serviceId: service.id,
-              localPort: service.forwardLocalPort,
-              remotePort: service.port,
-            });
-            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
+          const result = await checkServiceStatus(host, service);
+          if (currentState?.status === 'starting' && result.status === 'stopped') {
+            emitStatus(host.id, service.id, 'starting', service.pid);
+            return;
           }
-        } else if (!service.forwardLocalPort || service.port === 0) {
-          emitForwardStatus(host.id, service.id, 'none');
+          if (result.pid && result.pid !== service.pid) {
+            service.pid = result.pid;
+            await getStore().upsertHost(host);
+          }
+          if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
+            try {
+              await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+              emitForwardStatus(host.id, service.id, 'ok', undefined, Boolean(payload.silent));
+            } catch (error) {
+              logRuntimeError('port-forward:start', error, {
+                hostId: host.id,
+                serviceId: service.id,
+                localPort: service.forwardLocalPort,
+                remotePort: service.port,
+              });
+              emitForwardStatus(
+                host.id,
+                service.id,
+                'error',
+                error instanceof Error ? error.message : String(error),
+                Boolean(payload.silent)
+              );
+            }
+          } else if (!service.forwardLocalPort || service.port === 0) {
+            emitForwardStatus(host.id, service.id, 'none', undefined, Boolean(payload.silent));
+          }
+          if (result.status === 'stopped' && service.pid) {
+            await portForwardManager.stop(serviceForwardKey(host.id, service.id));
+            emitForwardStatus(host.id, service.id, 'none', undefined, Boolean(payload.silent));
+            service.pid = undefined;
+            await getStore().upsertHost(host);
+          }
+          emitStatus(host.id, service.id, result.status, service.pid, result.error, Boolean(payload.silent));
+        } catch (error) {
+          logRuntimeError('service:refresh', error, {
+            hostId: payload.hostId,
+            serviceId: payload.serviceId,
+            silent: Boolean(payload.silent),
+          });
+          throw error;
         }
-        if (result.status === 'stopped' && service.pid) {
-          await portForwardManager.stop(serviceForwardKey(host.id, service.id));
-          emitForwardStatus(host.id, service.id, 'none');
-          service.pid = undefined;
-          await getStore().upsertHost(host);
-        }
-        emitStatus(host.id, service.id, result.status, service.pid, result.error);
-      } catch (error) {
-        logRuntimeError('service:refresh', error, payload);
-        throw error;
-      }
-    });
-  });
+      });
+    }
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.startService,
@@ -780,15 +861,14 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.proxyGetState, async () => getProxyRuntime().getState());
   ipcMain.handle(IPC_CHANNELS.proxyDownloadCore, async () => getProxyRuntime().downloadCore());
-  ipcMain.handle(IPC_CHANNELS.proxyStart, async () => getProxyRuntime().start());
+  ipcMain.handle(IPC_CHANNELS.proxyStart, async (_event, mixedPort: unknown) =>
+    getProxyRuntime().start(validateProxyMixedPort(mixedPort))
+  );
   ipcMain.handle(IPC_CHANNELS.proxyStop, async () => getProxyRuntime().stop());
   ipcMain.handle(IPC_CHANNELS.proxySaveAndFetchSubscription, async (_event, url: string) =>
     getProxyRuntime().saveAndFetchSubscription(url)
   );
   ipcMain.handle(IPC_CHANNELS.proxySetMode, async (_event, mode: ProxyMode) => getProxyRuntime().setMode(mode));
-  ipcMain.handle(IPC_CHANNELS.proxySetMixedPort, async (_event, port: number) =>
-    getProxyRuntime().setMixedPort(port)
-  );
   ipcMain.handle(IPC_CHANNELS.proxySetSystemProxy, async (_event, enabled: boolean) =>
     getProxyRuntime().setSystemProxy(enabled)
   );
@@ -852,6 +932,20 @@ registerProcessErrorHandlers();
 
 app.whenReady()
   .then(async () => {
+    const initializedRuntimeLogWriter = new RuntimeLogWriter(path.join(app.getPath('userData'), 'logs'));
+    runtimeLogWriter = initializedRuntimeLogWriter;
+    setServiceRuntimeDiagnostics((event) =>
+      initializedRuntimeLogWriter.record('service:systemd-preflight', new Error('Systemd preflight probe failed'), {
+        hostId: event.hostId,
+        check: event.check,
+        attempt: event.attempt,
+        category: event.category,
+        exitCode: event.exitCode,
+        elapsedMs: event.elapsedMs,
+        stderr: event.stderr,
+      })
+    );
+
     const filePath = path.join(app.getPath('userData'), 'service-manager.json');
     store = new ServiceStore(filePath);
     await store.load();
@@ -892,13 +986,15 @@ app.whenReady()
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll(), proxyRuntime?.shutdown()]).finally(() =>
-      app.quit()
-    );
+    app.quit();
   }
 });
 
-app.on('before-quit', () => {
-  updater.stop();
-  void Promise.all([portForwardManager.stopAll(), tunnelManager.stopAll(), proxyRuntime?.shutdown()]);
+app.on('before-quit', (event) => {
+  if (allowQuitAfterRuntimeShutdown) {
+    return;
+  }
+
+  event.preventDefault();
+  requestQuitAfterRuntimeShutdown();
 });

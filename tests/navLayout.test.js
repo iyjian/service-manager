@@ -8,6 +8,9 @@ const mainDir = path.join(__dirname, '..', 'dist', 'main');
 
 test('home layout renders the nav rail with per-page shells', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const main = await readFile(path.join(mainDir, 'main.js'), 'utf8');
+  const preload = await readFile(path.join(mainDir, 'preload.js'), 'utf8');
 
   assert.match(html, /<nav id="nav-rail" class="nav-rail"/);
   assert.match(html, /<main class="app-shell" data-page="hosts">/);
@@ -18,6 +21,23 @@ test('home layout renders the nav rail with per-page shells', async () => {
   assert.match(html, /aria-label="Strategy groups"/);
   assert.match(html, /id="proxy-group-list"/);
   assert.match(html, />Strategy Groups</);
+  assert.doesNotMatch(html, /id="proxy-refresh-groups-btn"/);
+  assert.doesNotMatch(html, />Refresh<\/button>/);
+  assert.doesNotMatch(proxyPage, /const refreshGroupsButton = requireElement/);
+  assert.doesNotMatch(proxyPage, /refreshGroupsButton\.addEventListener/);
+  assert.match(proxyPage, /onShow:\s*\(\) => \{\s*void refreshState\(\)\.then\(\(\) => refreshGroups\(\)\);/);
+  assert.match(proxyPage, /setMessage\('Proxy started\.', 'success'\);\s*await refreshGroups\(\);/);
+  assert.doesNotMatch(html, /id="proxy-apply-port-btn"/);
+  assert.doesNotMatch(proxyPage, /applyPortButton/);
+  assert.doesNotMatch(proxyPage, /setMixedPort\(/);
+  assert.match(proxyPage, /const isMixedPortEditable = state\.running === 'stopped' \|\| state\.running === 'error';/);
+  assert.match(proxyPage, /mixedPortInput\.disabled = !isMixedPortEditable;/);
+  assert.match(proxyPage, /const port = Number\(mixedPortInput\.value\);[\s\S]{0,120}startProxy\(port\)/);
+  assert.match(proxyPage, /mixedPortDraft = mixedPortInput\.value/);
+  assert.match(html, /Set before starting\./);
+  assert.doesNotMatch(main, /proxy:set-mixed-port/);
+  assert.doesNotMatch(preload, /proxy:set-mixed-port/);
+  assert.match(preload, /startProxy:\s*\(mixedPort\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('proxy:start', mixedPort\)/);
 });
 
 test('nav module registers pages and persists the active page', async () => {
@@ -44,7 +64,6 @@ test('Save & Fetch is the sole subscription action and only clears its URL after
   const fetchIndex = proxyPage.indexOf('saveAndFetchSubscription(subUrlInput.value)');
   assert.notEqual(fetchIndex, -1);
   assert.doesNotMatch(proxyPage.slice(fetchIndex, fetchIndex + 160), /await refreshGroups\(\)/);
-  assert.match(proxyPage, /setMixedPort\(port\)[\s\S]{0,160}await refreshGroups\(\)/);
   assert.match(proxyPage, /setTun\(enabled\)[\s\S]{0,160}await refreshGroups\(\)/);
 });
 

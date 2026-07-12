@@ -153,11 +153,16 @@ export interface ServiceStatusChange {
   hostId: string;
   serviceId: string;
   status: ServiceStatus;
+  silent?: boolean;
   pid?: number;
   error?: string;
   updatedAt?: string;
   forwardState?: ForwardState;
   forwardError?: string;
+}
+
+export interface ServiceRefreshOptions {
+  silent?: boolean;
 }
 
 export interface TunnelStatusChange {
@@ -280,11 +285,10 @@ export interface ProxyGroupsInfo {
 export interface ProxyApi {
   getState: () => Promise<ProxyState>;
   downloadCore: () => Promise<ProxyState>;
-  startProxy: () => Promise<ProxyState>;
+  startProxy: (mixedPort: number) => Promise<ProxyState>;
   stopProxy: () => Promise<ProxyState>;
   saveAndFetchSubscription: (url: string) => Promise<ProxyState>;
   setMode: (mode: ProxyMode) => Promise<ProxyState>;
-  setMixedPort: (port: number) => Promise<ProxyState>;
   setSystemProxy: (enabled: boolean) => Promise<ProxyState>;
   setTun: (enabled: boolean) => Promise<ProxyState>;
   addException: (draft: ProxyExceptionDraft) => Promise<ProxyState>;
@@ -309,7 +313,7 @@ export interface ServiceApi {
   stopService: (hostId: string, serviceId: string) => Promise<void>;
   startForward: (hostId: string, forwardId: string) => Promise<void>;
   stopForward: (hostId: string, forwardId: string) => Promise<void>;
-  refreshService: (hostId: string, serviceId: string) => Promise<void>;
+  refreshService: (hostId: string, serviceId: string, options?: ServiceRefreshOptions) => Promise<void>;
   getServiceLogs: (hostId: string, serviceId: string, query?: ServiceLogsQuery) => Promise<ServiceLogsResult>;
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
   exportConfig: () => Promise<ConfigTransferResult | null>;

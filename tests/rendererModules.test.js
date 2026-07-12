@@ -10,3 +10,46 @@ test('compiled renderer uses browser-resolvable module specifiers', async () => 
   assert.match(renderer, /from ['"]\.\/status\.js['"]/);
   assert.doesNotMatch(renderer, /from ['"]\.\/(?:html|status)['"]/);
 });
+
+test('compiled renderer marks automatic service refreshes silent and does not toast silent status errors', async () => {
+  const dist = path.join(__dirname, '..', 'dist');
+  const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
+
+  assert.match(renderer, /refreshService\(host\.id, service\.id, \{ silent \}\)/);
+  assert.match(renderer, /!change\.silent && change\.status === 'error'/);
+  assert.match(preload, /refreshService: \(hostId, serviceId, options\)/);
+});
+
+test('compiled main preserves silent refreshes through every forward-status re-emission', async () => {
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const refreshStart = main.indexOf('IPC_CHANNELS.refreshService');
+  const refreshEnd = main.indexOf('IPC_CHANNELS.startService', refreshStart);
+  const refreshHandler = main.slice(refreshStart, refreshEnd);
+  const forwardReemissions = refreshHandler.match(/emitForwardStatus\([^;]*?\);/g) ?? [];
+
+  assert.match(
+    main,
+    /function emitForwardStatus\(hostId, serviceId, state, error, silent = false\) \{[\s\S]*?emitStatus\(hostId, serviceId, current\.status, current\.pid, current\.error, silent\);/
+  );
+  assert.equal(forwardReemissions.length, 4);
+  for (const reemission of forwardReemissions) {
+    assert.match(reemission, /, Boolean\(payload\.silent\)\);$/);
+  }
+});
+
+test('compiled main waits for runtime diagnostics before every normal quit continues', async () => {
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const beforeQuitStart = main.indexOf("app.on('before-quit'");
+  const beforeQuit = main.slice(beforeQuitStart, beforeQuitStart + 800);
+
+  assert.ok(beforeQuitStart >= 0);
+  assert.match(beforeQuit, /event\.preventDefault\(\)/);
+  assert.match(beforeQuit, /requestQuitAfterRuntimeShutdown\(\)/);
+  assert.match(main, /await flushRuntimeLog\(\);[\s\S]*?allowQuitAfterRuntimeShutdown = true;[\s\S]*?app\.quit\(\);/);
+  assert.match(
+    main,
+    /quitShutdownPromise = shutdownRuntimesForQuit\(\)\.catch\(async \(error\) => \{[\s\S]*?logRuntimeError\('app:shutdown', error, \{ operation: 'runtime-stop' \}\);[\s\S]*?await flushRuntimeLog\(\);/
+  );
+  assert.match(main, /app\.on\('window-all-closed', \(\) => \{[\s\S]*?app\.quit\(\);/);
+});

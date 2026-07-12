@@ -1,13 +1,34 @@
 import { Client, type ClientChannel } from 'ssh2';
 import type { HostConfig, ServiceConfig, ServiceLogsQuery, ServiceLogsResult, ServiceStatus } from '../shared/types';
 import { hostToEndpoint, jumpHostsToEndpoints } from './hostConnection';
+import { sanitizeRuntimeDiagnosticString } from './runtimeLog';
 import { closeSshClients, connectSshChain } from './sshChain';
 
-interface SshResult {
+export interface SshResult {
   ok: boolean;
   stdout: string;
   stderr: string;
   code: number;
+}
+
+export type SystemdSupportCheck = 'tools' | 'user-manager' | 'linger';
+
+export interface SystemdPreflightDiagnostic {
+  hostId: string;
+  check: SystemdSupportCheck;
+  attempt: number;
+  category: string;
+  exitCode: number;
+  elapsedMs: number;
+  stderr: string;
+}
+
+export type ServiceRuntimeDiagnosticsSink = (event: SystemdPreflightDiagnostic) => void | Promise<void>;
+
+let serviceRuntimeDiagnostics: ServiceRuntimeDiagnosticsSink | undefined;
+
+export function setServiceRuntimeDiagnostics(sink?: ServiceRuntimeDiagnosticsSink): void {
+  serviceRuntimeDiagnostics = sink;
 }
 
 export interface StartResult {
@@ -262,6 +283,124 @@ function formatCommandFailure(action: string, ret: SshResult): string {
 
 const systemdSupportCache = new Map<string, { expiresAt: number; error?: string }>();
 const SYSTEMD_SUPPORT_CACHE_MS = 15_000;
+const SYSTEMD_PREFLIGHT_RETRY_DELAY_MS = 500;
+const REQUIRED_SYSTEMD_TOOLS = ['systemd-run', 'systemctl', 'journalctl', 'loginctl'];
+
+function sanitizeSystemdSupportStderr(stderr: string): string {
+  return sanitizeRuntimeDiagnosticString(stderr.trim()) || 'no diagnostic output';
+}
+
+function isSshTimeout(stderr: string): boolean {
+  return /\b(?:ssh\s+command\s+)?timeout\b|\btimed out\b|\betimedout\b/i.test(stderr);
+}
+
+function isSystemdUserBusFailure(stderr: string): boolean {
+  return /failed to connect to bus|failed to get d-bus connection|no medium found/i.test(stderr);
+}
+
+function systemdSupportCheckLabel(check: SystemdSupportCheck): string {
+  switch (check) {
+    case 'tools':
+      return 'required systemd tools';
+    case 'user-manager':
+      return 'the systemd user session';
+    case 'linger':
+      return 'remote user lingering';
+  }
+}
+
+function missingSystemdTools(stderr: string): string[] {
+  const reported = new Set(stderr.match(/systemd-run|systemctl|journalctl|loginctl/gi)?.map((tool) => tool.toLowerCase()));
+  return REQUIRED_SYSTEMD_TOOLS.filter((tool) => reported.has(tool));
+}
+
+function systemdSupportFailureCategory(check: SystemdSupportCheck, result: SshResult): string {
+  if (result.code === -1) {
+    return isSshTimeout(result.stderr) ? 'ssh-timeout' : 'ssh-failure';
+  }
+  if (check === 'tools' && result.code === 127) {
+    return 'missing-tools';
+  }
+  if (check === 'user-manager' && isSystemdUserBusFailure(result.stderr)) {
+    return 'user-bus-unavailable';
+  }
+  if (check === 'tools') {
+    return 'tooling-check-failed';
+  }
+  return check === 'user-manager' ? 'user-manager-check-failed' : 'linger-check-failed';
+}
+
+export function classifySystemdSupportFailure(check: SystemdSupportCheck, result: SshResult): string {
+  const safeStderr = sanitizeSystemdSupportStderr(result.stderr);
+
+  if (result.code === -1) {
+    if (isSshTimeout(result.stderr)) {
+      return `Remote SSH check timed out while verifying ${systemdSupportCheckLabel(check)}.`;
+    }
+    return `Remote SSH check failed while verifying ${systemdSupportCheckLabel(check)}: ${safeStderr}`;
+  }
+
+  if (check === 'tools' && result.code === 127) {
+    const tools = missingSystemdTools(result.stderr);
+    return `Remote host is missing required systemd tools: ${tools.join(', ') || safeStderr}`;
+  }
+
+  if (check === 'user-manager' && isSystemdUserBusFailure(result.stderr)) {
+    return `Remote systemd user session is unavailable: ${safeStderr}`;
+  }
+
+  if (check === 'user-manager') {
+    return `Remote systemctl --user check failed (exit ${result.code}): ${safeStderr}`;
+  }
+
+  if (check === 'tools') {
+    return `Remote systemd tooling check failed (exit ${result.code}): ${safeStderr}`;
+  }
+
+  return `Remote linger check failed (exit ${result.code}): ${safeStderr}`;
+}
+
+export function shouldRetrySystemdSupportCheck(check: SystemdSupportCheck, result: SshResult): boolean {
+  return check === 'user-manager' && (result.code === -1 || isSystemdUserBusFailure(result.stderr));
+}
+
+function emitSystemdPreflightDiagnostic(event: SystemdPreflightDiagnostic): void {
+  try {
+    void Promise.resolve(serviceRuntimeDiagnostics?.(event)).catch(() => undefined);
+  } catch {
+    // Diagnostics must never interfere with service lifecycle operations.
+  }
+}
+
+async function runSystemdSupportCheck(
+  host: HostConfig,
+  check: SystemdSupportCheck,
+  command: string
+): Promise<SshResult> {
+  const runProbe = async (attempt: number): Promise<SshResult> => {
+    const startedAt = Date.now();
+    const result = await runSsh(host, command);
+    if (!result.ok) {
+      emitSystemdPreflightDiagnostic({
+        hostId: host.id,
+        check,
+        attempt,
+        category: systemdSupportFailureCategory(check, result),
+        exitCode: result.code,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        stderr: sanitizeSystemdSupportStderr(result.stderr),
+      });
+    }
+    return result;
+  };
+
+  const firstResult = await runProbe(1);
+  if (!firstResult.ok && shouldRetrySystemdSupportCheck(check, firstResult)) {
+    await new Promise<void>((resolve) => setTimeout(resolve, SYSTEMD_PREFLIGHT_RETRY_DELAY_MS));
+    return runProbe(2);
+  }
+  return firstResult;
+}
 
 async function ensureSystemdSupport(host: HostConfig): Promise<void> {
   const cacheKey = host.id;
@@ -273,35 +412,52 @@ async function ensureSystemdSupport(host: HostConfig): Promise<void> {
     return;
   }
 
-  const toolsRet = await runSsh(
+  const toolsRet = await runSystemdSupportCheck(
     host,
+    'tools',
     `bash -lc ${shellQuoteSingle(
-      'command -v systemd-run >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1 && command -v loginctl >/dev/null 2>&1'
+      [
+        'missing_tools=""',
+        'for tool in systemd-run systemctl journalctl loginctl; do',
+        '  if ! command -v "$tool" >/dev/null 2>&1; then',
+        '    missing_tools="${missing_tools}${missing_tools:+, }$tool"',
+        '  fi',
+        'done',
+        'if [ -n "$missing_tools" ]; then',
+        '  printf "%s\\n" "$missing_tools" >&2',
+        '  exit 127',
+        'fi',
+      ].join('\n')
     )}`
   );
   if (!toolsRet.ok) {
-    const error =
-      'Remote host does not provide usable systemd tooling. Please install systemd so systemd-run, systemctl, journalctl, and loginctl are available.';
+    const error = classifySystemdSupportFailure('tools', toolsRet);
     systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
     throw new Error(error);
   }
 
-  const userManagerRet = await runSsh(
+  const userManagerRet = await runSystemdSupportCheck(
     host,
-    `bash -lc ${shellQuoteSingle('systemctl --user show-environment >/dev/null 2>&1')}`
+    'user-manager',
+    `bash -lc ${shellQuoteSingle('systemctl --user show-environment >/dev/null')}`
   );
   if (!userManagerRet.ok) {
-    const error =
-      'Remote host requires a working systemd user session. Please install/configure systemd and make sure `systemctl --user` works for this SSH account.';
+    const error = classifySystemdSupportFailure('user-manager', userManagerRet);
     systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
     throw new Error(error);
   }
 
-  const lingerRet = await runSsh(
+  const lingerRet = await runSystemdSupportCheck(
     host,
-    `bash -lc ${shellQuoteSingle('loginctl show-user "$USER" -p Linger --value 2>/dev/null')}`
+    'linger',
+    `bash -lc ${shellQuoteSingle('loginctl show-user "$USER" -p Linger --value')}`
   );
-  if (!lingerRet.ok || lingerRet.stdout.trim() !== 'yes') {
+  if (!lingerRet.ok) {
+    const error = classifySystemdSupportFailure('linger', lingerRet);
+    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
+    throw new Error(error);
+  }
+  if (lingerRet.stdout.trim() !== 'yes') {
     const error =
       'Remote host requires systemd user lingering for this SSH account. Please run `sudo loginctl enable-linger <username>` on the remote host so services survive after SSH disconnects.';
     systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });

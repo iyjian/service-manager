@@ -30,8 +30,8 @@ const api: ServiceApi = {
     ipcRenderer.invoke('forward:start', { hostId, forwardId }),
   stopForward: (hostId: string, forwardId: string) =>
     ipcRenderer.invoke('forward:stop', { hostId, forwardId }),
-  refreshService: (hostId: string, serviceId: string) =>
-    ipcRenderer.invoke('service:refresh', { hostId, serviceId }),
+  refreshService: (hostId: string, serviceId: string, options) =>
+    ipcRenderer.invoke('service:refresh', { hostId, serviceId, ...options }),
   getServiceLogs: (hostId: string, serviceId: string, query) =>
     ipcRenderer.invoke('service:logs', { hostId, serviceId, query }),
   importPrivateKey: () => ipcRenderer.invoke('auth:import-private-key'),
@@ -68,11 +68,10 @@ const api: ServiceApi = {
 const proxyApi: ProxyApi = {
   getState: () => ipcRenderer.invoke('proxy:get-state'),
   downloadCore: () => ipcRenderer.invoke('proxy:download-core'),
-  startProxy: () => ipcRenderer.invoke('proxy:start'),
+  startProxy: (mixedPort: number) => ipcRenderer.invoke('proxy:start', mixedPort),
   stopProxy: () => ipcRenderer.invoke('proxy:stop'),
   saveAndFetchSubscription: (url: string) => ipcRenderer.invoke('proxy:save-and-fetch-subscription', url),
   setMode: (mode: ProxyMode) => ipcRenderer.invoke('proxy:set-mode', mode),
-  setMixedPort: (port: number) => ipcRenderer.invoke('proxy:set-mixed-port', port),
   setSystemProxy: (enabled: boolean) => ipcRenderer.invoke('proxy:set-system-proxy', enabled),
   setTun: (enabled: boolean) => ipcRenderer.invoke('proxy:set-tun', enabled),
   addException: (draft: ProxyExceptionDraft) => ipcRenderer.invoke('proxy:add-exception', draft),
