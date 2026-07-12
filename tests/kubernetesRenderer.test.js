@@ -382,6 +382,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
   const originalDocument = global.document;
   const instances = [];
   const listeners = new Map();
+  let scrollIntoViewCount = 0;
 
   class FakeClassList {
     constructor() {
@@ -427,6 +428,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
 
     setAttribute() {}
     addEventListener(name, listener) { this.listeners.set(name, listener); }
+    scrollIntoView() { scrollIntoViewCount += 1; }
   }
 
   class FakeTerminal {
@@ -435,6 +437,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
       this.rows = 24;
       this.writes = [];
       this.disposeCount = 0;
+      this.focusCount = 0;
       instances.push(this);
     }
 
@@ -442,6 +445,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     open() {}
     onData(listener) { this.onDataListener = listener; }
     write(data) { this.writes.push(data); }
+    focus() { this.focusCount += 1; }
     dispose() { this.disposeCount += 1; }
   }
 
@@ -474,6 +478,8 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     const failed = { ...normal, id: 'terminal-error' };
 
     drawer.open(normal);
+    assert.equal(instances[0].focusCount, 1);
+    assert.equal(scrollIntoViewCount, 1);
     drawer.write(normal.id, 'visible');
     drawer.open({ ...normal, state: 'closed' });
     drawer.write(normal.id, 'late');

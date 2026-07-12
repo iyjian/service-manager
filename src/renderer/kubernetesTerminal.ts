@@ -121,7 +121,11 @@ export function createKubernetesTerminalDrawer(options: {
     window.addEventListener('resize', resize);
     sessions.set(state.id, { host: session, terminal, fit, resize });
     closeButton.addEventListener('click', () => removeSession(state.id, true));
-    window.requestAnimationFrame(resize);
+    window.requestAnimationFrame(() => {
+      resize();
+      session.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      terminal.focus();
+    });
   };
 
   return {
