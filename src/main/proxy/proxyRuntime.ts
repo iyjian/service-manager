@@ -9,10 +9,12 @@ import type {
   ProxyExceptionDraft,
   ProxyCustomRule,
   ProxyCustomRuleDraft,
+  ProxyDelayResult,
   ProxyMode,
   ProxyRunStatus,
   ProxySettings,
   ProxyState,
+  ProxyTraffic,
   ProxyTunSupport,
 } from '../../shared/types';
 import { CoreManager } from './coreManager';
@@ -31,6 +33,13 @@ import {
   validSavedProxySelections,
 } from './proxyGroups';
 import { normalizeProxyCustomRules } from './proxyExceptions';
+import {
+  collectDelayTestTargets,
+  PROXY_DELAY_CONCURRENCY,
+  PROXY_DELAY_TEST_URL,
+  PROXY_DELAY_TIMEOUT_MS,
+  runBoundedDelayTests,
+} from './proxyDelays';
 import { applySystemProxy, readSystemProxy } from './systemProxy';
 import { checkTunSupport, grantTunPermission, revokeTunPermission } from './tunPermission';
 
@@ -129,9 +138,16 @@ export class ProxyRuntime extends EventEmitter {
   private isDownloading = false;
   private child: ChildProcess | null = null;
   private api: MihomoApi | null = null;
+  private trafficAbortController: AbortController | null = null;
+  private trafficMonitor: Promise<void> | null = null;
+  private traffic: ProxyTraffic | null = null;
+  private lastTrafficBroadcastAt = 0;
+  private delayResults = new Map<string, ProxyDelayResult>();
+  private delayResultsGeneration = 0;
   private logLines: string[] = [];
   private systemProxyActive = false;
   private expectingExit = false;
+  private shutdownRequested = false;
   private tunSupport: ProxyTunSupport | undefined;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private settingsWriteQueue: Promise<void> = Promise.resolve();
@@ -251,6 +267,63 @@ export class ProxyRuntime extends EventEmitter {
     this.runStatus = status;
     this.lastError = error;
     this.emitState();
+  }
+
+  private emitTraffic(traffic: ProxyTraffic | null): void {
+    this.emit('traffic-changed', traffic ? { ...traffic } : null);
+  }
+
+  private clearTraffic(): void {
+    this.traffic = null;
+    this.lastTrafficBroadcastAt = 0;
+    this.emitTraffic(null);
+  }
+
+  private clearDelayResults(): number {
+    this.delayResultsGeneration += 1;
+    this.delayResults.clear();
+    return this.delayResultsGeneration;
+  }
+
+  private stopTrafficMonitor(): void {
+    this.trafficAbortController?.abort();
+    this.trafficAbortController = null;
+    this.trafficMonitor = null;
+    this.clearTraffic();
+  }
+
+  private startTrafficMonitor(): void {
+    this.stopTrafficMonitor();
+    if (!this.api || this.runStatus !== 'running') {
+      return;
+    }
+
+    const api = this.api;
+    const controller = new AbortController();
+    this.trafficAbortController = controller;
+    this.trafficMonitor = (async () => {
+      try {
+        for await (const traffic of api.streamTraffic(controller.signal)) {
+          if (controller.signal.aborted || this.api !== api || this.runStatus !== 'running') {
+            return;
+          }
+          this.traffic = { ...traffic };
+          const now = Date.now();
+          if (now - this.lastTrafficBroadcastAt >= 1000) {
+            this.lastTrafficBroadcastAt = now;
+            this.emitTraffic(this.traffic);
+          }
+        }
+      } catch {
+        // Traffic telemetry is optional. The proxy itself remains running.
+      } finally {
+        if (this.trafficAbortController === controller) {
+          this.trafficAbortController = null;
+          this.trafficMonitor = null;
+          this.clearTraffic();
+        }
+      }
+    })();
   }
 
   private appendLog(chunk: string): void {
@@ -408,6 +481,7 @@ export class ProxyRuntime extends EventEmitter {
     const previousProxyCount = this.settings.proxyCount;
     const previousSubscriptionUpdatedAt = this.settings.subscriptionUpdatedAt;
     await this.replaceSubscriptionCaches(text, serializeSubscriptionCache(info));
+    this.clearDelayResults();
     this.settings.proxyCount = info.proxies.length;
     this.settings.subscriptionUpdatedAt = new Date().toISOString();
     try {
@@ -459,8 +533,11 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async start(mixedPort?: number): Promise<ProxyState> {
+    if (this.shutdownRequested) {
+      return this.snapshot();
+    }
     this.assertMixedPortCanChangeWhileActive(mixedPort);
-    return this.enqueueLifecycle(() => this.startNow(mixedPort));
+    return this.enqueueLifecycle(() => (this.shutdownRequested ? Promise.resolve(this.snapshot()) : this.startNow(mixedPort)));
   }
 
   private assertMixedPortCanChangeWhileActive(mixedPort: number | undefined): void {
@@ -511,6 +588,7 @@ export class ProxyRuntime extends EventEmitter {
 
   private async startNow(mixedPort?: number): Promise<ProxyState> {
     this.assertMixedPortCanChangeWhileActive(mixedPort);
+    this.clearDelayResults();
     if (this.runStatus === 'running' || this.runStatus === 'starting' || this.runStatus === 'stopping') {
       return this.snapshot();
     }
@@ -553,6 +631,8 @@ export class ProxyRuntime extends EventEmitter {
       child.stderr?.on('data', (data: Buffer) => this.appendLog(data.toString()));
       child.on('error', (error) => {
         if (this.child !== child) return;
+        this.stopTrafficMonitor();
+        this.clearDelayResults();
         this.child = null;
         this.api = null;
         if (this.runStatus === 'starting') {
@@ -564,6 +644,8 @@ export class ProxyRuntime extends EventEmitter {
       });
       child.on('exit', (code) => {
         if (this.child !== child) return;
+        this.stopTrafficMonitor();
+        this.clearDelayResults();
         this.child = null;
         this.api = null;
         if (this.expectingExit) {
@@ -584,6 +666,7 @@ export class ProxyRuntime extends EventEmitter {
       }
       await this.persistStartedSettings(candidateMixedPort);
       this.setRunStatus('running');
+      this.startTrafficMonitor();
 
       if (this.settings.systemProxyEnabled) {
         await this.activateSystemProxy();
@@ -591,9 +674,13 @@ export class ProxyRuntime extends EventEmitter {
     } catch (error) {
       // An expected child exit or an already-settled stop remains a clean stop.
       if (this.expectingExit || this.runStatus === 'stopped') {
+        this.stopTrafficMonitor();
+        this.clearDelayResults();
         this.setRunStatus('stopped');
         return this.snapshot();
       }
+      this.stopTrafficMonitor();
+      this.clearDelayResults();
       await this.killChild();
       this.setRunStatus('error', (error as Error).message);
       throw error;
@@ -643,22 +730,34 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   private async killChild(): Promise<void> {
+    this.stopTrafficMonitor();
+    this.clearDelayResults();
     const child = this.child;
     if (!child) return;
     this.expectingExit = true;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL');
-        resolve();
-      }, 3000);
-      child.once('exit', () => {
+      let settled = false;
+      const settle = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         clearTimeout(timer);
+        child.removeListener('exit', settle);
+        if (this.child === child) {
+          this.child = null;
+          this.api = null;
+        }
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        if (!settled) {
+          child.kill('SIGKILL');
+        }
+      }, 3000);
+      child.once('exit', settle);
       child.kill('SIGTERM');
     });
-    this.child = null;
-    this.api = null;
   }
 
   async stop(): Promise<ProxyState> {
@@ -797,7 +896,36 @@ export class ProxyRuntime extends EventEmitter {
     if (!this.api || this.runStatus !== 'running') {
       throw new Error('Proxy is not running.');
     }
-    return listManualProxyGroups(await this.api.getProxies());
+    return listManualProxyGroups(await this.api.getProxies(), this.delayResults);
+  }
+
+  async testProxyDelays(): Promise<ProxyGroupsInfo> {
+    if (!this.api || this.runStatus !== 'running') {
+      throw new Error('Proxy is not running.');
+    }
+
+    const api = this.api;
+    const delayResultsGeneration = this.clearDelayResults();
+    const records = await api.getProxies();
+    const targets = collectDelayTestTargets(records);
+    const delayResults = await runBoundedDelayTests(targets, PROXY_DELAY_CONCURRENCY, (name) =>
+      api.getProxyDelay(name, PROXY_DELAY_TEST_URL, PROXY_DELAY_TIMEOUT_MS)
+    );
+    if (this.api !== api || this.runStatus !== 'running') {
+      throw new Error('Proxy stopped before the node delay test completed.');
+    }
+    if (this.delayResultsGeneration !== delayResultsGeneration) {
+      throw new Error('Node delay test was superseded by a newer operation.');
+    }
+    this.delayResults = delayResults;
+    const currentRecords = await api.getProxies();
+    if (this.api !== api || this.runStatus !== 'running') {
+      throw new Error('Proxy stopped before the node delay test completed.');
+    }
+    if (this.delayResultsGeneration !== delayResultsGeneration) {
+      throw new Error('Node delay test was superseded by a newer operation.');
+    }
+    return listManualProxyGroups(currentRecords, this.delayResults);
   }
 
   async selectProxy(groupName: string, optionName: string): Promise<ProxyState> {
@@ -842,13 +970,14 @@ export class ProxyRuntime extends EventEmitter {
   }
 
   async restoreRunningIntent(): Promise<ProxyState> {
-    if (!this.settings.startOnLaunch) {
+    if (this.shutdownRequested || !this.settings.startOnLaunch) {
       return this.snapshot();
     }
     return this.start();
   }
 
   async shutdown(): Promise<void> {
+    this.shutdownRequested = true;
     await this.enqueueLifecycle(() => this.shutdownNow());
   }
 

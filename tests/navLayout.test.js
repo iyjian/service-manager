@@ -21,6 +21,7 @@ test('home layout renders the nav rail with per-page shells', async () => {
   assert.match(html, /aria-label="Strategy groups"/);
   assert.match(html, /id="proxy-group-list"/);
   assert.match(html, />Strategy Groups</);
+  assert.match(html, /id="proxy-test-nodes-btn"/);
   assert.doesNotMatch(html, /id="proxy-refresh-groups-btn"/);
   assert.doesNotMatch(html, />Refresh<\/button>/);
   assert.doesNotMatch(proxyPage, /const refreshGroupsButton = requireElement/);
@@ -38,6 +39,10 @@ test('home layout renders the nav rail with per-page shells', async () => {
   assert.doesNotMatch(main, /proxy:set-mixed-port/);
   assert.doesNotMatch(preload, /proxy:set-mixed-port/);
   assert.match(preload, /startProxy:\s*\(mixedPort\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('proxy:start', mixedPort\)/);
+  assert.match(preload, /testProxyDelays:\s*\(\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('proxy:test-delays'\)/);
+  assert.match(proxyPage, /Testing…/);
+  assert.match(proxyPage, /testProxyDelays\(\)/);
+  assert.match(proxyPage, /meta\.textContent = 'Unavailable';/);
 });
 
 test('nav module registers pages and persists the active page', async () => {
@@ -63,8 +68,20 @@ test('Save & Fetch is the sole subscription action and only clears its URL after
   assert.doesNotMatch(proxyPage, /updateSubscription\(/);
   const fetchIndex = proxyPage.indexOf('saveAndFetchSubscription(subUrlInput.value)');
   assert.notEqual(fetchIndex, -1);
-  assert.doesNotMatch(proxyPage.slice(fetchIndex, fetchIndex + 160), /await refreshGroups\(\)/);
+  assert.doesNotMatch(proxyPage.slice(fetchIndex, fetchIndex + 1_000), /(?:startProxy|stopProxy)\(/);
   assert.match(proxyPage, /setTun\(enabled\)[\s\S]{0,160}await refreshGroups\(\)/);
+});
+
+test('Save & Fetch clears stale delay labels and refreshes the running strategy groups', async () => {
+  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const fetchIndex = proxyPage.indexOf('saveAndFetchSubscription(subUrlInput.value)');
+  const saveFetchHandler = proxyPage.slice(fetchIndex, fetchIndex + 1_000);
+
+  assert.notEqual(fetchIndex, -1);
+  assert.match(
+    saveFetchHandler,
+    /renderState\(state\);[\s\S]*?subUrlInput\.value = '';[\s\S]*?if \(state\.running === 'running'\) \{\s*groupList\.replaceChildren\(\);\s*await refreshGroups\(\);\s*\}/
+  );
 });
 
 test('proxy controls keep user-facing text in English apart from the approved Custom Rules heading', async () => {

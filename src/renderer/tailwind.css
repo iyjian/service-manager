@@ -59,6 +59,10 @@
     @apply inline-flex h-6 items-center rounded-full border border-zinc-200 bg-white px-2 font-mono text-[12px] uppercase tracking-[0.08em] shadow-sm;
   }
 
+  .proxy-traffic {
+    @apply font-mono text-[12px] text-zinc-500;
+  }
+
   .proxy-meta-line {
     @apply mt-2 font-mono text-[12px] leading-5 text-zinc-500;
   }
@@ -209,6 +213,10 @@
     @apply shrink-0 truncate text-zinc-500;
   }
 
+  .proxy-test-nodes-btn {
+    @apply shrink-0;
+  }
+
   .proxy-node {
     @apply flex min-h-8 cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1 text-left font-mono text-[12.5px] text-zinc-700 outline-none transition hover:border-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-45;
   }
@@ -229,8 +237,16 @@
     @apply min-w-0 flex-1 truncate;
   }
 
+  .proxy-node-type {
+    @apply shrink-0 whitespace-nowrap text-[11px] text-zinc-400;
+  }
+
   .proxy-node-meta {
     @apply shrink-0 whitespace-nowrap text-[11px] text-zinc-400;
+  }
+
+  .proxy-node-meta-unavailable {
+    @apply text-amber-600;
   }
 
   .page-head {

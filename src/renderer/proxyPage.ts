@@ -6,6 +6,7 @@ import type {
   ProxyMode,
   ProxyRuleTarget,
   ProxyState,
+  ProxyTraffic,
 } from '../shared/types';
 import { registerPage } from './nav.js';
 import { setMessage } from './renderer.js';
@@ -26,6 +27,7 @@ function requireElement<T extends Element>(selector: string): T {
 
 const coreBadge = requireElement<HTMLElement>('#proxy-core-badge');
 const statusBadge = requireElement<HTMLElement>('#proxy-status-badge');
+const trafficReadout = requireElement<HTMLElement>('#proxy-traffic');
 const toggleButton = requireElement<HTMLButtonElement>('#proxy-toggle-btn');
 const logsButton = requireElement<HTMLButtonElement>('#proxy-logs-btn');
 const downloadCoreButton = requireElement<HTMLButtonElement>('#proxy-download-core-btn');
@@ -42,6 +44,7 @@ const subUrlInput = requireElement<HTMLInputElement>('#proxy-sub-url');
 const saveSubButton = requireElement<HTMLButtonElement>('#proxy-save-sub-btn');
 const subMetaLine = requireElement<HTMLElement>('#proxy-sub-meta');
 const groupList = requireElement<HTMLDivElement>('#proxy-group-list');
+const testNodesButton = requireElement<HTMLButtonElement>('#proxy-test-nodes-btn');
 const exceptionForm = requireElement<HTMLFormElement>('#proxy-exception-form');
 const exceptionTypeSelect = requireElement<HTMLSelectElement>('#proxy-exception-type');
 const ruleTargetSelect = requireElement<HTMLSelectElement>('#proxy-rule-target');
@@ -59,6 +62,7 @@ let currentState: ProxyState | null = null;
 let logRefreshTimer: number | null = null;
 let editingExceptionId: string | null = null;
 let mixedPortDraft: string | null = null;
+let isTestingNodes = false;
 
 const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
   DOMAIN: 'example.com',
@@ -75,6 +79,29 @@ const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : String(error);
+}
+
+function formatTrafficRate(bytesPerSecond: number): string {
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+  let value = Math.max(0, Number.isFinite(bytesPerSecond) ? bytesPerSecond : 0);
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const fractionDigits = unitIndex === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(fractionDigits)} ${units[unitIndex]}`;
+}
+
+function renderTraffic(traffic: ProxyTraffic | null): void {
+  if (!traffic || currentState?.running !== 'running') {
+    trafficReadout.textContent = '';
+    trafficReadout.classList.add('hidden');
+    return;
+  }
+
+  trafficReadout.textContent = `↓ ${formatTrafficRate(traffic.downBytesPerSecond)} · ↑ ${formatTrafficRate(traffic.upBytesPerSecond)}`;
+  trafficReadout.classList.remove('hidden');
 }
 
 async function runAction(button: HTMLButtonElement | null, action: () => Promise<void>): Promise<void> {
@@ -111,6 +138,7 @@ function renderState(state: ProxyState): void {
   }`;
 
   const isRunning = state.running === 'running';
+  testNodesButton.disabled = !isRunning || isTestingNodes;
   // Stop must stay clickable while running OR starting; only stopping (already
   // shutting down) and "not installed yet" disable the button.
   const showStop = state.running === 'running' || state.running === 'starting' || state.running === 'stopping';
@@ -176,6 +204,7 @@ function renderState(state: ProxyState): void {
   }
 
   if (!isRunning) {
+    renderTraffic(null);
     groupList.replaceChildren();
   }
 
@@ -285,10 +314,21 @@ function renderGroups(data: ProxyGroupsInfo): void {
       const optionName = document.createElement('span');
       optionName.className = 'proxy-node-name';
       optionName.textContent = option.name;
+      const type = document.createElement('span');
+      type.className = 'proxy-node-type';
+      type.textContent = option.type;
       const meta = document.createElement('span');
       meta.className = 'proxy-node-meta';
-      meta.textContent = `${option.type}${option.delayMs ? ` · ${option.delayMs}ms` : ''}`;
-      button.append(marker, optionName, meta);
+      if (option.delayStatus === 'unavailable') {
+        meta.classList.add('proxy-node-meta-unavailable');
+        meta.textContent = 'Unavailable';
+      } else if (typeof option.delayMs === 'number') {
+        meta.textContent = `${option.delayMs}ms`;
+      }
+      button.append(marker, optionName, type);
+      if (meta.textContent) {
+        button.appendChild(meta);
+      }
       button.addEventListener('click', () => {
         void runAction(button, async () => {
           renderState(await window.proxyApi.selectProxy(group.name, option.name));
@@ -473,12 +513,33 @@ function bindEvents(): void {
       const state = await window.proxyApi.saveAndFetchSubscription(subUrlInput.value);
       renderState(state);
       subUrlInput.value = '';
+      if (state.running === 'running') {
+        groupList.replaceChildren();
+        await refreshGroups();
+      }
       setMessage(
         state.running === 'running'
           ? 'Subscription fetched. Restart the proxy manually to apply it.'
           : 'Subscription fetched and cached. Start the proxy to browse strategy groups.',
         'success'
       );
+    });
+  });
+
+  testNodesButton.addEventListener('click', () => {
+    if (isTestingNodes) return;
+    isTestingNodes = true;
+    testNodesButton.textContent = 'Testing…';
+    void runAction(testNodesButton, async () => {
+      try {
+        renderGroups(await window.proxyApi.testProxyDelays());
+        setMessage('Node delay test complete.', 'success');
+      } finally {
+        testNodesButton.textContent = 'Test Nodes';
+      }
+    }).finally(() => {
+      isTestingNodes = false;
+      testNodesButton.disabled = currentState?.running !== 'running';
     });
   });
 
@@ -513,6 +574,7 @@ function bindEvents(): void {
   window.proxyApi.onProxyStateChanged((state) => {
     renderState(state);
   });
+  window.proxyApi.onProxyTrafficChanged(renderTraffic);
 }
 
 export function registerProxyPage(): void {

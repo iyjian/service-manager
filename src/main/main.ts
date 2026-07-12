@@ -34,7 +34,7 @@ import { preserveServiceRuntimeFields, validateHostDraft } from './validation';
 import { ProxyRuntime } from './proxy/proxyRuntime';
 import { scheduleProxyAutoStart } from './proxy/proxyAutoStart';
 import { collectAppMemoryUsage } from './appMemory';
-import type { ProxyExceptionDraft, ProxyMode, ProxyState } from '../shared/types';
+import type { ProxyExceptionDraft, ProxyMode, ProxyState, ProxyTraffic } from '../shared/types';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -75,9 +75,11 @@ const IPC_CHANNELS = {
   proxyGrantTun: 'proxy:grant-tun',
   proxyRevokeTun: 'proxy:revoke-tun',
   proxyListProxies: 'proxy:list-proxies',
+  proxyTestDelays: 'proxy:test-delays',
   proxySelectProxy: 'proxy:select-proxy',
   proxyGetLogs: 'proxy:get-logs',
   proxyStateChanged: 'proxy:state',
+  proxyTrafficChanged: 'proxy:traffic',
 } as const;
 
 const forwardOwners = new Map<string, string>();
@@ -86,6 +88,7 @@ let proxyRuntime: ProxyRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
 let allowQuitAfterRuntimeShutdown = false;
 let quitShutdownPromise: Promise<void> | null = null;
+const autoStartAbortController = new AbortController();
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
@@ -322,18 +325,23 @@ async function shutdownRuntimesForQuit(): Promise<void> {
   await flushRuntimeLog();
 }
 
-function requestQuitAfterRuntimeShutdown(): void {
+function requestQuitAfterRuntimeShutdown(signal = false): void {
   if (allowQuitAfterRuntimeShutdown || quitShutdownPromise) {
     return;
   }
 
+  autoStartAbortController.abort();
   quitShutdownPromise = shutdownRuntimesForQuit().catch(async (error) => {
     logRuntimeError('app:shutdown', error, { operation: 'runtime-stop' });
     await flushRuntimeLog();
   });
   void quitShutdownPromise.then(() => {
     allowQuitAfterRuntimeShutdown = true;
-    app.quit();
+    if (signal) {
+      app.exit(0);
+    } else {
+      app.quit();
+    }
   });
 }
 
@@ -890,6 +898,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.proxyGrantTun, async () => getProxyRuntime().grantTun());
   ipcMain.handle(IPC_CHANNELS.proxyRevokeTun, async () => getProxyRuntime().revokeTun());
   ipcMain.handle(IPC_CHANNELS.proxyListProxies, async () => getProxyRuntime().listProxies());
+  ipcMain.handle(IPC_CHANNELS.proxyTestDelays, async () => getProxyRuntime().testProxyDelays());
   ipcMain.handle(
     IPC_CHANNELS.proxySelectProxy,
     async (_event, selection: { groupName?: unknown; optionName?: unknown }) => {
@@ -905,6 +914,9 @@ function registerIpcHandlers(): void {
 function wireProxyStateBroadcast(): void {
   proxyRuntime?.on('state-changed', (state: ProxyState) => {
     broadcast(IPC_CHANNELS.proxyStateChanged, state);
+  });
+  proxyRuntime?.on('traffic-changed', (traffic: ProxyTraffic | null) => {
+    broadcast(IPC_CHANNELS.proxyTrafficChanged, traffic);
   });
 }
 
@@ -929,6 +941,12 @@ function wireUpdaterBroadcast(): void {
 }
 
 registerProcessErrorHandlers();
+process.once('SIGINT', () => {
+  requestQuitAfterRuntimeShutdown(true);
+});
+process.once('SIGTERM', () => {
+  requestQuitAfterRuntimeShutdown(true);
+});
 
 app.whenReady()
   .then(async () => {
@@ -967,7 +985,11 @@ app.whenReady()
     }
     updater.start();
     createWindow();
-    scheduleProxyAutoStart(initializedProxyRuntime, (error) => logRuntimeError('proxy:auto-start', error));
+    scheduleProxyAutoStart(
+      initializedProxyRuntime,
+      (error) => logRuntimeError('proxy:auto-start', error),
+      autoStartAbortController.signal
+    );
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

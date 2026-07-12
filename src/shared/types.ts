@@ -270,6 +270,7 @@ export interface ProxyGroupOptionInfo {
   name: string;
   type: string;
   delayMs?: number;
+  delayStatus?: ProxyDelayStatus;
 }
 
 export interface ProxyGroupInfo {
@@ -280,6 +281,18 @@ export interface ProxyGroupInfo {
 
 export interface ProxyGroupsInfo {
   groups: ProxyGroupInfo[];
+}
+
+export interface ProxyTraffic {
+  upBytesPerSecond: number;
+  downBytesPerSecond: number;
+}
+
+export type ProxyDelayStatus = 'ready' | 'unavailable';
+
+export interface ProxyDelayResult {
+  status: ProxyDelayStatus;
+  delayMs?: number;
 }
 
 export interface ProxyApi {
@@ -297,9 +310,11 @@ export interface ProxyApi {
   grantTunPermission: () => Promise<ProxyState>;
   revokeTunPermission: () => Promise<ProxyState>;
   listProxies: () => Promise<ProxyGroupsInfo>;
+  testProxyDelays: () => Promise<ProxyGroupsInfo>;
   selectProxy: (groupName: string, optionName: string) => Promise<ProxyState>;
   getProxyLogs: () => Promise<string>;
   onProxyStateChanged: (listener: (state: ProxyState) => void) => () => void;
+  onProxyTrafficChanged: (listener: (traffic: ProxyTraffic | null) => void) => () => void;
 }
 
 export interface ServiceApi {

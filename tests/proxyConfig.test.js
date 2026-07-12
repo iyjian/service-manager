@@ -16,7 +16,15 @@ const {
   serializeSubscriptionCache,
   parseSubscriptionCache,
 } = require('../dist/main/proxy/subscriptionCache.js');
-const { selectCoreAsset, coreArch, corePlatform, coreBinaryName } = require('../dist/main/proxy/coreManager.js');
+const {
+  CoreManager,
+  selectCoreAsset,
+  coreArch,
+  corePlatform,
+  coreBinaryName,
+  downloadSourceCandidates,
+  parseSha256Digest,
+} = require('../dist/main/proxy/coreManager.js');
 const { ProxyRuntime } = require('../dist/main/proxy/proxyRuntime.js');
 
 let proxyExceptions = {};
@@ -1212,4 +1220,220 @@ test('core platform/arch helpers map Node identifiers to mihomo asset names', ()
   assert.equal(coreArch('arm64'), 'arm64');
   assert.equal(coreBinaryName('win32'), 'mihomo.exe');
   assert.equal(coreBinaryName('darwin'), 'mihomo');
+});
+
+test('downloadSourceCandidates tries approved mirrors before the official URL', () => {
+  assert.deepEqual(downloadSourceCandidates('https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz'), [
+    'https://update.hwdns.net/https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz',
+    'https://gh-proxy.org/https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz',
+    'https://github.com/MetaCubeX/mihomo/releases/download/v1/a.gz',
+  ]);
+});
+
+test('parseSha256Digest accepts only a sha256 asset digest', () => {
+  const digest = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  assert.equal(parseSha256Digest(`sha256:${digest}`), digest);
+  assert.equal(parseSha256Digest(undefined), null);
+  assert.equal(parseSha256Digest('md5:abc'), null);
+});
+
+test('CoreManager retries asset mirrors and verifies the archive before extraction', async (t) => {
+  const crypto = require('node:crypto');
+  const zlib = require('node:zlib');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-core-download-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const assetName = `mihomo-${corePlatform()}-${coreArch()}-v1.0.0${process.platform === 'win32' ? '.zip' : '.gz'}`;
+  const assetUrl = `https://github.com/MetaCubeX/mihomo/releases/download/v1.0.0/${assetName}`;
+  const archive = process.platform === 'win32'
+    ? (() => {
+      const zip = new (require('adm-zip'))();
+      zip.addFile('mihomo.exe', Buffer.from('test binary'));
+      return zip.toBuffer();
+    })()
+    : zlib.gzipSync(Buffer.from('#!/bin/sh\necho "Mihomo Meta v9.9.9"\n'));
+  const digest = crypto.createHash('sha256').update(archive).digest('hex');
+  const attempts = [];
+  const fetchImpl = async (input) => {
+    const url = String(input);
+    attempts.push(url);
+    if (url.includes('/releases/latest')) {
+      return new Response(JSON.stringify({
+        tag_name: 'v1.0.0',
+        assets: [{
+          name: assetName,
+          browser_download_url: assetUrl,
+          digest: `sha256:${digest}`,
+        }],
+      }), { status: 200 });
+    }
+    if (url !== assetUrl) {
+      return new Response('unavailable', { status: 502 });
+    }
+    return new Response(archive, { status: 200, headers: { 'content-length': String(archive.length) } });
+  };
+
+  const manager = new CoreManager(directory, fetchImpl);
+  const installed = await manager.download();
+
+  assert.equal(installed.version, process.platform === 'win32' ? 'v1.0.0' : 'v9.9.9');
+  assert.deepEqual(attempts.slice(-3), downloadSourceCandidates(assetUrl));
+  await fs.access(installed.binaryPath);
+});
+
+test('CoreManager rejects a checksum mismatch and removes the temporary archive', async (t) => {
+  const crypto = require('node:crypto');
+  const zlib = require('node:zlib');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-core-checksum-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const assetName = `mihomo-${corePlatform()}-${coreArch()}-v1.0.0${process.platform === 'win32' ? '.zip' : '.gz'}`;
+  const assetUrl = `https://github.com/MetaCubeX/mihomo/releases/download/v1.0.0/${assetName}`;
+  const expectedDigest = crypto.createHash('sha256').update(Buffer.from('expected')).digest('hex');
+  const archive = zlib.gzipSync(Buffer.from('different archive'));
+  const fetchImpl = async (input) => {
+    const url = String(input);
+    if (url.includes('/releases/latest')) {
+      return new Response(JSON.stringify({
+        tag_name: 'v1.0.0',
+        assets: [{ name: assetName, browser_download_url: assetUrl, digest: `sha256:${expectedDigest}` }],
+      }), { status: 200 });
+    }
+    return new Response(archive, { status: 200 });
+  };
+
+  const manager = new CoreManager(directory, fetchImpl);
+  await assert.rejects(manager.download(), /checksum verification failed/i);
+  await assert.rejects(fs.access(path.join(directory, assetName)));
+});
+
+test('ProxyRuntime shutdown waits for child exit after escalating from SIGTERM to SIGKILL', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-shutdown-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const child = new EventEmitter();
+  child.stdout = null;
+  child.stderr = null;
+  child.kill = (signal) => {
+    if (signal === 'SIGKILL') {
+      setTimeout(() => child.emit('exit', 137), 100);
+    }
+    return true;
+  };
+
+  const runtime = new ProxyRuntime(proxyDir);
+  runtime.child = child;
+  runtime.runStatus = 'running';
+  let settled = false;
+  const shutdown = runtime.shutdown();
+  void shutdown.then(() => {
+    settled = true;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 3_010));
+  assert.equal(settled, false);
+  await shutdown;
+  assert.equal(settled, true);
+});
+
+test('ProxyRuntime does not restore running intent after shutdown has begun', async (t) => {
+  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-proxy-shutdown-intent-'));
+  t.after(() => fs.rm(proxyDir, { recursive: true, force: true }));
+
+  const runtime = new ProxyRuntime(proxyDir);
+  runtime.settings.startOnLaunch = true;
+  let startCalls = 0;
+  runtime.start = async () => {
+    startCalls += 1;
+    return runtime.snapshot();
+  };
+
+  await runtime.shutdown();
+  const state = await runtime.restoreRunningIntent();
+
+  assert.equal(startCalls, 0);
+  assert.equal(state.settings.startOnLaunch, true);
+});
+
+test('CoreManager preserves local archive write errors instead of reporting a mirror failure', async (t) => {
+  const crypto = require('node:crypto');
+  const zlib = require('node:zlib');
+  const fsPromises = require('node:fs/promises');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-core-write-error-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const assetName = `mihomo-${corePlatform()}-${coreArch()}-v1.0.0${process.platform === 'win32' ? '.zip' : '.gz'}`;
+  const assetUrl = `https://github.com/MetaCubeX/mihomo/releases/download/v1.0.0/${assetName}`;
+  const archive = zlib.gzipSync(Buffer.from('test binary'));
+  const digest = crypto.createHash('sha256').update(archive).digest('hex');
+  const manager = new CoreManager(directory, async (input) => {
+    const url = String(input);
+    if (url.includes('/releases/latest')) {
+      return new Response(JSON.stringify({
+        tag_name: 'v1.0.0',
+        assets: [{ name: assetName, browser_download_url: assetUrl, digest: `sha256:${digest}` }],
+      }), { status: 200 });
+    }
+    return new Response(archive, { status: 200 });
+  });
+  const originalOpen = fsPromises.open;
+  const localWriteError = new Error('archive directory is read-only');
+  localWriteError.code = 'EACCES';
+  fsPromises.open = async () => {
+    throw localWriteError;
+  };
+  t.after(() => {
+    fsPromises.open = originalOpen;
+  });
+
+  await assert.rejects(manager.download(), (error) => {
+    assert.match(error.message, /Unable to write Mihomo archive: archive directory is read-only/);
+    assert.equal(error.cause, localWriteError);
+    return true;
+  });
+});
+
+test('CoreManager wraps a final archive cleanup failure with its original cause', async (t) => {
+  const crypto = require('node:crypto');
+  const zlib = require('node:zlib');
+  const fsPromises = require('node:fs/promises');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-core-cleanup-error-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const assetName = `mihomo-${corePlatform()}-${coreArch()}-v1.0.0${process.platform === 'win32' ? '.zip' : '.gz'}`;
+  const assetUrl = `https://github.com/MetaCubeX/mihomo/releases/download/v1.0.0/${assetName}`;
+  const archive = zlib.gzipSync(Buffer.from('#!/bin/sh\necho Mihomo Meta v9.9.9\n'));
+  const digest = crypto.createHash('sha256').update(archive).digest('hex');
+  const manager = new CoreManager(directory, async (input) => {
+    const url = String(input);
+    if (url.includes('/releases/latest')) {
+      return new Response(JSON.stringify({
+        tag_name: 'v1.0.0',
+        assets: [{ name: assetName, browser_download_url: assetUrl, digest: `sha256:${digest}` }],
+      }), { status: 200 });
+    }
+    return new Response(archive, { status: 200 });
+  });
+  const originalRm = fsPromises.rm;
+  const localCleanupError = new Error('archive cleanup is denied');
+  localCleanupError.code = 'EACCES';
+  let removeCalls = 0;
+  fsPromises.rm = async (...args) => {
+    removeCalls += 1;
+    if (removeCalls === 2) {
+      throw localCleanupError;
+    }
+    return originalRm(...args);
+  };
+
+  try {
+    await assert.rejects(manager.download(), (error) => {
+      assert.equal(error.name, 'LocalArchiveWriteError');
+      assert.match(error.message, /Unable to write Mihomo archive: archive cleanup is denied/);
+      assert.equal(error.cause, localCleanupError);
+      return true;
+    });
+  } finally {
+    fsPromises.rm = originalRm;
+  }
 });

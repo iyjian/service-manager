@@ -5,6 +5,7 @@ import type {
   ProxyExceptionDraft,
   ProxyMode,
   ProxyState,
+  ProxyTraffic,
   ServiceApi,
   ServiceStatusChange,
   TunnelStatusChange,
@@ -81,6 +82,7 @@ const proxyApi: ProxyApi = {
   grantTunPermission: () => ipcRenderer.invoke('proxy:grant-tun'),
   revokeTunPermission: () => ipcRenderer.invoke('proxy:revoke-tun'),
   listProxies: () => ipcRenderer.invoke('proxy:list-proxies'),
+  testProxyDelays: () => ipcRenderer.invoke('proxy:test-delays'),
   selectProxy: (groupName: string, optionName: string) =>
     ipcRenderer.invoke('proxy:select-proxy', { groupName, optionName }),
   getProxyLogs: () => ipcRenderer.invoke('proxy:get-logs'),
@@ -90,6 +92,13 @@ const proxyApi: ProxyApi = {
     };
     ipcRenderer.on('proxy:state', wrapped);
     return () => ipcRenderer.removeListener('proxy:state', wrapped);
+  },
+  onProxyTrafficChanged: (listener: (traffic: ProxyTraffic | null) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, traffic: ProxyTraffic | null): void => {
+      listener(traffic);
+    };
+    ipcRenderer.on('proxy:traffic', wrapped);
+    return () => ipcRenderer.removeListener('proxy:traffic', wrapped);
   },
 };
 

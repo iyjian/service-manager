@@ -1,4 +1,4 @@
-import type { ProxyGroupInfo, ProxyGroupOptionInfo, ProxyGroupsInfo } from '../../shared/types';
+import type { ProxyDelayResult, ProxyGroupInfo, ProxyGroupOptionInfo, ProxyGroupsInfo } from '../../shared/types';
 
 export interface MihomoProxyRecord {
   name: string;
@@ -14,24 +14,38 @@ function isManualSelector(entry: MihomoProxyRecord): boolean {
   return entry.name !== 'GLOBAL' && entry.type.toLowerCase() === 'selector' && Array.isArray(entry.all);
 }
 
-function toOption(records: MihomoProxyRecords, name: string): ProxyGroupOptionInfo {
+function toOption(
+  records: MihomoProxyRecords,
+  name: string,
+  delayResults: ReadonlyMap<string, ProxyDelayResult> | undefined
+): ProxyGroupOptionInfo {
   const entry = records[name];
+  const delayResult = delayResults?.get(name);
   const delay = entry?.history?.[entry.history.length - 1]?.delay;
   return {
     name,
     type: entry?.type ?? 'unknown',
-    ...(typeof delay === 'number' && delay > 0 ? { delayMs: delay } : {}),
+    ...(delayResult?.status === 'ready' && typeof delayResult.delayMs === 'number'
+      ? { delayMs: delayResult.delayMs, delayStatus: 'ready' as const }
+      : delayResult?.status === 'unavailable'
+        ? { delayStatus: 'unavailable' as const }
+        : typeof delay === 'number' && delay > 0
+          ? { delayMs: delay }
+          : {}),
   };
 }
 
-export function listManualProxyGroups(records: MihomoProxyRecords): ProxyGroupsInfo {
+export function listManualProxyGroups(
+  records: MihomoProxyRecords,
+  delayResults?: ReadonlyMap<string, ProxyDelayResult>
+): ProxyGroupsInfo {
   return {
     groups: Object.values(records)
       .filter(isManualSelector)
       .map((group) => ({
         name: group.name,
         now: group.now,
-        options: (group.all ?? []).map((name) => toOption(records, name)),
+        options: (group.all ?? []).map((name) => toOption(records, name, delayResults)),
       })),
   };
 }

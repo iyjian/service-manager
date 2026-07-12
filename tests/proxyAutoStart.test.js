@@ -48,3 +48,75 @@ test('scheduleProxyAutoStart reports asynchronous restoration failure', async ()
 
   assert.equal(reported, expected);
 });
+
+test('restoreWithPortConflictRetry retries only transient Mixed Port conflicts', async () => {
+  let recoveredAttempts = 0;
+  const recovered = await proxyAutoStart.restoreWithPortConflictRetry(
+    {
+      restoreRunningIntent: async () => {
+        recoveredAttempts += 1;
+        if (recoveredAttempts < 3) {
+          throw new Error('Mixed port 7890 is already in use. Stop the process using it or choose another port.');
+        }
+        return 'running';
+      },
+    },
+    async () => undefined
+  );
+
+  assert.equal(recovered, 'running');
+  assert.equal(recoveredAttempts, 3);
+});
+
+test('restoreWithPortConflictRetry retains a persistent conflict and does not retry other failures', async () => {
+  let conflictAttempts = 0;
+  await assert.rejects(
+    proxyAutoStart.restoreWithPortConflictRetry(
+      {
+        restoreRunningIntent: async () => {
+          conflictAttempts += 1;
+          throw new Error('Mixed port 7890 is already in use. Stop the process using it or choose another port.');
+        },
+      },
+      async () => undefined
+    ),
+    /Mixed port 7890 is already in use/
+  );
+  assert.equal(conflictAttempts, 4);
+
+  let otherAttempts = 0;
+  await assert.rejects(
+    proxyAutoStart.restoreWithPortConflictRetry(
+      {
+        restoreRunningIntent: async () => {
+          otherAttempts += 1;
+          throw new Error('mihomo core is not installed. Download it first.');
+        },
+      },
+      async () => undefined
+    ),
+    /core is not installed/
+  );
+  assert.equal(otherAttempts, 1);
+});
+
+test('restoreWithPortConflictRetry does not queue another restore after shutdown aborts its delay', async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+
+  const result = await proxyAutoStart.restoreWithPortConflictRetry(
+    {
+      restoreRunningIntent: async () => {
+        attempts += 1;
+        throw new Error('Mixed port 7890 is already in use. Stop the process using it or choose another port.');
+      },
+    },
+    async () => {
+      controller.abort();
+    },
+    controller.signal
+  );
+
+  assert.equal(result, undefined);
+  assert.equal(attempts, 1);
+});

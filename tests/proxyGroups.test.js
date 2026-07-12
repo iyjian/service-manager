@@ -44,6 +44,19 @@ test('listManualProxyGroups returns only selectable Selector groups with all run
   });
 });
 
+test('listManualProxyGroups overlays the transient delay test result without treating unavailable as zero milliseconds', () => {
+  const delayResults = new Map([
+    ['HK-01', { delayMs: 17, status: 'ready' }],
+    ['US-01', { status: 'unavailable' }],
+  ]);
+
+  assert.deepEqual(listManualProxyGroups(RECORDS, delayResults).groups[0].options, [
+    { name: 'HK-01', type: 'Shadowsocks', delayMs: 17, delayStatus: 'ready' },
+    { name: 'US-01', type: 'Shadowsocks', delayStatus: 'unavailable' },
+    { name: 'DIRECT', type: 'Direct' },
+  ]);
+});
+
 test('findManualProxyOption accepts only candidates exposed by a Selector group', () => {
   assert.equal(findManualProxyOption(RECORDS, '全球直连', 'DIRECT')?.name, 'DIRECT');
   assert.equal(findManualProxyOption(RECORDS, '全球直连', 'HK-01'), undefined);
