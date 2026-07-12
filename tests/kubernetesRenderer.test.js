@@ -14,7 +14,10 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
   ]);
 
   for (const document of documents) {
-    assert.match(document, /~\/\.kube\/config/);
+    assert.match(document, /\.kube/i);
+    assert.match(document, /first level.*direct regular files|direct regular files.*first level|first-level.*regular files/i);
+    assert.match(document, /duplicate Context.*filename|filename.*duplicate Context/i);
+    assert.match(document, /Windows/);
     assert.match(document, /token.*client-certificate|client-certificate.*token/i);
     assert.match(document, /token(?: authentication)? or (?:a )?complete matching client-certificate\/client-key pair/i);
     assert.match(document, /exec.*not supported|not supported.*exec/i);
@@ -58,6 +61,8 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /window\.kubernetesApi\.reconnect\(\)/);
   assert.match(page, /state\?\.connection === 'disconnected'/);
   assert.match(page, /this\.reconnecting/);
+  assert.match(page, /context\.supported \? context\.displayName : `\$\{context\.displayName\} \(unsupported\)`/);
+  assert.doesNotMatch(page, /option\.textContent = context\.supported \? context\.name/);
   assert.match(page, /listCustomResourceDefinitions\(\)/);
   assert.match(page, /apiVersion: `\$\{definition\.group\}\/\$\{definition\.version\}`/);
   for (const mutation of ['Delete', 'Scale', 'Apply', 'Restart']) {

@@ -1292,7 +1292,7 @@ app.whenReady()
     await initializedProxyRuntime.init();
 
     const initializedKubernetesRuntime = new KubernetesRuntime({
-      kubeconfigPath: path.join(app.getPath('home'), '.kube', 'config'),
+      kubeconfigDirectory: path.join(app.getPath('home'), '.kube'),
       contextPreference: new FileKubernetesContextPreference(
         path.join(app.getPath('userData'), 'kubernetes-context.json')
       ),

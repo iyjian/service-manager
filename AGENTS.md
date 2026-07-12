@@ -43,7 +43,8 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/proxy/proxyGroups.ts`: pure Mihomo runtime group conversion, manual-selector validation, and saved-selection compatibility helpers.
 - `src/main/appMemory.ts`: local Electron and Mihomo working-set collection for the Hosts header Memory total.
 - `src/main/kubernetes/kubeconfigStore.ts`: safe local kubeconfig Context/auth/TLS classification, Namespace-scope normalization, and file-reload detection.
-- `src/main/kubernetes/contextPreference.ts`: durable user-data Context-name preference only; it never stores kubeconfig credentials or resource data.
+- `src/main/kubernetes/kubeconfigCatalog.ts`: cross-platform first-level `.kube` discovery, invalid-file isolation, duplicate-Context labeling, stable source IDs, credential-sensitive fingerprints, and main-process-only source resolution.
+- `src/main/kubernetes/contextPreference.ts`: durable user-data stable Context selection-ID preference only; it never stores kubeconfig credentials, absolute paths, or resource data.
 - `src/main/kubernetes/kubernetesClient.ts`: main-process Kubernetes REST, CRD discovery, Watch, log, exec, port-forward, and on-demand relation adapter.
 - `src/main/kubernetes/clusterSession.ts`: one active Context session, categorized reconnect/retry, and ordered owned-resource disposal.
 - `src/main/kubernetes/resourceQuery.ts`: stable resource keys, safe resource summaries, loaded-only projection, and virtual-window primitives.
@@ -103,9 +104,10 @@ Local proxy:
 
 Kubernetes:
 
-- Support Kubernetes 1.28+ through the Kubernetes tab. It reads only local `~/.kube/config`; one active Context is connected at a time, and the saved user-data Context preference contains only a Context name, never credentials.
+- Support Kubernetes 1.28+ through the Kubernetes tab. On macOS, Linux, and Windows, derive the current user's `.kube` directory with platform path APIs and scan only its first-level direct regular files; do not recurse into subdirectories, follow symbolic links, expand `~`, or depend on `KUBECONFIG`. Skip invalid/non-kubeconfig candidates without blocking valid files. One active Context is connected at a time.
+- Keep absolute kubeconfig paths and the stable selection-ID-to-source mapping in the main process. Unique Context names display normally; duplicate Context names display as `Context name — filename`. Persist only the stable non-credential selection ID, never credentials, kubeconfig contents, API URLs, or absolute paths, and never fall back to a same-named Context from another file when a saved source disappears.
 - Support either kubeconfig token authentication or a complete matching client-certificate/client-key pair, supplied as inline data or matching file paths. Detect `exec` and `auth-provider` authentication as not supported; reject them before Kubernetes client construction or execution, and leave the Context visible with an actionable unsupported-auth state.
-- Honor `insecure-skip-tls-verify` but display a persistent `TLS verification disabled` warning. Watch kubeconfig changes and require explicit reload confirmation before applying any changed Context or credential data.
+- Honor `insecure-skip-tls-verify` but display a persistent `TLS verification disabled` warning. Resolve relative certificate/key paths from each Context's own kubeconfig file. Watch the `.kube` directory and require explicit reload confirmation before applying added, removed, replaced, or changed Context or credential data.
 - Kubernetes resource APIs are strictly read-only. Do not add create, delete, patch, edit, Apply, Scale, Restart, or Pod lifecycle controls.
 - Categories are Workloads (Pods, Deployments, StatefulSets), Network (Services, Ingresses), Configuration (ConfigMaps, Secrets), Storage (PVC), Cluster (Nodes, Namespaces), and dynamically discovered Custom Resources. Discover CRDs only when that category is active, through read-only ApiextensionsV1 API; select a Group/Version/Kind before listing its instances.
 - Namespace scope accepts multiple selected Namespaces or mutually-exclusive `All Namespaces`. All Namespaces uses one active scope-wide Watch for the current resource type only; Nodes and Namespaces remain cluster-scoped.
@@ -189,7 +191,7 @@ Logs:
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
 - Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
-- Kubeconfig bytes, tokens, client certificates/keys, client transport handles, and terminal/port-forward credentials stay in the main process and never cross renderer IPC.
+- Kubeconfig bytes, absolute source paths, stable-ID source mappings, tokens, client certificates/keys, client transport handles, and terminal/port-forward credentials stay in the main process and never cross renderer IPC.
 - Kubernetes Secret `data`/`stringData` must be absent from list/cache/diagnostic/settings data. Decode only for the active resource-detail viewer, clear it when that viewer closes or changes, and never log it.
 - Dialog open/close paths must be idempotent.
 - Missing remote `systemd --user` support must fail explicitly with setup guidance; never silently switch to an unmanaged process model.

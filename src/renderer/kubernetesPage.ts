@@ -586,7 +586,7 @@ class KubernetesPage implements KubernetesPageController {
       for (const context of state.contexts) {
         const option = document.createElement('option');
         option.value = context.name;
-        option.textContent = context.supported ? context.name : `${context.name} (unsupported)`;
+        option.textContent = context.supported ? context.displayName : `${context.displayName} (unsupported)`;
         option.selected = context.name === state.selectedContext;
         this.contextSelect.appendChild(option);
       }
