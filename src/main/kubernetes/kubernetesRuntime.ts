@@ -1,9 +1,6 @@
 import { watch as watchPath } from 'node:fs';
-import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
-import yaml from 'js-yaml';
 import type {
   KubernetesListSnapshot as RendererKubernetesListSnapshot,
   KubernetesCustomResourceDefinition,
@@ -24,7 +21,15 @@ import type {
 } from '../../shared/types';
 import { ClusterSession, classifyKubernetesConnectionError } from './clusterSession';
 import { type KubernetesContextPreference } from './contextPreference';
-import { classifyKubeconfig, diffKubeconfigContexts, normalizeNamespaceScope, type KubeconfigDocument } from './kubeconfigStore';
+import { diffKubeconfigContexts, normalizeNamespaceScope, type KubeconfigDocument } from './kubeconfigStore';
+import {
+  catalogFromDocument,
+  kubeconfigDirectoryForHome,
+  resolveKubeconfigContext,
+  scanKubeconfigDirectory,
+  type KubeconfigCatalog,
+  type KubeconfigContextSource,
+} from './kubeconfigCatalog';
 import { createKubernetesClient, type KubernetesClient, type KubernetesWatchEvent } from './kubernetesClient';
 import { PodInteractionManager, type KubernetesPortForwardInput as RuntimePortForwardInput, type KubernetesPodInteractionTarget } from './podInteractions';
 import { ResourceCache } from './resourceCache';
@@ -94,14 +99,20 @@ export interface KubernetesInteractions {
 }
 
 export interface KubernetesRuntimeOptions {
+  kubeconfigDirectory?: string;
+  readKubeconfigCatalog?: () => Promise<KubeconfigCatalog>;
+  watchKubeconfigDirectory?: (listener: () => void) => () => void;
+  createClient?: (source: KubeconfigContextSource) => Promise<KubernetesClient>;
+  /** @deprecated Single-file injection retained for focused runtime tests. */
   kubeconfigPath?: string;
   session?: KubernetesRuntimeSession;
-  createClient?: (context: string) => Promise<KubernetesClient>;
   createCoordinator?: (client: () => KubernetesClient) => KubernetesCoordinator;
   createInteractions?: (client: () => KubernetesClient) => KubernetesInteractions;
+  /** @deprecated Single-document injection retained for focused runtime tests. */
   readKubeconfig?: () => Promise<KubeconfigDocument>;
+  /** @deprecated Single-file watcher injection retained for focused runtime tests. */
   watchKubeconfig?: (listener: () => void) => () => void;
-  /** Main-process durable, credential-free Context name preference. */
+  /** Main-process durable, credential-free Context selection-ID preference. */
   contextPreference?: KubernetesContextPreference;
   onDiagnostic?: (scope: string, error: Error, context: Record<string, string>) => void;
 }
@@ -229,17 +240,6 @@ function assertPort(value: unknown, label: 'remote' | 'local', allowZero = false
   return value;
 }
 
-function toKubeconfigDocument(value: unknown): KubeconfigDocument {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('The local Kubernetes kubeconfig is invalid.');
-  }
-  const record = value as Partial<KubeconfigDocument>;
-  if (!Array.isArray(record.contexts) || !Array.isArray(record.users) || !Array.isArray(record.clusters)) {
-    throw new Error('The local Kubernetes kubeconfig is invalid.');
-  }
-  return value as KubeconfigDocument;
-}
-
 function errorFromUnknown(value: unknown, fallback: string): Error {
   return value instanceof Error ? value : new Error(fallback);
 }
@@ -268,15 +268,6 @@ function throwCleanupFailures(failures: unknown[], fallback: string): void {
   }
 }
 
-/**
- * This hash stays only in the main process. It lets file watching detect
- * credential and endpoint changes whose safe Context metadata is unchanged,
- * without exposing kubeconfig bytes or derived values in state or logs.
- */
-function fingerprintKubeconfig(document: KubeconfigDocument): string {
-  return createHash('sha256').update(JSON.stringify(document)).digest('hex');
-}
-
 /** A parent-directory target survives editor/credential-helper atomic replaces. */
 export function kubeconfigWatchTarget(kubeconfigPath: string): { directory: string; filename: string } {
   return { directory: path.dirname(kubeconfigPath), filename: path.basename(kubeconfigPath) };
@@ -300,8 +291,8 @@ interface PendingListBroadcast {
  * remain inside the concrete client/session implementations.
  */
 export class KubernetesRuntime {
-  private readonly kubeconfigPath: string;
-  private readonly readKubeconfig: () => Promise<KubeconfigDocument>;
+  private readonly kubeconfigDirectory: string;
+  private readonly readKubeconfigCatalog: () => Promise<KubeconfigCatalog>;
   private readonly createCoordinator: (client: () => KubernetesClient) => KubernetesCoordinator;
   private readonly createInteractions: (client: () => KubernetesClient) => KubernetesInteractions;
   private readonly onDiagnostic?: (scope: string, error: Error, context: Record<string, string>) => void;
@@ -318,8 +309,7 @@ export class KubernetesRuntime {
   private queryGeneration = 0;
   private contextTransitionGeneration?: number;
   private namespaceScope: KubernetesNamespaceScope = { mode: 'all', namespaces: [] };
-  private lastKubeconfigContexts: KubernetesState['contexts'] = [];
-  private lastKubeconfigFingerprint?: string;
+  private activeCatalog: KubeconfigCatalog = { contexts: [], sources: new Map(), fingerprint: '' };
   private kubeconfigReloadAvailable = false;
   private localError?: string;
   private stopWatchingKubeconfig?: () => void;
@@ -339,8 +329,14 @@ export class KubernetesRuntime {
   private readonly customResourceDefinitionsCache = new ResourceCache<KubernetesCustomResourceDefinition[]>(4, 120_000);
 
   public constructor(options: KubernetesRuntimeOptions = {}) {
-    this.kubeconfigPath = options.kubeconfigPath ?? path.join(homedir(), '.kube', 'config');
-    this.readKubeconfig = options.readKubeconfig ?? (() => this.readLocalKubeconfig());
+    const defaultDirectory = kubeconfigDirectoryForHome(homedir());
+    this.kubeconfigDirectory = options.kubeconfigDirectory
+      ?? (options.kubeconfigPath ? path.dirname(options.kubeconfigPath) : defaultDirectory);
+    const legacyKubeconfigPath = options.kubeconfigPath ?? path.join(this.kubeconfigDirectory, 'config');
+    this.readKubeconfigCatalog = options.readKubeconfigCatalog
+      ?? (options.readKubeconfig
+        ? async () => catalogFromDocument(legacyKubeconfigPath, await options.readKubeconfig!())
+        : () => scanKubeconfigDirectory(this.kubeconfigDirectory));
     this.createCoordinator = options.createCoordinator ?? ((client) => new ResourceCoordinator({
       client,
       cache: new ResourceCache<KubernetesListSnapshot>(32, 120_000),
@@ -350,28 +346,35 @@ export class KubernetesRuntime {
     this.createInteractions = options.createInteractions ?? ((client) => new PodInteractionManager({ client }));
     this.onDiagnostic = options.onDiagnostic;
     this.contextPreference = options.contextPreference;
+    const clientFactory = options.createClient ?? ((source: KubeconfigContextSource) => createKubernetesClient({
+      kubeconfigPath: source.kubeconfigPath,
+      context: source.contextName,
+    }));
     this.session = options.session ?? new ClusterSession({
-      createClient: options.createClient ?? ((context) => createKubernetesClient({
-        kubeconfigPath: this.kubeconfigPath,
-        context,
-      })),
+      createClient: (selectionId) => {
+        const source = resolveKubeconfigContext(this.activeCatalog, selectionId);
+        if (!source) {
+          throw new Error('The selected Kubernetes Context is no longer available.');
+        }
+        return clientFactory(source);
+      },
       disposeOwnedResources: () => this.disposeContextResources(),
     });
     this.coordinator = this.createCoordinator(() => this.observedClient());
     this.interactions = this.createInteractions(() => this.observedClient());
 
-    const watchFactory = options.watchKubeconfig ?? ((listener: () => void) => this.watchLocalKubeconfig(listener));
+    const watchFactory = options.watchKubeconfigDirectory
+      ?? options.watchKubeconfig
+      ?? ((listener: () => void) => this.watchLocalKubeconfigDirectory(listener));
     this.stopWatchingKubeconfig = watchFactory(() => {
       void this.enqueueLifecycle(async () => {
         if (this.disposed) {
           return;
         }
-        const document = await this.readKubeconfig();
-        const next = classifyKubeconfig(document);
-        const fingerprint = fingerprintKubeconfig(document);
+        const next = await this.readKubeconfigCatalog();
         if (
-          diffKubeconfigContexts(this.lastKubeconfigContexts, next)
-          || this.lastKubeconfigFingerprint !== fingerprint
+          diffKubeconfigContexts(this.activeCatalog.contexts, next.contexts)
+          || this.activeCatalog.fingerprint !== next.fingerprint
         ) {
           this.kubeconfigReloadAvailable = true;
           this.emitState();
@@ -384,19 +387,16 @@ export class KubernetesRuntime {
     return this.enqueueLifecycle(async () => {
       this.assertUsable();
       try {
-        const document = await this.readKubeconfig();
-        const contexts = classifyKubeconfig(document);
-        this.lastKubeconfigContexts = contexts.map((context) => ({ ...context }));
-        this.lastKubeconfigFingerprint = fingerprintKubeconfig(document);
-        await this.session.setContexts(contexts);
-        await this.restoreContextPreference(contexts);
+        const catalog = await this.readKubeconfigCatalog();
+        this.activeCatalog = catalog;
+        await this.session.setContexts(catalog.contexts);
+        await this.restoreContextPreference(catalog.contexts);
         this.kubeconfigReloadAvailable = false;
         this.localError = undefined;
       } catch {
-        this.lastKubeconfigContexts = [];
-        this.lastKubeconfigFingerprint = undefined;
+        this.activeCatalog = { contexts: [], sources: new Map(), fingerprint: '' };
         await this.session.setContexts([]);
-        this.localError = 'The local Kubernetes kubeconfig could not be read.';
+        this.localError = 'The local Kubernetes kubeconfig directory could not be read.';
       }
       const state = this.getState();
       this.emitState(state);
@@ -435,13 +435,11 @@ export class KubernetesRuntime {
     return this.enqueueLifecycle(async () => {
       try {
         await this.deactivateInvalidatedQuery(transition.query, transition.coordinator);
-        const document = await this.readKubeconfig();
-        const contexts = classifyKubeconfig(document);
-        this.lastKubeconfigContexts = contexts.map((context) => ({ ...context }));
-        this.lastKubeconfigFingerprint = fingerprintKubeconfig(document);
-        await this.session.setContexts(contexts, { reconnectActiveContext: true });
+        const catalog = await this.readKubeconfigCatalog();
+        this.activeCatalog = catalog;
+        await this.session.setContexts(catalog.contexts, { reconnectActiveContext: true });
         const selectedAfterReload = this.session.getState().selectedContext;
-        if (!selectedAfterReload || !contexts.find((context) => (
+        if (!selectedAfterReload || !catalog.contexts.find((context) => (
           context.name === selectedAfterReload && context.supported
         ))) {
           await this.clearContextPreference();
@@ -1411,36 +1409,20 @@ export class KubernetesRuntime {
     }
   }
 
-  private async readLocalKubeconfig(): Promise<KubeconfigDocument> {
+  private watchLocalKubeconfigDirectory(listener: () => void): () => void {
     try {
-      return toKubeconfigDocument(yaml.load(await fs.readFile(this.kubeconfigPath, 'utf8')));
-    } catch (error) {
-      if (error instanceof Error && /invalid/i.test(error.message)) {
-        throw error;
-      }
-      throw new Error('The local Kubernetes kubeconfig could not be read.');
-    }
-  }
-
-  private watchLocalKubeconfig(listener: () => void): () => void {
-    try {
-      // Editors and credential helpers commonly update kubeconfig by atomically
-      // replacing the file. Watching its parent directory keeps the watcher
-      // attached after that inode replacement, unlike a direct file watch.
-      const { directory, filename } = kubeconfigWatchTarget(this.kubeconfigPath);
-      const watcher = watchPath(directory, { persistent: false }, (_event, changed) => {
-        if (!changed || changed.toString() === filename) {
-          listener();
-        }
-      });
+      // Directory-level watching covers creation, deletion, rename, content
+      // updates, and atomic replacement without trusting platform-specific
+      // event filenames.
+      const watcher = watchPath(this.kubeconfigDirectory, { persistent: false }, () => listener());
       // File-descriptor exhaustion or a platform watcher error must not become
       // an uncaught main-process exception. The next app launch/reload can
       // attach a watcher again, while the explicit Reload action remains safe.
       watcher.on('error', () => undefined);
       return () => watcher.close();
     } catch {
-      // A missing kubeconfig remains an explicit renderer state from init; the
-      // next app launch can attach a watcher after the file is created.
+      // A missing directory remains an empty renderer state from init; the next
+      // app launch can attach a watcher after the directory is created.
       return () => undefined;
     }
   }

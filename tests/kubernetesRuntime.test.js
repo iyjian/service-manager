@@ -1,7 +1,11 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const { KubernetesRuntime, kubeconfigWatchTarget } = require('../dist/main/kubernetes/kubernetesRuntime');
+const { catalogFromDocument } = require('../dist/main/kubernetes/kubeconfigCatalog');
 const { PodInteractionManager } = require('../dist/main/kubernetes/podInteractions');
 
 const POD_QUERY = {
@@ -62,6 +66,19 @@ function kubeconfigFixture() {
       { name: 'development', context: { cluster: 'development-cluster', user: 'token-user' } },
       { name: 'certificate', context: { cluster: 'development-cluster', user: 'certificate-user' } },
     ],
+  };
+}
+
+function emptyClient(onClose = () => undefined) {
+  return {
+    async list() { return { items: [], resourceVersion: '1' }; },
+    async get() { return {}; },
+    async listEvents() { return []; },
+    async watch() { return new AbortController(); },
+    async openPodLog() { throw new Error('not used'); },
+    async openPodExec() { throw new Error('not used'); },
+    async openPortForward() { throw new Error('not used'); },
+    async close() { onClose(); },
   };
 }
 
@@ -392,10 +409,12 @@ test('KubernetesRuntime reconnects only a disconnected Context through the read-
 
 test('KubernetesRuntime restores only a supported saved Context and clears a removed preference', async () => {
   const saved = [];
+  const developmentId = catalogFromDocument('/test-home/.kube/config', kubeconfigFixture())
+    .contexts.find((context) => context.contextName === 'development').name;
   const { runtime, fakeSession, calls } = createRuntime({
     readKubeconfig: async () => kubeconfigFixture(),
     contextPreference: {
-      async load() { return 'development'; },
+      async load() { return developmentId; },
       async save(value) { saved.push(value); },
       async clear() { saved.push('cleared'); },
     },
@@ -404,8 +423,8 @@ test('KubernetesRuntime restores only a supported saved Context and clears a rem
 
   await runtime.init();
 
-  assert.ok(calls.includes('select:development'));
-  assert.deepEqual(saved, ['development']);
+  assert.ok(calls.includes(`select:${developmentId}`));
+  assert.deepEqual(saved, [developmentId]);
   await runtime.shutdown();
 
   const removed = [];
@@ -872,6 +891,81 @@ test('KubernetesRuntime watches the kubeconfig parent directory to survive an at
   );
 });
 
+test('KubernetesRuntime resolves duplicate Context selections to their own kubeconfig source files', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-runtime-kubeconfigs-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const eastPath = path.join(directory, 'east.config');
+  const westPath = path.join(directory, 'west.config');
+  const documentFor = (suffix) => ({
+    clusters: [{ name: `${suffix}-cluster`, cluster: { server: `https://${suffix}.invalid` } }],
+    users: [{ name: `${suffix}-user`, user: { token: `${suffix}-secret` } }],
+    contexts: [{ name: 'shared', context: { cluster: `${suffix}-cluster`, user: `${suffix}-user` } }],
+  });
+  await fs.writeFile(eastPath, JSON.stringify(documentFor('east')));
+  await fs.writeFile(westPath, JSON.stringify(documentFor('west')));
+  const created = [];
+  const runtime = new KubernetesRuntime({
+    kubeconfigDirectory: directory,
+    createClient: async (source) => {
+      created.push(source);
+      return emptyClient();
+    },
+    watchKubeconfigDirectory: () => () => undefined,
+  });
+
+  const initial = await runtime.init();
+  assert.deepEqual(initial.contexts.map((context) => context.displayName), [
+    'shared — east.config',
+    'shared — west.config',
+  ]);
+  await runtime.selectContext(initial.contexts[0].name);
+  await runtime.selectContext(initial.contexts[1].name);
+
+  assert.deepEqual(created, [
+    { kubeconfigPath: eastPath, contextName: 'shared' },
+    { kubeconfigPath: westPath, contextName: 'shared' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(runtime.getState()), /east\.invalid|west\.invalid|secret|service-manager-runtime-kubeconfigs/);
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime keeps the active catalog until confirmed reload and clears a removed selection', async () => {
+  const sourcePath = '/safe-test-home/.kube/config';
+  let catalog = catalogFromDocument(sourcePath, kubeconfigFixture());
+  let notifyChange;
+  const preferenceEvents = [];
+  const closed = [];
+  const runtime = new KubernetesRuntime({
+    readKubeconfigCatalog: async () => catalog,
+    watchKubeconfigDirectory(listener) {
+      notifyChange = listener;
+      return () => undefined;
+    },
+    createClient: async () => emptyClient(() => closed.push('closed')),
+    contextPreference: {
+      async load() { return undefined; },
+      async save(value) { preferenceEvents.push(`save:${value}`); },
+      async clear() { preferenceEvents.push('clear'); },
+    },
+  });
+
+  const initial = await runtime.init();
+  const selected = initial.contexts[0].name;
+  await runtime.selectContext(selected);
+  catalog = catalogFromDocument(sourcePath, { clusters: [], users: [], contexts: [] });
+  notifyChange();
+  await waitFor(() => runtime.getState().kubeconfigReloadAvailable);
+
+  assert.equal(runtime.getState().selectedContext, selected);
+  await runtime.reloadKubeconfig();
+
+  assert.equal(runtime.getState().selectedContext, undefined);
+  assert.equal(runtime.getState().connection, 'disconnected');
+  assert.deepEqual(closed, ['closed']);
+  assert.equal(preferenceEvents.at(-1), 'clear');
+  await runtime.shutdown();
+});
+
 test('KubernetesRuntime rebuilds the active client after a confirmed content-only kubeconfig reload', async () => {
   let source = kubeconfigFixture();
   const createdClients = [];
@@ -931,9 +1025,11 @@ test('KubernetesRuntime rebuilds the active client after a confirmed content-onl
     watchKubeconfig: () => () => undefined,
   });
 
-  await runtime.init();
-  await runtime.selectContext('development');
-  await runtime.activateResources(POD_QUERY);
+  const initial = await runtime.init();
+  const developmentId = initial.contexts.find((context) => context.contextName === 'development').name;
+  const query = { ...POD_QUERY, context: developmentId };
+  await runtime.selectContext(developmentId);
+  await runtime.activateResources(query);
   source.users[0].user.token = 'rotated-token';
 
   await runtime.reloadKubeconfig();

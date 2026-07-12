@@ -150,7 +150,7 @@ test('normalizeNamespaceScope makes All Namespaces exclusive and canonicalizes s
   );
 });
 
-test('FileKubernetesContextPreference persists only a Context name and clears stale state', async (t) => {
+test('FileKubernetesContextPreference persists only a safe selection ID and clears stale state', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-kubernetes-preference-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const preferencePath = path.join(directory, 'context.json');
@@ -162,7 +162,7 @@ test('FileKubernetesContextPreference persists only a Context name and clears st
 
   assert.equal(await second.load(), 'development');
   assert.deepEqual(JSON.parse(persisted), { selectedContext: 'development' });
-  assert.doesNotMatch(persisted, /token|certificate|key|server/i);
+  assert.doesNotMatch(persisted, /token|certificate|key|server|\/Users\/|C:\\/i);
   await second.clear();
   assert.equal(await first.load(), undefined);
 });

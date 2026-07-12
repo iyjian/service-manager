@@ -2,12 +2,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 /**
- * The only durable Kubernetes setting. It intentionally contains a Context
- * name and nothing that could authenticate to a cluster.
+ * The only durable Kubernetes setting. It intentionally contains a stable,
+ * renderer-safe Context selection ID and nothing that could authenticate to a
+ * cluster or reveal an absolute kubeconfig path.
  */
 export interface KubernetesContextPreference {
   load(): Promise<string | undefined>;
-  save(contextName: string): Promise<void>;
+  save(selectionId: string): Promise<void>;
   clear(): Promise<void>;
 }
 
@@ -33,13 +34,13 @@ export class FileKubernetesContextPreference implements KubernetesContextPrefere
     }
   }
 
-  public async save(contextName: string): Promise<void> {
-    if (!isSafeContextName(contextName)) {
+  public async save(selectionId: string): Promise<void> {
+    if (!isSafeContextName(selectionId)) {
       throw new Error('Kubernetes Context preference is invalid.');
     }
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
     const temporary = `${this.filePath}.${process.pid}.tmp`;
-    await fs.writeFile(temporary, JSON.stringify({ selectedContext: contextName }), { encoding: 'utf8', mode: 0o600 });
+    await fs.writeFile(temporary, JSON.stringify({ selectedContext: selectionId }), { encoding: 'utf8', mode: 0o600 });
     await fs.rename(temporary, this.filePath);
   }
 
