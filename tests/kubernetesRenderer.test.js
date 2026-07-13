@@ -408,6 +408,56 @@ test('Kubernetes related-resource loading does not render or report an old detai
   assert.deepEqual(updates, ['loading']);
 });
 
+test('Kubernetes detail close ignores a stale cleanup after a later close opens a new detail', async () => {
+  const module = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { isCurrentKubernetesDetailClose } = module;
+  assert.equal(typeof isCurrentKubernetesDetailClose, 'function');
+
+  let detailGeneration = 20;
+  const firstCloseGeneration = detailGeneration;
+  detailGeneration += 1;
+  const laterCloseGeneration = detailGeneration;
+  detailGeneration += 1;
+  const cleanups = [];
+  let loadingGeneration = firstCloseGeneration;
+  const completeClose = (generation, label) => {
+    if (!isCurrentKubernetesDetailClose(generation, detailGeneration)) return;
+    cleanups.push(label);
+    loadingGeneration = undefined;
+  };
+
+  completeClose(laterCloseGeneration, 'later close');
+  detailGeneration += 1; // The later close revealed the list and a new detail started.
+  completeClose(firstCloseGeneration, 'stale first close');
+
+  assert.deepEqual(cleanups, ['later close']);
+  assert.equal(loadingGeneration, undefined);
+  assert.equal(isCurrentKubernetesDetailClose(40, 41), true);
+  assert.equal(isCurrentKubernetesDetailClose(40, 42), false);
+
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const closeStart = page.indexOf('    async closeDetail() {');
+  const closeEnd = page.indexOf('    displayDetail() {', closeStart);
+  const close = page.slice(closeStart, closeEnd);
+  const logsAwait = close.indexOf('await this.closeDetailLogs()');
+  const ownerGuard = close.indexOf('if (!isCurrentKubernetesDetailClose(closingGeneration, this.detailGeneration))');
+  const postAwaitCleanup = [
+    'this.activeDetail = undefined',
+    'this.decodedSecretDetail = undefined',
+    "this.detailPage.classList.add('hidden')",
+    'this.clearDetailLoadingState();',
+    "this.listPage.classList.remove('hidden')",
+    'this.detailBackStack = undefined',
+  ];
+
+  assert.ok(closeStart >= 0 && closeEnd > closeStart);
+  assert.ok(logsAwait >= 0);
+  assert.ok(ownerGuard > logsAwait);
+  for (const cleanup of postAwaitCleanup) {
+    assert.ok(close.indexOf(cleanup) > ownerGuard, `${cleanup} must remain close-owner guarded`);
+  }
+});
+
 test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read-only forward controls', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');

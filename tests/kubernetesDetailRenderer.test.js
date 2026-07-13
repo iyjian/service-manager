@@ -492,6 +492,7 @@ test('Kubernetes related-Pod loading blocks stale Service tab renders and Port F
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
   const tabStateStart = page.indexOf('    setDetailTabsDisabled(disabled) {');
   const resetStart = page.indexOf('    resetDetailLoadingState(generation) {');
+  const clearStart = page.indexOf('    clearDetailLoadingState() {');
   const finishStart = page.indexOf('    finishDetailLoadingState(generation) {');
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
   const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
@@ -506,7 +507,8 @@ test('Kubernetes related-Pod loading blocks stale Service tab renders and Port F
   const dialogStart = page.indexOf('    openPortForwardDialog() {');
   const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
   const tabState = page.slice(tabStateStart, resetStart);
-  const reset = page.slice(resetStart, finishStart);
+  const reset = page.slice(resetStart, clearStart);
+  const clear = page.slice(clearStart, finishStart);
   const finish = page.slice(finishStart, openDetailStart);
   const openDetail = page.slice(openDetailStart, openDetailEnd);
   const closeDetail = page.slice(closeDetailStart, closeDetailEnd);
@@ -533,11 +535,12 @@ test('Kubernetes related-Pod loading blocks stale Service tab renders and Port F
   );
   const relatedRecovery = related.slice(relatedCatch);
   const closeHidden = closeDetail.indexOf("this.detailPage.classList.add('hidden')");
-  const closeFinish = closeDetail.indexOf('this.finishDetailLoadingState(closingGeneration);');
+  const closeFinish = closeDetail.indexOf('this.clearDetailLoadingState();');
 
   for (const index of [
     tabStateStart,
     resetStart,
+    clearStart,
     finishStart,
     openDetailStart,
     closeDetailStart,
@@ -558,9 +561,10 @@ test('Kubernetes related-Pod loading blocks stale Service tab renders and Port F
   assert.match(reset, /this\.detailLoadingGeneration = generation/);
   assert.match(reset, /this\.setDetailTabsDisabled\(true\)/);
   assert.match(finish, /this\.detailLoadingGeneration !== generation/);
-  assert.match(finish, /this\.detailLoading = false/);
-  assert.match(finish, /this\.detailLoadingGeneration = undefined/);
-  assert.match(finish, /this\.setDetailTabsDisabled\(false\)/);
+  assert.match(finish, /this\.clearDetailLoadingState\(\)/);
+  assert.match(clear, /this\.detailLoading = false/);
+  assert.match(clear, /this\.detailLoadingGeneration = undefined/);
+  assert.match(clear, /this\.setDetailTabsDisabled\(false\)/);
   assert.ok(renderGuard >= 0 && renderGuard < renderRuntime);
   assert.ok(selectGuard >= 0 && selectGuard < selectMutation && selectGuard < selectRender);
   assert.ok(dialogGuard >= 0 && dialogGuard < dialogDraft);

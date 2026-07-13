@@ -717,6 +717,14 @@ export async function runRelatedResourceRequest<T>(
   }
 }
 
+/** A close owns cleanup only until a later detail lifecycle increments its generation. */
+export function isCurrentKubernetesDetailClose(
+  closingGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return currentGeneration === closingGeneration + 1;
+}
+
 class KubernetesPage implements KubernetesPageController {
   private readonly contextSelect = requireElement<HTMLSelectElement>('#kubernetes-context');
   private readonly connectionBadge = requireElement<HTMLElement>('#kubernetes-connection');
@@ -1568,11 +1576,15 @@ class KubernetesPage implements KubernetesPageController {
     this.detailPage.classList.remove('kubernetes-detail-pod');
   }
 
-  private finishDetailLoadingState(generation: number): void {
-    if (!this.detailLoading || this.detailLoadingGeneration !== generation) return;
+  private clearDetailLoadingState(): void {
     this.detailLoading = false;
     this.detailLoadingGeneration = undefined;
     this.setDetailTabsDisabled(false);
+  }
+
+  private finishDetailLoadingState(generation: number): void {
+    if (!this.detailLoading || this.detailLoadingGeneration !== generation) return;
+    this.clearDetailLoadingState();
   }
 
   private async openDetail(summary: KubernetesResourceSummary): Promise<void> {
@@ -1621,6 +1633,7 @@ class KubernetesPage implements KubernetesPageController {
     // relation response must never re-render a detail the user already left.
     this.invalidateRelatedDetail();
     await this.closeDetailLogs();
+    if (!isCurrentKubernetesDetailClose(closingGeneration, this.detailGeneration)) return;
     this.activeDetail = undefined;
     this.decodedSecretDetail = undefined;
     this.detailYaml.textContent = '';
@@ -1630,7 +1643,7 @@ class KubernetesPage implements KubernetesPageController {
     this.detailRelated.replaceChildren();
     this.detailRelated.classList.add('hidden');
     this.detailPage.classList.add('hidden');
-    this.finishDetailLoadingState(closingGeneration);
+    this.clearDetailLoadingState();
     this.listPage.classList.remove('hidden');
     this.detailBackStack = undefined;
     if (!backStack) return;
