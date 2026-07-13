@@ -398,13 +398,17 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /id="kubernetes-log-terminal-tab"/);
   assert.match(html, /id="kubernetes-log-count"/);
   assert.match(html, /id="kubernetes-log-state"/);
-  assert.match(html, /class="kubernetes-log-view-tabs"/);
-  const logHeadStart = html.indexOf('<header class="kubernetes-log-head">');
-  const logHead = html.slice(logHeadStart, html.indexOf('</header>', logHeadStart));
-  assert.ok(logHeadStart >= 0);
-  assert.match(logHead, /id="kubernetes-log-search"/);
-  assert.match(logHead, /id="kubernetes-log-follow"/);
-  assert.match(logHead, /id="kubernetes-log-clear"/);
+  assert.match(html, /class="kubernetes-log-toolbar"/);
+  assert.doesNotMatch(html, /class="kubernetes-log-view-tabs"|class="kubernetes-log-head"/);
+  const logToolbarStart = html.indexOf('<header class="kubernetes-log-toolbar">');
+  const logToolbar = html.slice(logToolbarStart, html.indexOf('</header>', logToolbarStart));
+  assert.ok(logToolbarStart >= 0);
+  assert.match(logToolbar, /id="kubernetes-log-search"/);
+  assert.match(logToolbar, /id="kubernetes-log-follow"/);
+  assert.match(logToolbar, /id="kubernetes-log-clear"/);
+  assert.match(logToolbar, /id="kubernetes-container-select"/);
+  assert.match(logToolbar, /id="kubernetes-log-follow-pause-icon"/);
+  assert.match(logToolbar, /id="kubernetes-log-follow-play-icon"/);
   assert.doesNotMatch(html, /500 initial lines|2,000 retained lines|Search current 2,000-line buffer/);
   assert.doesNotMatch(html, /kubernetes-log-load-older|Load older 500/);
   assert.doesNotMatch(html, /id="kubernetes-log-open"|>Open logs</i);
@@ -514,8 +518,15 @@ function createKubernetesLogViewportHarness(pageModule) {
     log: kubernetesLogState(),
     search: '',
   };
+  const followAttributes = new Map();
   const elements = {
-    followButton: { disabled: false, textContent: '' },
+    followButton: {
+      disabled: false,
+      setAttribute(name, value) { followAttributes.set(name, value); },
+      getAttribute(name) { return followAttributes.get(name) ?? null; },
+    },
+    pauseIcon: { classList: new FakeKubernetesLogClassList() },
+    playIcon: { classList: new FakeKubernetesLogClassList() },
     clearButton: { disabled: false },
     output: { textContent: '', scrollTop: 17, scrollHeight: 480 },
     count: { textContent: '' },
@@ -700,7 +711,10 @@ test('Kubernetes log viewport follows selected output and preserves incidental, 
   harness.viewport.render('follow');
   assert.equal(harness.elements.output.textContent, 'first\nsecond');
   assert.equal(harness.elements.count.textContent, '2 lines');
-  assert.equal(harness.elements.followButton.textContent, 'Pause Follow');
+  assert.equal(harness.elements.pauseIcon.classList.contains('hidden'), false);
+  assert.equal(harness.elements.playIcon.classList.contains('hidden'), true);
+  assert.equal(harness.elements.followButton.getAttribute('aria-label'), 'Pause log follow');
+  assert.equal(harness.elements.followButton.getAttribute('title'), 'Pause log follow');
   assert.equal(harness.elements.stateLabel.textContent, 'Live');
   assert.equal(harness.elements.state.classList.contains('kubernetes-log-state-live'), true);
   assert.deepEqual(harness.requested, [1]);
@@ -722,7 +736,10 @@ test('Kubernetes log viewport follows selected output and preserves incidental, 
   });
   harness.elements.output.scrollTop = 29;
   harness.viewport.render('follow');
-  assert.equal(harness.elements.followButton.textContent, 'Resume Follow');
+  assert.equal(harness.elements.pauseIcon.classList.contains('hidden'), true);
+  assert.equal(harness.elements.playIcon.classList.contains('hidden'), false);
+  assert.equal(harness.elements.followButton.getAttribute('aria-label'), 'Resume log follow');
+  assert.equal(harness.elements.followButton.getAttribute('title'), 'Resume log follow');
   assert.equal(harness.elements.stateLabel.textContent, 'Paused');
   assert.equal(harness.elements.state.classList.contains('kubernetes-log-state-live'), false);
   assert.equal(harness.elements.output.scrollTop, 29);
@@ -734,6 +751,138 @@ test('Kubernetes log viewport follows selected output and preserves incidental, 
   assert.deepEqual(harness.requested, [1, 2]);
   harness.runFrame(2);
   assert.equal(harness.elements.output.scrollTop, 720);
+});
+
+test('Kubernetes Pause applies local state and cancels queued auto-scroll before follow IPC settles', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const sessions = new Map([['app', kubernetesLogState()]]);
+  const request = deferred();
+  const calls = [];
+  harness.setState({ sessions, log: undefined });
+  harness.viewport.render('follow');
+  harness.elements.output.scrollTop = 37;
+
+  const toggling = pageModule.runKubernetesLogFollowToggle({
+    sessions,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: (sessionId, following) => {
+      calls.push([sessionId, following]);
+      return request.promise;
+    },
+    onError: () => assert.fail('Pause should not report an error'),
+  });
+
+  assert.equal(sessions.get('app').following, false);
+  assert.deepEqual(calls, [['session-app', false]]);
+  assert.deepEqual(harness.cancelled, [1]);
+  assert.equal(harness.frames.size, 0);
+  assert.equal(harness.elements.output.scrollTop, 37);
+  assert.equal(harness.elements.pauseIcon.classList.contains('hidden'), true);
+  assert.equal(harness.elements.playIcon.classList.contains('hidden'), false);
+
+  request.resolve(kubernetesLogState({ following: false }));
+  await toggling;
+});
+
+test('Kubernetes Resume applies local state and schedules bottom follow before IPC settles', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const paused = kubernetesLogState({ following: false });
+  const sessions = new Map([['app', paused]]);
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const request = deferred();
+  harness.setState({ sessions, log: undefined });
+  harness.elements.output.scrollTop = 31;
+  harness.elements.output.scrollHeight = 640;
+
+  const toggling = pageModule.runKubernetesLogFollowToggle({
+    sessions,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => request.promise,
+    onError: () => assert.fail('Resume should not report an error'),
+  });
+
+  assert.equal(sessions.get('app').following, true);
+  assert.deepEqual(harness.requested, [1]);
+  assert.equal(harness.frames.size, 1);
+  assert.equal(harness.elements.pauseIcon.classList.contains('hidden'), false);
+  assert.equal(harness.elements.playIcon.classList.contains('hidden'), true);
+  harness.runFrame(1);
+  assert.equal(harness.elements.output.scrollTop, 640);
+
+  request.resolve(kubernetesLogState({ following: true }));
+  await toggling;
+});
+
+test('Kubernetes followed output returns to bottom after manual upward scroll', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const state = kubernetesLogState();
+  const sessions = new Map([['app', state]]);
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  harness.setState({ sessions, log: undefined });
+  harness.viewport.render('follow');
+  harness.runFrame(1);
+  harness.elements.output.scrollTop = 46;
+  harness.elements.output.scrollHeight = 800;
+
+  const update = { ...state, lines: [...state.lines, 'new output'] };
+  assert.equal(
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', update, harness.viewport, 'follow'),
+    'selected',
+  );
+  assert.equal(harness.elements.output.scrollTop, 46);
+  harness.runFrame(2);
+  assert.equal(harness.elements.output.scrollTop, 800);
+});
+
+test('Kubernetes failed Follow mutation rolls the optimistic state back and reports the error', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const original = kubernetesLogState();
+  const sessions = new Map([['app', original]]);
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const request = deferred();
+  const errors = [];
+  harness.setState({ sessions, log: undefined });
+
+  const toggling = pageModule.runKubernetesLogFollowToggle({
+    sessions,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => request.promise,
+    onError: (error) => errors.push(error.message),
+  });
+  assert.equal(sessions.get('app').following, false);
+
+  request.reject(new Error('follow rejected'));
+  await toggling;
+
+  assert.equal(sessions.get('app'), original);
+  assert.equal(sessions.get('app').following, true);
+  assert.deepEqual(errors, ['follow rejected']);
+});
+
+test('Kubernetes failed Follow mutation does not roll back a newer owned log state', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const sessions = new Map([['app', kubernetesLogState()]]);
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const request = deferred();
+  harness.setState({ sessions, log: undefined });
+
+  const toggling = pageModule.runKubernetesLogFollowToggle({
+    sessions,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => request.promise,
+    onError: () => undefined,
+  });
+  const newer = kubernetesLogState({ lines: ['newer'], following: false });
+  sessions.set('app', newer);
+  request.reject(new Error('late rejection'));
+  await toggling;
+
+  assert.equal(sessions.get('app'), newer);
 });
 
 test('Kubernetes log viewport preserves selected follow work through incidental renders and coalesces bursts', async () => {

@@ -238,6 +238,47 @@ test('Kubernetes detail markup replaces Copy and separate action rows with one h
   assert.doesNotMatch(detail, /id="kubernetes-detail-service-actions"/);
 });
 
+test('Kubernetes Pod interactions use one ordered log toolbar with static Follow icons', async () => {
+  const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
+  const panelStart = html.indexOf('id="kubernetes-log-panel"');
+  const panelEnd = html.indexOf('</section>', panelStart);
+  const panel = html.slice(panelStart, panelEnd);
+  const toolbarStart = panel.indexOf('<header class="kubernetes-log-toolbar">');
+  const toolbarEnd = panel.indexOf('</header>', toolbarStart);
+  const toolbar = panel.slice(toolbarStart, toolbarEnd);
+
+  assert.ok(panelStart >= 0);
+  assert.ok(panelEnd > panelStart);
+  assert.ok(toolbarStart >= 0);
+  assert.ok(toolbarEnd > toolbarStart);
+  assert.equal(panel.match(/class="kubernetes-log-toolbar"/g)?.length, 1);
+  assert.doesNotMatch(panel, /kubernetes-log-view-tabs|kubernetes-log-head/);
+
+  const orderedControls = [
+    '<span>Logs</span>',
+    'id="kubernetes-log-terminal-tab"',
+    'id="kubernetes-log-search"',
+    'id="kubernetes-log-follow"',
+    'id="kubernetes-log-clear"',
+    'id="kubernetes-container-select"',
+  ];
+  let previous = -1;
+  for (const control of orderedControls) {
+    const index = toolbar.indexOf(control);
+    assert.ok(index > previous, `${control} should follow the previous toolbar control`);
+    previous = index;
+  }
+
+  const followStart = toolbar.indexOf('id="kubernetes-log-follow"');
+  const followEnd = toolbar.indexOf('</button>', followStart);
+  const follow = toolbar.slice(followStart, followEnd);
+  assert.match(follow, /aria-label="Pause log follow"/);
+  assert.match(follow, /title="Pause log follow"/);
+  assert.match(follow, /id="kubernetes-log-follow-pause-icon"/);
+  assert.match(follow, /id="kubernetes-log-follow-play-icon"[^>]*class="hidden"/);
+  assert.doesNotMatch(follow, /Pause Follow|Resume Follow/);
+});
+
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const dialogStart = html.indexOf('id="kubernetes-port-forward-dialog"');

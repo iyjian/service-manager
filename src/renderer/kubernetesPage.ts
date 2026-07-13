@@ -236,7 +236,9 @@ export interface KubernetesLogViewportState {
 }
 
 export interface KubernetesLogViewportElements {
-  followButton: Pick<HTMLButtonElement, 'disabled' | 'textContent'>;
+  followButton: Pick<HTMLButtonElement, 'disabled' | 'setAttribute'>;
+  pauseIcon: { classList: Pick<DOMTokenList, 'toggle'> };
+  playIcon: { classList: Pick<DOMTokenList, 'toggle'> };
   clearButton: Pick<HTMLButtonElement, 'disabled'>;
   output: Pick<HTMLPreElement, 'textContent' | 'scrollTop' | 'scrollHeight'>;
   count: Pick<HTMLElement, 'textContent'>;
@@ -247,6 +249,14 @@ export interface KubernetesLogViewportElements {
 export interface KubernetesLogViewport {
   render(intent?: KubernetesLogScrollIntent): void;
   cancel(): void;
+}
+
+export interface KubernetesLogFollowToggleOptions {
+  sessions: Map<string, KubernetesLogState>;
+  getSelectedContainer: () => string | undefined;
+  viewport: KubernetesLogViewport;
+  setFollowing: (sessionId: string, following: boolean) => Promise<KubernetesLogState>;
+  onError: (error: unknown) => void;
 }
 
 export function claimKubernetesLogOpen(
@@ -311,6 +321,46 @@ export function applyKubernetesLogUpdate(
   return route;
 }
 
+export async function runKubernetesLogFollowToggle(
+  options: KubernetesLogFollowToggleOptions,
+): Promise<void> {
+  const container = options.getSelectedContainer();
+  const previous = container ? options.sessions.get(container) : undefined;
+  if (!previous) return;
+
+  const desired = !previous.following;
+  const optimistic = { ...previous, following: desired };
+  applyKubernetesLogUpdate(
+    options.sessions,
+    options.getSelectedContainer(),
+    optimistic,
+    options.viewport,
+    desired ? 'follow' : 'preserve',
+  );
+
+  try {
+    const next = await options.setFollowing(previous.sessionId, desired);
+    applyKubernetesLogUpdate(
+      options.sessions,
+      options.getSelectedContainer(),
+      next,
+      options.viewport,
+      next.following ? 'follow' : 'preserve',
+    );
+  } catch (error) {
+    if (options.sessions.get(previous.container) === optimistic) {
+      applyKubernetesLogUpdate(
+        options.sessions,
+        options.getSelectedContainer(),
+        previous,
+        options.viewport,
+        previous.following ? 'follow' : 'preserve',
+      );
+    }
+    options.onError(error);
+  }
+}
+
 export function formatKubernetesLogCount(filtered: number, total: number): string {
   const unit = total === 1 ? 'line' : 'lines';
   return filtered === total ? `${total} ${unit}` : `${filtered} of ${total} ${unit}`;
@@ -329,9 +379,14 @@ export function createKubernetesLogViewport(options: {
       const previousScrollTop = options.elements.output.scrollTop;
       const state = options.getState();
       const log = state.log;
+      const following = log?.following === true;
+      const followLabel = following ? 'Pause log follow' : 'Resume log follow';
       options.elements.followButton.disabled = !log;
       options.elements.clearButton.disabled = !log;
-      options.elements.followButton.textContent = log?.following ? 'Pause Follow' : 'Resume Follow';
+      options.elements.followButton.setAttribute('aria-label', followLabel);
+      options.elements.followButton.setAttribute('title', followLabel);
+      options.elements.pauseIcon.classList.toggle('hidden', !following);
+      options.elements.playIcon.classList.toggle('hidden', following);
       if (!log) {
         options.elements.output.textContent = state.selectedContainer
           ? state.error ?? 'Loading logs…'
@@ -567,6 +622,8 @@ class KubernetesPage implements KubernetesPageController {
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
   private readonly logTerminalTab = requireElement<HTMLButtonElement>('#kubernetes-log-terminal-tab');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
+  private readonly logFollowPauseIcon = requireElement<SVGElement>('#kubernetes-log-follow-pause-icon');
+  private readonly logFollowPlayIcon = requireElement<SVGElement>('#kubernetes-log-follow-play-icon');
   private readonly logClearButton = requireElement<HTMLButtonElement>('#kubernetes-log-clear');
   private readonly logSearch = requireElement<HTMLInputElement>('#kubernetes-log-search');
   private readonly logOutput = requireElement<HTMLPreElement>('#kubernetes-log-output');
@@ -647,6 +704,8 @@ class KubernetesPage implements KubernetesPageController {
     },
     elements: {
       followButton: this.logFollowButton,
+      pauseIcon: this.logFollowPauseIcon,
+      playIcon: this.logFollowPlayIcon,
       clearButton: this.logClearButton,
       output: this.logOutput,
       count: this.logCount,
@@ -1850,20 +1909,13 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async toggleLogFollowing(): Promise<void> {
-    const log = this.activeLog();
-    if (!log) return;
-    try {
-      const next = await window.kubernetesApi.setLogFollowing(log.sessionId, !log.following);
-      applyKubernetesLogUpdate(
-        this.logsByContainer,
-        this.selectedContainer,
-        next,
-        this.logViewport,
-        next.following ? 'follow' : 'preserve',
-      );
-    } catch (error) {
-      setMessage(toErrorMessage(error), 'error');
-    }
+    await runKubernetesLogFollowToggle({
+      sessions: this.logsByContainer,
+      getSelectedContainer: () => this.selectedContainer,
+      viewport: this.logViewport,
+      setFollowing: (sessionId, following) => window.kubernetesApi.setLogFollowing(sessionId, following),
+      onError: (error) => setMessage(toErrorMessage(error), 'error'),
+    });
   }
 
   private async clearLogs(): Promise<void> {

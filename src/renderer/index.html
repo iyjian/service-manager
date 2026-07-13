@@ -300,20 +300,24 @@
             <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
           </div>
           <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
-            <div class="kubernetes-log-view-tabs" role="tablist" aria-label="Pod workspace views">
-              <button type="button" class="kubernetes-log-view-tab kubernetes-log-view-tab-active" role="tab" aria-selected="true">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h6l3 3v11H6z"/><path d="M12 3v4h4M8.5 10h4M8.5 13h4"/></svg><span>Logs</span>
-              </button>
-              <button id="kubernetes-log-terminal-tab" type="button" class="kubernetes-log-view-tab" role="tab" aria-selected="false">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="m6.5 8 2 2-2 2M10.5 12h3"/></svg><span>Terminal</span>
-              </button>
-            </div>
-            <header class="kubernetes-log-head">
+            <header class="kubernetes-log-toolbar">
+              <div role="tablist" aria-label="Pod workspace views">
+                <button type="button" class="kubernetes-log-view-tab kubernetes-log-view-tab-active" role="tab" aria-selected="true">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h6l3 3v11H6z"/><path d="M12 3v4h4M8.5 10h4M8.5 13h4"/></svg><span>Logs</span>
+                </button>
+                <button id="kubernetes-log-terminal-tab" type="button" class="kubernetes-log-view-tab" role="tab" aria-selected="false">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="m6.5 8 2 2-2 2M10.5 12h3"/></svg><span>Terminal</span>
+                </button>
+              </div>
               <label class="kubernetes-log-search-wrap">
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="4.5"/><path d="m12 12 4 4"/></svg>
                 <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
               </label>
-              <div class="dialog-head-actions"><button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button><button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button></div>
+              <button id="kubernetes-log-follow" type="button" class="icon-btn" aria-label="Pause log follow" title="Pause log follow">
+                <svg id="kubernetes-log-follow-pause-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M7 5v10M13 5v10"/></svg>
+                <svg id="kubernetes-log-follow-play-icon" class="hidden" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="m7 4.75 8 5.25-8 5.25z"/></svg>
+              </button>
+              <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
               <label class="kubernetes-container-field"><span class="kubernetes-container-label">Container</span><select id="kubernetes-container-select" class="input"></select></label>
             </header>
             <pre id="kubernetes-log-output" class="kubernetes-log-output" tabindex="0"></pre>
