@@ -179,6 +179,44 @@ export function shouldAutoScrollKubernetesLogs(following: boolean, preserveScrol
   return following && !preserveScroll;
 }
 
+export interface KubernetesLogAutoScrollScheduler {
+  schedule(key: string, callback: () => void): void;
+  cancel(): void;
+}
+
+export function createKubernetesLogAutoScrollScheduler(
+  requestFrame: (callback: FrameRequestCallback) => number,
+  cancelFrame: (frame: number) => void,
+): KubernetesLogAutoScrollScheduler {
+  let frame: number | undefined;
+  let key: string | undefined;
+  let callback: (() => void) | undefined;
+
+  const cancel = (): void => {
+    if (frame !== undefined) cancelFrame(frame);
+    frame = undefined;
+    key = undefined;
+    callback = undefined;
+  };
+
+  return {
+    schedule(nextKey, nextCallback) {
+      callback = nextCallback;
+      if (frame !== undefined && key === nextKey) return;
+      if (frame !== undefined) cancelFrame(frame);
+      key = nextKey;
+      frame = requestFrame(() => {
+        frame = undefined;
+        key = undefined;
+        const pendingCallback = callback;
+        callback = undefined;
+        pendingCallback?.();
+      });
+    },
+    cancel,
+  };
+}
+
 export function formatKubernetesLogCount(filtered: number, total: number): string {
   return filtered === total ? `${total} lines` : `${filtered} of ${total} lines`;
 }
@@ -417,7 +455,10 @@ class KubernetesPage implements KubernetesPageController {
   private requestedContinuation: string | undefined;
   private requestedWindow: string | undefined;
   private searchTimer: number | undefined;
-  private logAutoScrollFrame: number | undefined;
+  private readonly logAutoScroll = createKubernetesLogAutoScrollScheduler(
+    (callback) => window.requestAnimationFrame(callback),
+    (frame) => window.cancelAnimationFrame(frame),
+  );
   private reconnecting = false;
   private requestGeneration = 0;
   private selectedNamespaces = new Set<string>();
@@ -1579,13 +1620,10 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private cancelLogAutoScroll(): void {
-    if (this.logAutoScrollFrame === undefined) return;
-    window.cancelAnimationFrame(this.logAutoScrollFrame);
-    this.logAutoScrollFrame = undefined;
+    this.logAutoScroll.cancel();
   }
 
   private renderLogPanel(options: { preserveScroll?: boolean } = {}): void {
-    this.cancelLogAutoScroll();
     const previousScrollTop = this.logOutput.scrollTop;
     const log = this.activeLog();
     this.logFollowButton.disabled = !log;
@@ -1598,6 +1636,7 @@ class KubernetesPage implements KubernetesPageController {
       this.logCount.textContent = '0 lines';
       this.logState.classList.remove('kubernetes-log-state-live');
       this.logState.lastElementChild!.textContent = 'Paused';
+      this.cancelLogAutoScroll();
       this.logOutput.scrollTop = previousScrollTop;
       return;
     }
@@ -1608,6 +1647,7 @@ class KubernetesPage implements KubernetesPageController {
     this.logState.lastElementChild!.textContent = log.following ? 'Live' : 'Paused';
     this.logOutput.textContent = lines.join('\n');
     if (!shouldAutoScrollKubernetesLogs(log.following, options.preserveScroll === true)) {
+      this.cancelLogAutoScroll();
       this.logOutput.scrollTop = previousScrollTop;
       return;
     }
@@ -1616,8 +1656,8 @@ class KubernetesPage implements KubernetesPageController {
       container: log.container,
       detailGeneration: this.detailGeneration,
     };
-    this.logAutoScrollFrame = window.requestAnimationFrame(() => {
-      this.logAutoScrollFrame = undefined;
+    const requestKey = `${request.sessionId}\u0000${request.container}\u0000${request.detailGeneration}`;
+    this.logAutoScroll.schedule(requestKey, () => {
       const current = this.activeLog();
       if (!this.visible || !current) return;
       if (current.sessionId !== request.sessionId) return;

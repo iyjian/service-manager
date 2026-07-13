@@ -461,6 +461,55 @@ test('Kubernetes log viewport follows new output and preserves explicit filter o
   assert.match(pageSource, /renderLogPanel\(\{ preserveScroll: true \}\)/);
 });
 
+test('Kubernetes log auto-scroll coalesces high-frequency updates without starving the pending frame', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const frames = new Map();
+  const requested = [];
+  const cancelled = [];
+  let nextFrame = 1;
+  const runFrame = (frame) => {
+    const callback = frames.get(frame);
+    frames.delete(frame);
+    callback(0);
+  };
+  const scheduler = pageModule.createKubernetesLogAutoScrollScheduler(
+    (callback) => {
+      const frame = nextFrame++;
+      requested.push(frame);
+      frames.set(frame, callback);
+      return frame;
+    },
+    (frame) => {
+      cancelled.push(frame);
+      frames.delete(frame);
+    },
+  );
+
+  let applied = -1;
+  for (let update = 0; update < 500; update += 1) {
+    scheduler.schedule('session-1\u0000container-1\u00001', () => { applied = update; });
+  }
+
+  assert.deepEqual(requested, [1]);
+  assert.deepEqual(cancelled, []);
+  assert.equal(frames.size, 1);
+  runFrame(1);
+  assert.equal(applied, 499);
+
+  scheduler.schedule('session-1\u0000container-1\u00001', () => { applied = 500; });
+  scheduler.cancel();
+  assert.deepEqual(cancelled, [2]);
+  assert.equal(frames.size, 0);
+  assert.equal(applied, 499);
+
+  scheduler.schedule('session-1\u0000container-1\u00001', () => { applied = 501; });
+  scheduler.schedule('session-2\u0000container-2\u00002', () => { applied = 502; });
+  assert.deepEqual(cancelled, [2, 3]);
+  assert.equal(frames.size, 1);
+  runFrame(4);
+  assert.equal(applied, 502);
+});
+
 test('Kubernetes list and detail layout use aligned controls and a compact visual hierarchy', async () => {
   const root = path.join(__dirname, '..');
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
