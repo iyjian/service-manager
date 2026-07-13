@@ -1547,12 +1547,23 @@ class KubernetesPage implements KubernetesPageController {
     });
   }
 
+  private resetDetailLoadingState(): void {
+    this.detailPortForwardButton.classList.add('hidden');
+    this.detailPortForwardButton.disabled = true;
+    this.detailPortSummary.textContent = '';
+    this.closePortForwardDialog();
+    this.logPanel.classList.add('hidden');
+    this.logTerminalTab.disabled = true;
+    this.detailPage.classList.remove('kubernetes-detail-pod');
+  }
+
   private async openDetail(summary: KubernetesResourceSummary): Promise<void> {
     const query = this.currentQuery();
     const snapshot = this.snapshot;
     if (!query || !snapshot || this.activeDetail) return;
     this.openingTerminals.clear();
     this.selectPodWorkspace('logs');
+    this.resetDetailLoadingState();
     const detailGeneration = ++this.detailGeneration;
     this.detailBackStack = {
       query: { ...query, namespaceScope: { ...query.namespaceScope, namespaces: [...query.namespaceScope.namespaces] } },
@@ -1562,9 +1573,6 @@ class KubernetesPage implements KubernetesPageController {
       sort: { ...this.sort },
     };
     this.listPage.classList.add('hidden');
-    this.detailPortForwardButton.classList.add('hidden');
-    this.detailPortForwardButton.disabled = true;
-    this.detailPortSummary.textContent = '';
     this.detailPage.classList.remove('hidden');
     this.detailTitle.textContent = `Loading ${resourceLabel(query.kind)}…`;
     this.detailSubtitle.textContent = '';
@@ -1977,6 +1985,7 @@ class KubernetesPage implements KubernetesPageController {
     this.invalidateRelatedDetail(active);
     this.openingTerminals.clear();
     this.selectPodWorkspace('logs');
+    this.resetDetailLoadingState();
     const generation = ++this.detailGeneration;
     this.detailTitle.textContent = 'Loading Pod…';
     this.detailSubtitle.textContent = '';
@@ -2187,6 +2196,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private openPortForwardDialog(): void {
+    if (this.detailPortForwardButton.disabled) return;
     const active = this.activeDetail;
     const detail = this.displayDetail();
     const targetKind = active?.query.kind === 'pods' ? 'pod'
