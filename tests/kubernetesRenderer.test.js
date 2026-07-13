@@ -493,6 +493,7 @@ test('Kubernetes detail tab rerenders keep existing log sessions incidental whil
   assert.doesNotMatch(openLogs, /if \(existing\)[\s\S]{0,120}renderLogPanel\('follow'\)/);
   assert.match(containerChange, /this\.renderLogPanel\('follow'\);\s*void this\.openLogsForSelectedContainer\(\)/);
   assert.match(openLogs, /applyKubernetesLogUpdate\([\s\S]*?'follow',\s*true,?\s*\)/);
+  assert.match(logChanged, /shouldApplyKubernetesLogBroadcast\(this\.logFollowMutations, state\)/);
   assert.match(logChanged, /applyKubernetesLogUpdate\([\s\S]*?'follow',?\s*\)/);
 });
 
@@ -1324,6 +1325,61 @@ test('Kubernetes rapid Resume then Pause ignores a stale Follow success', async 
   pauseRequest.resolve(kubernetesLogState({ following: false }));
   await pause;
   assert.equal(sessions.get('app').following, false);
+  assert.deepEqual(errors, []);
+  assert.equal(mutations.size, 0);
+});
+
+test('Kubernetes Follow broadcasts respect the latest rapid Resume then Pause intent', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const sessions = new Map([['app', kubernetesLogState({ following: false })]]);
+  const mutations = new Map();
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const resumeRequest = deferred();
+  const pauseRequest = deferred();
+  const requests = [resumeRequest, pauseRequest];
+  const errors = [];
+  let call = 0;
+  harness.setState({ sessions, log: undefined });
+  const options = {
+    sessions,
+    mutations,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => requests[call++].promise,
+    onError: (error) => errors.push(error.message),
+  };
+
+  const resume = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, true);
+  const pause = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, false);
+
+  const oldResumeBroadcast = kubernetesLogState({ following: true, lines: ['old resume'] });
+  assert.equal(pageModule.shouldApplyKubernetesLogBroadcast(mutations, oldResumeBroadcast), false);
+  const pausedState = sessions.get('app');
+  if (pageModule.shouldApplyKubernetesLogBroadcast(mutations, oldResumeBroadcast)) {
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', oldResumeBroadcast, harness.viewport, 'follow');
+  }
+  assert.equal(sessions.get('app'), pausedState);
+  assert.equal(sessions.get('app').following, false);
+
+  const matchingPauseBroadcast = kubernetesLogState({ following: false, lines: ['pause confirmed'] });
+  assert.equal(pageModule.shouldApplyKubernetesLogBroadcast(mutations, matchingPauseBroadcast), true);
+  if (pageModule.shouldApplyKubernetesLogBroadcast(mutations, matchingPauseBroadcast)) {
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', matchingPauseBroadcast, harness.viewport, 'follow');
+  }
+  assert.equal(sessions.get('app'), matchingPauseBroadcast);
+  assert.equal(sessions.get('app').following, false);
+
+  const otherSession = kubernetesLogState({ sessionId: 'session-sidecar', container: 'sidecar', following: true });
+  assert.equal(pageModule.shouldApplyKubernetesLogBroadcast(mutations, otherSession), true);
+
+  resumeRequest.resolve(kubernetesLogState({ following: true }));
+  await resume;
+  assert.equal(sessions.get('app').following, false);
+
+  pauseRequest.resolve(kubernetesLogState({ following: false }));
+  await pause;
   assert.deepEqual(errors, []);
   assert.equal(mutations.size, 0);
 });

@@ -253,9 +253,14 @@ export interface KubernetesLogViewport {
   cancel(): void;
 }
 
+export interface KubernetesLogFollowMutation {
+  token: symbol;
+  following: boolean;
+}
+
 export interface KubernetesLogFollowToggleOptions {
   sessions: Map<string, KubernetesLogState>;
-  mutations: Map<string, symbol>;
+  mutations: Map<string, KubernetesLogFollowMutation>;
   getSelectedContainer: () => string | undefined;
   viewport: KubernetesLogViewport;
   setFollowing: (sessionId: string, following: boolean) => Promise<KubernetesLogState>;
@@ -431,6 +436,14 @@ export function applyKubernetesLogUpdate(
   return route;
 }
 
+export function shouldApplyKubernetesLogBroadcast(
+  mutations: ReadonlyMap<string, KubernetesLogFollowMutation>,
+  state: KubernetesLogState,
+): boolean {
+  const mutation = mutations.get(state.sessionId);
+  return !mutation || mutation.following === state.following;
+}
+
 export async function runKubernetesLogFollowToggle(
   options: KubernetesLogFollowToggleOptions,
 ): Promise<void> {
@@ -440,7 +453,7 @@ export async function runKubernetesLogFollowToggle(
 
   const desired = !previous.following;
   const token = Symbol(previous.sessionId);
-  options.mutations.set(previous.sessionId, token);
+  options.mutations.set(previous.sessionId, { token, following: desired });
   const optimistic = { ...previous, following: desired };
   applyKubernetesLogUpdate(
     options.sessions,
@@ -450,7 +463,7 @@ export async function runKubernetesLogFollowToggle(
     desired ? 'follow' : 'preserve',
   );
 
-  const isCurrent = (): boolean => options.mutations.get(previous.sessionId) === token
+  const isCurrent = (): boolean => options.mutations.get(previous.sessionId)?.token === token
     && options.sessions.get(previous.container)?.sessionId === previous.sessionId;
 
   try {
@@ -476,7 +489,7 @@ export async function runKubernetesLogFollowToggle(
     }
     options.onError(error);
   } finally {
-    if (options.mutations.get(previous.sessionId) === token) options.mutations.delete(previous.sessionId);
+    if (options.mutations.get(previous.sessionId)?.token === token) options.mutations.delete(previous.sessionId);
   }
 }
 
@@ -805,7 +818,7 @@ class KubernetesPage implements KubernetesPageController {
   private detailEventsLoaded = false;
   private selectedContainer: string | undefined;
   private readonly logsByContainer = new Map<string, KubernetesLogState>();
-  private readonly logFollowMutations = new Map<string, symbol>();
+  private readonly logFollowMutations = new Map<string, KubernetesLogFollowMutation>();
   private readonly openingLogs = new Map<string, symbol>();
   private readonly logErrorsByContainer = new Map<string, string>();
   private podWorkspace: KubernetesPodWorkspace = 'logs';
@@ -2100,6 +2113,7 @@ class KubernetesPage implements KubernetesPageController {
     const active = this.activeDetail;
     if (!active || active.query.kind !== 'pods') return;
     if (state.podName !== active.summary.name || state.namespace !== active.summary.namespace) return;
+    if (!shouldApplyKubernetesLogBroadcast(this.logFollowMutations, state)) return;
     applyKubernetesLogUpdate(
       this.logsByContainer,
       this.selectedContainer,
