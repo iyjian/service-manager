@@ -221,7 +221,7 @@ test('buildKubernetesOverviewFields returns only Kind Namespace Status Name and 
   ]);
 });
 
-test('Kubernetes detail markup replaces Copy and separate action rows with one header Port Forward', async () => {
+test('Kubernetes detail header replaces Copy and action rows with Port Forward while Terminal remains a runtime tab', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const detailStart = html.indexOf('id="kubernetes-detail-page"');
   const detailEnd = html.indexOf('id="kubernetes-terminal-drawer"', detailStart);
@@ -236,6 +236,7 @@ test('Kubernetes detail markup replaces Copy and separate action rows with one h
   assert.doesNotMatch(detail, /id="kubernetes-terminal-open"/);
   assert.doesNotMatch(detail, /id="kubernetes-detail-pod-actions"/);
   assert.doesNotMatch(detail, /id="kubernetes-detail-service-actions"/);
+  assert.match(detail, /id="kubernetes-log-terminal-tab"/);
 });
 
 test('Kubernetes Pod interactions use one ordered log toolbar with static Follow icons', async () => {

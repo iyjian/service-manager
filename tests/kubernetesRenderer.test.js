@@ -48,6 +48,28 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
   }
 });
 
+test('Kubernetes documentation describes the compact detail workbench without stale Copy behavior', async () => {
+  const root = path.join(__dirname, '..');
+  const documents = await Promise.all([
+    readFile(path.join(root, 'README.md'), 'utf8'),
+    readFile(path.join(root, 'AGENTS.md'), 'utf8'),
+  ]);
+
+  for (const document of documents) {
+    assert.match(document, /Overview.*Kind.*Namespace.*Status.*Name.*Pod IP/i);
+    assert.match(document, /pause icon.*play icon|play icon.*pause icon/i);
+    assert.match(document, /Terminal tab.*(?:open|focus).*global terminal drawer/i);
+    assert.match(document, /no Open Terminal button/i);
+    assert.match(document, /header.*Port Forward.*replac(?:es|ing).*Copy/i);
+    assert.match(document, /regular containers.*restartable(?: native)? sidecar.*TCP/i);
+    assert.match(document, /Service.*spec\.ports\[\]\.port/i);
+    assert.match(document, /zero.*manual.*one.*prefill.*multiple.*select/i);
+    assert.match(document, /declared.*not proof.*listener/i);
+    assert.match(document, /src\/renderer\/kubernetesDetailModel\.ts/);
+    assert.doesNotMatch(document, /Kubernetes YAML[^.\n]*(?:Copy|copy)|kubernetesPage\.ts[^.\n]*(?:Copy|copy)/i);
+  }
+});
+
 test('Kubernetes page provides a read-only resource browser shell', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
@@ -1288,7 +1310,7 @@ test('Kubernetes log auto-scroll coalesces high-frequency updates without starvi
   assert.equal(applied, 502);
 });
 
-test('Kubernetes list and detail layout use aligned controls and a compact visual hierarchy', async () => {
+test('Kubernetes detail layout uses bounded four-track Pod workspaces and compact one-row Overview metadata', async () => {
   const root = path.join(__dirname, '..');
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
@@ -1300,46 +1322,97 @@ test('Kubernetes list and detail layout use aligned controls and a compact visua
   assert.match(page, /portForwardPanel\.classList\.toggle\('hidden', forwards\.length === 0\)/);
   assert.match(page, /detailPage\.classList\.toggle\('kubernetes-detail-pod', isPod\)/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?height:\s*100dvh/);
-  assert.match(styles, /\.kubernetes-detail-page\s*\{[\s\S]*?bg-white/);
-  assert.match(styles, /\.kubernetes-detail-page\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\);/);
-  assert.match(styles, /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows/);
-  assert.match(styles, /\.kubernetes-log-output\s*\{[\s\S]*?white-space:\s*pre;/);
+  const detailRule = styles.match(/\.kubernetes-detail-page\s*\{([^}]*)\}/);
+  const podRule = styles.match(/\.kubernetes-detail-pod\s*\{([^}]*)\}/);
+  const overviewRule = styles.match(/\.kubernetes-detail-overview-grid\s*\{([^}]*)\}/);
+  const overviewItemRule = styles.match(/\.kubernetes-detail-overview-grid > div\s*\{([^}]*)\}/);
+  const overviewWrapperRule = styles.match(/#kubernetes-detail-overview\s*\{([^}]*)\}/);
+  const toolbarRule = styles.match(/\.kubernetes-log-toolbar\s*\{([^}]*)\}/);
+  const logPanelRule = styles.match(/\.kubernetes-log-panel\s*\{([^}]*)\}/);
+  const logOutputRule = styles.match(/\.kubernetes-log-output\s*\{([^}]*)\}/);
+
+  assert.ok(detailRule);
+  assert.ok(podRule);
+  assert.ok(overviewRule);
+  assert.ok(overviewItemRule);
+  assert.ok(overviewWrapperRule);
+  assert.ok(toolbarRule);
+  assert.ok(logPanelRule);
+  assert.ok(logOutputRule);
+  assert.match(detailRule[1], /h-full/);
+  assert.match(detailRule[1], /min-h-0/);
+  assert.match(detailRule[1], /min-w-0/);
+  assert.match(detailRule[1], /overflow-hidden/);
+  assert.match(detailRule[1], /bg-white/);
+  assert.match(detailRule[1], /grid-template-rows:\s*auto auto minmax\(0, 1fr\);/);
+
+  const podRows = podRule[1].match(
+    /grid-template-rows:\s*auto\s+auto\s+minmax\((\d+)px,\s*([\d.]+)fr\)\s+minmax\((\d+)px,\s*([\d.]+)fr\);/,
+  );
+  assert.ok(podRows, 'Pod detail must use header, tabs, content, and runtime tracks only');
+  assert.ok(Number(podRows[4]) > Number(podRows[2]), 'the runtime panel receives the larger fractional track');
+  assert.doesNotMatch(styles, /\.kubernetes-detail-actions\s*\{/);
+  assert.doesNotMatch(styles, /\.kubernetes-detail-copy\s*\{/);
+  assert.doesNotMatch(styles, /\.kubernetes-log-head\s*\{/);
+  assert.doesNotMatch(styles, /\.kubernetes-log-view-tabs\s*\{/);
+
+  const overviewColumns = [...overviewRule[1].matchAll(/minmax\((\d+)px,\s*([\d.]+)fr\)/g)];
+  assert.equal(overviewColumns.length, 5);
+  assert.match(overviewRule[1], /min-w-\[\d+px\]/);
+  assert.ok(Number(overviewColumns[3][2]) > Math.max(
+    Number(overviewColumns[0][2]),
+    Number(overviewColumns[1][2]),
+    Number(overviewColumns[2][2]),
+    Number(overviewColumns[4][2]),
+  ), 'the fourth Name field receives flexible space');
+  assert.match(overviewItemRule[1], /gap-1\.5/);
+  assert.match(overviewItemRule[1], /px-2/);
+  assert.match(overviewItemRule[1], /py-1/);
+  assert.match(overviewWrapperRule[1], /overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-detail-overview-grid dd\s*\{[\s\S]*?whitespace-nowrap/);
+
+  assert.match(toolbarRule[1], /flex-nowrap/);
+  assert.match(toolbarRule[1], /overflow-x-auto/);
+  assert.doesNotMatch(toolbarRule[1], /flex-wrap/);
+  assert.match(logPanelRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/);
+  assert.match(logOutputRule[1], /min-h-0/);
+  assert.match(logOutputRule[1], /overflow-y-auto/);
+  assert.match(logOutputRule[1], /white-space:\s*pre;/);
   assert.match(styles, /\.kubernetes-terminal-drawer\s*\{[\s\S]*?absolute/);
   assert.match(styles, /\.kubernetes-port-forwards\s*\{[\s\S]*?absolute/);
-  assert.doesNotMatch(styles, /\.kubernetes-detail-page\s*\{[\s\S]*?bg-zinc-100\/70/);
+  assert.doesNotMatch(detailRule[1], /bg-zinc-100\/70/);
   assert.match(styles, /\.kubernetes-list-page\s*\{[\s\S]*?@apply[^;]*grid[^;]*gap-3/);
-  assert.match(styles, /\.kubernetes-detail-overview-grid\s*\{[\s\S]*?@apply[^;]*m-0/);
-  assert.match(styles, /\.kubernetes-detail-overview-grid > div\s*\{[\s\S]*?grid-cols-\[max-content_minmax\(0,1fr\)\]/);
   assert.match(styles, /\.kubernetes-detail-overview-grid dt\s*\{[\s\S]*?whitespace-nowrap/);
   assert.match(styles, /\.kubernetes-detail-overview-grid dd\s*\{[\s\S]*?m-0[^;]*whitespace-nowrap/);
   assert.match(styles, /\.kubernetes-namespace-control > \.btn\s*\{[\s\S]*?h-8/);
-  assert.match(styles, /\.kubernetes-detail-actions\s*\{[\s\S]*?flex-nowrap/);
   assert.match(styles, /\.kubernetes-related-list\s*\{/);
   assert.match(styles, /\.kubernetes-related-row\s*\{/);
   assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
 });
 
-test('Kubernetes minimum viewport keeps Pod actions and log controls on bounded single rows', async () => {
+test('Kubernetes minimum viewport preserves bounded four tracks and internal one-row overflow', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const responsiveStart = styles.indexOf('@media (max-width: 900px)');
   assert.ok(responsiveStart >= 0);
   const responsiveStyles = styles.slice(responsiveStart);
   const podRows = responsiveStyles.match(
-    /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\((\d+)px,[^)]+\) auto minmax\((\d+)px,[^)]+\)/,
+    /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows:\s*auto\s+auto\s+minmax\((\d+)px,\s*([\d.]+)fr\)\s+minmax\((\d+)px,\s*([\d.]+)fr\);/,
   );
   assert.ok(podRows);
 
   const contentMinimum = Number(podRows[1]);
-  const logMinimum = Number(podRows[2]);
+  const contentFraction = Number(podRows[2]);
+  const logMinimum = Number(podRows[3]);
+  const logFraction = Number(podRows[4]);
   const minimumMiddleTrackBudget = 260;
-  const fixedLogChrome = 40 + 53 + 32;
+  const fixedLogChrome = 44 + 28;
   const minimumUsefulLogOutput = 48;
   assert.ok(contentMinimum + logMinimum <= minimumMiddleTrackBudget);
+  assert.ok(logFraction > contentFraction);
   assert.ok(logMinimum - fixedLogChrome >= minimumUsefulLogOutput);
-  assert.doesNotMatch(responsiveStyles, /\.kubernetes-detail-actions\s*\{[^}]*@apply[^;]*flex-wrap/);
-  assert.doesNotMatch(responsiveStyles, /\.kubernetes-log-head\s*\{[^}]*@apply[^;]*flex-wrap/);
-  assert.match(styles, /\.kubernetes-detail-actions\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
-  assert.match(styles, /\.kubernetes-log-head\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
+  assert.doesNotMatch(responsiveStyles, /\.kubernetes-detail-overview-grid\s*\{[^}]*grid-template-columns/);
+  assert.doesNotMatch(responsiveStyles, /\.kubernetes-log-toolbar\s*\{[^}]*flex-wrap/);
+  assert.match(styles, /\.kubernetes-log-toolbar\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
 });
 
 test('Kubernetes simultaneous runtime layers share the page containing-block height budget', async () => {

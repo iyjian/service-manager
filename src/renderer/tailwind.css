@@ -304,14 +304,17 @@
     @apply px-1.5 py-1 text-[12px] text-zinc-500;
   }
 
-  .kubernetes-category-tabs,
-  .kubernetes-resource-tabs {
+  .kubernetes-category-tabs {
     @apply flex min-w-0 flex-wrap items-center gap-1 border-b border-zinc-100 pb-2;
+  }
+
+  .kubernetes-resource-tabs {
+    @apply flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-zinc-100 pb-2;
   }
 
   .kubernetes-category-tab,
   .kubernetes-resource-tab {
-    @apply inline-flex h-7 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent px-2.5 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+    @apply inline-flex h-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent px-2.5 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
   }
 
   .kubernetes-resource-tabs {
@@ -453,16 +456,15 @@
   }
 
   .kubernetes-detail-page {
-    @apply grid h-full min-h-0 min-w-0 gap-3 overflow-hidden rounded-xl border border-zinc-200 bg-white p-4 shadow-sm ring-1 ring-zinc-950/[0.02];
+    @apply grid h-full min-h-0 min-w-0 gap-2 overflow-hidden rounded-xl border border-zinc-200 bg-white p-3 shadow-sm ring-1 ring-zinc-950/[0.02];
     grid-template-rows: auto auto minmax(0, 1fr);
   }
 
   .kubernetes-detail-pod {
-    grid-template-rows: auto auto minmax(142px, 0.75fr) auto minmax(160px, 1.25fr);
+    grid-template-rows: auto auto minmax(112px, 0.7fr) minmax(192px, 1.3fr);
   }
 
   .kubernetes-detail-head,
-  .kubernetes-log-head,
   .kubernetes-port-forward-row,
   .kubernetes-terminal-session-head {
     @apply flex min-w-0 items-center gap-2;
@@ -473,12 +475,12 @@
   }
 
   .kubernetes-detail-back,
-  .kubernetes-detail-copy {
+  #kubernetes-detail-port-forward {
     @apply h-9 shrink-0 gap-1.5 px-3 text-[13px];
   }
 
   .kubernetes-detail-back svg,
-  .kubernetes-detail-copy svg {
+  #kubernetes-detail-port-forward svg {
     @apply h-4 w-4;
   }
 
@@ -495,11 +497,11 @@
   }
 
   .kubernetes-detail-tabs {
-    @apply flex min-w-0 flex-wrap gap-2;
+    @apply flex min-w-0 flex-nowrap gap-1.5 overflow-x-auto;
   }
 
   .kubernetes-detail-tab {
-    @apply inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-transparent bg-zinc-100 px-3 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-200 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+    @apply inline-flex h-8 shrink-0 cursor-pointer items-center justify-center rounded-md border border-transparent bg-zinc-100 px-3 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-200 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
   }
 
   .kubernetes-detail-tab-active {
@@ -507,7 +509,7 @@
   }
 
   .kubernetes-detail-content-stack {
-    @apply grid min-h-0 min-w-0 content-start gap-3 overflow-auto rounded-lg border border-zinc-200 bg-white p-3;
+    @apply grid min-h-0 min-w-0 content-start gap-2 overflow-auto rounded-lg border border-zinc-200 bg-white p-2;
   }
 
   .kubernetes-detail-content,
@@ -519,12 +521,22 @@
     @apply border-0 p-0;
   }
 
+  #kubernetes-detail-overview {
+    @apply overflow-x-auto;
+  }
+
   .kubernetes-detail-overview-grid {
-    @apply m-0 grid gap-2 sm:grid-cols-2 lg:grid-cols-3;
+    @apply m-0 grid min-w-[760px] gap-1.5;
+    grid-template-columns:
+      minmax(72px, 0.72fr)
+      minmax(112px, 1fr)
+      minmax(112px, 1fr)
+      minmax(220px, 2.8fr)
+      minmax(112px, 1fr);
   }
 
   .kubernetes-detail-overview-grid > div {
-    @apply grid min-h-11 min-w-0 grid-cols-[max-content_minmax(0,1fr)] items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2;
+    @apply grid min-h-9 min-w-0 grid-cols-[max-content_minmax(0,1fr)] items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1;
   }
 
   .kubernetes-detail-overview-grid dt {
@@ -594,12 +606,8 @@
     @apply cursor-pointer outline-none transition hover:border-zinc-300 hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-zinc-300;
   }
 
-  .kubernetes-detail-actions {
-    @apply flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto;
-  }
-
   .kubernetes-container-field {
-    @apply grid min-w-[260px] flex-1 items-center gap-3;
+    @apply grid min-w-[228px] flex-none items-center gap-2;
     grid-template-columns: auto minmax(0, 1fr);
   }
 
@@ -608,20 +616,24 @@
   }
 
   .kubernetes-container-field .input {
-    @apply h-9;
+    @apply h-8;
   }
 
   .kubernetes-log-panel {
     @apply grid min-h-0 min-w-0 gap-0 overflow-hidden rounded-lg border border-zinc-200 bg-white;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
-  .kubernetes-log-view-tabs {
-    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-3;
+  .kubernetes-log-toolbar {
+    @apply flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
+  }
+
+  .kubernetes-log-toolbar > [role='tablist'] {
+    @apply flex shrink-0 items-center gap-1;
   }
 
   .kubernetes-log-view-tab {
-    @apply inline-flex h-10 cursor-pointer items-center gap-2 border-0 border-b-2 border-transparent bg-transparent px-2 text-[12.5px] font-medium text-zinc-500 outline-none hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-45;
+    @apply inline-flex h-8 cursor-pointer items-center gap-1.5 border-0 border-b-2 border-transparent bg-transparent px-1.5 text-[12.5px] font-medium text-zinc-500 outline-none hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-not-allowed disabled:opacity-45;
   }
 
   .kubernetes-log-view-tab svg {
@@ -632,10 +644,6 @@
     @apply border-zinc-950 text-zinc-950;
   }
 
-  .kubernetes-log-head {
-    @apply flex-nowrap overflow-x-auto border-b border-zinc-200 p-2.5;
-  }
-
   .kubernetes-log-search-wrap {
     @apply relative min-w-[180px] flex-1;
   }
@@ -644,21 +652,17 @@
     @apply pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400;
   }
 
-  .kubernetes-log-head .kubernetes-log-search-field {
+  .kubernetes-log-toolbar .kubernetes-log-search-field {
     @apply h-8 w-full pl-8 font-mono text-[12.5px];
   }
 
-  .kubernetes-log-head .dialog-head-actions {
-    @apply shrink-0;
-  }
-
   .kubernetes-log-output {
-    @apply m-0 min-h-0 overflow-auto border-0 bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-zinc-100;
+    @apply m-0 min-h-0 min-w-0 overflow-x-auto overflow-y-auto border-0 bg-zinc-950 p-2.5 font-mono text-[12px] leading-5 text-zinc-100;
     white-space: pre;
   }
 
   .kubernetes-log-status {
-    @apply flex h-8 min-w-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-3 font-mono text-[11px] text-zinc-400;
+    @apply flex h-7 min-w-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-2.5 font-mono text-[11px] text-zinc-400;
   }
 
   .kubernetes-log-state {
@@ -1533,11 +1537,11 @@
     }
 
     .kubernetes-detail-page {
-      @apply p-3;
+      @apply p-2.5;
     }
 
     .kubernetes-detail-pod {
-      grid-template-rows: auto auto minmax(80px, 0.5fr) auto minmax(180px, 1.5fr);
+      grid-template-rows: auto auto minmax(80px, 0.5fr) minmax(160px, 1.5fr);
     }
 
     .kubernetes-table-header,
