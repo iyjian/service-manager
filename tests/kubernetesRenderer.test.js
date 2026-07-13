@@ -439,26 +439,308 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /xterm\.css/);
 });
 
+class FakeKubernetesLogClassList {
+  constructor() {
+    this.values = new Set();
+  }
+
+  toggle(value, force) {
+    if (force === undefined ? !this.values.has(value) : force) this.values.add(value);
+    else this.values.delete(value);
+  }
+
+  remove(value) {
+    this.values.delete(value);
+  }
+
+  contains(value) {
+    return this.values.has(value);
+  }
+}
+
+function kubernetesLogState(overrides = {}) {
+  return {
+    sessionId: 'session-app',
+    podName: 'pod-1',
+    namespace: 'apps',
+    container: 'app',
+    lines: ['first', 'second'],
+    following: true,
+    hasOlder: false,
+    ...overrides,
+  };
+}
+
+function createKubernetesLogViewportHarness(pageModule) {
+  const frames = new Map();
+  const requested = [];
+  const cancelled = [];
+  let nextFrame = 1;
+  let state = {
+    visible: true,
+    detailGeneration: 1,
+    selectedContainer: 'app',
+    log: kubernetesLogState(),
+    search: '',
+  };
+  const elements = {
+    followButton: { disabled: false, textContent: '' },
+    clearButton: { disabled: false },
+    output: { textContent: '', scrollTop: 17, scrollHeight: 480 },
+    count: { textContent: '' },
+    state: { classList: new FakeKubernetesLogClassList() },
+    stateLabel: { textContent: '' },
+  };
+  const viewport = pageModule.createKubernetesLogViewport({
+    getState: () => state.sessions
+      ? { ...state, log: state.sessions.get(state.selectedContainer) }
+      : state,
+    elements,
+    requestFrame: (callback) => {
+      const frame = nextFrame++;
+      requested.push(frame);
+      frames.set(frame, callback);
+      return frame;
+    },
+    cancelFrame: (frame) => {
+      cancelled.push(frame);
+      frames.delete(frame);
+    },
+  });
+
+  return {
+    viewport,
+    elements,
+    frames,
+    requested,
+    cancelled,
+    get state() { return state; },
+    setState(next) { state = { ...state, ...next }; },
+    runFrame(frame = requested.at(-1)) {
+      const callback = frames.get(frame);
+      assert.ok(callback, `expected animation frame ${frame}`);
+      frames.delete(frame);
+      callback(0);
+    },
+  };
+}
+
 test('Kubernetes log count label reports filtered and total retained lines', async () => {
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   assert.equal(pageModule.formatKubernetesLogCount(0, 0), '0 lines');
+  assert.equal(pageModule.formatKubernetesLogCount(1, 1), '1 line');
+  assert.equal(pageModule.formatKubernetesLogCount(0, 1), '0 of 1 line');
   assert.equal(pageModule.formatKubernetesLogCount(12, 12), '12 lines');
   assert.equal(pageModule.formatKubernetesLogCount(3, 12), '3 of 12 lines');
 });
 
-test('Kubernetes log viewport follows new output and preserves explicit filter or paused positions', async () => {
+test('Kubernetes log updates cache owned background sessions without granting repaint authority', async () => {
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
-  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const sessions = new Map();
+  const selected = kubernetesLogState();
+  assert.equal(pageModule.routeKubernetesLogUpdate(sessions, 'app', selected), 'stale');
+  assert.equal(sessions.has('app'), false);
+  assert.equal(pageModule.routeKubernetesLogUpdate(sessions, 'app', selected, true), 'selected');
+  assert.equal(sessions.get('app'), selected);
 
-  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(true, false), true);
-  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(true, true), false);
-  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(false, false), false);
-  assert.match(pageSource, /window\.requestAnimationFrame/);
-  assert.match(pageSource, /current\.sessionId !== request\.sessionId/);
-  assert.match(pageSource, /this\.selectedContainer !== request\.container/);
-  assert.match(pageSource, /this\.detailGeneration !== request\.detailGeneration/);
-  assert.match(pageSource, /this\.logOutput\.scrollTop = this\.logOutput\.scrollHeight/);
-  assert.match(pageSource, /renderLogPanel\(\{ preserveScroll: true \}\)/);
+  const sidecar = kubernetesLogState({
+    sessionId: 'session-sidecar',
+    container: 'sidecar',
+    lines: ['sidecar-1'],
+  });
+  sessions.set('sidecar', sidecar);
+  const background = { ...sidecar, lines: ['sidecar-1', 'sidecar-2'] };
+  assert.equal(pageModule.routeKubernetesLogUpdate(sessions, 'app', background), 'background');
+  assert.equal(sessions.get('sidecar'), background);
+
+  const unowned = kubernetesLogState({ sessionId: 'session-metrics', container: 'metrics' });
+  assert.equal(pageModule.routeKubernetesLogUpdate(sessions, 'app', unowned), 'stale');
+  assert.equal(sessions.has('metrics'), false);
+
+  const stale = { ...background, sessionId: 'old-sidecar-session', lines: ['stale'] };
+  assert.equal(pageModule.routeKubernetesLogUpdate(sessions, 'app', stale), 'stale');
+  assert.equal(sessions.get('sidecar'), background);
+});
+
+test('Kubernetes log open ownership survives a late completion from a closed detail', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const requests = new Map();
+  const key = 'apps\u0000pod-1\u0000app';
+  const closedDetailRequest = pageModule.claimKubernetesLogOpen(requests, key);
+  assert.ok(closedDetailRequest);
+  assert.equal(pageModule.claimKubernetesLogOpen(requests, key), undefined);
+
+  requests.clear();
+  const reopenedDetailRequest = pageModule.claimKubernetesLogOpen(requests, key);
+  assert.ok(reopenedDetailRequest);
+  assert.notEqual(reopenedDetailRequest, closedDetailRequest);
+
+  pageModule.releaseKubernetesLogOpen(requests, key, closedDetailRequest);
+  assert.equal(requests.get(key), reopenedDetailRequest);
+  pageModule.releaseKubernetesLogOpen(requests, key, reopenedDetailRequest);
+  assert.equal(requests.has(key), false);
+});
+
+test('Kubernetes log open failure does not repaint the selected container after a switch', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const requests = new Map();
+  const key = 'apps\u0000pod-1\u0000app';
+  const token = pageModule.claimKubernetesLogOpen(requests, key);
+  assert.ok(token);
+  harness.setState({
+    selectedContainer: 'sidecar',
+    log: kubernetesLogState({ sessionId: 'session-sidecar', container: 'sidecar' }),
+  });
+  harness.viewport.render('follow');
+
+  const cached = [];
+  let selectedEffects = 0;
+  assert.equal(pageModule.applyKubernetesLogOpenFailure({
+    requests,
+    key,
+    token,
+    selectedContainer: 'sidecar',
+    targetContainer: 'app',
+    cache: () => cached.push('app'),
+    renderSelected: () => { selectedEffects += 1; },
+  }), 'background');
+  assert.deepEqual(cached, ['app']);
+  assert.equal(selectedEffects, 0);
+  assert.equal(harness.frames.size, 1);
+  assert.deepEqual(harness.cancelled, []);
+  harness.runFrame(1);
+  assert.equal(harness.elements.output.scrollTop, 480);
+
+  requests.clear();
+  assert.equal(pageModule.applyKubernetesLogOpenFailure({
+    requests,
+    key,
+    token,
+    selectedContainer: 'app',
+    targetContainer: 'app',
+    cache: () => cached.push('stale'),
+    renderSelected: () => { selectedEffects += 1; },
+  }), 'stale');
+  assert.deepEqual(cached, ['app']);
+  assert.equal(selectedEffects, 0);
+});
+
+test('Kubernetes log update routing renders only the selected owned session', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const app = kubernetesLogState();
+  const sidecar = kubernetesLogState({ sessionId: 'session-sidecar', container: 'sidecar' });
+  const sessions = new Map([['app', app], ['sidecar', sidecar]]);
+  harness.setState({ sessions, log: undefined });
+  harness.elements.output.textContent = 'selected output';
+
+  const background = { ...sidecar, lines: ['sidecar-only'] };
+  assert.equal(
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', background, harness.viewport, 'follow'),
+    'background',
+  );
+  assert.equal(harness.elements.output.textContent, 'selected output');
+  assert.deepEqual(harness.requested, []);
+
+  const selected = { ...app, lines: ['selected-new'] };
+  assert.equal(
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', selected, harness.viewport, 'follow'),
+    'selected',
+  );
+  assert.equal(harness.elements.output.textContent, 'selected-new');
+  assert.deepEqual(harness.requested, [1]);
+
+  sessions.clear();
+  harness.elements.output.textContent = 'detail closed';
+  assert.equal(
+    pageModule.applyKubernetesLogUpdate(sessions, 'app', selected, harness.viewport, 'follow'),
+    'stale',
+  );
+  assert.equal(sessions.size, 0);
+  assert.equal(harness.elements.output.textContent, 'detail closed');
+  assert.deepEqual(harness.requested, [1]);
+});
+
+test('Kubernetes log viewport follows selected output and preserves incidental, search, and paused renders', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const harness = createKubernetesLogViewportHarness(pageModule);
+
+  harness.viewport.render('follow');
+  assert.equal(harness.elements.output.textContent, 'first\nsecond');
+  assert.equal(harness.elements.count.textContent, '2 lines');
+  assert.equal(harness.elements.followButton.textContent, 'Pause Follow');
+  assert.equal(harness.elements.stateLabel.textContent, 'Live');
+  assert.equal(harness.elements.state.classList.contains('kubernetes-log-state-live'), true);
+  assert.deepEqual(harness.requested, [1]);
+  assert.equal(harness.elements.output.scrollTop, 17);
+  harness.runFrame(1);
+  assert.equal(harness.elements.output.scrollTop, 480);
+
+  harness.elements.output.scrollTop = 41;
+  harness.setState({ search: 'first' });
+  harness.viewport.render('preserve');
+  assert.equal(harness.elements.output.textContent, 'first');
+  assert.equal(harness.elements.count.textContent, '1 of 2 lines');
+  assert.equal(harness.elements.output.scrollTop, 41);
+  assert.deepEqual(harness.requested, [1]);
+
+  harness.setState({
+    search: '',
+    log: kubernetesLogState({ lines: ['first', 'second', 'paused'], following: false }),
+  });
+  harness.elements.output.scrollTop = 29;
+  harness.viewport.render('follow');
+  assert.equal(harness.elements.followButton.textContent, 'Resume Follow');
+  assert.equal(harness.elements.stateLabel.textContent, 'Paused');
+  assert.equal(harness.elements.state.classList.contains('kubernetes-log-state-live'), false);
+  assert.equal(harness.elements.output.scrollTop, 29);
+  assert.deepEqual(harness.requested, [1]);
+
+  harness.setState({ log: kubernetesLogState({ lines: ['first', 'second', 'resumed'] }) });
+  harness.elements.output.scrollHeight = 720;
+  harness.viewport.render('follow');
+  assert.deepEqual(harness.requested, [1, 2]);
+  harness.runFrame(2);
+  assert.equal(harness.elements.output.scrollTop, 720);
+});
+
+test('Kubernetes log viewport preserves selected follow work through incidental renders and coalesces bursts', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const harness = createKubernetesLogViewportHarness(pageModule);
+
+  harness.viewport.render('follow');
+  harness.elements.output.scrollTop = 23;
+  harness.viewport.render();
+  assert.deepEqual(harness.cancelled, []);
+  assert.equal(harness.frames.size, 1);
+  assert.equal(harness.elements.output.scrollTop, 23);
+  harness.runFrame(1);
+  assert.equal(harness.elements.output.scrollTop, 480);
+
+  harness.elements.output.scrollTop = 23;
+  harness.viewport.render('follow');
+  harness.viewport.render('preserve');
+  assert.deepEqual(harness.cancelled, [2]);
+  assert.equal(harness.frames.size, 0);
+  assert.equal(harness.elements.output.scrollTop, 23);
+
+  harness.viewport.render('follow');
+  harness.setState({ selectedContainer: 'sidecar' });
+  harness.runFrame(3);
+  assert.equal(harness.elements.output.scrollTop, 23);
+
+  harness.setState({ selectedContainer: 'app' });
+  for (let update = 0; update < 500; update += 1) {
+    harness.setState({ log: kubernetesLogState({ lines: [`line-${update}`] }) });
+    harness.viewport.render('follow');
+  }
+  assert.deepEqual(harness.requested, [1, 2, 3, 4]);
+  assert.equal(harness.frames.size, 1);
+  assert.equal(harness.elements.output.textContent, 'line-499');
+  harness.elements.output.scrollHeight = 960;
+  harness.runFrame(4);
+  assert.equal(harness.elements.output.scrollTop, 960);
 });
 
 test('Kubernetes log auto-scroll coalesces high-frequency updates without starving the pending frame', async () => {

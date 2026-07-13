@@ -217,8 +217,159 @@ export function createKubernetesLogAutoScrollScheduler(
   };
 }
 
+export type KubernetesLogScrollIntent = 'follow' | 'preserve' | 'incidental';
+export type KubernetesLogUpdateRoute = 'selected' | 'background' | 'stale';
+
+export interface KubernetesLogViewportState {
+  visible: boolean;
+  detailGeneration: number;
+  selectedContainer?: string;
+  log?: KubernetesLogState;
+  error?: string;
+  search: string;
+}
+
+export interface KubernetesLogViewportElements {
+  followButton: Pick<HTMLButtonElement, 'disabled' | 'textContent'>;
+  clearButton: Pick<HTMLButtonElement, 'disabled'>;
+  output: Pick<HTMLPreElement, 'textContent' | 'scrollTop' | 'scrollHeight'>;
+  count: Pick<HTMLElement, 'textContent'>;
+  state: { classList: Pick<DOMTokenList, 'remove' | 'toggle'> };
+  stateLabel: Pick<HTMLElement, 'textContent'>;
+}
+
+export interface KubernetesLogViewport {
+  render(intent?: KubernetesLogScrollIntent): void;
+  cancel(): void;
+}
+
+export function claimKubernetesLogOpen(
+  requests: Map<string, symbol>,
+  key: string,
+): symbol | undefined {
+  if (requests.has(key)) return undefined;
+  const token = Symbol(key);
+  requests.set(key, token);
+  return token;
+}
+
+export function releaseKubernetesLogOpen(
+  requests: Map<string, symbol>,
+  key: string,
+  token: symbol,
+): void {
+  if (requests.get(key) === token) requests.delete(key);
+}
+
+export function applyKubernetesLogOpenFailure(options: {
+  requests: Map<string, symbol>;
+  key: string;
+  token: symbol;
+  selectedContainer: string | undefined;
+  targetContainer: string;
+  cache: () => void;
+  renderSelected: () => void;
+}): KubernetesLogUpdateRoute {
+  if (options.requests.get(options.key) !== options.token) return 'stale';
+  options.cache();
+  if (options.selectedContainer !== options.targetContainer) return 'background';
+  options.renderSelected();
+  return 'selected';
+}
+
+export function routeKubernetesLogUpdate(
+  sessions: Map<string, KubernetesLogState>,
+  selectedContainer: string | undefined,
+  state: KubernetesLogState,
+  allowNewSession = false,
+): KubernetesLogUpdateRoute {
+  const current = sessions.get(state.container);
+  if ((current && current.sessionId !== state.sessionId)
+    || (!current && (!allowNewSession || state.container !== selectedContainer))) {
+    return 'stale';
+  }
+  sessions.set(state.container, state);
+  return state.container === selectedContainer ? 'selected' : 'background';
+}
+
+export function applyKubernetesLogUpdate(
+  sessions: Map<string, KubernetesLogState>,
+  selectedContainer: string | undefined,
+  state: KubernetesLogState,
+  viewport: KubernetesLogViewport,
+  intent: KubernetesLogScrollIntent,
+  allowNewSession = false,
+): KubernetesLogUpdateRoute {
+  const route = routeKubernetesLogUpdate(sessions, selectedContainer, state, allowNewSession);
+  if (route === 'selected') viewport.render(intent);
+  return route;
+}
+
 export function formatKubernetesLogCount(filtered: number, total: number): string {
-  return filtered === total ? `${total} lines` : `${filtered} of ${total} lines`;
+  const unit = total === 1 ? 'line' : 'lines';
+  return filtered === total ? `${total} ${unit}` : `${filtered} of ${total} ${unit}`;
+}
+
+export function createKubernetesLogViewport(options: {
+  getState: () => KubernetesLogViewportState;
+  elements: KubernetesLogViewportElements;
+  requestFrame: (callback: FrameRequestCallback) => number;
+  cancelFrame: (frame: number) => void;
+}): KubernetesLogViewport {
+  const autoScroll = createKubernetesLogAutoScrollScheduler(options.requestFrame, options.cancelFrame);
+
+  return {
+    render(intent = 'incidental'): void {
+      const previousScrollTop = options.elements.output.scrollTop;
+      const state = options.getState();
+      const log = state.log;
+      options.elements.followButton.disabled = !log;
+      options.elements.clearButton.disabled = !log;
+      options.elements.followButton.textContent = log?.following ? 'Pause Follow' : 'Resume Follow';
+      if (!log) {
+        options.elements.output.textContent = state.selectedContainer
+          ? state.error ?? 'Loading logs…'
+          : 'No container is available.';
+        options.elements.count.textContent = '0 lines';
+        options.elements.state.classList.remove('kubernetes-log-state-live');
+        options.elements.stateLabel.textContent = 'Paused';
+        autoScroll.cancel();
+        options.elements.output.scrollTop = previousScrollTop;
+        return;
+      }
+
+      const search = state.search.trim().toLocaleLowerCase();
+      const lines = search ? log.lines.filter((line) => line.toLocaleLowerCase().includes(search)) : log.lines;
+      options.elements.count.textContent = formatKubernetesLogCount(lines.length, log.lines.length);
+      options.elements.state.classList.toggle('kubernetes-log-state-live', log.following);
+      options.elements.stateLabel.textContent = log.following ? 'Live' : 'Paused';
+      options.elements.output.textContent = lines.join('\n');
+      if (!shouldAutoScrollKubernetesLogs(log.following, intent !== 'follow')) {
+        if (!log.following || intent === 'preserve') autoScroll.cancel();
+        options.elements.output.scrollTop = previousScrollTop;
+        return;
+      }
+
+      const request = {
+        sessionId: log.sessionId,
+        container: log.container,
+        detailGeneration: state.detailGeneration,
+      };
+      const requestKey = `${request.sessionId}\u0000${request.container}\u0000${request.detailGeneration}`;
+      autoScroll.schedule(requestKey, () => {
+        const current = options.getState();
+        if (!current.visible || !current.log?.following) return;
+        if (current.log.sessionId !== request.sessionId) return;
+        if (current.log.container !== request.container) return;
+        if (current.selectedContainer !== request.container) return;
+        if (current.detailGeneration !== request.detailGeneration) return;
+        options.elements.output.scrollTop = options.elements.output.scrollHeight;
+      });
+    },
+    cancel(): void {
+      autoScroll.cancel();
+    },
+  };
 }
 
 export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
@@ -428,6 +579,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly logOutput = requireElement<HTMLPreElement>('#kubernetes-log-output');
   private readonly logCount = requireElement<HTMLElement>('#kubernetes-log-count');
   private readonly logState = requireElement<HTMLElement>('#kubernetes-log-state');
+  private readonly logStateLabel = requireElement<HTMLElement>('#kubernetes-log-state > span:last-child');
   private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
   private readonly portForwardList = requireElement<HTMLElement>('#kubernetes-port-forward-list');
   private readonly portForwardDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forward-dialog');
@@ -455,10 +607,6 @@ class KubernetesPage implements KubernetesPageController {
   private requestedContinuation: string | undefined;
   private requestedWindow: string | undefined;
   private searchTimer: number | undefined;
-  private readonly logAutoScroll = createKubernetesLogAutoScrollScheduler(
-    (callback) => window.requestAnimationFrame(callback),
-    (frame) => window.cancelAnimationFrame(frame),
-  );
   private reconnecting = false;
   private requestGeneration = 0;
   private selectedNamespaces = new Set<string>();
@@ -484,11 +632,34 @@ class KubernetesPage implements KubernetesPageController {
   private detailEventsLoaded = false;
   private selectedContainer: string | undefined;
   private readonly logsByContainer = new Map<string, KubernetesLogState>();
-  private readonly openingLogs = new Set<string>();
+  private readonly openingLogs = new Map<string, symbol>();
   private readonly logErrorsByContainer = new Map<string, string>();
   private terminalDrawer: KubernetesTerminalDrawer | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
+  private readonly logViewport = createKubernetesLogViewport({
+    getState: () => {
+      const selectedContainer = this.selectedContainer;
+      return {
+        visible: this.visible,
+        detailGeneration: this.detailGeneration,
+        selectedContainer,
+        log: selectedContainer ? this.logsByContainer.get(selectedContainer) : undefined,
+        error: selectedContainer ? this.logErrorsByContainer.get(selectedContainer) : undefined,
+        search: this.logSearch.value,
+      };
+    },
+    elements: {
+      followButton: this.logFollowButton,
+      clearButton: this.logClearButton,
+      output: this.logOutput,
+      count: this.logCount,
+      state: this.logState,
+      stateLabel: this.logStateLabel,
+    },
+    requestFrame: (callback) => window.requestAnimationFrame(callback),
+    cancelFrame: (frame) => window.cancelAnimationFrame(frame),
+  });
 
   public show(): void {
     if (this.visible) return;
@@ -591,12 +762,12 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.containerSelect.addEventListener('change', () => {
       this.selectedContainer = this.containerSelect.value || undefined;
-      this.renderLogPanel();
+      this.renderLogPanel('follow');
       void this.openLogsForSelectedContainer();
     });
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
-    this.logSearch.addEventListener('input', () => this.renderLogPanel({ preserveScroll: true }));
+    this.logSearch.addEventListener('input', () => this.renderLogPanel('preserve'));
     this.logTerminalTab.addEventListener('click', () => { void this.openTerminal(); });
     this.terminalOpenButton.addEventListener('click', () => { void this.openTerminal(); });
     this.podPortForwardButton.addEventListener('click', () => this.openPortForwardDialog('pod'));
@@ -1620,51 +1791,11 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private cancelLogAutoScroll(): void {
-    this.logAutoScroll.cancel();
+    this.logViewport.cancel();
   }
 
-  private renderLogPanel(options: { preserveScroll?: boolean } = {}): void {
-    const previousScrollTop = this.logOutput.scrollTop;
-    const log = this.activeLog();
-    this.logFollowButton.disabled = !log;
-    this.logClearButton.disabled = !log;
-    this.logFollowButton.textContent = log?.following ? 'Pause Follow' : 'Resume Follow';
-    if (!log) {
-      this.logOutput.textContent = this.selectedContainer
-        ? this.logErrorsByContainer.get(this.selectedContainer) ?? 'Loading logs…'
-        : 'No container is available.';
-      this.logCount.textContent = '0 lines';
-      this.logState.classList.remove('kubernetes-log-state-live');
-      this.logState.lastElementChild!.textContent = 'Paused';
-      this.cancelLogAutoScroll();
-      this.logOutput.scrollTop = previousScrollTop;
-      return;
-    }
-    const search = this.logSearch.value.trim().toLocaleLowerCase();
-    const lines = search ? log.lines.filter((line) => line.toLocaleLowerCase().includes(search)) : log.lines;
-    this.logCount.textContent = formatKubernetesLogCount(lines.length, log.lines.length);
-    this.logState.classList.toggle('kubernetes-log-state-live', log.following);
-    this.logState.lastElementChild!.textContent = log.following ? 'Live' : 'Paused';
-    this.logOutput.textContent = lines.join('\n');
-    if (!shouldAutoScrollKubernetesLogs(log.following, options.preserveScroll === true)) {
-      this.cancelLogAutoScroll();
-      this.logOutput.scrollTop = previousScrollTop;
-      return;
-    }
-    const request = {
-      sessionId: log.sessionId,
-      container: log.container,
-      detailGeneration: this.detailGeneration,
-    };
-    const requestKey = `${request.sessionId}\u0000${request.container}\u0000${request.detailGeneration}`;
-    this.logAutoScroll.schedule(requestKey, () => {
-      const current = this.activeLog();
-      if (!this.visible || !current) return;
-      if (current.sessionId !== request.sessionId) return;
-      if (this.selectedContainer !== request.container) return;
-      if (this.detailGeneration !== request.detailGeneration) return;
-      this.logOutput.scrollTop = this.logOutput.scrollHeight;
-    });
+  private renderLogPanel(intent: KubernetesLogScrollIntent = 'incidental'): void {
+    this.logViewport.render(intent);
   }
 
   private async openLogsForSelectedContainer(): Promise<void> {
@@ -1672,14 +1803,14 @@ class KubernetesPage implements KubernetesPageController {
     if (!target) return;
     const existing = this.logsByContainer.get(target.container);
     if (existing) {
-      this.renderLogPanel();
+      this.renderLogPanel('follow');
       return;
     }
     const openingKey = `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
-    if (this.openingLogs.has(openingKey)) return;
+    const openingToken = claimKubernetesLogOpen(this.openingLogs, openingKey);
+    if (!openingToken) return;
     const active = this.activeDetail;
     const detailGeneration = this.detailGeneration;
-    this.openingLogs.add(openingKey);
     this.logErrorsByContainer.delete(target.container);
     this.renderLogPanel();
     try {
@@ -1689,17 +1820,33 @@ class KubernetesPage implements KubernetesPageController {
         await window.kubernetesApi.closeLogs(state.sessionId).catch(() => undefined);
         return;
       }
-      this.logsByContainer.set(target.container, state);
       this.logErrorsByContainer.delete(target.container);
-      this.renderLogPanel();
+      applyKubernetesLogUpdate(
+        this.logsByContainer,
+        this.selectedContainer,
+        state,
+        this.logViewport,
+        'follow',
+        true,
+      );
     } catch (error) {
       if (this.activeDetail === active && this.detailGeneration === detailGeneration) {
-        this.logErrorsByContainer.set(target.container, `Unable to load logs: ${toErrorMessage(error)}`);
-        this.renderLogPanel();
-        setMessage(toErrorMessage(error), 'error');
+        const message = toErrorMessage(error);
+        applyKubernetesLogOpenFailure({
+          requests: this.openingLogs,
+          key: openingKey,
+          token: openingToken,
+          selectedContainer: this.selectedContainer,
+          targetContainer: target.container,
+          cache: () => this.logErrorsByContainer.set(target.container, `Unable to load logs: ${message}`),
+          renderSelected: () => {
+            this.renderLogPanel();
+            setMessage(message, 'error');
+          },
+        });
       }
     } finally {
-      this.openingLogs.delete(openingKey);
+      releaseKubernetesLogOpen(this.openingLogs, openingKey, openingToken);
     }
   }
 
@@ -1708,8 +1855,13 @@ class KubernetesPage implements KubernetesPageController {
     if (!log) return;
     try {
       const next = await window.kubernetesApi.setLogFollowing(log.sessionId, !log.following);
-      this.logsByContainer.set(next.container, next);
-      this.renderLogPanel();
+      applyKubernetesLogUpdate(
+        this.logsByContainer,
+        this.selectedContainer,
+        next,
+        this.logViewport,
+        next.following ? 'follow' : 'preserve',
+      );
     } catch (error) {
       setMessage(toErrorMessage(error), 'error');
     }
@@ -1720,8 +1872,13 @@ class KubernetesPage implements KubernetesPageController {
     if (!log) return;
     try {
       const next = await window.kubernetesApi.clearLogs(log.sessionId);
-      this.logsByContainer.set(next.container, next);
-      this.renderLogPanel();
+      applyKubernetesLogUpdate(
+        this.logsByContainer,
+        this.selectedContainer,
+        next,
+        this.logViewport,
+        'preserve',
+      );
     } catch (error) {
       setMessage(toErrorMessage(error), 'error');
     }
@@ -1742,8 +1899,13 @@ class KubernetesPage implements KubernetesPageController {
     const active = this.activeDetail;
     if (!active || active.query.kind !== 'pods') return;
     if (state.podName !== active.summary.name || state.namespace !== active.summary.namespace) return;
-    this.logsByContainer.set(state.container, state);
-    this.renderLogPanel();
+    applyKubernetesLogUpdate(
+      this.logsByContainer,
+      this.selectedContainer,
+      state,
+      this.logViewport,
+      'follow',
+    );
   }
 
   private selectedPodTarget(): { namespace: string; podName: string; container: string } | undefined {
