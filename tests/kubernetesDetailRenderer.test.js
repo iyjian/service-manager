@@ -292,3 +292,19 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
   assert.match(page, /portForwardDeclaredPort\.addEventListener\('change'/);
   assert.match(page, /portForwardRemotePort\.addEventListener\('input'[\s\S]*?portForwardDeclaredPort\.value = ''/);
 });
+
+test('Kubernetes detail loading immediately clears stale Port Forward header state', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const openDetailStart = page.indexOf('    async openDetail(summary) {');
+  const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
+  const openDetail = page.slice(openDetailStart, openDetailEnd);
+  const requestStart = openDetail.indexOf('await window.kubernetesApi.getResourceDetail');
+  const beforeRequest = openDetail.slice(0, requestStart);
+
+  assert.ok(openDetailStart >= 0);
+  assert.ok(openDetailEnd > openDetailStart);
+  assert.ok(requestStart >= 0);
+  assert.match(beforeRequest, /this\.detailPortForwardButton\.classList\.add\('hidden'\)/);
+  assert.match(beforeRequest, /this\.detailPortForwardButton\.disabled = true/);
+  assert.match(beforeRequest, /this\.detailPortSummary\.textContent = ''/);
+});

@@ -1361,6 +1361,9 @@ class KubernetesPage implements KubernetesPageController {
       sort: { ...this.sort },
     };
     this.listPage.classList.add('hidden');
+    this.detailPortForwardButton.classList.add('hidden');
+    this.detailPortForwardButton.disabled = true;
+    this.detailPortSummary.textContent = '';
     this.detailPage.classList.remove('hidden');
     this.detailTitle.textContent = `Loading ${resourceLabel(query.kind)}…`;
     this.detailSubtitle.textContent = '';
