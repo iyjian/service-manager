@@ -439,6 +439,43 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /xterm\.css/);
 });
 
+test('Kubernetes detail tab rerenders keep existing log sessions incidental while real log actions follow', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const selectDetailTab = page.slice(
+    page.indexOf('    async selectDetailTab(tab) {'),
+    page.indexOf('    renderEvents(events) {'),
+  );
+  const renderDetail = page.slice(
+    page.indexOf('    renderDetail() {'),
+    page.indexOf('    renderDetailTabs(tab) {'),
+  );
+  const podActions = page.slice(
+    page.indexOf('    renderPodActions(detail, active) {'),
+    page.indexOf('    appendContainerOption(value, label, init) {'),
+  );
+  const openLogs = page.slice(
+    page.indexOf('async openLogsForSelectedContainer()'),
+    page.indexOf('async toggleLogFollowing()'),
+  );
+  const containerChange = page.slice(
+    page.indexOf("this.containerSelect.addEventListener('change'"),
+    page.indexOf("this.logFollowButton.addEventListener('click'"),
+  );
+  const logChanged = page.slice(
+    page.indexOf('    onLogChanged(state) {'),
+    page.indexOf('    selectedPodTarget() {'),
+  );
+
+  assert.match(selectDetailTab, /this\.renderDetail\(\)/);
+  assert.match(renderDetail, /this\.renderPodActions\(detail, active\)/);
+  assert.match(podActions, /this\.renderLogPanel\(\);[\s\S]*?void this\.openLogsForSelectedContainer\(\)/);
+  assert.match(openLogs, /const existing = this\.logsByContainer\.get\(target\.container\);\s*if \(existing\)\s*return;/);
+  assert.doesNotMatch(openLogs, /if \(existing\)[\s\S]{0,120}renderLogPanel\('follow'\)/);
+  assert.match(containerChange, /this\.renderLogPanel\('follow'\);\s*void this\.openLogsForSelectedContainer\(\)/);
+  assert.match(openLogs, /applyKubernetesLogUpdate\([\s\S]*?'follow',\s*true,?\s*\)/);
+  assert.match(logChanged, /applyKubernetesLogUpdate\([\s\S]*?'follow',?\s*\)/);
+});
+
 class FakeKubernetesLogClassList {
   constructor() {
     this.values = new Set();

@@ -1802,10 +1802,7 @@ class KubernetesPage implements KubernetesPageController {
     const target = this.selectedPodTarget();
     if (!target) return;
     const existing = this.logsByContainer.get(target.container);
-    if (existing) {
-      this.renderLogPanel('follow');
-      return;
-    }
+    if (existing) return;
     const openingKey = `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
     const openingToken = claimKubernetesLogOpen(this.openingLogs, openingKey);
     if (!openingToken) return;
