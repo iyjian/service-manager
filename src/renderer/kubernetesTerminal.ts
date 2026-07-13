@@ -191,6 +191,7 @@ export function createKubernetesTerminalDrawer(options: {
       if (terminal && data) terminal.write(data);
     },
     close(id: string): void {
+      finalizedIds.add(id);
       removeSession(id, true);
     },
     dispose(): void {

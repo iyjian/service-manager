@@ -1647,6 +1647,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
   const listeners = new Map();
   const fits = [];
   const frames = [];
+  const closeCalls = [];
   let scrollIntoViewCount = 0;
   const runFrame = () => {
     const callback = frames.shift();
@@ -1747,7 +1748,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
       root,
       onInput: async () => {},
       onResize: async () => {},
-      onClose: async () => {},
+      onClose: async (id) => { closeCalls.push(id); },
     });
     const normal = { id: 'terminal-normal', namespace: 'apps', podName: 'api', container: 'api', shell: '/bin/sh', state: 'open' };
     const failed = { ...normal, id: 'terminal-error' };
@@ -1822,6 +1823,29 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     assert.deepEqual(instances[2].writes, ['visible error']);
     assert.equal(root.children.length, 0);
     assert.equal(root.classList.contains('hidden'), true);
+
+    const locallyClosed = { ...normal, id: 'terminal-local-close', container: 'worker' };
+    drawer.open(locallyClosed);
+    runFrame();
+    const instanceCountBeforeLateEvents = instances.length;
+    drawer.close(locallyClosed.id);
+    assert.deepEqual(closeCalls, [locallyClosed.id]);
+    assert.equal(root.children.length, 0);
+    assert.equal(root.classList.contains('hidden'), true);
+
+    drawer.open({ ...locallyClosed, state: 'connecting' });
+    drawer.open({ ...locallyClosed, state: 'open' });
+
+    assert.equal(instances.length, instanceCountBeforeLateEvents);
+    assert.equal(root.children.length, 0);
+    assert.equal(root.classList.contains('hidden'), true);
+    assert.equal(drawer.focusTarget({
+      namespace: locallyClosed.namespace,
+      podName: locallyClosed.podName,
+      container: locallyClosed.container,
+    }), undefined);
+    assert.equal(drawer.focusSession(locallyClosed.id), false);
+    assert.deepEqual(closeCalls, [locallyClosed.id]);
 
     drawer.dispose();
   } finally {
