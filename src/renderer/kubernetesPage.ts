@@ -175,6 +175,10 @@ export function nextKubernetesSort(
     : { column, direction: 'asc' };
 }
 
+export function shouldAutoScrollKubernetesLogs(following: boolean, preserveScroll: boolean): boolean {
+  return following && !preserveScroll;
+}
+
 export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
   return category !== 'Custom Resources';
 }
@@ -406,6 +410,7 @@ class KubernetesPage implements KubernetesPageController {
   private requestedContinuation: string | undefined;
   private requestedWindow: string | undefined;
   private searchTimer: number | undefined;
+  private logAutoScrollFrame: number | undefined;
   private reconnecting = false;
   private requestGeneration = 0;
   private selectedNamespaces = new Set<string>();
@@ -543,7 +548,7 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
-    this.logSearch.addEventListener('input', () => this.renderLogPanel());
+    this.logSearch.addEventListener('input', () => this.renderLogPanel({ preserveScroll: true }));
     this.terminalOpenButton.addEventListener('click', () => { void this.openTerminal(); });
     this.podPortForwardButton.addEventListener('click', () => this.openPortForwardDialog('pod'));
     this.servicePortForwardButton.addEventListener('click', () => this.openPortForwardDialog('service'));
@@ -1556,7 +1561,15 @@ class KubernetesPage implements KubernetesPageController {
     return this.selectedContainer ? this.logsByContainer.get(this.selectedContainer) : undefined;
   }
 
-  private renderLogPanel(): void {
+  private cancelLogAutoScroll(): void {
+    if (this.logAutoScrollFrame === undefined) return;
+    window.cancelAnimationFrame(this.logAutoScrollFrame);
+    this.logAutoScrollFrame = undefined;
+  }
+
+  private renderLogPanel(options: { preserveScroll?: boolean } = {}): void {
+    this.cancelLogAutoScroll();
+    const previousScrollTop = this.logOutput.scrollTop;
     const log = this.activeLog();
     this.logFollowButton.disabled = !log;
     this.logClearButton.disabled = !log;
@@ -1565,11 +1578,30 @@ class KubernetesPage implements KubernetesPageController {
       this.logOutput.textContent = this.selectedContainer
         ? this.logErrorsByContainer.get(this.selectedContainer) ?? 'Loading logs…'
         : 'No container is available.';
+      this.logOutput.scrollTop = previousScrollTop;
       return;
     }
     const search = this.logSearch.value.trim().toLocaleLowerCase();
     const lines = search ? log.lines.filter((line) => line.toLocaleLowerCase().includes(search)) : log.lines;
     this.logOutput.textContent = lines.join('\n');
+    if (!shouldAutoScrollKubernetesLogs(log.following, options.preserveScroll === true)) {
+      this.logOutput.scrollTop = previousScrollTop;
+      return;
+    }
+    const request = {
+      sessionId: log.sessionId,
+      container: log.container,
+      detailGeneration: this.detailGeneration,
+    };
+    this.logAutoScrollFrame = window.requestAnimationFrame(() => {
+      this.logAutoScrollFrame = undefined;
+      const current = this.activeLog();
+      if (!this.visible || !current) return;
+      if (current.sessionId !== request.sessionId) return;
+      if (this.selectedContainer !== request.container) return;
+      if (this.detailGeneration !== request.detailGeneration) return;
+      this.logOutput.scrollTop = this.logOutput.scrollHeight;
+    });
   }
 
   private async openLogsForSelectedContainer(): Promise<void> {
@@ -1633,6 +1665,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async closeDetailLogs(): Promise<void> {
+    this.cancelLogAutoScroll();
     const logs = [...this.logsByContainer.values()];
     this.logsByContainer.clear();
     this.openingLogs.clear();

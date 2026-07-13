@@ -435,6 +435,21 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /xterm\.css/);
 });
 
+test('Kubernetes log viewport follows new output and preserves explicit filter or paused positions', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+
+  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(true, false), true);
+  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(true, true), false);
+  assert.equal(pageModule.shouldAutoScrollKubernetesLogs(false, false), false);
+  assert.match(pageSource, /window\.requestAnimationFrame/);
+  assert.match(pageSource, /current\.sessionId !== request\.sessionId/);
+  assert.match(pageSource, /this\.selectedContainer !== request\.container/);
+  assert.match(pageSource, /this\.detailGeneration !== request\.detailGeneration/);
+  assert.match(pageSource, /this\.logOutput\.scrollTop = this\.logOutput\.scrollHeight/);
+  assert.match(pageSource, /renderLogPanel\(\{ preserveScroll: true \}\)/);
+});
+
 test('Kubernetes list and detail layout use aligned controls and a compact visual hierarchy', async () => {
   const root = path.join(__dirname, '..');
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
