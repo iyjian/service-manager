@@ -18,6 +18,12 @@ import type {
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
 import { createKubernetesTerminalDrawer, type KubernetesTerminalDrawer } from './kubernetesTerminal.js';
+import {
+  buildKubernetesOverviewFields,
+  buildKubernetesPortForwardDialogModel,
+  detectKubernetesForwardPorts,
+  formatKubernetesDeclaredPortLabel,
+} from './kubernetesDetailModel.js';
 
 type ToastLevel = 'default' | 'success' | 'error';
 
@@ -484,15 +490,6 @@ export function serializeKubernetesDetailYaml(detail: Record<string, unknown>): 
   return browserYamlSerializer().dump(detail, { lineWidth: -1, noRefs: true });
 }
 
-export async function copyKubernetesDetailYaml(
-  detail: Record<string, unknown>,
-  writeClipboardText: (text: string) => Promise<void>
-): Promise<string> {
-  const text = serializeKubernetesDetailYaml(detail);
-  await writeClipboardText(text);
-  return text;
-}
-
 function detailName(detail: ActiveDetail): string {
   return detail.summary.namespace
     ? `${detail.summary.namespace}/${detail.summary.name}`
@@ -558,19 +555,15 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailBackButton = requireElement<HTMLButtonElement>('#kubernetes-detail-back');
   private readonly detailTitle = requireElement<HTMLElement>('#kubernetes-detail-title');
   private readonly detailSubtitle = requireElement<HTMLElement>('#kubernetes-detail-subtitle');
-  private readonly detailCopyButton = requireElement<HTMLButtonElement>('#kubernetes-detail-copy');
+  private readonly detailPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-detail-port-forward');
+  private readonly detailPortSummary = requireElement<HTMLElement>('#kubernetes-detail-port-summary');
   private readonly detailTabs = requireElement<HTMLElement>('#kubernetes-detail-tabs');
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
   private readonly detailYamlSection = requireElement<HTMLElement>('#kubernetes-detail-yaml-section');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
   private readonly detailEvents = requireElement<HTMLElement>('#kubernetes-detail-events');
   private readonly detailRelated = requireElement<HTMLElement>('#kubernetes-detail-related');
-  private readonly detailPodActions = requireElement<HTMLElement>('#kubernetes-detail-pod-actions');
-  private readonly detailServiceActions = requireElement<HTMLElement>('#kubernetes-detail-service-actions');
   private readonly containerSelect = requireElement<HTMLSelectElement>('#kubernetes-container-select');
-  private readonly terminalOpenButton = requireElement<HTMLButtonElement>('#kubernetes-terminal-open');
-  private readonly podPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-port-forward-open');
-  private readonly servicePortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-service-port-forward-open');
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
   private readonly logTerminalTab = requireElement<HTMLButtonElement>('#kubernetes-log-terminal-tab');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
@@ -586,6 +579,9 @@ class KubernetesPage implements KubernetesPageController {
   private readonly portForwardForm = requireElement<HTMLFormElement>('#kubernetes-port-forward-form');
   private readonly portForwardTitle = requireElement<HTMLElement>('#kubernetes-port-forward-title');
   private readonly portForwardTarget = requireElement<HTMLElement>('#kubernetes-port-forward-target');
+  private readonly portForwardDeclaredField = requireElement<HTMLElement>('#kubernetes-port-forward-declared-field');
+  private readonly portForwardDeclaredPort = requireElement<HTMLSelectElement>('#kubernetes-port-forward-declared-port');
+  private readonly portForwardHint = requireElement<HTMLElement>('#kubernetes-port-forward-hint');
   private readonly portForwardRemotePort = requireElement<HTMLInputElement>('#kubernetes-port-forward-remote-port');
   private readonly portForwardLocalPort = requireElement<HTMLInputElement>('#kubernetes-port-forward-local-port');
   private readonly portForwardError = requireElement<HTMLElement>('#kubernetes-port-forward-error');
@@ -754,7 +750,7 @@ class KubernetesPage implements KubernetesPageController {
     });
     this.customResourceSelect.addEventListener('change', () => this.selectCustomResourceDefinition());
     this.detailBackButton.addEventListener('click', () => { void this.closeDetail(); });
-    this.detailCopyButton.addEventListener('click', () => { void this.copyActiveDetail(); });
+    this.detailPortForwardButton.addEventListener('click', () => this.openPortForwardDialog());
     this.detailTabs.addEventListener('click', (event) => {
       const target = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>('[data-detail-tab]') : null;
       const tab = target?.dataset.detailTab;
@@ -769,9 +765,12 @@ class KubernetesPage implements KubernetesPageController {
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
     this.logSearch.addEventListener('input', () => this.renderLogPanel('preserve'));
     this.logTerminalTab.addEventListener('click', () => { void this.openTerminal(); });
-    this.terminalOpenButton.addEventListener('click', () => { void this.openTerminal(); });
-    this.podPortForwardButton.addEventListener('click', () => this.openPortForwardDialog('pod'));
-    this.servicePortForwardButton.addEventListener('click', () => this.openPortForwardDialog('service'));
+    this.portForwardDeclaredPort.addEventListener('change', () => {
+      this.portForwardRemotePort.value = this.portForwardDeclaredPort.value;
+    });
+    this.portForwardRemotePort.addEventListener('input', () => {
+      this.portForwardDeclaredPort.value = '';
+    });
     this.portForwardForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.submitPortForward();
@@ -1449,31 +1448,25 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderOverview(detail: Record<string, unknown>, active: ActiveDetail): void {
     this.detailOverview.replaceChildren();
-    const metadata = asRecord(detail.metadata);
-    const values: Array<[string, string | undefined]> = [
-      ['Kind', stringValue(detail.kind) ?? resourceLabel(active.query.kind)],
-      ['API Version', stringValue(detail.apiVersion)],
-      ['Name', stringValue(metadata?.name) ?? active.summary.name],
-      ['Namespace', stringValue(metadata?.namespace) ?? active.summary.namespace],
-      ['Status', stringValue(asRecord(detail.status)?.phase) ?? active.summary.status],
-      ['Created', stringValue(metadata?.creationTimestamp) ?? active.summary.createdAt],
-      ['Resource Version', stringValue(metadata?.resourceVersion) ?? active.summary.resourceVersion],
-    ];
+    const fields = buildKubernetesOverviewFields(detail, {
+      kind: resourceLabel(active.query.kind),
+      name: active.summary.name,
+      namespace: active.summary.namespace,
+      status: active.summary.status,
+    });
     const list = document.createElement('dl');
     list.className = 'kubernetes-detail-overview-grid';
-    for (const [label, value] of values) {
-      if (!value) continue;
+    for (const field of fields) {
       const item = document.createElement('div');
       const term = document.createElement('dt');
-      term.textContent = label;
+      term.textContent = field.label;
       const description = document.createElement('dd');
-      description.title = value;
-      if (label === 'Status') {
+      description.textContent = field.value;
+      description.title = field.value;
+      if (field.label === 'Status') {
         const dot = document.createElement('span');
         dot.className = 'kubernetes-status-dot';
-        description.append(dot, document.createTextNode(value));
-      } else {
-        description.textContent = value;
+        description.prepend(dot);
       }
       item.append(term, description);
       list.appendChild(item);
@@ -1524,11 +1517,19 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderPodActions(detail: Record<string, unknown>, active: ActiveDetail): void {
     const isPod = active.query.kind === 'pods';
+    const targetKind = active.query.kind === 'pods' ? 'pod'
+      : active.query.kind === 'services' ? 'service'
+        : undefined;
+    const declaredPorts = targetKind ? detectKubernetesForwardPorts(detail, targetKind) : [];
     this.detailPage.classList.toggle('kubernetes-detail-pod', isPod);
-    this.detailPodActions.classList.toggle('hidden', !isPod);
-    this.detailServiceActions.classList.toggle('hidden', active.query.kind !== 'services');
+    this.detailPortForwardButton.classList.toggle('hidden', !targetKind);
+    this.detailPortForwardButton.disabled = !targetKind || !active.summary.namespace;
+    this.detailPortSummary.textContent = declaredPorts.length === 0
+      ? 'No declared TCP ports'
+      : declaredPorts.length === 1
+        ? `1 declared · ${declaredPorts[0].remotePort}`
+        : `${declaredPorts.length} declared`;
     this.logPanel.classList.toggle('hidden', !isPod);
-    this.servicePortForwardButton.disabled = active.query.kind !== 'services' || !active.summary.namespace;
     this.logTerminalTab.disabled = true;
     if (!isPod) return;
     const containers = containerNames(detail);
@@ -1539,8 +1540,6 @@ class KubernetesPage implements KubernetesPageController {
     for (const name of containers.init) this.appendContainerOption(name, `Init: ${name}`, true);
     this.containerSelect.value = this.selectedContainer ?? '';
     const enabled = Boolean(this.selectedContainer && active.summary.namespace);
-    this.terminalOpenButton.disabled = !enabled;
-    this.podPortForwardButton.disabled = !enabled;
     this.logTerminalTab.disabled = !enabled;
     this.renderLogPanel();
     if (enabled) void this.openLogsForSelectedContainer();
@@ -1938,9 +1937,19 @@ class KubernetesPage implements KubernetesPageController {
     this.terminalDrawer?.write(output.id, output.data);
   }
 
-  private openPortForwardDialog(targetKind: 'pod' | 'service'): void {
+  private openPortForwardDialog(): void {
     const active = this.activeDetail;
-    if (!active || !active.summary.namespace) return;
+    const detail = this.displayDetail();
+    const targetKind = active?.query.kind === 'pods' ? 'pod'
+      : active?.query.kind === 'services' ? 'service'
+        : undefined;
+    if (!active || !detail || !targetKind || !active.summary.namespace) return;
+    if (this.portForwards.size >= 10) {
+      setMessage('Kubernetes supports at most 10 active port forwards.', 'error');
+      return;
+    }
+    const declaredPorts = detectKubernetesForwardPorts(detail, targetKind);
+    const dialogModel = buildKubernetesPortForwardDialogModel(declaredPorts);
     this.portForwardDraft = {
       targetKind,
       namespace: active.summary.namespace,
@@ -1948,7 +1957,27 @@ class KubernetesPage implements KubernetesPageController {
     };
     this.portForwardTitle.textContent = `Port Forward ${targetKind === 'pod' ? 'Pod' : 'Service'}`;
     this.portForwardTarget.textContent = `${active.summary.namespace}/${active.summary.name}`;
-    this.portForwardRemotePort.value = '';
+    this.portForwardDeclaredPort.replaceChildren();
+    if (dialogModel.selectorVisible) {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Choose a declared port';
+      placeholder.selected = true;
+      placeholder.disabled = true;
+      this.portForwardDeclaredPort.appendChild(placeholder);
+    }
+    for (const port of declaredPorts) {
+      const option = document.createElement('option');
+      option.value = String(port.remotePort);
+      option.textContent = formatKubernetesDeclaredPortLabel(port);
+      this.portForwardDeclaredPort.appendChild(option);
+    }
+    this.portForwardDeclaredPort.value = '';
+    this.portForwardDeclaredField.classList.toggle('hidden', !dialogModel.selectorVisible);
+    this.portForwardHint.textContent = declaredPorts.length === 1
+      ? `${formatKubernetesDeclaredPortLabel(declaredPorts[0])}. ${dialogModel.hint}`
+      : dialogModel.hint;
+    this.portForwardRemotePort.value = dialogModel.remotePort;
     this.portForwardLocalPort.value = '';
     this.setPortForwardError('');
     if (!this.portForwardDialog.open) this.portForwardDialog.showModal();
@@ -1957,6 +1986,9 @@ class KubernetesPage implements KubernetesPageController {
   private closePortForwardDialog(): void {
     if (this.portForwardDialog.open) this.portForwardDialog.close();
     this.portForwardDraft = undefined;
+    this.portForwardDeclaredField.classList.add('hidden');
+    this.portForwardDeclaredPort.replaceChildren();
+    this.portForwardHint.textContent = '';
     this.setPortForwardError('');
   }
 
@@ -2044,17 +2076,6 @@ class KubernetesPage implements KubernetesPageController {
       });
       row.append(target, mapping, state, stop);
       this.portForwardList.appendChild(row);
-    }
-  }
-
-  private async copyActiveDetail(): Promise<void> {
-    const detail = this.displayDetail();
-    if (!detail) return;
-    try {
-      await copyKubernetesDetailYaml(detail, (text) => window.serviceApi.writeClipboardText(text));
-      setMessage('Resource detail copied.', 'success');
-    } catch (error) {
-      setMessage(toErrorMessage(error), 'error');
     }
   }
 

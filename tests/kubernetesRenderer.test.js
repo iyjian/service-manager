@@ -291,7 +291,7 @@ test('Kubernetes resource details are full-page, read-only, render YAML, and cle
   assert.doesNotMatch(html, />Restart</);
 });
 
-test('Kubernetes detail YAML uses the copied browser serializer and clipboard text matches rendered YAML', async () => {
+test('Kubernetes detail YAML uses the copied browser serializer and text-safe rendering without Copy', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
@@ -303,10 +303,7 @@ test('Kubernetes detail YAML uses the copied browser serializer and clipboard te
   globalThis.jsyaml = browserContext.jsyaml;
 
   try {
-    const {
-      serializeKubernetesDetailYaml,
-      copyKubernetesDetailYaml,
-    } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+    const { serializeKubernetesDetailYaml } = await import(path.join(distRenderer, 'kubernetesPage.js'));
     const detail = {
       apiVersion: 'v1',
       kind: 'ConfigMap',
@@ -314,17 +311,11 @@ test('Kubernetes detail YAML uses the copied browser serializer and clipboard te
       data: { feature: 'enabled' },
     };
     const rendered = serializeKubernetesDetailYaml(detail);
-    let copied = '';
-    const returned = await copyKubernetesDetailYaml(detail, async (text) => {
-      copied = text;
-    });
 
     assert.match(rendered, /^apiVersion: v1$/m);
     assert.match(rendered, /^kind: ConfigMap$/m);
     assert.match(rendered, /^metadata:$/m);
     assert.doesNotMatch(rendered, /^\{/);
-    assert.equal(copied, rendered);
-    assert.equal(returned, rendered);
   } finally {
     globalThis.jsyaml = previousYaml;
   }
@@ -333,7 +324,9 @@ test('Kubernetes detail YAML uses the copied browser serializer and clipboard te
   assert.match(html, /<script src="\.\/js-yaml\.umd\.min\.js"><\/script>/);
   assert.match(browserYaml, /jsyaml/);
   assert.match(page, /serializeKubernetesDetailYaml/);
-  assert.match(page, /copyKubernetesDetailYaml/);
+  assert.match(page, /yaml\.textContent = serializeKubernetesDetailYaml\(detail\)/);
+  assert.doesNotMatch(page, /copyKubernetesDetailYaml/);
+  assert.doesNotMatch(html, /id="kubernetes-detail-copy"/);
   assert.doesNotMatch(page, /JSON\.stringify\(detail/);
 });
 
@@ -415,7 +408,8 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.doesNotMatch(html, /500 initial lines|2,000 retained lines|Search current 2,000-line buffer/);
   assert.doesNotMatch(html, /kubernetes-log-load-older|Load older 500/);
   assert.doesNotMatch(html, /id="kubernetes-log-open"|>Open logs</i);
-  assert.ok(html.indexOf('id="kubernetes-detail-pod-actions"') < html.indexOf('id="kubernetes-log-panel"'));
+  assert.doesNotMatch(html, /id="kubernetes-detail-pod-actions"|id="kubernetes-detail-service-actions"/);
+  assert.match(html, /id="kubernetes-detail-port-forward"/);
   assert.match(html, /id="kubernetes-terminal-drawer"/);
   assert.ok(html.indexOf('id="kubernetes-terminal-drawer"') < html.indexOf('id="kubernetes-port-forwards"'));
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
@@ -837,7 +831,7 @@ test('Kubernetes list and detail layout use aligned controls and a compact visua
 
   assert.match(html, /id="kubernetes-list-page" class="kubernetes-list-page"/);
   assert.match(html, /class="kubernetes-detail-content-stack"/);
-  assert.match(page, /description\.title = value/);
+  assert.match(page, /description\.title = field\.value/);
   assert.match(page, /portForwardPanel\.classList\.toggle\('hidden', forwards\.length === 0\)/);
   assert.match(page, /detailPage\.classList\.toggle\('kubernetes-detail-pod', isPod\)/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?height:\s*100dvh/);
