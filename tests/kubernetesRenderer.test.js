@@ -474,6 +474,7 @@ test('Kubernetes list and detail layout use aligned controls and a compact visua
   assert.match(page, /detailPage\.classList\.toggle\('kubernetes-detail-pod', isPod\)/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?height:\s*100dvh/);
   assert.match(styles, /\.kubernetes-detail-page\s*\{[\s\S]*?bg-white/);
+  assert.match(styles, /\.kubernetes-detail-page\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\);/);
   assert.match(styles, /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows/);
   assert.match(styles, /\.kubernetes-log-output\s*\{[\s\S]*?white-space:\s*pre;/);
   assert.match(styles, /\.kubernetes-terminal-drawer\s*\{[\s\S]*?absolute/);
@@ -489,6 +490,66 @@ test('Kubernetes list and detail layout use aligned controls and a compact visua
   assert.match(styles, /\.kubernetes-related-list\s*\{/);
   assert.match(styles, /\.kubernetes-related-row\s*\{/);
   assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
+});
+
+test('Kubernetes minimum viewport keeps Pod actions and log controls on bounded single rows', async () => {
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+  const responsiveStart = styles.indexOf('@media (max-width: 900px)');
+  assert.ok(responsiveStart >= 0);
+  const responsiveStyles = styles.slice(responsiveStart);
+  const podRows = responsiveStyles.match(
+    /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\((\d+)px,[^)]+\) auto minmax\((\d+)px,[^)]+\)/,
+  );
+  assert.ok(podRows);
+
+  const contentMinimum = Number(podRows[1]);
+  const logMinimum = Number(podRows[2]);
+  const minimumMiddleTrackBudget = 260;
+  const fixedLogChrome = 40 + 53 + 32;
+  const minimumUsefulLogOutput = 48;
+  assert.ok(contentMinimum + logMinimum <= minimumMiddleTrackBudget);
+  assert.ok(logMinimum - fixedLogChrome >= minimumUsefulLogOutput);
+  assert.doesNotMatch(responsiveStyles, /\.kubernetes-detail-actions\s*\{[^}]*@apply[^;]*flex-wrap/);
+  assert.doesNotMatch(responsiveStyles, /\.kubernetes-log-head\s*\{[^}]*@apply[^;]*flex-wrap/);
+  assert.match(styles, /\.kubernetes-detail-actions\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-log-head\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
+});
+
+test('Kubernetes simultaneous runtime layers share the page containing-block height budget', async () => {
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+  const terminalRule = styles.match(/\.kubernetes-terminal-drawer\s*\{([^}]*)\}/);
+  const forwardRule = styles.match(/\.kubernetes-port-forwards\s*\{([^}]*)\}/);
+  const stackedRule = styles.match(
+    /\.kubernetes-terminal-drawer:not\(\.hidden\) ~ \.kubernetes-port-forwards\s*\{([^}]*)\}/,
+  );
+  assert.ok(terminalRule);
+  assert.ok(forwardRule);
+  assert.ok(stackedRule);
+
+  const terminalBudget = terminalRule[1].match(
+    /max-height:\s*min\(420px,\s*calc\((\d+)%\s*-\s*(\d+)px\)\)/,
+  );
+  const standaloneForwardBudget = forwardRule[1].match(
+    /max-height:\s*min\(12rem,\s*calc\(100%\s*-\s*(\d+)px\)\)/,
+  );
+  const stackedBottom = stackedRule[1].match(/bottom:\s*(\d+)%/);
+  const stackedForwardBudget = stackedRule[1].match(
+    /max-height:\s*min\(12rem,\s*calc\((\d+)%\s*-\s*(\d+)px\)\)/,
+  );
+  assert.ok(terminalBudget);
+  assert.ok(standaloneForwardBudget);
+  assert.ok(stackedBottom);
+  assert.ok(stackedForwardBudget);
+
+  const terminalPercent = Number(terminalBudget[1]);
+  const terminalReserve = Number(terminalBudget[2]);
+  const forwardPercent = Number(stackedForwardBudget[1]);
+  const forwardReserve = Number(stackedForwardBudget[2]);
+  assert.equal(terminalPercent + forwardPercent, 100);
+  assert.equal(Number(stackedBottom[1]), terminalPercent);
+  assert.ok(Number(standaloneForwardBudget[1]) >= 24);
+  assert.ok(terminalReserve + forwardReserve >= 36);
+  assert.doesNotMatch(terminalRule[1], /vh/);
 });
 
 test('Kubernetes terminal drawer disposes final closed or errored sessions and ignores late revival events', async () => {
