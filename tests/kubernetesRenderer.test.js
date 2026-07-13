@@ -681,8 +681,10 @@ test('Kubernetes terminal open reuses an exact target and marks Terminal active 
     selectWorkspace: (workspace) => steps.push(`workspace:${workspace}`),
     focusTarget: (candidate) => {
       steps.push(`focus:${candidate.namespace}/${candidate.podName}/${candidate.container}`);
-      return true;
+      return 'terminal-existing';
     },
+    focusSession: () => assert.fail('an existing target must not require a second focus lookup'),
+    claimSession: (id) => steps.push(`claim:${id}`),
     openDrawer: () => steps.push('drawer'),
     requestTerminal: async () => {
       requestCount += 1;
@@ -692,7 +694,7 @@ test('Kubernetes terminal open reuses an exact target and marks Terminal active 
     reportError: (error) => steps.push(`error:${error}`),
   });
 
-  assert.deepEqual(steps, ['workspace:terminal', 'focus:apps/api/app']);
+  assert.deepEqual(steps, ['workspace:terminal', 'focus:apps/api/app', 'claim:terminal-existing']);
   assert.equal(requestCount, 0);
   assert.equal(requests.size, 0);
 });
@@ -711,11 +713,14 @@ test('Kubernetes terminal open guards a pending exact target and focuses its suc
     requests,
     selectWorkspace: (workspace) => steps.push(`workspace:${workspace}`),
     focusTarget: (candidate) => {
-      steps.push(`focus:${candidate.container}`);
-      return stored?.namespace === candidate.namespace
-        && stored?.podName === candidate.podName
-        && stored?.container === candidate.container;
+      steps.push(`focus-target:${candidate.container}`);
+      return undefined;
     },
+    focusSession: (id) => {
+      steps.push(`focus-session:${id}`);
+      return stored?.id === id;
+    },
+    claimSession: (id) => steps.push(`claim:${id}`),
     openDrawer: (state) => {
       steps.push(`drawer:${state.id}`);
       stored = state;
@@ -741,12 +746,13 @@ test('Kubernetes terminal open guards a pending exact target and focuses its suc
   assert.equal(stored, terminal);
   assert.deepEqual(steps, [
     'workspace:terminal',
-    'focus:app',
+    'focus-target:app',
     'request',
     'workspace:terminal',
-    'focus:app',
+    'focus-target:app',
     'drawer:terminal-app',
-    'focus:app',
+    'focus-session:terminal-app',
+    'claim:terminal-app',
   ]);
 });
 
@@ -759,7 +765,9 @@ test('Kubernetes terminal open failure returns the current workspace to Logs and
     target: { namespace: 'apps', podName: 'api', container: 'app' },
     requests: new Map(),
     selectWorkspace: (workspace) => workspaces.push(workspace),
-    focusTarget: () => false,
+    focusTarget: () => undefined,
+    focusSession: () => false,
+    claimSession: () => assert.fail('failed terminal must not claim a session'),
     openDrawer: () => assert.fail('failed terminal must not open the drawer'),
     requestTerminal: async () => { throw new Error('exec forbidden'); },
     isCurrent: () => true,
@@ -776,12 +784,16 @@ test('Kubernetes terminal stale completion after a container switch cannot activ
   const workspaces = [];
   const drawer = [];
   let current = true;
-  let focusCount = 0;
+  let targetFocusCount = 0;
+  let sessionFocusCount = 0;
+  const claimed = [];
   const opening = openKubernetesTerminalWorkspace({
     target: { namespace: 'apps', podName: 'api', container: 'app' },
     requests: new Map(),
     selectWorkspace: (workspace) => workspaces.push(workspace),
-    focusTarget: () => { focusCount += 1; return false; },
+    focusTarget: () => { targetFocusCount += 1; return undefined; },
+    focusSession: () => { sessionFocusCount += 1; return true; },
+    claimSession: (id) => claimed.push(id),
     openDrawer: (state) => drawer.push(state.id),
     requestTerminal: () => request.promise,
     isCurrent: () => current,
@@ -801,7 +813,9 @@ test('Kubernetes terminal stale completion after a container switch cannot activ
 
   assert.deepEqual(workspaces, ['terminal', 'logs']);
   assert.deepEqual(drawer, ['terminal-app']);
-  assert.equal(focusCount, 1);
+  assert.equal(targetFocusCount, 1);
+  assert.equal(sessionFocusCount, 0);
+  assert.deepEqual(claimed, []);
 });
 
 test('Kubernetes terminal stale failure after a detail switch cannot change the current workspace', async () => {
@@ -814,7 +828,9 @@ test('Kubernetes terminal stale failure after a detail switch cannot change the 
     target: { namespace: 'apps', podName: 'api', container: 'app' },
     requests: new Map(),
     selectWorkspace: (workspace) => workspaces.push(workspace),
-    focusTarget: () => false,
+    focusTarget: () => undefined,
+    focusSession: () => false,
+    claimSession: () => assert.fail('stale failure must not claim a session'),
     openDrawer: () => assert.fail('failed terminal must not open the drawer'),
     requestTerminal: () => request.promise,
     isCurrent: () => current,
@@ -840,16 +856,21 @@ test('Kubernetes terminal final matching state falls back to Logs only when no r
     selectLogs: () => workspaces.push('logs'),
     reportError: (message) => errors.push(message),
   };
+  const claimed = [];
 
   assert.equal(routeKubernetesTerminalFinalState({
     ...base,
     state: { id: 'one', ...selectedTarget, shell: '/bin/sh', state: 'closed' },
-    hasMatchingTarget: false,
+    workspaceSessionId: 'one',
+    replacementSessionId: undefined,
+    claimSession: (id) => claimed.push(id),
   }), 'fallback');
   assert.equal(routeKubernetesTerminalFinalState({
     ...base,
     state: { id: 'two', ...selectedTarget, shell: '/bin/sh', state: 'error', error: 'stream lost' },
-    hasMatchingTarget: false,
+    workspaceSessionId: 'two',
+    replacementSessionId: undefined,
+    claimSession: (id) => claimed.push(id),
   }), 'fallback');
   assert.deepEqual(workspaces, ['logs', 'logs']);
   assert.deepEqual(errors, ['stream lost']);
@@ -857,15 +878,110 @@ test('Kubernetes terminal final matching state falls back to Logs only when no r
   assert.equal(routeKubernetesTerminalFinalState({
     ...base,
     state: { id: 'three', ...selectedTarget, shell: '/bin/sh', state: 'closed' },
-    hasMatchingTarget: true,
+    workspaceSessionId: 'three',
+    replacementSessionId: 'replacement',
+    claimSession: (id) => claimed.push(id),
   }), 'retained');
   assert.equal(routeKubernetesTerminalFinalState({
     ...base,
     state: { id: 'sidecar', ...selectedTarget, container: 'sidecar', shell: '/bin/sh', state: 'error', error: 'old' },
-    hasMatchingTarget: false,
+    workspaceSessionId: 'sidecar',
+    replacementSessionId: undefined,
+    claimSession: (id) => claimed.push(id),
+  }), 'background');
+  assert.equal(routeKubernetesTerminalFinalState({
+    ...base,
+    state: { id: 'old-same-target', ...selectedTarget, shell: '/bin/sh', state: 'error', error: 'stale' },
+    workspaceSessionId: 'current-same-target',
+    replacementSessionId: undefined,
+    claimSession: (id) => claimed.push(id),
   }), 'background');
   assert.deepEqual(workspaces, ['logs', 'logs']);
   assert.deepEqual(errors, ['stream lost']);
+  assert.deepEqual(claimed, ['replacement']);
+});
+
+test('Kubernetes terminal exact session ownership prevents same-target ABA finals before and after claim', async () => {
+  const {
+    openKubernetesTerminalWorkspace,
+    routeKubernetesTerminalFinalState,
+  } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const target = { namespace: 'apps', podName: 'api', container: 'app' };
+  const requests = new Map();
+  const oldRequest = deferred();
+  const newRequest = deferred();
+  const workspaces = [];
+  const errors = [];
+  const drawerStates = new Map();
+  const focused = [];
+  let owner;
+  let generation = 1;
+
+  const options = (request, requestGeneration) => ({
+    target,
+    requests,
+    selectWorkspace: (workspace) => {
+      workspaces.push(workspace);
+      if (workspace === 'logs') owner = undefined;
+    },
+    focusTarget: () => undefined,
+    focusSession: (id) => {
+      focused.push(id);
+      return drawerStates.has(id);
+    },
+    claimSession: (id) => { owner = id; },
+    openDrawer: (state) => drawerStates.set(state.id, state),
+    requestTerminal: () => request.promise,
+    isCurrent: () => generation === requestGeneration && workspaces.at(-1) === 'terminal',
+    reportError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+  });
+
+  const oldOpening = openKubernetesTerminalWorkspace(options(oldRequest, generation));
+  requests.clear();
+  owner = undefined;
+  workspaces.push('logs');
+  generation += 1;
+  const newOpening = openKubernetesTerminalWorkspace(options(newRequest, generation));
+
+  const oldFinal = { id: 'terminal-old', ...target, shell: '/bin/sh', state: 'error', error: 'old failed' };
+  assert.equal(routeKubernetesTerminalFinalState({
+    state: oldFinal,
+    selectedTarget: target,
+    workspace: workspaces.at(-1),
+    workspaceSessionId: owner,
+    replacementSessionId: undefined,
+    claimSession: (id) => { owner = id; },
+    selectLogs: () => workspaces.push('logs'),
+    reportError: (message) => errors.push(message),
+  }), 'background');
+  assert.equal(workspaces.at(-1), 'terminal');
+  assert.deepEqual(errors, []);
+
+  newRequest.resolve({ id: 'terminal-new', ...target, shell: '/bin/sh', state: 'open' });
+  await newOpening;
+  assert.equal(owner, 'terminal-new');
+  assert.deepEqual(focused, ['terminal-new']);
+  assert.equal(workspaces.at(-1), 'terminal');
+
+  assert.equal(routeKubernetesTerminalFinalState({
+    state: { ...oldFinal, state: 'closed', error: undefined },
+    selectedTarget: target,
+    workspace: workspaces.at(-1),
+    workspaceSessionId: owner,
+    replacementSessionId: undefined,
+    claimSession: (id) => { owner = id; },
+    selectLogs: () => workspaces.push('logs'),
+    reportError: (message) => errors.push(message),
+  }), 'background');
+  assert.equal(owner, 'terminal-new');
+  assert.equal(workspaces.at(-1), 'terminal');
+  assert.deepEqual(errors, []);
+
+  oldRequest.reject(new Error('old request rejected'));
+  await oldOpening;
+  assert.equal(owner, 'terminal-new');
+  assert.equal(workspaces.at(-1), 'terminal');
+  assert.deepEqual(errors, []);
 });
 
 test('Kubernetes log update routing renders only the selected owned session', async () => {
@@ -1384,14 +1500,14 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     assert.equal(root.classList.contains('hidden'), true);
     assert.equal(root.children.length, 1);
     assert.equal(instances[0].disposeCount, 0);
-    assert.equal(drawer.focusTarget({ namespace: 'apps', podName: 'api', container: 'api' }), true);
+    assert.equal(drawer.focusTarget({ namespace: 'apps', podName: 'api', container: 'api' }), normal.id);
     runFrame();
     assert.equal(root.classList.contains('hidden'), false);
     assert.equal(instances.length, 1);
     assert.equal(instances[0].focusCount, 2);
     assert.equal(scrollIntoViewCount, 2);
     assert.equal(fits[0].fitCount, 2);
-    assert.equal(drawer.focusTarget({ namespace: 'apps', podName: 'api', container: 'sidecar' }), false);
+    assert.equal(drawer.focusTarget({ namespace: 'apps', podName: 'api', container: 'sidecar' }), undefined);
     assert.equal(instances[0].focusCount, 2);
     assert.equal(scrollIntoViewCount, 2);
     assert.equal(fits[0].fitCount, 2);
@@ -1421,7 +1537,8 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     assert.equal(scrollIntoViewCount, 2);
     assert.equal(fits[1].fitCount, 0);
     assert.equal(root.classList.contains('hidden'), true);
-    assert.equal(drawer.focusTarget({ namespace: 'apps', podName: 'api', container: 'sidecar' }), true);
+    assert.equal(drawer.sessionIdForTarget({ namespace: 'apps', podName: 'api', container: 'sidecar' }), background.id);
+    assert.equal(drawer.focusSession(background.id), true);
     runFrame();
     assert.equal(instances.length, 2);
     assert.equal(instances[1].focusCount, 1);

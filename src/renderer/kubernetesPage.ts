@@ -334,14 +334,20 @@ export async function openKubernetesTerminalWorkspace(options: {
   target: KubernetesPodTarget;
   requests: Map<string, symbol>;
   selectWorkspace: (workspace: KubernetesPodWorkspace) => void;
-  focusTarget: (target: KubernetesPodTarget) => boolean;
+  focusTarget: (target: KubernetesPodTarget) => string | undefined;
+  focusSession: (id: string) => boolean;
+  claimSession: (id: string) => void;
   openDrawer: (state: KubernetesTerminalState) => void;
   requestTerminal: (target: KubernetesPodTarget) => Promise<KubernetesTerminalState>;
   isCurrent: () => boolean;
   reportError: (error: unknown) => void;
 }): Promise<void> {
   options.selectWorkspace('terminal');
-  if (options.focusTarget(options.target)) return;
+  const existingId = options.focusTarget(options.target);
+  if (existingId) {
+    options.claimSession(existingId);
+    return;
+  }
 
   const key = kubernetesPodTargetKey(options.target);
   const token = claimKubernetesLogOpen(options.requests, key);
@@ -350,7 +356,10 @@ export async function openKubernetesTerminalWorkspace(options: {
     const state = await options.requestTerminal(options.target);
     options.openDrawer(state);
     if (options.requests.get(key) !== token || !options.isCurrent()) return;
-    if (options.focusTarget(options.target)) return;
+    if (options.focusSession(state.id)) {
+      options.claimSession(state.id);
+      return;
+    }
     options.selectWorkspace('logs');
     if (state.state === 'error') {
       options.reportError(state.error ?? 'Kubernetes terminal failed.');
@@ -370,22 +379,27 @@ export function routeKubernetesTerminalFinalState(options: {
   state: KubernetesTerminalState;
   selectedTarget: KubernetesPodTarget | undefined;
   workspace: KubernetesPodWorkspace;
-  hasMatchingTarget: boolean;
+  workspaceSessionId: string | undefined;
+  replacementSessionId: string | undefined;
+  claimSession: (id: string) => void;
   selectLogs: () => void;
   reportError: (message: string) => void;
 }): KubernetesTerminalFinalRoute {
   if ((options.state.state !== 'closed' && options.state.state !== 'error')
+    || options.workspace !== 'terminal'
+    || options.state.id !== options.workspaceSessionId
     || !sameKubernetesPodTarget(options.state, options.selectedTarget)) {
     return 'background';
   }
   if (options.state.state === 'error') {
     options.reportError(options.state.error ?? 'Kubernetes terminal failed.');
   }
-  if (options.workspace === 'terminal' && !options.hasMatchingTarget) {
-    options.selectLogs();
-    return 'fallback';
+  if (options.replacementSessionId) {
+    options.claimSession(options.replacementSessionId);
+    return 'retained';
   }
-  return 'retained';
+  options.selectLogs();
+  return 'fallback';
 }
 
 export function routeKubernetesLogUpdate(
@@ -785,6 +799,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly logErrorsByContainer = new Map<string, string>();
   private podWorkspace: KubernetesPodWorkspace = 'logs';
   private readonly openingTerminals = new Map<string, symbol>();
+  private terminalWorkspaceSessionId: string | undefined;
   private terminalDrawer: KubernetesTerminalDrawer | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
@@ -1549,6 +1564,7 @@ class KubernetesPage implements KubernetesPageController {
     const backStack = this.detailBackStack;
     this.detailGeneration += 1;
     this.openingTerminals.clear();
+    this.terminalWorkspaceSessionId = undefined;
     // This must happen before closeDetailLogs awaits remote cleanup. A late
     // relation response must never re-render a detail the user already left.
     this.invalidateRelatedDetail();
@@ -1964,6 +1980,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private selectPodWorkspace(workspace: KubernetesPodWorkspace): void {
     this.podWorkspace = workspace;
+    if (workspace === 'logs') this.terminalWorkspaceSessionId = undefined;
     applyKubernetesPodWorkspace(workspace, {
       logsTab: this.logTab,
       terminalTab: this.logTerminalTab,
@@ -2097,7 +2114,11 @@ class KubernetesPage implements KubernetesPageController {
       selectWorkspace: (workspace) => {
         if (this.podWorkspace !== workspace) this.selectPodWorkspace(workspace);
       },
-      focusTarget: (candidate) => this.terminalDrawer?.focusTarget(candidate) ?? false,
+      focusTarget: (candidate) => this.terminalDrawer?.focusTarget(candidate),
+      focusSession: (id) => this.terminalDrawer?.focusSession(id) ?? false,
+      claimSession: (id) => {
+        this.terminalWorkspaceSessionId = id;
+      },
       openDrawer: (state) => this.terminalDrawer?.open(state, false),
       requestTerminal: (candidate) => window.kubernetesApi.openTerminal(candidate),
       isCurrent: () => this.visible
@@ -2114,11 +2135,18 @@ class KubernetesPage implements KubernetesPageController {
     if (state.state === 'closed' || state.state === 'error') {
       this.terminalDrawer?.open(state);
       const selectedTarget = this.selectedPodTarget();
+      const replacementSessionId = selectedTarget
+        ? this.terminalDrawer?.sessionIdForTarget(selectedTarget)
+        : undefined;
       routeKubernetesTerminalFinalState({
         state,
         selectedTarget,
         workspace: this.podWorkspace,
-        hasMatchingTarget: selectedTarget ? this.terminalDrawer?.hasTarget(selectedTarget) ?? false : false,
+        workspaceSessionId: this.terminalWorkspaceSessionId,
+        replacementSessionId,
+        claimSession: (id) => {
+          this.terminalWorkspaceSessionId = id;
+        },
         selectLogs: () => this.selectPodWorkspace('logs'),
         reportError: () => setMessage(state.error ?? 'Kubernetes terminal failed.', 'error'),
       });

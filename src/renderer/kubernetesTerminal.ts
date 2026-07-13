@@ -20,8 +20,9 @@ interface TerminalSessionView {
 
 export interface KubernetesTerminalDrawer {
   open(state: KubernetesTerminalState, activate?: boolean): void;
-  focusTarget(target: KubernetesPodTarget): boolean;
-  hasTarget(target: KubernetesPodTarget): boolean;
+  focusTarget(target: KubernetesPodTarget): string | undefined;
+  focusSession(id: string): boolean;
+  sessionIdForTarget(target: KubernetesPodTarget): string | undefined;
   hide(): void;
   write(id: string, data: string): void;
   close(id: string): void;
@@ -166,14 +167,20 @@ export function createKubernetesTerminalDrawer(options: {
 
   return {
     open,
-    focusTarget(target: KubernetesPodTarget): boolean {
+    focusTarget(target: KubernetesPodTarget): string | undefined {
       const session = findTarget(target);
+      if (!session) return undefined;
+      focusSession(session);
+      return session.state.id;
+    },
+    focusSession(id: string): boolean {
+      const session = sessions.get(id);
       if (!session) return false;
       focusSession(session);
       return true;
     },
-    hasTarget(target: KubernetesPodTarget): boolean {
-      return Boolean(findTarget(target));
+    sessionIdForTarget(target: KubernetesPodTarget): string | undefined {
+      return findTarget(target)?.state.id;
     },
     hide(): void {
       focusGeneration += 1;

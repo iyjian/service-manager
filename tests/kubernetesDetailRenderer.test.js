@@ -362,6 +362,25 @@ test('Kubernetes terminal workspace resets to Logs and invalidates pending owner
   assert.match(closeDetail, /this\.openingTerminals\.clear\(\)[\s\S]*?await this\.closeDetailLogs\(\)/);
 });
 
+test('Kubernetes terminal page binds final-state authority to an exact session ID', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const workspaceStart = page.indexOf('    selectPodWorkspace(workspace) {');
+  const workspaceEnd = page.indexOf('    cancelLogAutoScroll() {', workspaceStart);
+  const workspace = page.slice(workspaceStart, workspaceEnd);
+  const openStart = page.indexOf('    async openTerminal() {');
+  const openEnd = page.indexOf('    onTerminalChanged(state) {', openStart);
+  const openTerminal = page.slice(openStart, openEnd);
+  const finalStart = page.indexOf('    onTerminalChanged(state) {');
+  const finalEnd = page.indexOf('    onTerminalOutput(output) {', finalStart);
+  const finalHandler = page.slice(finalStart, finalEnd);
+
+  assert.match(page, /terminalWorkspaceSessionId/);
+  assert.match(workspace, /workspace === 'logs'[\s\S]*?this\.terminalWorkspaceSessionId = undefined/);
+  assert.match(openTerminal, /claimSession: \(id\) => \{\s*this\.terminalWorkspaceSessionId = id/);
+  assert.match(finalHandler, /workspaceSessionId: this\.terminalWorkspaceSessionId/);
+  assert.match(finalHandler, /claimSession: \(id\) => \{\s*this\.terminalWorkspaceSessionId = id/);
+});
+
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const dialogStart = html.indexOf('id="kubernetes-port-forward-dialog"');
