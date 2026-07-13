@@ -402,6 +402,10 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
 
   assert.match(html, /id="kubernetes-log-panel"/);
+  assert.match(html, /id="kubernetes-log-terminal-tab"/);
+  assert.match(html, /id="kubernetes-log-count"/);
+  assert.match(html, /id="kubernetes-log-state"/);
+  assert.match(html, /class="kubernetes-log-view-tabs"/);
   const logHeadStart = html.indexOf('<header class="kubernetes-log-head">');
   const logHead = html.slice(logHeadStart, html.indexOf('</header>', logHeadStart));
   assert.ok(logHeadStart >= 0);
@@ -435,6 +439,13 @@ test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read
   assert.match(html, /xterm\.css/);
 });
 
+test('Kubernetes log count label reports filtered and total retained lines', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  assert.equal(pageModule.formatKubernetesLogCount(0, 0), '0 lines');
+  assert.equal(pageModule.formatKubernetesLogCount(12, 12), '12 lines');
+  assert.equal(pageModule.formatKubernetesLogCount(3, 12), '3 of 12 lines');
+});
+
 test('Kubernetes log viewport follows new output and preserves explicit filter or paused positions', async () => {
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
@@ -457,9 +468,11 @@ test('Kubernetes list and detail layout use aligned controls and a compact visua
   const styles = await readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8');
 
   assert.match(html, /id="kubernetes-list-page" class="kubernetes-list-page"/);
+  assert.match(html, /class="kubernetes-detail-content-stack"/);
   assert.match(page, /description\.title = value/);
+  assert.match(page, /portForwardPanel\.classList\.toggle\('hidden', forwards\.length === 0\)/);
+  assert.match(page, /detailPage\.classList\.toggle\('kubernetes-detail-pod', isPod\)/);
   assert.match(styles, /\.kubernetes-list-page\s*\{[\s\S]*?@apply[^;]*grid[^;]*gap-3/);
-  assert.match(styles, /\.kubernetes-detail-page\s*\{[\s\S]*?@apply[^;]*bg-zinc-100\/70/);
   assert.match(styles, /\.kubernetes-detail-overview-grid\s*\{[\s\S]*?@apply[^;]*m-0/);
   assert.match(styles, /\.kubernetes-detail-overview-grid > div\s*\{[\s\S]*?grid-cols-\[max-content_minmax\(0,1fr\)\]/);
   assert.match(styles, /\.kubernetes-detail-overview-grid dt\s*\{[\s\S]*?whitespace-nowrap/);

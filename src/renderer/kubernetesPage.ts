@@ -179,6 +179,10 @@ export function shouldAutoScrollKubernetesLogs(following: boolean, preserveScrol
   return following && !preserveScroll;
 }
 
+export function formatKubernetesLogCount(filtered: number, total: number): string {
+  return filtered === total ? `${total} lines` : `${filtered} of ${total} lines`;
+}
+
 export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
   return category !== 'Custom Resources';
 }
@@ -379,10 +383,13 @@ class KubernetesPage implements KubernetesPageController {
   private readonly podPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-port-forward-open');
   private readonly servicePortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-service-port-forward-open');
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
+  private readonly logTerminalTab = requireElement<HTMLButtonElement>('#kubernetes-log-terminal-tab');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
   private readonly logClearButton = requireElement<HTMLButtonElement>('#kubernetes-log-clear');
   private readonly logSearch = requireElement<HTMLInputElement>('#kubernetes-log-search');
   private readonly logOutput = requireElement<HTMLPreElement>('#kubernetes-log-output');
+  private readonly logCount = requireElement<HTMLElement>('#kubernetes-log-count');
+  private readonly logState = requireElement<HTMLElement>('#kubernetes-log-state');
   private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
   private readonly portForwardList = requireElement<HTMLElement>('#kubernetes-port-forward-list');
   private readonly portForwardDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forward-dialog');
@@ -549,6 +556,7 @@ class KubernetesPage implements KubernetesPageController {
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
     this.logSearch.addEventListener('input', () => this.renderLogPanel({ preserveScroll: true }));
+    this.logTerminalTab.addEventListener('click', () => { void this.openTerminal(); });
     this.terminalOpenButton.addEventListener('click', () => { void this.openTerminal(); });
     this.podPortForwardButton.addEventListener('click', () => this.openPortForwardDialog('pod'));
     this.servicePortForwardButton.addEventListener('click', () => this.openPortForwardDialog('service'));
@@ -1247,8 +1255,14 @@ class KubernetesPage implements KubernetesPageController {
       const term = document.createElement('dt');
       term.textContent = label;
       const description = document.createElement('dd');
-      description.textContent = value;
       description.title = value;
+      if (label === 'Status') {
+        const dot = document.createElement('span');
+        dot.className = 'kubernetes-status-dot';
+        description.append(dot, document.createTextNode(value));
+      } else {
+        description.textContent = value;
+      }
       item.append(term, description);
       list.appendChild(item);
     }
@@ -1298,10 +1312,12 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderPodActions(detail: Record<string, unknown>, active: ActiveDetail): void {
     const isPod = active.query.kind === 'pods';
+    this.detailPage.classList.toggle('kubernetes-detail-pod', isPod);
     this.detailPodActions.classList.toggle('hidden', !isPod);
     this.detailServiceActions.classList.toggle('hidden', active.query.kind !== 'services');
     this.logPanel.classList.toggle('hidden', !isPod);
     this.servicePortForwardButton.disabled = active.query.kind !== 'services' || !active.summary.namespace;
+    this.logTerminalTab.disabled = true;
     if (!isPod) return;
     const containers = containerNames(detail);
     const all = [...containers.regular, ...containers.init];
@@ -1313,6 +1329,7 @@ class KubernetesPage implements KubernetesPageController {
     const enabled = Boolean(this.selectedContainer && active.summary.namespace);
     this.terminalOpenButton.disabled = !enabled;
     this.podPortForwardButton.disabled = !enabled;
+    this.logTerminalTab.disabled = !enabled;
     this.renderLogPanel();
     if (enabled) void this.openLogsForSelectedContainer();
   }
@@ -1578,11 +1595,17 @@ class KubernetesPage implements KubernetesPageController {
       this.logOutput.textContent = this.selectedContainer
         ? this.logErrorsByContainer.get(this.selectedContainer) ?? 'Loading logs…'
         : 'No container is available.';
+      this.logCount.textContent = '0 lines';
+      this.logState.classList.remove('kubernetes-log-state-live');
+      this.logState.lastElementChild!.textContent = 'Paused';
       this.logOutput.scrollTop = previousScrollTop;
       return;
     }
     const search = this.logSearch.value.trim().toLocaleLowerCase();
     const lines = search ? log.lines.filter((line) => line.toLocaleLowerCase().includes(search)) : log.lines;
+    this.logCount.textContent = formatKubernetesLogCount(lines.length, log.lines.length);
+    this.logState.classList.toggle('kubernetes-log-state-live', log.following);
+    this.logState.lastElementChild!.textContent = log.following ? 'Live' : 'Paused';
     this.logOutput.textContent = lines.join('\n');
     if (!shouldAutoScrollKubernetesLogs(log.following, options.preserveScroll === true)) {
       this.logOutput.scrollTop = previousScrollTop;
@@ -1801,12 +1824,8 @@ class KubernetesPage implements KubernetesPageController {
   private renderPortForwards(): void {
     this.portForwardList.replaceChildren();
     const forwards = [...this.portForwards.values()];
-    if (forwards.length === 0) {
-      const empty = document.createElement('p');
-      empty.textContent = 'No active port forwards.';
-      this.portForwardList.appendChild(empty);
-      return;
-    }
+    this.portForwardPanel.classList.toggle('hidden', forwards.length === 0);
+    if (forwards.length === 0) return;
     for (const forward of forwards) {
       const row = document.createElement('div');
       row.className = 'kubernetes-port-forward-row';

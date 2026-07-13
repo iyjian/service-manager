@@ -272,29 +272,32 @@
 
         <section id="kubernetes-detail-page" class="kubernetes-detail-page hidden" aria-label="Kubernetes resource detail">
           <header class="kubernetes-detail-head">
-            <button id="kubernetes-detail-back" type="button" class="btn btn-secondary btn-sm">Back to list</button>
+            <button id="kubernetes-detail-back" type="button" class="btn btn-secondary kubernetes-detail-back">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.5 5-5 5 5 5"/><path d="M8 10h8"/></svg>
+              <span>Back to list</span>
+            </button>
             <div class="kubernetes-detail-title-wrap">
               <h2 id="kubernetes-detail-title" class="section-title">Resource detail</h2>
               <p id="kubernetes-detail-subtitle" class="kubernetes-detail-subtitle"></p>
             </div>
-            <button id="kubernetes-detail-copy" type="button" class="btn btn-secondary btn-sm">Copy</button>
+            <button id="kubernetes-detail-copy" type="button" class="btn btn-secondary kubernetes-detail-copy">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="5" width="9" height="11" rx="1.5"/><path d="M4 13V4.5A1.5 1.5 0 0 1 5.5 3H12"/></svg>
+              <span>Copy</span>
+            </button>
           </header>
           <div id="kubernetes-detail-tabs" class="kubernetes-detail-tabs" role="tablist" aria-label="Resource detail sections">
             <button type="button" class="kubernetes-detail-tab kubernetes-detail-tab-active" data-detail-tab="overview">Overview</button>
             <button type="button" class="kubernetes-detail-tab" data-detail-tab="yaml">YAML</button>
             <button type="button" class="kubernetes-detail-tab" data-detail-tab="events">Events</button>
           </div>
-          <section id="kubernetes-detail-overview" class="kubernetes-detail-content" aria-label="Overview"></section>
-          <section id="kubernetes-detail-yaml-section" class="kubernetes-detail-content hidden" aria-label="YAML">
-            <pre id="kubernetes-detail-yaml" class="kubernetes-detail-code"></pre>
-          </section>
-          <section id="kubernetes-detail-events" class="kubernetes-detail-content hidden" aria-label="Events"></section>
-          <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
+          <div class="kubernetes-detail-content-stack">
+            <section id="kubernetes-detail-overview" class="kubernetes-detail-content" aria-label="Overview"></section>
+            <section id="kubernetes-detail-yaml-section" class="kubernetes-detail-content hidden" aria-label="YAML"><pre id="kubernetes-detail-yaml" class="kubernetes-detail-code"></pre></section>
+            <section id="kubernetes-detail-events" class="kubernetes-detail-content hidden" aria-label="Events"></section>
+            <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
+          </div>
           <section id="kubernetes-detail-pod-actions" class="kubernetes-detail-actions hidden" aria-label="Pod actions">
-            <label class="field field-xs kubernetes-container-field">
-              Container
-              <select id="kubernetes-container-select" class="input"></select>
-            </label>
+            <label class="kubernetes-container-field"><span class="kubernetes-container-label">Container</span><select id="kubernetes-container-select" class="input"></select></label>
             <button id="kubernetes-terminal-open" type="button" class="btn btn-secondary">Open Terminal</button>
             <button id="kubernetes-port-forward-open" type="button" class="btn btn-secondary">Port Forward</button>
           </section>
@@ -302,20 +305,31 @@
             <button id="kubernetes-service-port-forward-open" type="button" class="btn btn-secondary">Port Forward</button>
           </section>
           <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
+            <div class="kubernetes-log-view-tabs" role="tablist" aria-label="Pod workspace views">
+              <button type="button" class="kubernetes-log-view-tab kubernetes-log-view-tab-active" role="tab" aria-selected="true">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h6l3 3v11H6z"/><path d="M12 3v4h4M8.5 10h4M8.5 13h4"/></svg><span>Logs</span>
+              </button>
+              <button id="kubernetes-log-terminal-tab" type="button" class="kubernetes-log-view-tab" role="tab" aria-selected="false">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="m6.5 8 2 2-2 2M10.5 12h3"/></svg><span>Terminal</span>
+              </button>
+            </div>
             <header class="kubernetes-log-head">
-              <h3 class="subcard-title">Logs</h3>
-              <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
-              <div class="dialog-head-actions">
-                <button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button>
-                <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
-              </div>
+              <label class="kubernetes-log-search-wrap">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="4.5"/><path d="m12 12 4 4"/></svg>
+                <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
+              </label>
+              <div class="dialog-head-actions"><button id="kubernetes-log-follow" type="button" class="btn btn-secondary btn-sm">Pause Follow</button><button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button></div>
             </header>
-            <pre id="kubernetes-log-output" class="kubernetes-log-output"></pre>
+            <pre id="kubernetes-log-output" class="kubernetes-log-output" tabindex="0"></pre>
+            <footer class="kubernetes-log-status">
+              <span id="kubernetes-log-count">0 lines</span>
+              <span id="kubernetes-log-state" class="kubernetes-log-state"><span class="kubernetes-log-live-dot" aria-hidden="true"></span><span>Paused</span></span>
+            </footer>
           </section>
         </section>
 
         <aside id="kubernetes-terminal-drawer" class="kubernetes-terminal-drawer hidden" aria-label="Pod terminal sessions"></aside>
-        <section id="kubernetes-port-forwards" class="kubernetes-port-forwards" aria-label="Port Forwards">
+        <section id="kubernetes-port-forwards" class="kubernetes-port-forwards hidden" aria-label="Port Forwards">
           <header class="subcard-head">
             <h3 class="subcard-title">Port Forwards</h3>
           </header>
