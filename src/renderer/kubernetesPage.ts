@@ -255,6 +255,7 @@ export interface KubernetesLogViewport {
 
 export interface KubernetesLogFollowToggleOptions {
   sessions: Map<string, KubernetesLogState>;
+  mutations: Map<string, symbol>;
   getSelectedContainer: () => string | undefined;
   viewport: KubernetesLogViewport;
   setFollowing: (sessionId: string, following: boolean) => Promise<KubernetesLogState>;
@@ -438,6 +439,8 @@ export async function runKubernetesLogFollowToggle(
   if (!previous) return;
 
   const desired = !previous.following;
+  const token = Symbol(previous.sessionId);
+  options.mutations.set(previous.sessionId, token);
   const optimistic = { ...previous, following: desired };
   applyKubernetesLogUpdate(
     options.sessions,
@@ -447,8 +450,12 @@ export async function runKubernetesLogFollowToggle(
     desired ? 'follow' : 'preserve',
   );
 
+  const isCurrent = (): boolean => options.mutations.get(previous.sessionId) === token
+    && options.sessions.get(previous.container)?.sessionId === previous.sessionId;
+
   try {
     const next = await options.setFollowing(previous.sessionId, desired);
+    if (!isCurrent()) return;
     applyKubernetesLogUpdate(
       options.sessions,
       options.getSelectedContainer(),
@@ -457,6 +464,7 @@ export async function runKubernetesLogFollowToggle(
       next.following ? 'follow' : 'preserve',
     );
   } catch (error) {
+    if (!isCurrent()) return;
     if (options.sessions.get(previous.container) === optimistic) {
       applyKubernetesLogUpdate(
         options.sessions,
@@ -467,6 +475,8 @@ export async function runKubernetesLogFollowToggle(
       );
     }
     options.onError(error);
+  } finally {
+    if (options.mutations.get(previous.sessionId) === token) options.mutations.delete(previous.sessionId);
   }
 }
 
@@ -795,6 +805,7 @@ class KubernetesPage implements KubernetesPageController {
   private detailEventsLoaded = false;
   private selectedContainer: string | undefined;
   private readonly logsByContainer = new Map<string, KubernetesLogState>();
+  private readonly logFollowMutations = new Map<string, symbol>();
   private readonly openingLogs = new Map<string, symbol>();
   private readonly logErrorsByContainer = new Map<string, string>();
   private podWorkspace: KubernetesPodWorkspace = 'logs';
@@ -2048,6 +2059,7 @@ class KubernetesPage implements KubernetesPageController {
   private async toggleLogFollowing(): Promise<void> {
     await runKubernetesLogFollowToggle({
       sessions: this.logsByContainer,
+      mutations: this.logFollowMutations,
       getSelectedContainer: () => this.selectedContainer,
       viewport: this.logViewport,
       setFollowing: (sessionId, following) => window.kubernetesApi.setLogFollowing(sessionId, following),
@@ -2076,6 +2088,7 @@ class KubernetesPage implements KubernetesPageController {
     this.cancelLogAutoScroll();
     const logs = [...this.logsByContainer.values()];
     this.logsByContainer.clear();
+    this.logFollowMutations.clear();
     this.openingLogs.clear();
     this.logErrorsByContainer.clear();
     this.logSearch.value = '';

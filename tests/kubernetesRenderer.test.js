@@ -496,6 +496,20 @@ test('Kubernetes detail tab rerenders keep existing log sessions incidental whil
   assert.match(logChanged, /applyKubernetesLogUpdate\([\s\S]*?'follow',?\s*\)/);
 });
 
+test('Kubernetes page owns Follow mutation tokens and clears them with detail logs', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const toggleStart = page.indexOf('    async toggleLogFollowing() {');
+  const toggleEnd = page.indexOf('    async clearLogs() {', toggleStart);
+  const closeLogsStart = page.indexOf('    async closeDetailLogs() {');
+  const closeLogsEnd = page.indexOf('    onLogChanged(state) {', closeLogsStart);
+  const toggle = page.slice(toggleStart, toggleEnd);
+  const closeLogs = page.slice(closeLogsStart, closeLogsEnd);
+
+  assert.match(page, /this\.logFollowMutations = new Map\(\);/);
+  assert.match(toggle, /mutations: this\.logFollowMutations/);
+  assert.match(closeLogs, /this\.logFollowMutations\.clear\(\)/);
+});
+
 class FakeKubernetesLogClassList {
   constructor() {
     this.values = new Set();
@@ -1095,6 +1109,7 @@ test('Kubernetes Pause applies local state and cancels queued auto-scroll before
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const harness = createKubernetesLogViewportHarness(pageModule);
   const sessions = new Map([['app', kubernetesLogState()]]);
+  const mutations = new Map();
   const request = deferred();
   const calls = [];
   harness.setState({ sessions, log: undefined });
@@ -1103,6 +1118,7 @@ test('Kubernetes Pause applies local state and cancels queued auto-scroll before
 
   const toggling = pageModule.runKubernetesLogFollowToggle({
     sessions,
+    mutations,
     getSelectedContainer: () => harness.state.selectedContainer,
     viewport: harness.viewport,
     setFollowing: (sessionId, following) => {
@@ -1113,6 +1129,7 @@ test('Kubernetes Pause applies local state and cancels queued auto-scroll before
   });
 
   assert.equal(sessions.get('app').following, false);
+  assert.ok(mutations.get('session-app'));
   assert.deepEqual(calls, [['session-app', false]]);
   assert.deepEqual(harness.cancelled, [1]);
   assert.equal(harness.frames.size, 0);
@@ -1122,12 +1139,14 @@ test('Kubernetes Pause applies local state and cancels queued auto-scroll before
 
   request.resolve(kubernetesLogState({ following: false }));
   await toggling;
+  assert.equal(mutations.size, 0);
 });
 
 test('Kubernetes Resume applies local state and schedules bottom follow before IPC settles', async () => {
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const paused = kubernetesLogState({ following: false });
   const sessions = new Map([['app', paused]]);
+  const mutations = new Map();
   const harness = createKubernetesLogViewportHarness(pageModule);
   const request = deferred();
   harness.setState({ sessions, log: undefined });
@@ -1136,6 +1155,7 @@ test('Kubernetes Resume applies local state and schedules bottom follow before I
 
   const toggling = pageModule.runKubernetesLogFollowToggle({
     sessions,
+    mutations,
     getSelectedContainer: () => harness.state.selectedContainer,
     viewport: harness.viewport,
     setFollowing: () => request.promise,
@@ -1152,6 +1172,7 @@ test('Kubernetes Resume applies local state and schedules bottom follow before I
 
   request.resolve(kubernetesLogState({ following: true }));
   await toggling;
+  assert.equal(mutations.size, 0);
 });
 
 test('Kubernetes followed output returns to bottom after manual upward scroll', async () => {
@@ -1179,6 +1200,7 @@ test('Kubernetes failed Follow mutation rolls the optimistic state back and repo
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const original = kubernetesLogState();
   const sessions = new Map([['app', original]]);
+  const mutations = new Map();
   const harness = createKubernetesLogViewportHarness(pageModule);
   const request = deferred();
   const errors = [];
@@ -1186,6 +1208,7 @@ test('Kubernetes failed Follow mutation rolls the optimistic state back and repo
 
   const toggling = pageModule.runKubernetesLogFollowToggle({
     sessions,
+    mutations,
     getSelectedContainer: () => harness.state.selectedContainer,
     viewport: harness.viewport,
     setFollowing: () => request.promise,
@@ -1199,17 +1222,20 @@ test('Kubernetes failed Follow mutation rolls the optimistic state back and repo
   assert.equal(sessions.get('app'), original);
   assert.equal(sessions.get('app').following, true);
   assert.deepEqual(errors, ['follow rejected']);
+  assert.equal(mutations.size, 0);
 });
 
 test('Kubernetes failed Follow mutation does not roll back a newer owned log state', async () => {
   const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const sessions = new Map([['app', kubernetesLogState()]]);
+  const mutations = new Map();
   const harness = createKubernetesLogViewportHarness(pageModule);
   const request = deferred();
   harness.setState({ sessions, log: undefined });
 
   const toggling = pageModule.runKubernetesLogFollowToggle({
     sessions,
+    mutations,
     getSelectedContainer: () => harness.state.selectedContainer,
     viewport: harness.viewport,
     setFollowing: () => request.promise,
@@ -1221,6 +1247,112 @@ test('Kubernetes failed Follow mutation does not roll back a newer owned log sta
   await toggling;
 
   assert.equal(sessions.get('app'), newer);
+});
+
+test('Kubernetes rapid Pause then Resume keeps the newer Follow mutation authoritative', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const sessions = new Map([['app', kubernetesLogState()]]);
+  const mutations = new Map();
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const pauseRequest = deferred();
+  const resumeRequest = deferred();
+  const requests = [pauseRequest, resumeRequest];
+  const errors = [];
+  let call = 0;
+  harness.setState({ sessions, log: undefined });
+  const options = {
+    sessions,
+    mutations,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => requests[call++].promise,
+    onError: (error) => errors.push(error.message),
+  };
+
+  const pause = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, false);
+  const resume = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, true);
+  const resumeToken = mutations.get('session-app');
+  assert.ok(resumeToken);
+
+  pauseRequest.reject(new Error('stale pause failure'));
+  await pause;
+  assert.equal(sessions.get('app').following, true);
+  assert.deepEqual(errors, []);
+  assert.equal(mutations.get('session-app'), resumeToken);
+
+  resumeRequest.resolve(kubernetesLogState({ following: true }));
+  await resume;
+  assert.equal(sessions.get('app').following, true);
+  assert.deepEqual(errors, []);
+  assert.equal(mutations.size, 0);
+});
+
+test('Kubernetes rapid Resume then Pause ignores a stale Follow success', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const sessions = new Map([['app', kubernetesLogState({ following: false })]]);
+  const mutations = new Map();
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const resumeRequest = deferred();
+  const pauseRequest = deferred();
+  const requests = [resumeRequest, pauseRequest];
+  const errors = [];
+  let call = 0;
+  harness.setState({ sessions, log: undefined });
+  const options = {
+    sessions,
+    mutations,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => requests[call++].promise,
+    onError: (error) => errors.push(error.message),
+  };
+
+  const resume = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, true);
+  const pause = pageModule.runKubernetesLogFollowToggle(options);
+  assert.equal(sessions.get('app').following, false);
+  const pauseToken = mutations.get('session-app');
+  assert.ok(pauseToken);
+
+  resumeRequest.resolve(kubernetesLogState({ following: true }));
+  await resume;
+  assert.equal(sessions.get('app').following, false);
+  assert.equal(mutations.get('session-app'), pauseToken);
+
+  pauseRequest.resolve(kubernetesLogState({ following: false }));
+  await pause;
+  assert.equal(sessions.get('app').following, false);
+  assert.deepEqual(errors, []);
+  assert.equal(mutations.size, 0);
+});
+
+test('Kubernetes replaced log session suppresses a stale Follow failure', async () => {
+  const pageModule = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const sessions = new Map([['app', kubernetesLogState()]]);
+  const mutations = new Map();
+  const harness = createKubernetesLogViewportHarness(pageModule);
+  const request = deferred();
+  const errors = [];
+  harness.setState({ sessions, log: undefined });
+
+  const toggling = pageModule.runKubernetesLogFollowToggle({
+    sessions,
+    mutations,
+    getSelectedContainer: () => harness.state.selectedContainer,
+    viewport: harness.viewport,
+    setFollowing: () => request.promise,
+    onError: (error) => errors.push(error.message),
+  });
+  const replacement = kubernetesLogState({ sessionId: 'session-replacement', following: true });
+  sessions.set('app', replacement);
+  request.reject(new Error('closed old session'));
+  await toggling;
+
+  assert.equal(sessions.get('app'), replacement);
+  assert.deepEqual(errors, []);
+  assert.equal(mutations.size, 0);
 });
 
 test('Kubernetes log viewport preserves selected follow work through incidental renders and coalesces bursts', async () => {
