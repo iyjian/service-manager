@@ -812,6 +812,8 @@ class KubernetesPage implements KubernetesPageController {
   private detailBackStack: DetailBackStack | undefined;
   private activeDetail: ActiveDetail | undefined;
   private detailGeneration = 0;
+  private detailLoading = false;
+  private detailLoadingGeneration: number | undefined;
   private relatedGeneration = 0;
   /** Plaintext Secret material may exist only while its full-page detail is active. */
   private decodedSecretDetail: Record<string, unknown> | undefined;
@@ -1547,7 +1549,16 @@ class KubernetesPage implements KubernetesPageController {
     });
   }
 
-  private resetDetailLoadingState(): void {
+  private setDetailTabsDisabled(disabled: boolean): void {
+    for (const button of Array.from(this.detailTabs.querySelectorAll<HTMLButtonElement>('[data-detail-tab]'))) {
+      button.disabled = disabled;
+    }
+  }
+
+  private resetDetailLoadingState(generation: number): void {
+    this.detailLoading = true;
+    this.detailLoadingGeneration = generation;
+    this.setDetailTabsDisabled(true);
     this.detailPortForwardButton.classList.add('hidden');
     this.detailPortForwardButton.disabled = true;
     this.detailPortSummary.textContent = '';
@@ -1557,14 +1568,21 @@ class KubernetesPage implements KubernetesPageController {
     this.detailPage.classList.remove('kubernetes-detail-pod');
   }
 
+  private finishDetailLoadingState(generation: number): void {
+    if (!this.detailLoading || this.detailLoadingGeneration !== generation) return;
+    this.detailLoading = false;
+    this.detailLoadingGeneration = undefined;
+    this.setDetailTabsDisabled(false);
+  }
+
   private async openDetail(summary: KubernetesResourceSummary): Promise<void> {
     const query = this.currentQuery();
     const snapshot = this.snapshot;
     if (!query || !snapshot || this.activeDetail) return;
     this.openingTerminals.clear();
     this.selectPodWorkspace('logs');
-    this.resetDetailLoadingState();
     const detailGeneration = ++this.detailGeneration;
+    this.resetDetailLoadingState(detailGeneration);
     this.detailBackStack = {
       query: { ...query, namespaceScope: { ...query.namespaceScope, namespaces: [...query.namespaceScope.namespaces] } },
       selectedUid: summary.uid,
@@ -1580,6 +1598,7 @@ class KubernetesPage implements KubernetesPageController {
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
       if (!this.visible || detailGeneration !== this.detailGeneration || !this.detailBackStack) return;
+      this.finishDetailLoadingState(detailGeneration);
       this.activeDetail = { query, summary, detail, tab: 'overview' };
       this.decodedSecretDetail = query.kind === 'secrets' ? decodeSecretForActiveView(detail) : undefined;
       this.detailEventsLoaded = false;
@@ -1594,6 +1613,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private async closeDetail(): Promise<void> {
     const backStack = this.detailBackStack;
+    const closingGeneration = this.detailGeneration;
     this.detailGeneration += 1;
     this.openingTerminals.clear();
     this.terminalWorkspaceSessionId = undefined;
@@ -1610,6 +1630,7 @@ class KubernetesPage implements KubernetesPageController {
     this.detailRelated.replaceChildren();
     this.detailRelated.classList.add('hidden');
     this.detailPage.classList.add('hidden');
+    this.finishDetailLoadingState(closingGeneration);
     this.listPage.classList.remove('hidden');
     this.detailBackStack = undefined;
     if (!backStack) return;
@@ -1634,6 +1655,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private renderDetail(): void {
+    if (this.detailLoading) return;
     const active = this.activeDetail;
     const detail = this.displayDetail();
     if (!active || !detail) return;
@@ -1689,6 +1711,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async selectDetailTab(tab: DetailTab): Promise<void> {
+    if (this.detailLoading) return;
     const active = this.activeDetail;
     if (!active) return;
     active.tab = tab;
@@ -1985,8 +2008,8 @@ class KubernetesPage implements KubernetesPageController {
     this.invalidateRelatedDetail(active);
     this.openingTerminals.clear();
     this.selectPodWorkspace('logs');
-    this.resetDetailLoadingState();
     const generation = ++this.detailGeneration;
+    this.resetDetailLoadingState(generation);
     this.detailTitle.textContent = 'Loading Pod…';
     this.detailSubtitle.textContent = '';
     await this.closeDetailLogs();
@@ -1994,6 +2017,7 @@ class KubernetesPage implements KubernetesPageController {
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
       if (!this.visible || generation !== this.detailGeneration || this.activeDetail !== active) return;
+      this.finishDetailLoadingState(generation);
       this.activeDetail = { query, summary, detail, tab: 'overview' };
       this.decodedSecretDetail = undefined;
       this.detailEventsLoaded = false;
@@ -2001,6 +2025,7 @@ class KubernetesPage implements KubernetesPageController {
       this.renderDetail();
     } catch (error) {
       if (this.visible && generation === this.detailGeneration && this.activeDetail === active) {
+        this.finishDetailLoadingState(generation);
         this.renderDetail();
         setMessage(toErrorMessage(error), 'error');
       }
@@ -2196,7 +2221,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private openPortForwardDialog(): void {
-    if (this.detailPortForwardButton.disabled) return;
+    if (this.detailLoading || this.detailPortForwardButton.disabled) return;
     const active = this.activeDetail;
     const detail = this.displayDetail();
     const targetKind = active?.query.kind === 'pods' ? 'pod'

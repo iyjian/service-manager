@@ -439,7 +439,7 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
 
 test('Kubernetes detail loading synchronously fences stale actions for direct and related Pod navigation', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
-  const resetStart = page.indexOf('    resetDetailLoadingState() {');
+  const resetStart = page.indexOf('    resetDetailLoadingState(generation) {');
   const resetEnd = page.indexOf('    async openDetail(summary) {', resetStart);
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
   const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
@@ -456,8 +456,8 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   const detailRequestStart = openDetail.indexOf('await window.kubernetesApi.getResourceDetail');
   const relatedLogCloseStart = openRelatedPod.indexOf('await this.closeDetailLogs()');
   const relatedRequestStart = openRelatedPod.indexOf('await window.kubernetesApi.getResourceDetail');
-  const detailResetStart = openDetail.indexOf('this.resetDetailLoadingState();');
-  const relatedResetStart = openRelatedPod.indexOf('this.resetDetailLoadingState();');
+  const detailResetStart = openDetail.indexOf('this.resetDetailLoadingState(detailGeneration);');
+  const relatedResetStart = openRelatedPod.indexOf('this.resetDetailLoadingState(generation);');
 
   assert.ok(resetStart >= 0);
   assert.ok(resetEnd > resetStart);
@@ -482,8 +482,90 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   assert.match(reset, /this\.logTerminalTab\.disabled = true/);
   assert.match(reset, /this\.detailPage\.classList\.remove\('kubernetes-detail-pod'\)/);
   assert.doesNotMatch(reset, /this\.activeDetail\s*=/);
-  assert.match(dialog, /if \(this\.detailPortForwardButton\.disabled\)\s*return/);
+  assert.match(dialog, /if \((?:this\.detailLoading \|\| )?this\.detailPortForwardButton\.disabled\)\s*return/);
   assert.ok(detailResetStart < detailRequestStart);
   assert.ok(relatedResetStart < relatedLogCloseStart);
   assert.ok(relatedResetStart < relatedRequestStart);
+});
+
+test('Kubernetes related-Pod loading blocks stale Service tab renders and Port Forward drafts', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const tabStateStart = page.indexOf('    setDetailTabsDisabled(disabled) {');
+  const resetStart = page.indexOf('    resetDetailLoadingState(generation) {');
+  const finishStart = page.indexOf('    finishDetailLoadingState(generation) {');
+  const openDetailStart = page.indexOf('    async openDetail(summary) {');
+  const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
+  const closeDetailStart = openDetailEnd;
+  const closeDetailEnd = page.indexOf('    displayDetail() {', closeDetailStart);
+  const renderDetailStart = page.indexOf('    renderDetail() {');
+  const renderDetailEnd = page.indexOf('    renderDetailTabs(tab) {', renderDetailStart);
+  const selectTabStart = page.indexOf('    async selectDetailTab(tab) {');
+  const selectTabEnd = page.indexOf('    renderEvents(events) {', selectTabStart);
+  const relatedStart = page.indexOf('    async openRelatedPod(active, summary) {');
+  const relatedEnd = page.indexOf('    activeLog() {', relatedStart);
+  const dialogStart = page.indexOf('    openPortForwardDialog() {');
+  const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
+  const tabState = page.slice(tabStateStart, resetStart);
+  const reset = page.slice(resetStart, finishStart);
+  const finish = page.slice(finishStart, openDetailStart);
+  const openDetail = page.slice(openDetailStart, openDetailEnd);
+  const closeDetail = page.slice(closeDetailStart, closeDetailEnd);
+  const renderDetail = page.slice(renderDetailStart, renderDetailEnd);
+  const selectTab = page.slice(selectTabStart, selectTabEnd);
+  const related = page.slice(relatedStart, relatedEnd);
+  const dialog = page.slice(dialogStart, dialogEnd);
+  const renderGuard = renderDetail.indexOf('if (this.detailLoading)');
+  const renderRuntime = renderDetail.indexOf('this.renderPodActions');
+  const selectGuard = selectTab.indexOf('if (this.detailLoading)');
+  const selectMutation = selectTab.indexOf('active.tab = tab');
+  const selectRender = selectTab.indexOf('this.renderDetail();');
+  const dialogGuard = dialog.indexOf('if (this.detailLoading || this.detailPortForwardButton.disabled)');
+  const dialogDraft = dialog.indexOf('this.portForwardDraft = {');
+  const directCatch = openDetail.indexOf('catch (error) {');
+  const relatedCatch = related.indexOf('catch (error) {');
+  const directSuccess = openDetail.slice(
+    openDetail.indexOf('const detail = await window.kubernetesApi.getResourceDetail'),
+    directCatch,
+  );
+  const relatedSuccess = related.slice(
+    related.indexOf('const detail = await window.kubernetesApi.getResourceDetail'),
+    relatedCatch,
+  );
+  const relatedRecovery = related.slice(relatedCatch);
+  const closeHidden = closeDetail.indexOf("this.detailPage.classList.add('hidden')");
+  const closeFinish = closeDetail.indexOf('this.finishDetailLoadingState(closingGeneration);');
+
+  for (const index of [
+    tabStateStart,
+    resetStart,
+    finishStart,
+    openDetailStart,
+    closeDetailStart,
+    closeDetailEnd,
+    renderDetailStart,
+    renderDetailEnd,
+    selectTabStart,
+    selectTabEnd,
+    relatedStart,
+    relatedEnd,
+    dialogStart,
+    dialogEnd,
+    directCatch,
+    relatedCatch,
+  ]) assert.ok(index >= 0);
+  assert.match(tabState, /button\.disabled = disabled/);
+  assert.match(reset, /this\.detailLoading = true/);
+  assert.match(reset, /this\.detailLoadingGeneration = generation/);
+  assert.match(reset, /this\.setDetailTabsDisabled\(true\)/);
+  assert.match(finish, /this\.detailLoadingGeneration !== generation/);
+  assert.match(finish, /this\.detailLoading = false/);
+  assert.match(finish, /this\.detailLoadingGeneration = undefined/);
+  assert.match(finish, /this\.setDetailTabsDisabled\(false\)/);
+  assert.ok(renderGuard >= 0 && renderGuard < renderRuntime);
+  assert.ok(selectGuard >= 0 && selectGuard < selectMutation && selectGuard < selectRender);
+  assert.ok(dialogGuard >= 0 && dialogGuard < dialogDraft);
+  assert.match(directSuccess, /this\.finishDetailLoadingState\(detailGeneration\)[\s\S]*?this\.renderDetail\(\)/);
+  assert.ok(closeHidden >= 0 && closeFinish > closeHidden);
+  assert.match(relatedSuccess, /this\.finishDetailLoadingState\(generation\)[\s\S]*?this\.renderDetail\(\)/);
+  assert.match(relatedRecovery, /this\.finishDetailLoadingState\(generation\)[\s\S]*?this\.renderDetail\(\)/);
 });
