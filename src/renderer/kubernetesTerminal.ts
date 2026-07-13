@@ -1,6 +1,6 @@
 import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
 import type { Terminal as XtermTerminal } from '@xterm/xterm';
-import type { KubernetesTerminalState } from '../shared/types';
+import type { KubernetesPodTarget, KubernetesTerminalState } from '../shared/types';
 
 type XtermConstructor = new (options?: ConstructorParameters<typeof XtermTerminal>[0]) => XtermTerminal;
 type FitAddonConstructor = new () => XtermFitAddon;
@@ -11,14 +11,18 @@ interface XtermGlobals {
 }
 
 interface TerminalSessionView {
+  state: KubernetesTerminalState;
   host: HTMLElement;
-  terminal: XtermTerminal;
-  fit: XtermFitAddon;
+  terminal?: XtermTerminal;
+  fit?: XtermFitAddon;
   resize: () => void;
 }
 
 export interface KubernetesTerminalDrawer {
-  open(state: KubernetesTerminalState): void;
+  open(state: KubernetesTerminalState, activate?: boolean): void;
+  focusTarget(target: KubernetesPodTarget): boolean;
+  hasTarget(target: KubernetesPodTarget): boolean;
+  hide(): void;
   write(id: string, data: string): void;
   close(id: string): void;
   dispose(): void;
@@ -39,6 +43,12 @@ function sessionTitle(state: KubernetesTerminalState): string {
   return `${state.namespace}/${state.podName} · ${state.container}`;
 }
 
+function matchesTarget(state: KubernetesTerminalState, target: KubernetesPodTarget): boolean {
+  return state.namespace === target.namespace
+    && state.podName === target.podName
+    && state.container === target.container;
+}
+
 /**
  * The xterm renderer is intentionally owned by this small UI boundary. Raw
  * output is passed to xterm only through `terminal.write`, never HTML.
@@ -51,28 +61,50 @@ export function createKubernetesTerminalDrawer(options: {
 }): KubernetesTerminalDrawer {
   const sessions = new Map<string, TerminalSessionView>();
   const finalizedIds = new Set<string>();
+  let focusGeneration = 0;
 
   const removeSession = (id: string, notify: boolean): void => {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
     window.removeEventListener('resize', session.resize);
-    session.terminal.dispose();
+    session.terminal?.dispose();
     session.host.remove();
     if (sessions.size === 0) options.root.classList.add('hidden');
     if (notify) void options.onClose(id).catch(() => undefined);
   };
 
-  const open = (state: KubernetesTerminalState): void => {
+  const focusSession = (session: TerminalSessionView): void => {
+    const generation = ++focusGeneration;
+    const id = session.state.id;
+    options.root.classList.remove('hidden');
+    window.requestAnimationFrame(() => {
+      if (generation !== focusGeneration || sessions.get(id) !== session) return;
+      session.resize();
+      session.host.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      session.terminal?.focus();
+    });
+  };
+
+  const findTarget = (target: KubernetesPodTarget): TerminalSessionView | undefined => (
+    [...sessions.values()].find((session) => matchesTarget(session.state, target))
+  );
+
+  const open = (state: KubernetesTerminalState, activate = true): void => {
     if (state.state === 'closed' || state.state === 'error') {
       finalizedIds.add(state.id);
       removeSession(state.id, false);
       return;
     }
-    if (finalizedIds.has(state.id) || sessions.has(state.id)) return;
+    if (finalizedIds.has(state.id)) return;
+    const existing = sessions.get(state.id);
+    if (existing) {
+      existing.state = state;
+      if (activate) focusSession(existing);
+      return;
+    }
 
     const runtime = terminalRuntime();
-    options.root.classList.remove('hidden');
     const session = document.createElement('section');
     session.className = 'kubernetes-terminal-session';
     const header = document.createElement('header');
@@ -89,13 +121,20 @@ export function createKubernetesTerminalDrawer(options: {
     host.className = 'kubernetes-terminal-host';
     session.append(header, host);
     options.root.appendChild(session);
+    const view: TerminalSessionView = {
+      state,
+      host: session,
+      resize: () => undefined,
+    };
+    sessions.set(state.id, view);
+    closeButton.addEventListener('click', () => removeSession(state.id, true));
 
     if (!runtime) {
       const unavailable = document.createElement('p');
       unavailable.className = 'kubernetes-terminal-unavailable';
       unavailable.textContent = 'Terminal renderer is unavailable.';
       host.appendChild(unavailable);
-      closeButton.addEventListener('click', () => removeSession(state.id, true));
+      if (activate) focusSession(view);
       return;
     }
 
@@ -119,17 +158,27 @@ export function createKubernetesTerminalDrawer(options: {
       void options.onInput(state.id, data).catch(() => undefined);
     });
     window.addEventListener('resize', resize);
-    sessions.set(state.id, { host: session, terminal, fit, resize });
-    closeButton.addEventListener('click', () => removeSession(state.id, true));
-    window.requestAnimationFrame(() => {
-      resize();
-      session.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      terminal.focus();
-    });
+    view.terminal = terminal;
+    view.fit = fit;
+    view.resize = resize;
+    if (activate) focusSession(view);
   };
 
   return {
     open,
+    focusTarget(target: KubernetesPodTarget): boolean {
+      const session = findTarget(target);
+      if (!session) return false;
+      focusSession(session);
+      return true;
+    },
+    hasTarget(target: KubernetesPodTarget): boolean {
+      return Boolean(findTarget(target));
+    },
+    hide(): void {
+      focusGeneration += 1;
+      options.root.classList.add('hidden');
+    },
     write(id: string, data: string): void {
       const terminal = sessions.get(id)?.terminal;
       if (terminal && data) terminal.write(data);

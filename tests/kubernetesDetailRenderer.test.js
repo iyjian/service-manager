@@ -279,6 +279,89 @@ test('Kubernetes Pod interactions use one ordered log toolbar with static Follow
   assert.doesNotMatch(follow, /Pause Follow|Resume Follow/);
 });
 
+test('Kubernetes terminal workspace selection keeps tab state accessible and hides sessions only for Logs', async () => {
+  const { applyKubernetesPodWorkspace } = await import(path.join(rendererPath, 'kubernetesPage.js'));
+  const button = () => {
+    const classes = new Set();
+    const attributes = new Map();
+    return {
+      classes,
+      attributes,
+      classList: {
+        toggle(name, force) {
+          if (force) classes.add(name);
+          else classes.delete(name);
+        },
+      },
+      setAttribute(name, value) { attributes.set(name, value); },
+    };
+  };
+  const logsTab = button();
+  const terminalTab = button();
+  let hideCount = 0;
+  const tabs = {
+    logsTab,
+    terminalTab,
+    hideTerminalDrawer: () => { hideCount += 1; },
+  };
+
+  applyKubernetesPodWorkspace('terminal', tabs);
+  assert.equal(logsTab.classes.has('kubernetes-log-view-tab-active'), false);
+  assert.equal(logsTab.attributes.get('aria-selected'), 'false');
+  assert.equal(terminalTab.classes.has('kubernetes-log-view-tab-active'), true);
+  assert.equal(terminalTab.attributes.get('aria-selected'), 'true');
+  assert.equal(hideCount, 0);
+
+  applyKubernetesPodWorkspace('logs', tabs);
+  assert.equal(logsTab.classes.has('kubernetes-log-view-tab-active'), true);
+  assert.equal(logsTab.attributes.get('aria-selected'), 'true');
+  assert.equal(terminalTab.classes.has('kubernetes-log-view-tab-active'), false);
+  assert.equal(terminalTab.attributes.get('aria-selected'), 'false');
+  assert.equal(hideCount, 1);
+});
+
+test('Kubernetes terminal tab click selects Terminal before opening and Logs hides without closing sessions', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const bindings = page.slice(
+    page.indexOf("this.containerSelect.addEventListener('change'"),
+    page.indexOf("this.portForwardDeclaredPort.addEventListener('change'"),
+  );
+  const openStart = page.indexOf('    async openTerminal() {');
+  const openEnd = page.indexOf('    onTerminalChanged(state) {', openStart);
+  const openTerminal = page.slice(openStart, openEnd);
+
+  assert.match(bindings, /this\.logTab\.addEventListener\('click',[\s\S]*?this\.selectPodWorkspace\('logs'\)/);
+  assert.match(bindings, /this\.logTerminalTab\.addEventListener\('click',[\s\S]*?this\.openTerminal\(\)/);
+  assert.ok(openTerminal.indexOf("this.selectPodWorkspace('terminal')")
+    < openTerminal.indexOf('openKubernetesTerminalWorkspace'));
+  assert.doesNotMatch(bindings, /closeTerminal/);
+});
+
+test('Kubernetes terminal workspace resets to Logs and invalidates pending ownership on target transitions', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const containerChange = page.slice(
+    page.indexOf("this.containerSelect.addEventListener('change'"),
+    page.indexOf("this.logFollowButton.addEventListener('click'"),
+  );
+  const openDetail = page.slice(
+    page.indexOf('    async openDetail(summary) {'),
+    page.indexOf('    async closeDetail() {'),
+  );
+  const closeDetail = page.slice(
+    page.indexOf('    async closeDetail() {'),
+    page.indexOf('    displayDetail() {'),
+  );
+  const openRelatedPod = page.slice(
+    page.indexOf('    async openRelatedPod(active, summary) {'),
+    page.indexOf('    activeLog() {'),
+  );
+
+  for (const transition of [containerChange, openDetail, openRelatedPod]) {
+    assert.match(transition, /this\.openingTerminals\.clear\(\)[\s\S]*?this\.selectPodWorkspace\('logs'\)/);
+  }
+  assert.match(closeDetail, /this\.openingTerminals\.clear\(\)[\s\S]*?await this\.closeDetailLogs\(\)/);
+});
+
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const dialogStart = html.indexOf('id="kubernetes-port-forward-dialog"');

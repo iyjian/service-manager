@@ -4,6 +4,7 @@ import type {
   KubernetesListSnapshot,
   KubernetesLogState,
   KubernetesNamespaceScope,
+  KubernetesPodTarget,
   KubernetesPortForwardInput,
   KubernetesPortForwardState,
   KubernetesRelatedResourceRequest,
@@ -225,6 +226,7 @@ export function createKubernetesLogAutoScrollScheduler(
 
 export type KubernetesLogScrollIntent = 'follow' | 'preserve' | 'incidental';
 export type KubernetesLogUpdateRoute = 'selected' | 'background' | 'stale';
+export type KubernetesPodWorkspace = 'logs' | 'terminal';
 
 export interface KubernetesLogViewportState {
   visible: boolean;
@@ -291,6 +293,99 @@ export function applyKubernetesLogOpenFailure(options: {
   if (options.selectedContainer !== options.targetContainer) return 'background';
   options.renderSelected();
   return 'selected';
+}
+
+interface KubernetesPodWorkspaceTab {
+  classList: Pick<DOMTokenList, 'toggle'>;
+  setAttribute(name: string, value: string): void;
+}
+
+export function applyKubernetesPodWorkspace(
+  workspace: KubernetesPodWorkspace,
+  options: {
+    logsTab: KubernetesPodWorkspaceTab;
+    terminalTab: KubernetesPodWorkspaceTab;
+    hideTerminalDrawer: () => void;
+  },
+): void {
+  const terminalSelected = workspace === 'terminal';
+  options.logsTab.classList.toggle('kubernetes-log-view-tab-active', !terminalSelected);
+  options.logsTab.setAttribute('aria-selected', String(!terminalSelected));
+  options.terminalTab.classList.toggle('kubernetes-log-view-tab-active', terminalSelected);
+  options.terminalTab.setAttribute('aria-selected', String(terminalSelected));
+  if (!terminalSelected) options.hideTerminalDrawer();
+}
+
+function kubernetesPodTargetKey(target: KubernetesPodTarget): string {
+  return `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
+}
+
+export function sameKubernetesPodTarget(
+  left: KubernetesPodTarget | undefined,
+  right: KubernetesPodTarget | undefined,
+): boolean {
+  return Boolean(left && right
+    && left.namespace === right.namespace
+    && left.podName === right.podName
+    && left.container === right.container);
+}
+
+export async function openKubernetesTerminalWorkspace(options: {
+  target: KubernetesPodTarget;
+  requests: Map<string, symbol>;
+  selectWorkspace: (workspace: KubernetesPodWorkspace) => void;
+  focusTarget: (target: KubernetesPodTarget) => boolean;
+  openDrawer: (state: KubernetesTerminalState) => void;
+  requestTerminal: (target: KubernetesPodTarget) => Promise<KubernetesTerminalState>;
+  isCurrent: () => boolean;
+  reportError: (error: unknown) => void;
+}): Promise<void> {
+  options.selectWorkspace('terminal');
+  if (options.focusTarget(options.target)) return;
+
+  const key = kubernetesPodTargetKey(options.target);
+  const token = claimKubernetesLogOpen(options.requests, key);
+  if (!token) return;
+  try {
+    const state = await options.requestTerminal(options.target);
+    options.openDrawer(state);
+    if (options.requests.get(key) !== token || !options.isCurrent()) return;
+    if (options.focusTarget(options.target)) return;
+    options.selectWorkspace('logs');
+    if (state.state === 'error') {
+      options.reportError(state.error ?? 'Kubernetes terminal failed.');
+    }
+  } catch (error) {
+    if (options.requests.get(key) !== token || !options.isCurrent()) return;
+    options.selectWorkspace('logs');
+    options.reportError(error);
+  } finally {
+    releaseKubernetesLogOpen(options.requests, key, token);
+  }
+}
+
+export type KubernetesTerminalFinalRoute = 'background' | 'retained' | 'fallback';
+
+export function routeKubernetesTerminalFinalState(options: {
+  state: KubernetesTerminalState;
+  selectedTarget: KubernetesPodTarget | undefined;
+  workspace: KubernetesPodWorkspace;
+  hasMatchingTarget: boolean;
+  selectLogs: () => void;
+  reportError: (message: string) => void;
+}): KubernetesTerminalFinalRoute {
+  if ((options.state.state !== 'closed' && options.state.state !== 'error')
+    || !sameKubernetesPodTarget(options.state, options.selectedTarget)) {
+    return 'background';
+  }
+  if (options.state.state === 'error') {
+    options.reportError(options.state.error ?? 'Kubernetes terminal failed.');
+  }
+  if (options.workspace === 'terminal' && !options.hasMatchingTarget) {
+    options.selectLogs();
+    return 'fallback';
+  }
+  return 'retained';
 }
 
 export function routeKubernetesLogUpdate(
@@ -620,6 +715,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailRelated = requireElement<HTMLElement>('#kubernetes-detail-related');
   private readonly containerSelect = requireElement<HTMLSelectElement>('#kubernetes-container-select');
   private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
+  private readonly logTab = requireElement<HTMLButtonElement>('.kubernetes-log-toolbar [role="tablist"] .kubernetes-log-view-tab:first-child');
   private readonly logTerminalTab = requireElement<HTMLButtonElement>('#kubernetes-log-terminal-tab');
   private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
   private readonly logFollowPauseIcon = requireElement<SVGElement>('#kubernetes-log-follow-pause-icon');
@@ -687,6 +783,8 @@ class KubernetesPage implements KubernetesPageController {
   private readonly logsByContainer = new Map<string, KubernetesLogState>();
   private readonly openingLogs = new Map<string, symbol>();
   private readonly logErrorsByContainer = new Map<string, string>();
+  private podWorkspace: KubernetesPodWorkspace = 'logs';
+  private readonly openingTerminals = new Map<string, symbol>();
   private terminalDrawer: KubernetesTerminalDrawer | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
@@ -816,13 +914,16 @@ class KubernetesPage implements KubernetesPageController {
       if (tab === 'overview' || tab === 'yaml' || tab === 'events') void this.selectDetailTab(tab);
     });
     this.containerSelect.addEventListener('change', () => {
+      this.openingTerminals.clear();
       this.selectedContainer = this.containerSelect.value || undefined;
+      this.selectPodWorkspace('logs');
       this.renderLogPanel('follow');
       void this.openLogsForSelectedContainer();
     });
     this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
     this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
     this.logSearch.addEventListener('input', () => this.renderLogPanel('preserve'));
+    this.logTab.addEventListener('click', () => this.selectPodWorkspace('logs'));
     this.logTerminalTab.addEventListener('click', () => { void this.openTerminal(); });
     this.portForwardDeclaredPort.addEventListener('change', () => {
       this.portForwardRemotePort.value = this.portForwardDeclaredPort.value;
@@ -1411,6 +1512,8 @@ class KubernetesPage implements KubernetesPageController {
     const query = this.currentQuery();
     const snapshot = this.snapshot;
     if (!query || !snapshot || this.activeDetail) return;
+    this.openingTerminals.clear();
+    this.selectPodWorkspace('logs');
     const detailGeneration = ++this.detailGeneration;
     this.detailBackStack = {
       query: { ...query, namespaceScope: { ...query.namespaceScope, namespaces: [...query.namespaceScope.namespaces] } },
@@ -1445,6 +1548,7 @@ class KubernetesPage implements KubernetesPageController {
   private async closeDetail(): Promise<void> {
     const backStack = this.detailBackStack;
     this.detailGeneration += 1;
+    this.openingTerminals.clear();
     // This must happen before closeDetailLogs awaits remote cleanup. A late
     // relation response must never re-render a detail the user already left.
     this.invalidateRelatedDetail();
@@ -1593,6 +1697,11 @@ class KubernetesPage implements KubernetesPageController {
         : `${declaredPorts.length} declared`;
     this.logPanel.classList.toggle('hidden', !isPod);
     this.logTerminalTab.disabled = true;
+    applyKubernetesPodWorkspace(this.podWorkspace, {
+      logsTab: this.logTab,
+      terminalTab: this.logTerminalTab,
+      hideTerminalDrawer: () => this.terminalDrawer?.hide(),
+    });
     if (!isPod) return;
     const containers = containerNames(detail);
     const all = [...containers.regular, ...containers.init];
@@ -1826,6 +1935,8 @@ class KubernetesPage implements KubernetesPageController {
     // Do this before any await: related-resource completion belongs only to
     // the previous Workload detail and cannot repaint over the linked Pod.
     this.invalidateRelatedDetail(active);
+    this.openingTerminals.clear();
+    this.selectPodWorkspace('logs');
     const generation = ++this.detailGeneration;
     this.detailTitle.textContent = 'Loading Pod…';
     this.detailSubtitle.textContent = '';
@@ -1849,6 +1960,15 @@ class KubernetesPage implements KubernetesPageController {
 
   private activeLog(): KubernetesLogState | undefined {
     return this.selectedContainer ? this.logsByContainer.get(this.selectedContainer) : undefined;
+  }
+
+  private selectPodWorkspace(workspace: KubernetesPodWorkspace): void {
+    this.podWorkspace = workspace;
+    applyKubernetesPodWorkspace(workspace, {
+      logsTab: this.logTab,
+      terminalTab: this.logTerminalTab,
+      hideTerminalDrawer: () => this.terminalDrawer?.hide(),
+    });
   }
 
   private cancelLogAutoScroll(): void {
@@ -1959,7 +2079,7 @@ class KubernetesPage implements KubernetesPageController {
     );
   }
 
-  private selectedPodTarget(): { namespace: string; podName: string; container: string } | undefined {
+  private selectedPodTarget(): KubernetesPodTarget | undefined {
     const active = this.activeDetail;
     if (!active || active.query.kind !== 'pods' || !active.summary.namespace || !this.selectedContainer) return undefined;
     return { namespace: active.summary.namespace, podName: active.summary.name, container: this.selectedContainer };
@@ -1968,24 +2088,43 @@ class KubernetesPage implements KubernetesPageController {
   private async openTerminal(): Promise<void> {
     const target = this.selectedPodTarget();
     if (!target) return;
-    try {
-      const terminal = await window.kubernetesApi.openTerminal(target);
-      this.terminalDrawer?.open(terminal);
-    } catch (error) {
-      setMessage(toErrorMessage(error), 'error');
-    }
+    this.selectPodWorkspace('terminal');
+    const active = this.activeDetail;
+    const detailGeneration = this.detailGeneration;
+    await openKubernetesTerminalWorkspace({
+      target,
+      requests: this.openingTerminals,
+      selectWorkspace: (workspace) => {
+        if (this.podWorkspace !== workspace) this.selectPodWorkspace(workspace);
+      },
+      focusTarget: (candidate) => this.terminalDrawer?.focusTarget(candidate) ?? false,
+      openDrawer: (state) => this.terminalDrawer?.open(state, false),
+      requestTerminal: (candidate) => window.kubernetesApi.openTerminal(candidate),
+      isCurrent: () => this.visible
+        && this.activeDetail === active
+        && this.detailGeneration === detailGeneration
+        && this.podWorkspace === 'terminal'
+        && sameKubernetesPodTarget(this.selectedPodTarget(), target),
+      reportError: (error) => setMessage(toErrorMessage(error), 'error'),
+    });
   }
 
   private onTerminalChanged(state: KubernetesTerminalState): void {
     if (!this.visible) return;
     if (state.state === 'closed' || state.state === 'error') {
       this.terminalDrawer?.open(state);
-      if (state.state === 'error') {
-        setMessage(state.error ?? 'Kubernetes terminal failed.', 'error');
-      }
+      const selectedTarget = this.selectedPodTarget();
+      routeKubernetesTerminalFinalState({
+        state,
+        selectedTarget,
+        workspace: this.podWorkspace,
+        hasMatchingTarget: selectedTarget ? this.terminalDrawer?.hasTarget(selectedTarget) ?? false : false,
+        selectLogs: () => this.selectPodWorkspace('logs'),
+        reportError: () => setMessage(state.error ?? 'Kubernetes terminal failed.', 'error'),
+      });
       return;
     }
-    this.terminalDrawer?.open(state);
+    this.terminalDrawer?.open(state, false);
   }
 
   private onTerminalOutput(output: KubernetesTerminalOutput): void {
