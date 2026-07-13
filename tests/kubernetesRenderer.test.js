@@ -1847,6 +1847,32 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     assert.equal(drawer.focusSession(locallyClosed.id), false);
     assert.deepEqual(closeCalls, [locallyClosed.id]);
 
+    const buttonClosed = { ...normal, id: 'terminal-button-close', container: 'metrics' };
+    drawer.open(buttonClosed);
+    runFrame();
+    const closeButton = root.children[0].children[0].children[1];
+    const click = closeButton.listeners.get('click');
+    assert.equal(typeof click, 'function');
+    const instanceCountBeforeButtonLateEvents = instances.length;
+    click();
+    assert.deepEqual(closeCalls, [locallyClosed.id, buttonClosed.id]);
+    assert.equal(root.children.length, 0);
+    assert.equal(root.classList.contains('hidden'), true);
+
+    drawer.open({ ...buttonClosed, state: 'connecting' });
+    drawer.open({ ...buttonClosed, state: 'open' });
+
+    assert.equal(instances.length, instanceCountBeforeButtonLateEvents);
+    assert.equal(root.children.length, 0);
+    assert.equal(root.classList.contains('hidden'), true);
+    assert.equal(drawer.focusTarget({
+      namespace: buttonClosed.namespace,
+      podName: buttonClosed.podName,
+      container: buttonClosed.container,
+    }), undefined);
+    assert.equal(drawer.focusSession(buttonClosed.id), false);
+    assert.deepEqual(closeCalls, [locallyClosed.id, buttonClosed.id]);
+
     drawer.dispose();
   } finally {
     global.window = originalWindow;

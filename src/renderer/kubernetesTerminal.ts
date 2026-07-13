@@ -75,6 +75,11 @@ export function createKubernetesTerminalDrawer(options: {
     if (notify) void options.onClose(id).catch(() => undefined);
   };
 
+  const closeSession = (id: string): void => {
+    finalizedIds.add(id);
+    removeSession(id, true);
+  };
+
   const focusSession = (session: TerminalSessionView): void => {
     const generation = ++focusGeneration;
     const id = session.state.id;
@@ -128,7 +133,7 @@ export function createKubernetesTerminalDrawer(options: {
       resize: () => undefined,
     };
     sessions.set(state.id, view);
-    closeButton.addEventListener('click', () => removeSession(state.id, true));
+    closeButton.addEventListener('click', () => closeSession(state.id));
 
     if (!runtime) {
       const unavailable = document.createElement('p');
@@ -191,11 +196,10 @@ export function createKubernetesTerminalDrawer(options: {
       if (terminal && data) terminal.write(data);
     },
     close(id: string): void {
-      finalizedIds.add(id);
-      removeSession(id, true);
+      closeSession(id);
     },
     dispose(): void {
-      for (const id of [...sessions.keys()]) removeSession(id, true);
+      for (const id of [...sessions.keys()]) closeSession(id);
       options.root.replaceChildren();
       options.root.classList.add('hidden');
     },
