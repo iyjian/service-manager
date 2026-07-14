@@ -13,7 +13,11 @@ import type {
   KubernetesResourceKind,
 } from '../../shared/types';
 import { preflightKubeconfigContext } from './kubeconfigStore';
-import { resolvePodContainerEnvironment } from './podEnvironment';
+import {
+  noPermissionPodEnvironment,
+  resolvePodContainerEnvironment,
+  safePodEnvironmentReadError,
+} from './podEnvironment';
 import { POD_SUMMARY_EMPTY, summarizePodListColumns } from './podSummary';
 import { sanitizeSecretForCache } from './resourceQuery';
 import type {
@@ -800,10 +804,19 @@ class KubernetesClientAdapter implements KubernetesClient {
   public async getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment> {
     this.assertOpen();
     this.assertPodStreamRequest(input);
-    const pod = asRecord(await this.call(this.core, 'readNamespacedPod', {
-      name: input.podName,
-      namespace: input.namespace,
-    }));
+    let pod: Record<string, unknown>;
+    try {
+      pod = asRecord(await this.call(this.core, 'readNamespacedPod', {
+        name: input.podName,
+        namespace: input.namespace,
+      }));
+    } catch (error) {
+      const status = statusCodeFrom(error);
+      if (status === 401 || status === 403) {
+        return noPermissionPodEnvironment();
+      }
+      throw safePodEnvironmentReadError(error);
+    }
     return resolvePodContainerEnvironment(pod, input.container, {
       readSecret: async (name) => asRecord(await this.call(this.core, 'readNamespacedSecret', {
         name,

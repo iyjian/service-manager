@@ -81,6 +81,32 @@ function safeSecretReadError(error: unknown): Error {
   return safe;
 }
 
+/**
+ * Returns a deliberately target-free response when the selected Pod itself
+ * cannot be read. It must not reveal a Pod name, namespace, or API error.
+ */
+export function noPermissionPodEnvironment(): KubernetesPodEnvironment {
+  return {
+    entries: [{ name: '(unavailable)', source: 'unknown', unavailable: 'no-permission' }],
+    truncated: false,
+    permissionDenied: true,
+  };
+}
+
+/** Sanitizes initial Pod-read failures before they can cross the client boundary. */
+export function safePodEnvironmentReadError(error: unknown): Error {
+  const safe = new Error('Unable to read Kubernetes Pod environment.');
+  const status = statusCode(error);
+  if (status !== undefined) {
+    Object.assign(safe, { statusCode: status });
+  }
+  const code = text(record(error)?.code)?.toUpperCase();
+  if (code && SAFE_CONNECTION_CODES.has(code)) {
+    Object.assign(safe, { code });
+  }
+  return safe;
+}
+
 function isUtf8Text(value: string): boolean {
   const bytes = Buffer.from(value, 'utf8');
   return bytes.toString('utf8') === value;
@@ -131,6 +157,10 @@ function configMapReference(name: string | undefined, key?: string): string | un
 
 function prefixedDeclarationName(prefix: unknown): string {
   return `${text(prefix) ?? ''}*`;
+}
+
+function isOptionalDeclaration(reference: Record<string, unknown>): boolean {
+  return reference.optional === true;
 }
 
 class EnvironmentAccumulator {
@@ -216,6 +246,7 @@ async function resolveSecretKeyRef(
     name: entryName,
     source: 'secretKeyRef',
     ...(secretReference(secretName, key) ? { reference: secretReference(secretName, key) } : {}),
+    optional: isOptionalDeclaration(reference),
   };
   if (!secretName || !key) {
     accumulator.add({ ...entry, unavailable: 'missing' });
@@ -231,7 +262,8 @@ async function resolveSecretKeyRef(
     accumulator.add({ ...entry, unavailable: 'missing' });
     return;
   }
-  const encoded = record(result.secret.data)?.[key];
+  const data = record(result.secret.data);
+  const encoded = data && hasOwn(data, key) ? data[key] : undefined;
   if (encoded === undefined) {
     accumulator.add({ ...entry, unavailable: 'missing' });
     return;
@@ -277,6 +309,7 @@ async function resolveEnvironmentVariable(
       name: entryName,
       source: 'configMapKeyRef',
       ...(configMapReference(configMapName, key) ? { reference: configMapReference(configMapName, key) } : {}),
+      optional: isOptionalDeclaration(configMapKeyRef),
       unavailable: configMapName && key ? 'unsupported' : 'missing',
     };
     accumulator.add(entry);
@@ -325,6 +358,7 @@ async function resolveEnvironmentFrom(
       name: entryName,
       source: 'secretEnvFrom',
       ...(secretReference(secretName) ? { reference: secretReference(secretName) } : {}),
+      optional: isOptionalDeclaration(secretRef),
     };
     if (!secretName) {
       accumulator.add({ ...entry, unavailable: 'missing' });
@@ -353,6 +387,7 @@ async function resolveEnvironmentFrom(
         name: `${prefix}${key}`,
         source: 'secretEnvFrom',
         reference: `secret/${secretName}/${key}`,
+        optional: entry.optional,
       };
       if (data[key] === undefined) {
         accumulator.add({ ...imported, unavailable: 'missing' });
@@ -369,6 +404,7 @@ async function resolveEnvironmentFrom(
       name: entryName,
       source: 'configMapEnvFrom',
       ...(configMapReference(configMapName) ? { reference: configMapReference(configMapName) } : {}),
+      optional: isOptionalDeclaration(configMapRef),
       unavailable: configMapName ? 'unsupported' : 'missing',
     });
     return;

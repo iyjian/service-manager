@@ -365,6 +365,8 @@ export interface KubernetesPodEnvironmentEntry {
   source: KubernetesPodEnvironmentSource;
   value?: string;
   reference?: string;
+  /** Kubernetes `optional` state for Secret and ConfigMap declarations. */
+  optional?: boolean;
   unavailable?: KubernetesPodEnvironmentUnavailable;
 }
 
