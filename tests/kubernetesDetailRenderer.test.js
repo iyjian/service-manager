@@ -415,7 +415,8 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   const dialog = page.slice(dialogStart, closeDialogStart);
   const closeDialog = page.slice(closeDialogStart, closeDialogEnd);
   const detailRequestStart = openDetail.indexOf('await window.kubernetesApi.getResourceDetail');
-  const relatedRequestStart = openRelatedPod.indexOf('await window.kubernetesApi.getResourceDetail');
+  const relatedRequestStart = openRelatedPod.indexOf('await runKubernetesDrawerDetailRequest');
+  const relatedFetchStart = openRelatedPod.indexOf('window.kubernetesApi.getResourceDetail');
   const detailResetStart = openDetail.indexOf('this.beginDrawerReplacement()');
   const relatedResetStart = openRelatedPod.indexOf('this.beginDrawerReplacement()');
 
@@ -430,6 +431,7 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   assert.ok(closeDialogEnd > closeDialogStart);
   assert.ok(detailRequestStart >= 0);
   assert.ok(relatedRequestStart >= 0);
+  assert.ok(relatedFetchStart > relatedRequestStart);
   assert.ok(detailResetStart >= 0);
   assert.ok(relatedResetStart >= 0);
   assert.match(reset, /const generation = \+\+this\.detailGeneration/);
@@ -465,8 +467,12 @@ test('Kubernetes related-Pod drawer navigation guards stale results and leaves t
   }
   assert.match(openDetail, /this\.createDrawerRequest\(summary, detailGeneration\)/);
   assert.match(openDetail, /if \(!this\.isCurrentDrawerRequest\(request, query\)\)\s*return/);
+  assert.match(related, /const originQuery = active\.originQuery/);
   assert.match(related, /this\.createDrawerRequest\(summary, generation\)/);
-  assert.match(related, /if \(!this\.isCurrentDrawerRequest\(request, query\)\)\s*return/);
+  assert.match(related, /runKubernetesDrawerDetailRequest\(/);
+  assert.match(related, /isCurrent:\s*\(\)\s*=> this\.isCurrentDrawerRequest\(request, originQuery\)/);
+  assert.match(related, /const next = \{ originQuery, query, summary, detail, request \}/);
+  assert.match(related, /this\.renderDetail\(\)[\s\S]*?this\.requestDrawerEvents\(next\)/);
   assert.match(renderDetail, /this\.renderDrawerPortForward\(detail, active\)/);
   assert.doesNotMatch(openDetail, /listPage\.classList\.add\('hidden'\)/);
   assert.doesNotMatch(related, /listPage\.classList\.add\('hidden'\)/);
@@ -499,5 +505,7 @@ test('Kubernetes drawer replacement synchronously clears stale Service actions b
   assert.ok(openDetail.indexOf('this.beginDrawerReplacement()')
     < openDetail.indexOf('await window.kubernetesApi.getResourceDetail'));
   assert.ok(related.indexOf('this.beginDrawerReplacement()')
-    < related.indexOf('await window.kubernetesApi.getResourceDetail'));
+    < related.indexOf('await runKubernetesDrawerDetailRequest'));
+  assert.ok(related.indexOf('await runKubernetesDrawerDetailRequest')
+    < related.indexOf('window.kubernetesApi.getResourceDetail'));
 });

@@ -73,6 +73,8 @@ export interface KubernetesDrawerRequest {
 }
 
 interface ActiveDetail {
+  /** The page/list query that owns this drawer, distinct from a related-Pod fetch query. */
+  originQuery: KubernetesResourceQuery;
   query: KubernetesResourceQuery;
   summary: KubernetesResourceSummary;
   detail: Record<string, unknown>;
@@ -705,6 +707,30 @@ export async function runRelatedResourceRequest<T>(
   }
 }
 
+/**
+ * Applies a detail result only while its drawer still belongs to the same
+ * visible page/list query. Related Pods deliberately fetch with `kind: pods`
+ * while their originating list remains a Deployment or StatefulSet.
+ */
+export async function runKubernetesDrawerDetailRequest<T>(
+  load: () => Promise<T>,
+  lifecycle: {
+    isCurrent: () => boolean;
+    onSuccess: (detail: T) => void;
+    onError: (error: unknown) => void;
+  },
+): Promise<void> {
+  if (!lifecycle.isCurrent()) return;
+  try {
+    const detail = await load();
+    if (!lifecycle.isCurrent()) return;
+    lifecycle.onSuccess(detail);
+  } catch (error) {
+    if (!lifecycle.isCurrent()) return;
+    lifecycle.onError(error);
+  }
+}
+
 /** A close owns cleanup only until a later detail lifecycle increments its generation. */
 export function isCurrentKubernetesDetailClose(
   closingGeneration: number,
@@ -723,6 +749,24 @@ export function isCurrentKubernetesDrawerRequest(
     && current.pageGeneration === candidate.pageGeneration
     && current.drawerGeneration === candidate.drawerGeneration
     && current.uid === candidate.uid;
+}
+
+/**
+ * Adds page/list-query ownership to the exact drawer request fence. The
+ * detail fetch query may be different for a related Pod, so it must not be
+ * compared to the current resource-list query here.
+ */
+export function isCurrentKubernetesDrawerListRequest(
+  pageVisible: boolean,
+  current: KubernetesDrawerRequest,
+  candidate: KubernetesDrawerRequest,
+  currentListQuery: KubernetesResourceQuery | undefined,
+  originListQuery: KubernetesResourceQuery,
+): boolean {
+  return pageVisible
+    && isCurrentKubernetesDrawerRequest(current, candidate)
+    && currentListQuery !== undefined
+    && sameQuery(currentListQuery, originListQuery);
 }
 
 class KubernetesPage implements KubernetesPageController {
@@ -1512,14 +1556,21 @@ class KubernetesPage implements KubernetesPageController {
     };
   }
 
-  private isCurrentDrawerRequest(request: KubernetesDrawerRequest, query: KubernetesResourceQuery): boolean {
-    return this.visible
-      && isCurrentKubernetesDrawerRequest(this.drawerRequest, request)
-      && sameQuery(this.currentQuery() ?? query, query);
+  private isCurrentDrawerRequest(
+    request: KubernetesDrawerRequest,
+    originQuery: KubernetesResourceQuery,
+  ): boolean {
+    return isCurrentKubernetesDrawerListRequest(
+      this.visible,
+      this.drawerRequest,
+      request,
+      this.currentQuery(),
+      originQuery,
+    );
   }
 
   private isCurrentActiveDrawer(active: ActiveDetail): boolean {
-    return this.activeDetail === active && this.isCurrentDrawerRequest(active.request, active.query);
+    return this.activeDetail === active && this.isCurrentDrawerRequest(active.request, active.originQuery);
   }
 
   private async openDetail(summary: KubernetesResourceSummary): Promise<void> {
@@ -1534,7 +1585,7 @@ class KubernetesPage implements KubernetesPageController {
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
       if (!this.isCurrentDrawerRequest(request, query)) return;
-      const active: ActiveDetail = { query, summary, detail, request };
+      const active: ActiveDetail = { originQuery: query, query, summary, detail, request };
       this.activeDetail = active;
       this.decodedSecretDetail = query.kind === 'secrets' ? decodeSecretForActiveView(detail) : undefined;
       this.renderDetail();
@@ -2024,6 +2075,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private async openRelatedPod(active: ActiveDetail, summary: KubernetesResourceSummary): Promise<void> {
     if (!this.isCurrentActiveDrawer(active) || !summary.namespace) return;
+    const originQuery = active.originQuery;
     const query: KubernetesResourceQuery = {
       context: active.query.context,
       kind: 'pods',
@@ -2035,19 +2087,23 @@ class KubernetesPage implements KubernetesPageController {
     this.drawerRequest = request;
     this.detailTitle.textContent = 'Loading Pod…';
     this.detailSubtitle.textContent = '';
-    try {
-      const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
-      if (!this.isCurrentDrawerRequest(request, query)) return;
-      const next: ActiveDetail = { query, summary, detail, request };
-      this.activeDetail = next;
-      this.decodedSecretDetail = undefined;
-      this.renderDetail();
-      this.requestDrawerEvents(next);
-    } catch (error) {
-      if (!this.isCurrentDrawerRequest(request, query)) return;
-      setMessage(toErrorMessage(error), 'error');
-      this.closeDetail();
-    }
+    await runKubernetesDrawerDetailRequest(
+      () => window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace),
+      {
+        isCurrent: () => this.isCurrentDrawerRequest(request, originQuery),
+        onSuccess: (detail) => {
+          const next: ActiveDetail = { originQuery, query, summary, detail, request };
+          this.activeDetail = next;
+          this.decodedSecretDetail = undefined;
+          this.renderDetail();
+          this.requestDrawerEvents(next);
+        },
+        onError: (error) => {
+          setMessage(toErrorMessage(error), 'error');
+          this.closeDetail();
+        },
+      },
+    );
   }
 
   private openPortForwardDialog(): void {

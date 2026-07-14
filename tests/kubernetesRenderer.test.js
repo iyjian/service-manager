@@ -469,6 +469,99 @@ test('Kubernetes drawer request identity ignores stale detail completions after 
   assert.doesNotMatch(close, /await |closeDetailLogs|closeTerminal|stopPortForward/);
 });
 
+test('Kubernetes related Pod navigation accepts a Pod fetch under a current workload list and suppresses stale drawers', async () => {
+  const {
+    isCurrentKubernetesDrawerListRequest,
+    runKubernetesDrawerDetailRequest,
+  } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+
+  for (const kind of ['deployments', 'statefulsets']) {
+    const originListQuery = {
+      context: 'development',
+      kind,
+      scope: 'namespaced',
+      namespaceScope: { mode: 'selected', namespaces: ['apps'] },
+      sort: { column: 'name', direction: 'asc' },
+    };
+    const podFetchQuery = {
+      context: 'development',
+      kind: 'pods',
+      scope: 'namespaced',
+      namespaceScope: { mode: 'selected', namespaces: ['apps'] },
+    };
+    const request = { visible: true, pageGeneration: 3, drawerGeneration: 8, uid: `${kind}-pod` };
+    let pageVisible = true;
+    let currentDrawer = request;
+    let currentListQuery = originListQuery;
+    const isCurrent = () => isCurrentKubernetesDrawerListRequest(
+      pageVisible,
+      currentDrawer,
+      request,
+      currentListQuery,
+      originListQuery,
+    );
+    const renders = [];
+    const fetchedKinds = [];
+
+    await runKubernetesDrawerDetailRequest(
+      async () => {
+        fetchedKinds.push(podFetchQuery.kind);
+        return { kind: 'Pod', metadata: { name: `${kind}-pod` } };
+      },
+      {
+        isCurrent,
+        onSuccess: (detail) => renders.push(`drawer:${detail.kind}`),
+        onError: (error) => { throw error; },
+      },
+    );
+
+    assert.deepEqual(fetchedKinds, ['pods']);
+    assert.deepEqual(renders, ['drawer:Pod']);
+
+    for (const staleDrawer of [
+      { visible: true, pageGeneration: 3, drawerGeneration: 9, uid: 'replacement-pod' },
+      { visible: false, pageGeneration: 3, drawerGeneration: 8, uid: `${kind}-pod` },
+    ]) {
+      const pending = deferred();
+      const staleRenders = [];
+      currentDrawer = request;
+      pageVisible = true;
+      const navigation = runKubernetesDrawerDetailRequest(
+        () => pending.promise,
+        {
+          isCurrent,
+          onSuccess: (detail) => staleRenders.push(`drawer:${detail.kind}`),
+          onError: (error) => { throw error; },
+        },
+      );
+      currentDrawer = staleDrawer;
+      if (!staleDrawer.visible) pageVisible = false;
+      pending.resolve({ kind: 'Pod' });
+      await navigation;
+      assert.deepEqual(staleRenders, []);
+    }
+
+    const listChange = deferred();
+    const listChangeRenders = [];
+    currentDrawer = request;
+    pageVisible = true;
+    currentListQuery = originListQuery;
+    const navigation = runKubernetesDrawerDetailRequest(
+      () => listChange.promise,
+      {
+        isCurrent,
+        onSuccess: (detail) => listChangeRenders.push(`drawer:${detail.kind}`),
+        onError: (error) => { throw error; },
+      },
+    );
+    currentListQuery = { ...originListQuery, sort: { column: 'name', direction: 'desc' } };
+    listChange.resolve({ kind: 'Pod' });
+    await navigation;
+    assert.deepEqual(listChangeRenders, []);
+    currentListQuery = originListQuery;
+  }
+});
+
 test('Kubernetes Task 4 keeps port forward controls while reserving Logs and Shell for the workspace task', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
