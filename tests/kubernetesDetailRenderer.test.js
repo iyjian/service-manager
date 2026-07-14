@@ -403,6 +403,23 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   assert.match(drawer, /this\.workspace\.openShell\(container\.target\)/);
 });
 
+test('Kubernetes Pod drawer starts Labels collapsed and Containers expanded', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const drawerStart = page.indexOf('    renderPodDrawer(detail, active) {');
+  const sectionStart = page.indexOf('    createDrawerSection(', drawerStart);
+  const sectionEnd = page.indexOf('    requestDrawerEnvironment(', sectionStart);
+  const drawer = page.slice(drawerStart, sectionStart);
+  const section = page.slice(sectionStart, sectionEnd);
+
+  assert.ok(drawerStart >= 0 && sectionStart > drawerStart && sectionEnd > sectionStart);
+  assert.match(drawer, /this\.createDrawerSection\('Labels', false, \(content\) => \{/);
+  assert.match(drawer, /this\.createDrawerSection\('Containers', true, \(content\) => \{/);
+  assert.match(section, /createDrawerSection\(title, initiallyExpanded, renderContent\)/);
+  assert.match(section, /let expanded = initiallyExpanded/);
+  assert.match(section, /toggle\.setAttribute\('aria-expanded', String\(expanded\)\)/);
+  assert.match(section, /content\.classList\.toggle\('hidden', !expanded\)/);
+});
+
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const dialogStart = html.indexOf('id="kubernetes-port-forward-dialog"');

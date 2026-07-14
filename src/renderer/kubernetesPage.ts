@@ -1903,7 +1903,7 @@ class KubernetesPage implements KubernetesPageController {
     }
     this.detailOverview.appendChild(header);
 
-    this.detailOverview.appendChild(this.createDrawerSection('Labels', (content) => {
+    this.detailOverview.appendChild(this.createDrawerSection('Labels', false, (content) => {
       if (model.labels.length === 0) {
         const empty = document.createElement('p');
         empty.textContent = 'No labels declared.';
@@ -1923,7 +1923,7 @@ class KubernetesPage implements KubernetesPageController {
       }
     }));
 
-    this.detailOverview.appendChild(this.createDrawerSection('Containers', (content) => {
+    this.detailOverview.appendChild(this.createDrawerSection('Containers', true, (content) => {
       if (model.containers.length === 0) {
         const empty = document.createElement('p');
         empty.textContent = 'No containers declared.';
@@ -2142,6 +2142,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private createDrawerSection(
     title: string,
+    initiallyExpanded: boolean,
     renderContent: (content: HTMLElement) => void,
   ): HTMLElement {
     const section = document.createElement('section');
@@ -2152,7 +2153,7 @@ class KubernetesPage implements KubernetesPageController {
     const label = document.createElement('span');
     label.textContent = title;
     const indicator = document.createElement('span');
-    let expanded = true;
+    let expanded = initiallyExpanded;
     const content = document.createElement('div');
     content.className = 'kubernetes-drawer-section-content';
     renderContent(content);
