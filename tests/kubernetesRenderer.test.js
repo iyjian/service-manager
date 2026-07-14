@@ -79,6 +79,8 @@ test('Kubernetes documentation describes overlay drawers and reusable bottom wor
     assert.match(document, /\/bin\/sh.*ash.*bash/i);
     assert.match(document, /header.*Port Forward.*replac(?:es|ing).*Copy/i);
     assert.match(document, /regular containers.*restartable(?: native)? sidecar.*TCP/i);
+    assert.doesNotMatch(document, /detail-page close/i);
+    assert.match(document, /(?:detail )?drawer close/i);
     assert.match(document, /Service.*spec\.ports\[\]\.port/i);
     assert.match(document, /zero.*manual.*one.*prefill.*multiple.*select/i);
     assert.match(document, /declared.*not proof.*listener/i);
