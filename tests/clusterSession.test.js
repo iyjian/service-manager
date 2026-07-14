@@ -513,6 +513,25 @@ test('mapKubernetesResourceSummary normalizes Date creation timestamps and strip
     columns: { type: 'Opaque' },
   });
   assert.doesNotMatch(JSON.stringify(summary), /c2VjcmV0|"password":"secret"/);
+  assert.equal(Object.hasOwn(summary, 'data'), false);
+  assert.equal(Object.hasOwn(summary, 'stringData'), false);
+});
+
+test('Pod summary ignores invalid or negative requests and renders missing requests as em dashes', () => {
+  const { summarizePodListColumns } = require('../dist/main/kubernetes/podSummary');
+  const invalid = summarizePodListColumns({
+    spec: {
+      containers: [
+        { resources: { requests: { cpu: '-2', memory: '-2Mi' } } },
+        { resources: { requests: { cpu: 'not-a-quantity', memory: 'infinity' } } },
+      ],
+    },
+    status: {},
+  });
+  assert.deepEqual(invalid, { cpu: '—', memory: '—', restarts: '0', node: '—' });
+
+  const missing = summarizePodListColumns({ spec: { containers: [{}] }, status: {} });
+  assert.deepEqual(missing, { cpu: '—', memory: '—', restarts: '0', node: '—' });
 });
 
 test('mapKubernetesResourceSummary normalizes valid string creation timestamps to ISO', () => {

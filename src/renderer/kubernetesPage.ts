@@ -54,7 +54,7 @@ const VIRTUAL_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 8;
 
 type KubernetesCategory = keyof typeof RESOURCE_CATEGORIES;
-type KubernetesSortColumn = 'name' | 'namespace' | 'status' | 'age';
+type KubernetesSortColumn = 'namespace' | 'name' | 'cpu' | 'memory' | 'restarts' | 'status' | 'node' | 'age';
 
 interface KubernetesSortState {
   column: KubernetesSortColumn;
@@ -570,7 +570,8 @@ export function categoryUsesResourceTabs(category: KubernetesCategory): boolean 
 }
 
 function kubernetesSortColumn(value: string | undefined): KubernetesSortColumn | undefined {
-  return value === 'name' || value === 'namespace' || value === 'status' || value === 'age'
+  return value === 'namespace' || value === 'name' || value === 'cpu' || value === 'memory'
+    || value === 'restarts' || value === 'status' || value === 'node' || value === 'age'
     ? value
     : undefined;
 }
@@ -2381,7 +2382,16 @@ class KubernetesPage implements KubernetesPageController {
     row.className = 'kubernetes-table-row';
     row.setAttribute('role', 'row');
     row.tabIndex = 0;
-    const fields = [item.name, item.namespace ?? '—', item.status ?? '—', formatAge(item.createdAt)];
+    const fields = [
+      item.namespace ?? '—',
+      item.name,
+      item.columns.cpu ?? '—',
+      item.columns.memory ?? '—',
+      item.columns.restarts ?? '—',
+      item.status ?? '—',
+      item.columns.node ?? '—',
+      formatAge(item.createdAt),
+    ];
     for (const value of fields) {
       const cell = document.createElement('span');
       cell.className = 'kubernetes-table-cell';

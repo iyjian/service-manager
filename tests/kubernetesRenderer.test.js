@@ -160,7 +160,7 @@ test('Kubernetes renderer keeps dynamic resource names text-safe and debounces l
   assert.match(page, /SEARCH_DEBOUNCE_MS = 200/);
   assert.match(page, /nameFilter:/);
   assert.doesNotMatch(page, /Sorted loaded items only/);
-  assert.match(page, /const fields = \[item\.name,/);
+  assert.match(page, /const fields = \[\s*item\.namespace \?\? '—',\s*item\.name,\s*item\.columns\.cpu \?\? '—',\s*item\.columns\.memory \?\? '—',\s*item\.columns\.restarts \?\? '—',\s*item\.status \?\? '—',\s*item\.columns\.node \?\? '—',\s*formatAge\(item\.createdAt\),\s*\]/);
   assert.match(page, /cell\.textContent = value/);
   assert.doesNotMatch(page, /innerHTML\s*=\s*[^;]*(?:item|summary)\.(?:name|namespace)/);
   assert.doesNotMatch(page, /snapshot\.items\.filter\(/);
@@ -188,7 +188,12 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
     column: 'age',
     direction: 'asc',
   });
-  for (const column of ['name', 'namespace', 'status', 'age']) {
+  const columns = ['namespace', 'name', 'cpu', 'memory', 'restarts', 'status', 'node', 'age'];
+  assert.deepEqual(
+    [...html.matchAll(/data-kubernetes-sort="([^"]+)"/g)].map((match) => match[1]),
+    columns,
+  );
+  for (const column of columns) {
     assert.match(html, new RegExp(`data-kubernetes-sort="${column}"`));
   }
   assert.match(html, /class="kubernetes-sort-icon"/);
@@ -196,6 +201,10 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
   assert.match(pageSource, /nextKubernetesSort/);
   assert.match(styles, /\.kubernetes-table-sort\s*\{/);
   assert.match(styles, /\.kubernetes-sort-icon\s*\{/);
+  assert.match(styles, /grid-template-columns:\s*minmax\(128px, 1\.05fr\) minmax\(240px, 2fr\) 88px 106px 82px\s*minmax\(104px, 0\.95fr\) minmax\(148px, 1\.2fr\) 68px;/);
+  assert.match(styles, /min-width:\s*1064px;/);
+  assert.match(styles, /\.kubernetes-table-shell\s*\{[\s\S]*?overflow-x:\s*auto;/);
+  assert.match(styles, /\.kubernetes-table-viewport\s*\{[\s\S]*?overflow-y:\s*auto;/);
   assert.doesNotMatch(html, /kubernetes-sort-column|kubernetes-sort-direction|kubernetes-sort-hint|Sorted loaded items only/);
 });
 

@@ -234,6 +234,12 @@
 
         <div class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list">
           <div id="kubernetes-table-header" class="kubernetes-table-header" role="row">
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="namespace" data-sort-label="Namespace" aria-label="Sort by Namespace">
+                <span>Namespace</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
             <span role="columnheader" aria-sort="ascending">
               <button type="button" class="kubernetes-table-sort kubernetes-table-sort-active" data-kubernetes-sort="name" data-sort-label="Name" data-direction="asc" aria-label="Sort by Name, currently ascending">
                 <span>Name</span>
@@ -241,14 +247,32 @@
               </button>
             </span>
             <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="namespace" data-sort-label="Namespace" aria-label="Sort by Namespace">
-                <span>Namespace</span>
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="cpu" data-sort-label="CPU" aria-label="Sort by CPU">
+                <span>CPU</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="memory" data-sort-label="Memory" aria-label="Sort by Memory">
+                <span>Memory</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="restarts" data-sort-label="Restarts" aria-label="Sort by Restarts">
+                <span>Restarts</span>
                 <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
               </button>
             </span>
             <span role="columnheader" aria-sort="none">
               <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="status" data-sort-label="Status" aria-label="Sort by Status">
                 <span>Status</span>
+                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+              </button>
+            </span>
+            <span role="columnheader" aria-sort="none">
+              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="node" data-sort-label="Node" aria-label="Sort by Node">
+                <span>Node</span>
                 <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
               </button>
             </span>

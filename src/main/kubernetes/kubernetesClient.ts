@@ -11,6 +11,7 @@ import type {
   KubernetesResourceKind,
 } from '../../shared/types';
 import { preflightKubeconfigContext } from './kubeconfigStore';
+import { POD_SUMMARY_EMPTY, summarizePodListColumns } from './podSummary';
 import { sanitizeSecretForCache } from './resourceQuery';
 import type {
   KubernetesResourcePage,
@@ -429,14 +430,22 @@ export function mapKubernetesResourceSummary(
 
   const status = resourceStatus(kind, source);
   const columns: Record<string, string> = {};
-  if (status) {
-    if (kind === 'secrets') {
-      columns.type = status;
-    } else if (kind === 'events') {
-      columns.reason = status;
-    } else {
-      columns.status = status;
-    }
+  if (kind === 'pods') {
+    if (status) columns.status = status;
+    Object.assign(columns, summarizePodListColumns(source));
+  } else if (kind === 'events') {
+    columns.reason = stringValue(source.reason) ?? POD_SUMMARY_EMPTY;
+    columns.type = stringValue(source.type) ?? POD_SUMMARY_EMPTY;
+    columns.message = (stringValue(source.message) ?? POD_SUMMARY_EMPTY).slice(0, 16_384);
+    columns.count = String(numericValue(source.count) ?? 0);
+    const observed = timestampValue(source.eventTime)
+      ?? timestampValue(objectValue(source, 'series').lastObservedTime)
+      ?? timestampValue(source.lastTimestamp)
+      ?? createdAt;
+    if (observed) columns.observedAt = observed;
+  } else if (status) {
+    if (kind === 'secrets') columns.type = status;
+    else columns.status = status;
   }
 
   return {

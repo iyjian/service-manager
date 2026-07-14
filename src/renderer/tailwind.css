@@ -342,13 +342,18 @@
   }
 
   .kubernetes-table-shell {
-    @apply min-w-0 overflow-hidden rounded-lg border border-zinc-200;
+    @apply min-w-0 rounded-lg border border-zinc-200;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   .kubernetes-table-header,
   .kubernetes-table-row {
     display: grid;
-    grid-template-columns: minmax(180px, 2fr) minmax(130px, 1fr) minmax(120px, 1fr) 88px;
+    grid-template-columns:
+      minmax(128px, 1.05fr) minmax(240px, 2fr) 88px 106px 82px
+      minmax(104px, 0.95fr) minmax(148px, 1.2fr) 68px;
+    min-width: 1064px;
   }
 
   .kubernetes-table-header {
@@ -388,7 +393,10 @@
   }
 
   .kubernetes-table-viewport {
-    @apply relative h-[min(56vh,620px)] min-h-[260px] overflow-auto bg-white;
+    @apply relative h-[min(56vh,620px)] min-h-[260px] bg-white;
+    min-width: 1064px;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .kubernetes-table-spacer {
@@ -407,7 +415,10 @@
   }
 
   .kubernetes-table-cell {
-    @apply min-w-0 truncate pr-3;
+    @apply min-w-0 pr-3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .kubernetes-table-cell:first-child {
@@ -1542,12 +1553,6 @@
 
     .kubernetes-detail-pod {
       grid-template-rows: auto auto minmax(80px, 0.5fr) minmax(160px, 1.5fr);
-    }
-
-    .kubernetes-table-header,
-    .kubernetes-table-row {
-      grid-template-columns: minmax(180px, 1.8fr) minmax(120px, 1fr) minmax(100px, 1fr) 64px;
-      min-width: 560px;
     }
 
     .kubernetes-port-forward-row {
