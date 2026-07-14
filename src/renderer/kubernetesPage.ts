@@ -13,12 +13,11 @@ import type {
   KubernetesResourceQuery,
   KubernetesResourceSummary,
   KubernetesState,
-  KubernetesTerminalOutput,
   KubernetesTerminalState,
 } from '../shared/types';
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
-import { createKubernetesTerminalDrawer, type KubernetesTerminalDrawer } from './kubernetesTerminal.js';
+import { buildKubernetesDrawerModel } from './kubernetesDrawerModel.js';
 import {
   buildKubernetesOverviewFields,
   buildKubernetesPortForwardDialogModel,
@@ -45,7 +44,6 @@ export const RESOURCE_CATEGORIES = {
   Network: ['services', 'ingresses'],
   Configuration: ['configmaps', 'secrets'],
   Storage: ['persistentvolumeclaims'],
-  Cluster: ['nodes', 'namespaces'],
   'Custom Resources': ['custom-resources'],
 } as const;
 
@@ -67,22 +65,22 @@ interface KubernetesPageController {
   destroy(): void;
 }
 
-type DetailTab = 'overview' | 'yaml' | 'events';
-
-interface DetailBackStack {
-  query: KubernetesResourceQuery;
-  selectedUid: string;
-  scrollTop: number;
-  search: string;
-  sort: KubernetesSortState;
+export interface KubernetesDrawerRequest {
+  visible: boolean;
+  pageGeneration: number;
+  drawerGeneration: number;
+  uid: string;
 }
 
 interface ActiveDetail {
   query: KubernetesResourceQuery;
   summary: KubernetesResourceSummary;
   detail: Record<string, unknown>;
-  tab: DetailTab;
+  request: KubernetesDrawerRequest;
   related?: RelatedDetailState;
+  eventsLoading?: boolean;
+  events?: KubernetesResourceSummary[];
+  eventsError?: string;
 }
 
 interface RelatedDetailState {
@@ -598,17 +596,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function containerNames(detail: Record<string, unknown>): { regular: string[]; init: string[] } {
-  const spec = asRecord(detail.spec);
-  const names = (value: unknown): string[] => Array.isArray(value)
-    ? value.flatMap((item) => {
-      const name = stringValue(asRecord(item)?.name);
-      return name ? [name] : [];
-    })
-    : [];
-  return { regular: names(spec?.containers), init: names(spec?.initContainers) };
-}
-
 /** Converts the Kubernetes selector shape into the native API selector form. */
 function workloadSelector(detail: Record<string, unknown>): string | undefined {
   const selector = asRecord(asRecord(detail.spec)?.selector);
@@ -726,6 +713,18 @@ export function isCurrentKubernetesDetailClose(
   return currentGeneration === closingGeneration + 1;
 }
 
+/** Exact page/drawer/summary ownership guard for every asynchronous drawer result. */
+export function isCurrentKubernetesDrawerRequest(
+  current: KubernetesDrawerRequest,
+  candidate: KubernetesDrawerRequest,
+): boolean {
+  return current.visible
+    && candidate.visible
+    && current.pageGeneration === candidate.pageGeneration
+    && current.drawerGeneration === candidate.drawerGeneration
+    && current.uid === candidate.uid;
+}
+
 class KubernetesPage implements KubernetesPageController {
   private readonly contextSelect = requireElement<HTMLSelectElement>('#kubernetes-context');
   private readonly connectionBadge = requireElement<HTMLElement>('#kubernetes-connection');
@@ -746,32 +745,16 @@ class KubernetesPage implements KubernetesPageController {
   private readonly emptyState = requireElement<HTMLElement>('#kubernetes-empty-state');
   private readonly noPermission = requireElement<HTMLElement>('#kubernetes-no-permission');
   private readonly errorState = requireElement<HTMLElement>('#kubernetes-error-state');
-  private readonly listPage = requireElement<HTMLElement>('#kubernetes-list-page');
-  private readonly detailPage = requireElement<HTMLElement>('#kubernetes-detail-page');
-  private readonly detailBackButton = requireElement<HTMLButtonElement>('#kubernetes-detail-back');
+  private readonly detailDrawer = requireElement<HTMLElement>('#kubernetes-detail-drawer');
+  private readonly detailDrawerScrim = requireElement<HTMLButtonElement>('#kubernetes-detail-drawer-scrim');
+  private readonly detailCloseButton = requireElement<HTMLButtonElement>('#kubernetes-detail-close');
   private readonly detailTitle = requireElement<HTMLElement>('#kubernetes-detail-title');
   private readonly detailSubtitle = requireElement<HTMLElement>('#kubernetes-detail-subtitle');
   private readonly detailPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-detail-port-forward');
   private readonly detailPortSummary = requireElement<HTMLElement>('#kubernetes-detail-port-summary');
-  private readonly detailTabs = requireElement<HTMLElement>('#kubernetes-detail-tabs');
+  private readonly detailYamlToggle = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-toggle');
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
-  private readonly detailYamlSection = requireElement<HTMLElement>('#kubernetes-detail-yaml-section');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
-  private readonly detailEvents = requireElement<HTMLElement>('#kubernetes-detail-events');
-  private readonly detailRelated = requireElement<HTMLElement>('#kubernetes-detail-related');
-  private readonly containerSelect = requireElement<HTMLSelectElement>('#kubernetes-container-select');
-  private readonly logPanel = requireElement<HTMLElement>('#kubernetes-log-panel');
-  private readonly logTab = requireElement<HTMLButtonElement>('.kubernetes-log-toolbar [role="tablist"] .kubernetes-log-view-tab:first-child');
-  private readonly logTerminalTab = requireElement<HTMLButtonElement>('#kubernetes-log-terminal-tab');
-  private readonly logFollowButton = requireElement<HTMLButtonElement>('#kubernetes-log-follow');
-  private readonly logFollowPauseIcon = requireElement<SVGElement>('#kubernetes-log-follow-pause-icon');
-  private readonly logFollowPlayIcon = requireElement<SVGElement>('#kubernetes-log-follow-play-icon');
-  private readonly logClearButton = requireElement<HTMLButtonElement>('#kubernetes-log-clear');
-  private readonly logSearch = requireElement<HTMLInputElement>('#kubernetes-log-search');
-  private readonly logOutput = requireElement<HTMLPreElement>('#kubernetes-log-output');
-  private readonly logCount = requireElement<HTMLElement>('#kubernetes-log-count');
-  private readonly logState = requireElement<HTMLElement>('#kubernetes-log-state');
-  private readonly logStateLabel = requireElement<HTMLElement>('#kubernetes-log-state > span:last-child');
   private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
   private readonly portForwardList = requireElement<HTMLElement>('#kubernetes-port-forward-list');
   private readonly portForwardDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forward-dialog');
@@ -786,8 +769,6 @@ class KubernetesPage implements KubernetesPageController {
   private readonly portForwardError = requireElement<HTMLElement>('#kubernetes-port-forward-error');
   private readonly portForwardCancel = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel');
   private readonly portForwardCancelSecondary = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel-secondary');
-  private readonly terminalDrawerRoot = requireElement<HTMLElement>('#kubernetes-terminal-drawer');
-
   private category: KubernetesCategory = 'Workloads';
   private resourceKind: KubernetesResourceKind = 'pods';
   private sort: KubernetesSortState = { column: 'name', direction: 'asc' };
@@ -811,58 +792,23 @@ class KubernetesPage implements KubernetesPageController {
   private namespaceRequestGeneration = 0;
   private unsubscribeState: (() => void) | undefined;
   private unsubscribeList: (() => void) | undefined;
-  private unsubscribeLog: (() => void) | undefined;
-  private unsubscribeTerminal: (() => void) | undefined;
-  private unsubscribeTerminalOutput: (() => void) | undefined;
   private unsubscribePortForward: (() => void) | undefined;
   private bound = false;
   private pageGeneration = 0;
   private deactivation: Promise<void> = Promise.resolve();
-  private detailBackStack: DetailBackStack | undefined;
   private activeDetail: ActiveDetail | undefined;
   private detailGeneration = 0;
-  private detailLoading = false;
-  private detailLoadingGeneration: number | undefined;
+  private drawerRequest: KubernetesDrawerRequest = {
+    visible: false,
+    pageGeneration: 0,
+    drawerGeneration: 0,
+    uid: '',
+  };
   private relatedGeneration = 0;
-  /** Plaintext Secret material may exist only while its full-page detail is active. */
+  /** Plaintext Secret material may exist only while its drawer detail is active. */
   private decodedSecretDetail: Record<string, unknown> | undefined;
-  private detailEventsLoaded = false;
-  private selectedContainer: string | undefined;
-  private readonly logsByContainer = new Map<string, KubernetesLogState>();
-  private readonly logFollowMutations = new Map<string, KubernetesLogFollowMutation>();
-  private readonly openingLogs = new Map<string, symbol>();
-  private readonly logErrorsByContainer = new Map<string, string>();
-  private podWorkspace: KubernetesPodWorkspace = 'logs';
-  private readonly openingTerminals = new Map<string, symbol>();
-  private terminalWorkspaceSessionId: string | undefined;
-  private terminalDrawer: KubernetesTerminalDrawer | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
-  private readonly logViewport = createKubernetesLogViewport({
-    getState: () => {
-      const selectedContainer = this.selectedContainer;
-      return {
-        visible: this.visible,
-        detailGeneration: this.detailGeneration,
-        selectedContainer,
-        log: selectedContainer ? this.logsByContainer.get(selectedContainer) : undefined,
-        error: selectedContainer ? this.logErrorsByContainer.get(selectedContainer) : undefined,
-        search: this.logSearch.value,
-      };
-    },
-    elements: {
-      followButton: this.logFollowButton,
-      pauseIcon: this.logFollowPauseIcon,
-      playIcon: this.logFollowPlayIcon,
-      clearButton: this.logClearButton,
-      output: this.logOutput,
-      count: this.logCount,
-      state: this.logState,
-      stateLabel: this.logStateLabel,
-    },
-    requestFrame: (callback) => window.requestAnimationFrame(callback),
-    cancelFrame: (frame) => window.cancelAnimationFrame(frame),
-  });
 
   public show(): void {
     if (this.visible) return;
@@ -872,11 +818,7 @@ class KubernetesPage implements KubernetesPageController {
     this.ensureTable();
     this.unsubscribeState = window.kubernetesApi.onStateChanged((state) => this.onStateChanged(state));
     this.unsubscribeList = window.kubernetesApi.onListChanged((snapshot) => this.onListChanged(snapshot));
-    this.unsubscribeLog = window.kubernetesApi.onLogChanged((state) => this.onLogChanged(state));
-    this.unsubscribeTerminal = window.kubernetesApi.onTerminalChanged((state) => this.onTerminalChanged(state));
-    this.unsubscribeTerminalOutput = window.kubernetesApi.onTerminalOutput((output) => this.onTerminalOutput(output));
     this.unsubscribePortForward = window.kubernetesApi.onPortForwardChanged((state) => this.onPortForwardChanged(state));
-    this.ensureTerminalDrawer();
     void this.loadPortForwards();
     void this.waitForPriorDeactivation(pageGeneration);
   }
@@ -898,18 +840,10 @@ class KubernetesPage implements KubernetesPageController {
     this.unsubscribeState = undefined;
     this.unsubscribeList?.();
     this.unsubscribeList = undefined;
-    this.unsubscribeLog?.();
-    this.unsubscribeLog = undefined;
-    this.unsubscribeTerminal?.();
-    this.unsubscribeTerminal = undefined;
-    this.unsubscribeTerminalOutput?.();
-    this.unsubscribeTerminalOutput = undefined;
     this.unsubscribePortForward?.();
     this.unsubscribePortForward = undefined;
     this.closePortForwardDialog();
-    void this.closeDetail();
-    this.terminalDrawer?.dispose();
-    this.terminalDrawer = undefined;
+    this.closeDetail();
     this.table?.dispose();
     this.table = undefined;
     this.deactivation = window.kubernetesApi.deactivatePage().catch((error) => {
@@ -951,30 +885,16 @@ class KubernetesPage implements KubernetesPageController {
         : null;
       const column = kubernetesSortColumn(button?.dataset.kubernetesSort);
       if (!column) return;
+      this.closeDetail();
       this.sort = nextKubernetesSort(this.sort, column);
       this.renderSortHeaders();
       void this.activateCurrentList();
     });
     this.customResourceSelect.addEventListener('change', () => this.selectCustomResourceDefinition());
-    this.detailBackButton.addEventListener('click', () => { void this.closeDetail(); });
+    this.detailCloseButton.addEventListener('click', () => this.closeDetail());
+    this.detailDrawerScrim.addEventListener('click', () => this.closeDetail());
     this.detailPortForwardButton.addEventListener('click', () => this.openPortForwardDialog());
-    this.detailTabs.addEventListener('click', (event) => {
-      const target = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>('[data-detail-tab]') : null;
-      const tab = target?.dataset.detailTab;
-      if (tab === 'overview' || tab === 'yaml' || tab === 'events') void this.selectDetailTab(tab);
-    });
-    this.containerSelect.addEventListener('change', () => {
-      this.openingTerminals.clear();
-      this.selectedContainer = this.containerSelect.value || undefined;
-      this.selectPodWorkspace('logs');
-      this.renderLogPanel('follow');
-      void this.openLogsForSelectedContainer();
-    });
-    this.logFollowButton.addEventListener('click', () => { void this.toggleLogFollowing(); });
-    this.logClearButton.addEventListener('click', () => { void this.clearLogs(); });
-    this.logSearch.addEventListener('input', () => this.renderLogPanel('preserve'));
-    this.logTab.addEventListener('click', () => this.selectPodWorkspace('logs'));
-    this.logTerminalTab.addEventListener('click', () => { void this.openTerminal(); });
+    this.detailYamlToggle.addEventListener('click', () => this.toggleDrawerYaml());
     this.portForwardDeclaredPort.addEventListener('change', () => {
       this.portForwardRemotePort.value = this.portForwardDeclaredPort.value;
     });
@@ -988,16 +908,6 @@ class KubernetesPage implements KubernetesPageController {
     this.portForwardCancel.addEventListener('click', () => this.closePortForwardDialog());
     this.portForwardCancelSecondary.addEventListener('click', () => this.closePortForwardDialog());
     this.renderSortHeaders();
-  }
-
-  private ensureTerminalDrawer(): void {
-    if (this.terminalDrawer) return;
-    this.terminalDrawer = createKubernetesTerminalDrawer({
-      root: this.terminalDrawerRoot,
-      onInput: (id, data) => window.kubernetesApi.writeTerminal(id, data),
-      onResize: (id, cols, rows) => window.kubernetesApi.resizeTerminal(id, cols, rows),
-      onClose: (id) => window.kubernetesApi.closeTerminal(id),
-    });
   }
 
   private ensureTable(): void {
@@ -1066,7 +976,7 @@ class KubernetesPage implements KubernetesPageController {
       this.showError(snapshot.error);
       return;
     }
-    if (!this.activeDetail) this.renderList();
+    this.renderList();
   }
 
   private renderState(): void {
@@ -1254,6 +1164,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private selectCategory(category: KubernetesCategory): void {
     if (this.category === category) return;
+    this.closeDetail();
     this.category = category;
     this.resourceKind = RESOURCE_CATEGORIES[category][0] as KubernetesResourceKind;
     this.snapshot = undefined;
@@ -1266,6 +1177,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private selectResource(kind: KubernetesResourceKind): void {
     if (this.resourceKind === kind) return;
+    this.closeDetail();
     this.resourceKind = kind;
     this.snapshot = undefined;
     this.searchInput.value = '';
@@ -1308,6 +1220,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private selectCustomResourceDefinition(): void {
+    this.closeDetail();
     const selected = this.customResourceSelect.value;
     this.selectedCustomDefinition = this.customDefinitions.find((definition) => this.customDefinitionKey(definition) === selected);
     this.snapshot = undefined;
@@ -1346,6 +1259,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async selectContext(context: string): Promise<void> {
+    this.closeDetail();
     try {
       const state = await window.kubernetesApi.selectContext(context);
       if (!this.visible) return;
@@ -1358,6 +1272,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async reloadKubeconfig(): Promise<void> {
+    this.closeDetail();
     try {
       const state = await window.kubernetesApi.reloadKubeconfig();
       if (!this.visible) return;
@@ -1423,6 +1338,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async setNamespaceScope(scope: KubernetesNamespaceScope): Promise<void> {
+    this.closeDetail();
     try {
       const state = await window.kubernetesApi.setNamespaceScope(scope);
       if (!this.visible) return;
@@ -1436,6 +1352,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private debounceSearch(): void {
+    this.closeDetail();
     if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
     this.searchTimer = window.setTimeout(() => {
       this.searchTimer = undefined;
@@ -1488,7 +1405,6 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private renderList(): void {
-    if (this.activeDetail) return;
     const snapshot = this.snapshot;
     const query = this.currentQuery();
     if (!snapshot || !query || !sameQuery(snapshot.query, query)) return;
@@ -1558,109 +1474,99 @@ class KubernetesPage implements KubernetesPageController {
     });
   }
 
-  private setDetailTabsDisabled(disabled: boolean): void {
-    for (const button of Array.from(this.detailTabs.querySelectorAll<HTMLButtonElement>('[data-detail-tab]'))) {
-      button.disabled = disabled;
-    }
-  }
-
-  private resetDetailLoadingState(generation: number): void {
-    this.detailLoading = true;
-    this.detailLoadingGeneration = generation;
-    this.setDetailTabsDisabled(true);
+  /**
+   * Fence all prior detail actions before any new request can yield. Both row
+   * and linked-Pod navigation use this exact path so the old resource can
+   * never retain a Port Forward action while another detail is loading.
+   */
+  private beginDrawerReplacement(): number {
+    const generation = ++this.detailGeneration;
+    this.invalidateRelatedDetail();
+    this.activeDetail = undefined;
+    this.decodedSecretDetail = undefined;
+    this.drawerRequest = {
+      visible: false,
+      pageGeneration: this.pageGeneration,
+      drawerGeneration: generation,
+      uid: '',
+    };
     this.detailPortForwardButton.classList.add('hidden');
     this.detailPortForwardButton.disabled = true;
     this.detailPortSummary.textContent = '';
     this.closePortForwardDialog();
-    this.logPanel.classList.add('hidden');
-    this.logTerminalTab.disabled = true;
-    this.detailPage.classList.remove('kubernetes-detail-pod');
+    this.detailOverview.replaceChildren();
+    this.detailYaml.textContent = '';
+    this.detailYaml.classList.add('hidden');
+    this.detailYamlToggle.setAttribute('aria-pressed', 'false');
+    this.detailYamlToggle.setAttribute('aria-label', 'View YAML');
+    this.detailDrawer.classList.remove('hidden');
+    return generation;
   }
 
-  private clearDetailLoadingState(): void {
-    this.detailLoading = false;
-    this.detailLoadingGeneration = undefined;
-    this.setDetailTabsDisabled(false);
+  private createDrawerRequest(summary: KubernetesResourceSummary, drawerGeneration: number): KubernetesDrawerRequest {
+    return {
+      visible: true,
+      pageGeneration: this.pageGeneration,
+      drawerGeneration,
+      uid: summary.uid,
+    };
   }
 
-  private finishDetailLoadingState(generation: number): void {
-    if (!this.detailLoading || this.detailLoadingGeneration !== generation) return;
-    this.clearDetailLoadingState();
+  private isCurrentDrawerRequest(request: KubernetesDrawerRequest, query: KubernetesResourceQuery): boolean {
+    return this.visible
+      && isCurrentKubernetesDrawerRequest(this.drawerRequest, request)
+      && sameQuery(this.currentQuery() ?? query, query);
+  }
+
+  private isCurrentActiveDrawer(active: ActiveDetail): boolean {
+    return this.activeDetail === active && this.isCurrentDrawerRequest(active.request, active.query);
   }
 
   private async openDetail(summary: KubernetesResourceSummary): Promise<void> {
     const query = this.currentQuery();
     const snapshot = this.snapshot;
-    if (!query || !snapshot || this.activeDetail) return;
-    this.openingTerminals.clear();
-    this.selectPodWorkspace('logs');
-    const detailGeneration = ++this.detailGeneration;
-    this.resetDetailLoadingState(detailGeneration);
-    this.detailBackStack = {
-      query: { ...query, namespaceScope: { ...query.namespaceScope, namespaces: [...query.namespaceScope.namespaces] } },
-      selectedUid: summary.uid,
-      scrollTop: this.tableViewport.scrollTop,
-      search: this.searchInput.value,
-      sort: { ...this.sort },
-    };
-    this.listPage.classList.add('hidden');
-    this.detailPage.classList.remove('hidden');
+    if (!query || !snapshot) return;
+    const detailGeneration = this.beginDrawerReplacement();
+    const request = this.createDrawerRequest(summary, detailGeneration);
+    this.drawerRequest = request;
     this.detailTitle.textContent = `Loading ${resourceLabel(query.kind)}…`;
     this.detailSubtitle.textContent = '';
-    this.detailOverview.replaceChildren();
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
-      if (!this.visible || detailGeneration !== this.detailGeneration || !this.detailBackStack) return;
-      this.finishDetailLoadingState(detailGeneration);
-      this.activeDetail = { query, summary, detail, tab: 'overview' };
+      if (!this.isCurrentDrawerRequest(request, query)) return;
+      const active: ActiveDetail = { query, summary, detail, request };
+      this.activeDetail = active;
       this.decodedSecretDetail = query.kind === 'secrets' ? decodeSecretForActiveView(detail) : undefined;
-      this.detailEventsLoaded = false;
-      this.selectedContainer = undefined;
       this.renderDetail();
+      this.requestDrawerEvents(active);
     } catch (error) {
-      if (!this.visible || detailGeneration !== this.detailGeneration) return;
+      if (!this.isCurrentDrawerRequest(request, query)) return;
       setMessage(toErrorMessage(error), 'error');
-      await this.closeDetail();
+      this.closeDetail();
     }
   }
 
-  private async closeDetail(): Promise<void> {
-    const backStack = this.detailBackStack;
-    const closingGeneration = this.detailGeneration;
+  private closeDetail(): void {
     this.detailGeneration += 1;
-    this.openingTerminals.clear();
-    this.terminalWorkspaceSessionId = undefined;
-    // This must happen before closeDetailLogs awaits remote cleanup. A late
-    // relation response must never re-render a detail the user already left.
     this.invalidateRelatedDetail();
-    await this.closeDetailLogs();
-    if (!isCurrentKubernetesDetailClose(closingGeneration, this.detailGeneration)) return;
     this.activeDetail = undefined;
     this.decodedSecretDetail = undefined;
+    this.drawerRequest = {
+      visible: false,
+      pageGeneration: this.pageGeneration,
+      drawerGeneration: this.detailGeneration,
+      uid: '',
+    };
+    this.closePortForwardDialog();
+    this.detailPortForwardButton.classList.add('hidden');
+    this.detailPortForwardButton.disabled = true;
+    this.detailPortSummary.textContent = '';
+    this.detailOverview.replaceChildren();
     this.detailYaml.textContent = '';
-    this.selectedContainer = undefined;
-    this.detailEventsLoaded = false;
-    this.detailEvents.replaceChildren();
-    this.detailRelated.replaceChildren();
-    this.detailRelated.classList.add('hidden');
-    this.detailPage.classList.add('hidden');
-    this.clearDetailLoadingState();
-    this.listPage.classList.remove('hidden');
-    this.detailBackStack = undefined;
-    if (!backStack) return;
-    this.searchInput.value = backStack.search;
-    this.sort = { ...backStack.sort };
-    this.renderSortHeaders();
-    this.renderList();
-    window.requestAnimationFrame(() => {
-      this.tableViewport.scrollTop = backStack.scrollTop;
-      const visibleStart = Math.floor(backStack.scrollTop / VIRTUAL_ROW_HEIGHT);
-      const visibleRows = Math.ceil(this.tableViewport.clientHeight / VIRTUAL_ROW_HEIGHT);
-      this.requestVisibleWindow({
-        start: Math.max(0, visibleStart - VIRTUAL_OVERSCAN),
-        end: visibleStart + visibleRows + VIRTUAL_OVERSCAN,
-      });
-    });
+    this.detailYaml.classList.add('hidden');
+    this.detailYamlToggle.setAttribute('aria-pressed', 'false');
+    this.detailYamlToggle.setAttribute('aria-label', 'View YAML');
+    this.detailDrawer.classList.add('hidden');
   }
 
   private displayDetail(): Record<string, unknown> | undefined {
@@ -1669,31 +1575,19 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private renderDetail(): void {
-    if (this.detailLoading) return;
     const active = this.activeDetail;
     const detail = this.displayDetail();
     if (!active || !detail) return;
     this.detailTitle.textContent = detailName(active);
     this.detailSubtitle.textContent = resourceLabel(active.query.kind);
-    this.renderDetailTabs(active.tab);
-    this.renderOverview(detail, active);
-    const yaml = this.detailYaml;
-    try {
-      yaml.textContent = serializeKubernetesDetailYaml(detail);
-    } catch (error) {
-      yaml.textContent = toErrorMessage(error);
-    }
-    this.detailYamlSection.classList.toggle('hidden', active.tab !== 'yaml');
-    this.detailOverview.classList.toggle('hidden', active.tab !== 'overview');
-    this.detailEvents.classList.toggle('hidden', active.tab !== 'events');
-    this.renderPodActions(detail, active);
-    this.renderRelatedDetail(detail, active);
-  }
-
-  private renderDetailTabs(tab: DetailTab): void {
-    for (const button of Array.from(this.detailTabs.querySelectorAll<HTMLButtonElement>('[data-detail-tab]'))) {
-      button.classList.toggle('kubernetes-detail-tab-active', button.dataset.detailTab === tab);
-    }
+    this.detailOverview.replaceChildren();
+    if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
+    else this.renderOverview(detail, active);
+    this.renderDrawerPortForward(detail, active);
+    const related = this.renderRelatedDetail(detail, active);
+    if (related) this.detailOverview.appendChild(related);
+    this.detailOverview.appendChild(this.renderDrawerEvents(active));
+    if (!this.detailYaml.classList.contains('hidden')) this.renderDrawerYaml(detail);
   }
 
   private renderOverview(detail: Record<string, unknown>, active: ActiveDetail): void {
@@ -1724,55 +1618,95 @@ class KubernetesPage implements KubernetesPageController {
     this.detailOverview.appendChild(list);
   }
 
-  private async selectDetailTab(tab: DetailTab): Promise<void> {
-    if (this.detailLoading) return;
+  private toggleDrawerYaml(): void {
     const active = this.activeDetail;
-    if (!active) return;
-    active.tab = tab;
-    this.renderDetail();
-    if (tab !== 'events' || this.detailEventsLoaded) return;
-    this.detailEventsLoaded = true;
-    this.detailEvents.textContent = 'Loading events…';
+    const detail = this.displayDetail();
+    if (!active || !detail || !this.isCurrentActiveDrawer(active)) return;
+    const opening = this.detailYaml.classList.contains('hidden');
+    this.detailYaml.classList.toggle('hidden', !opening);
+    this.detailYamlToggle.setAttribute('aria-pressed', String(opening));
+    this.detailYamlToggle.setAttribute('aria-label', opening ? 'Hide YAML' : 'View YAML');
+    if (opening) this.renderDrawerYaml(detail);
+    else this.detailYaml.textContent = '';
+  }
+
+  private renderDrawerYaml(detail: Record<string, unknown>): void {
     try {
-      const events = await window.kubernetesApi.getResourceEvents(active.summary.uid, active.summary.namespace);
-      if (this.activeDetail !== active || active.tab !== 'events') return;
-      this.renderEvents(events);
+      this.detailYaml.textContent = serializeKubernetesDetailYaml(detail);
     } catch (error) {
-      if (this.activeDetail !== active) return;
-      this.detailEvents.textContent = `Unable to load Events: ${toErrorMessage(error)}`;
+      this.detailYaml.textContent = toErrorMessage(error);
     }
   }
 
-  private renderEvents(events: KubernetesResourceSummary[]): void {
-    this.detailEvents.replaceChildren();
+  private requestDrawerEvents(active: ActiveDetail): void {
+    if (!this.isCurrentActiveDrawer(active) || active.eventsLoading || active.events || active.eventsError) return;
+    active.eventsLoading = true;
+    this.renderDetail();
+    void window.kubernetesApi.getResourceEvents(active.summary.uid, active.summary.namespace).then((events) => {
+      if (!this.isCurrentActiveDrawer(active)) return;
+      active.events = events;
+      active.eventsLoading = false;
+      this.renderDetail();
+    }).catch((error) => {
+      if (!this.isCurrentActiveDrawer(active)) return;
+      active.eventsError = `Unable to load Events: ${toErrorMessage(error)}`;
+      active.eventsLoading = false;
+      this.renderDetail();
+    });
+  }
+
+  private renderDrawerEvents(active: ActiveDetail): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'kubernetes-drawer-events';
+    const heading = document.createElement('h3');
+    heading.textContent = 'Events';
+    section.appendChild(heading);
+    if (active.eventsLoading) {
+      const loading = document.createElement('p');
+      loading.textContent = 'Loading events…';
+      section.appendChild(loading);
+      return section;
+    }
+    if (active.eventsError) {
+      const error = document.createElement('p');
+      error.textContent = active.eventsError;
+      section.appendChild(error);
+      return section;
+    }
+    const events = active.events ?? [];
     if (events.length === 0) {
-      this.detailEvents.textContent = 'No Events found for this resource.';
-      return;
+      const empty = document.createElement('p');
+      empty.textContent = 'No Events found for this resource.';
+      section.appendChild(empty);
+      return section;
     }
     const list = document.createElement('div');
-    list.className = 'kubernetes-events-list';
+    list.className = 'kubernetes-drawer-event-list';
     for (const event of events) {
       const row = document.createElement('div');
-      row.className = 'kubernetes-event-row';
-      const name = document.createElement('strong');
-      name.textContent = event.name;
-      const status = document.createElement('span');
-      status.textContent = event.status ?? 'Event';
-      const age = document.createElement('span');
-      age.textContent = formatAge(event.createdAt);
-      row.append(name, status, age);
+      row.className = 'kubernetes-drawer-event-row';
+      const reason = document.createElement('strong');
+      reason.textContent = event.columns.reason ?? event.status ?? event.name;
+      const type = document.createElement('span');
+      type.textContent = `Type: ${event.columns.type ?? '—'}`;
+      const time = document.createElement('span');
+      time.textContent = `Time: ${event.columns.observedAt ?? event.createdAt ?? '—'}`;
+      const message = document.createElement('span');
+      message.textContent = `Message: ${event.columns.message ?? '—'}`;
+      const count = document.createElement('span');
+      count.textContent = `Count: ${event.columns.count ?? '0'}`;
+      row.append(reason, type, time, message, count);
       list.appendChild(row);
     }
-    this.detailEvents.appendChild(list);
+    section.appendChild(list);
+    return section;
   }
 
-  private renderPodActions(detail: Record<string, unknown>, active: ActiveDetail): void {
-    const isPod = active.query.kind === 'pods';
+  private renderDrawerPortForward(detail: Record<string, unknown>, active: ActiveDetail): void {
     const targetKind = active.query.kind === 'pods' ? 'pod'
       : active.query.kind === 'services' ? 'service'
         : undefined;
     const declaredPorts = targetKind ? detectKubernetesForwardPorts(detail, targetKind) : [];
-    this.detailPage.classList.toggle('kubernetes-detail-pod', isPod);
     this.detailPortForwardButton.classList.toggle('hidden', !targetKind);
     this.detailPortForwardButton.disabled = !targetKind || !active.summary.namespace;
     this.detailPortSummary.textContent = declaredPorts.length === 0
@@ -1780,32 +1714,117 @@ class KubernetesPage implements KubernetesPageController {
       : declaredPorts.length === 1
         ? `1 declared · ${declaredPorts[0].remotePort}`
         : `${declaredPorts.length} declared`;
-    this.logPanel.classList.toggle('hidden', !isPod);
-    this.logTerminalTab.disabled = true;
-    applyKubernetesPodWorkspace(this.podWorkspace, {
-      logsTab: this.logTab,
-      terminalTab: this.logTerminalTab,
-      hideTerminalDrawer: () => this.terminalDrawer?.hide(),
-    });
-    if (!isPod) return;
-    const containers = containerNames(detail);
-    const all = [...containers.regular, ...containers.init];
-    if (!this.selectedContainer || !all.includes(this.selectedContainer)) this.selectedContainer = containers.regular[0] ?? containers.init[0];
-    this.containerSelect.replaceChildren();
-    for (const name of containers.regular) this.appendContainerOption(name, name, false);
-    for (const name of containers.init) this.appendContainerOption(name, `Init: ${name}`, true);
-    this.containerSelect.value = this.selectedContainer ?? '';
-    const enabled = Boolean(this.selectedContainer && active.summary.namespace);
-    this.logTerminalTab.disabled = !enabled;
-    this.renderLogPanel();
-    if (enabled) void this.openLogsForSelectedContainer();
   }
 
-  private appendContainerOption(value: string, label: string, init: boolean): void {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = init ? `${label} (init)` : label;
-    this.containerSelect.appendChild(option);
+  private renderPodDrawer(detail: Record<string, unknown>, active: ActiveDetail): void {
+    const model = buildKubernetesDrawerModel(detail, active.summary);
+    const header = document.createElement('dl');
+    header.className = 'kubernetes-drawer-header-grid';
+    for (const [label, value] of model.header) {
+      const item = document.createElement('div');
+      const term = document.createElement('dt');
+      term.textContent = label;
+      const description = document.createElement('dd');
+      description.textContent = value;
+      description.title = value;
+      item.append(term, description);
+      header.appendChild(item);
+    }
+    this.detailOverview.appendChild(header);
+
+    this.detailOverview.appendChild(this.createDrawerSection('Labels', (content) => {
+      if (model.labels.length === 0) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No labels declared.';
+        content.appendChild(empty);
+        return;
+      }
+      for (const [key, value] of model.labels) {
+        const row = document.createElement('div');
+        row.className = 'kubernetes-drawer-label-row';
+        const label = document.createElement('span');
+        label.textContent = key;
+        const text = document.createElement('span');
+        text.textContent = value;
+        text.title = value;
+        row.append(label, text);
+        content.appendChild(row);
+      }
+    }));
+
+    this.detailOverview.appendChild(this.createDrawerSection('Containers', (content) => {
+      if (model.containers.length === 0) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No containers declared.';
+        content.appendChild(empty);
+        return;
+      }
+      for (const container of model.containers) {
+        const card = document.createElement('article');
+        card.className = 'kubernetes-drawer-container';
+        const head = document.createElement('div');
+        head.className = 'kubernetes-drawer-container-head';
+        const name = document.createElement('strong');
+        name.className = 'kubernetes-drawer-container-name';
+        name.textContent = container.name;
+        const kind = document.createElement('span');
+        kind.className = 'kubernetes-drawer-container-kind';
+        kind.textContent = container.init ? 'Init container' : 'Container';
+        head.append(name, kind);
+        const facts = document.createElement('dl');
+        facts.className = 'kubernetes-drawer-facts';
+        for (const [label, value] of [
+          ['Status', container.status],
+          ['Image', container.image],
+          ['Pull policy', container.imagePullPolicy],
+          ['Mounts', container.mounts],
+          ['Command', container.command],
+          ['Environment', container.environmentDeclared ? 'Declared' : 'Not declared'],
+        ]) {
+          const fact = document.createElement('div');
+          const term = document.createElement('dt');
+          term.textContent = label;
+          const description = document.createElement('dd');
+          description.textContent = value;
+          description.title = value;
+          fact.append(term, description);
+          facts.appendChild(fact);
+        }
+        card.append(head, facts);
+        content.appendChild(card);
+      }
+    }));
+  }
+
+  private createDrawerSection(
+    title: string,
+    renderContent: (content: HTMLElement) => void,
+  ): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'kubernetes-drawer-section';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'kubernetes-drawer-section-toggle';
+    const label = document.createElement('span');
+    label.textContent = title;
+    const indicator = document.createElement('span');
+    let expanded = true;
+    const content = document.createElement('div');
+    content.className = 'kubernetes-drawer-section-content';
+    renderContent(content);
+    const update = (): void => {
+      toggle.setAttribute('aria-expanded', String(expanded));
+      indicator.textContent = expanded ? '▾' : '▸';
+      content.classList.toggle('hidden', !expanded);
+    };
+    toggle.addEventListener('click', () => {
+      expanded = !expanded;
+      update();
+    });
+    toggle.append(label, indicator);
+    update();
+    section.append(toggle, content);
+    return section;
   }
 
   /**
@@ -1813,14 +1832,12 @@ class KubernetesPage implements KubernetesPageController {
    * detail-only section. The active resource list owns Watch lifecycle, so no
    * relation path may activate a list or replace its snapshot.
    */
-  private renderRelatedDetail(detail: Record<string, unknown>, active: ActiveDetail): void {
+  private renderRelatedDetail(detail: Record<string, unknown>, active: ActiveDetail): HTMLElement | undefined {
     const state = this.relatedState(active);
-    this.detailRelated.replaceChildren();
-    this.detailRelated.classList.toggle('hidden', !state);
-    if (!state) return;
+    if (!state) return undefined;
 
     const section = document.createElement('section');
-    section.className = 'kubernetes-related-section';
+    section.className = 'kubernetes-related-section kubernetes-drawer-section';
     const header = document.createElement('header');
     header.className = 'kubernetes-related-head';
     const heading = document.createElement('h3');
@@ -1832,9 +1849,9 @@ class KubernetesPage implements KubernetesPageController {
     toggle.disabled = state.loading;
     toggle.textContent = state.loading ? 'Loading…' : state.expanded ? 'Collapse' : 'Expand';
     toggle.addEventListener('click', () => {
-      if (state.loading || this.activeDetail !== active || !this.visible) return;
+      if (state.loading || !this.isCurrentActiveDrawer(active)) return;
       state.expanded = !state.expanded;
-      this.renderRelatedDetail(detail, active);
+      this.renderDetail();
       if (state.expanded && !state.resources && !state.error) {
         void this.loadRelatedResources(active, state);
       }
@@ -1843,8 +1860,7 @@ class KubernetesPage implements KubernetesPageController {
     section.appendChild(header);
 
     if (!state.expanded) {
-      this.detailRelated.appendChild(section);
-      return;
+      return section;
     }
     if (state.error) {
       const error = document.createElement('p');
@@ -1855,7 +1871,7 @@ class KubernetesPage implements KubernetesPageController {
       retry.className = 'btn btn-secondary btn-sm';
       retry.textContent = 'Retry';
       retry.addEventListener('click', () => {
-        if (!state.loading && this.activeDetail === active && this.visible) {
+        if (!state.loading && this.isCurrentActiveDrawer(active)) {
           state.error = undefined;
           void this.loadRelatedResources(active, state);
         }
@@ -1869,7 +1885,7 @@ class KubernetesPage implements KubernetesPageController {
     } else if (state.resources) {
       section.appendChild(this.renderRelatedResources(active, state.resources));
     }
-    this.detailRelated.appendChild(section);
+    return section;
   }
 
   private relatedState(active: ActiveDetail): RelatedDetailState | undefined {
@@ -1903,8 +1919,6 @@ class KubernetesPage implements KubernetesPageController {
   private invalidateRelatedDetail(active: ActiveDetail | undefined = this.activeDetail): void {
     this.relatedGeneration += 1;
     if (active) active.related = undefined;
-    this.detailRelated.replaceChildren();
-    this.detailRelated.classList.add('hidden');
   }
 
   private isCurrentRelatedRequest(
@@ -1913,8 +1927,7 @@ class KubernetesPage implements KubernetesPageController {
     detailGeneration: number,
     relatedGeneration: number,
   ): boolean {
-    return this.visible
-      && this.activeDetail === active
+    return this.isCurrentActiveDrawer(active)
       && active.related === state
       && state.expanded
       && this.detailGeneration === detailGeneration
@@ -1922,7 +1935,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async loadRelatedResources(active: ActiveDetail, state: RelatedDetailState): Promise<void> {
-    if (!this.visible || this.activeDetail !== active || !state.expanded || state.loading) return;
+    if (!this.isCurrentActiveDrawer(active) || !state.expanded || state.loading) return;
     const detailGeneration = this.detailGeneration;
     const relatedGeneration = ++this.relatedGeneration;
     const isCurrent = (): boolean => this.isCurrentRelatedRequest(active, state, detailGeneration, relatedGeneration);
@@ -1934,7 +1947,7 @@ class KubernetesPage implements KubernetesPageController {
         ? 'Backend resources are unavailable because this Service has no Namespace.'
         : 'No selector is available for this Workload.';
       if (!isCurrent()) return;
-      this.renderRelatedDetail(active.detail, active);
+      this.renderDetail();
       return;
     }
     await runRelatedResourceRequest(
@@ -1945,7 +1958,7 @@ class KubernetesPage implements KubernetesPageController {
           if (!isCurrent()) return;
           state.loading = true;
           if (!isCurrent()) return;
-          this.renderRelatedDetail(active.detail, active);
+          this.renderDetail();
         },
         onSuccess: (resources) => {
           if (!isCurrent()) return;
@@ -1963,7 +1976,7 @@ class KubernetesPage implements KubernetesPageController {
           if (!isCurrent()) return;
           state.loading = false;
           if (!isCurrent()) return;
-          this.renderRelatedDetail(active.detail, active);
+          this.renderDetail();
         },
       },
     );
@@ -2010,238 +2023,41 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async openRelatedPod(active: ActiveDetail, summary: KubernetesResourceSummary): Promise<void> {
-    if (!this.visible || this.activeDetail !== active || !summary.namespace) return;
+    if (!this.isCurrentActiveDrawer(active) || !summary.namespace) return;
     const query: KubernetesResourceQuery = {
       context: active.query.context,
       kind: 'pods',
       scope: 'namespaced',
       namespaceScope: { mode: 'selected', namespaces: [summary.namespace] },
     };
-    // Do this before any await: related-resource completion belongs only to
-    // the previous Workload detail and cannot repaint over the linked Pod.
-    this.invalidateRelatedDetail(active);
-    this.openingTerminals.clear();
-    this.selectPodWorkspace('logs');
-    const generation = ++this.detailGeneration;
-    this.resetDetailLoadingState(generation);
+    const generation = this.beginDrawerReplacement();
+    const request = this.createDrawerRequest(summary, generation);
+    this.drawerRequest = request;
     this.detailTitle.textContent = 'Loading Pod…';
     this.detailSubtitle.textContent = '';
-    await this.closeDetailLogs();
-    if (!this.visible || generation !== this.detailGeneration || this.activeDetail !== active) return;
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
-      if (!this.visible || generation !== this.detailGeneration || this.activeDetail !== active) return;
-      this.finishDetailLoadingState(generation);
-      this.activeDetail = { query, summary, detail, tab: 'overview' };
+      if (!this.isCurrentDrawerRequest(request, query)) return;
+      const next: ActiveDetail = { query, summary, detail, request };
+      this.activeDetail = next;
       this.decodedSecretDetail = undefined;
-      this.detailEventsLoaded = false;
-      this.selectedContainer = undefined;
       this.renderDetail();
+      this.requestDrawerEvents(next);
     } catch (error) {
-      if (this.visible && generation === this.detailGeneration && this.activeDetail === active) {
-        this.finishDetailLoadingState(generation);
-        this.renderDetail();
-        setMessage(toErrorMessage(error), 'error');
-      }
-    }
-  }
-
-  private activeLog(): KubernetesLogState | undefined {
-    return this.selectedContainer ? this.logsByContainer.get(this.selectedContainer) : undefined;
-  }
-
-  private selectPodWorkspace(workspace: KubernetesPodWorkspace): void {
-    this.podWorkspace = workspace;
-    if (workspace === 'logs') this.terminalWorkspaceSessionId = undefined;
-    applyKubernetesPodWorkspace(workspace, {
-      logsTab: this.logTab,
-      terminalTab: this.logTerminalTab,
-      hideTerminalDrawer: () => this.terminalDrawer?.hide(),
-    });
-  }
-
-  private cancelLogAutoScroll(): void {
-    this.logViewport.cancel();
-  }
-
-  private renderLogPanel(intent: KubernetesLogScrollIntent = 'incidental'): void {
-    this.logViewport.render(intent);
-  }
-
-  private async openLogsForSelectedContainer(): Promise<void> {
-    const target = this.selectedPodTarget();
-    if (!target) return;
-    const existing = this.logsByContainer.get(target.container);
-    if (existing) return;
-    const openingKey = `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
-    const openingToken = claimKubernetesLogOpen(this.openingLogs, openingKey);
-    if (!openingToken) return;
-    const active = this.activeDetail;
-    const detailGeneration = this.detailGeneration;
-    this.logErrorsByContainer.delete(target.container);
-    this.renderLogPanel();
-    try {
-      const state = await window.kubernetesApi.openLogs(target);
-      if (!this.visible || this.activeDetail !== active || this.detailGeneration !== detailGeneration
-        || this.selectedContainer !== target.container) {
-        await window.kubernetesApi.closeLogs(state.sessionId).catch(() => undefined);
-        return;
-      }
-      this.logErrorsByContainer.delete(target.container);
-      applyKubernetesLogUpdate(
-        this.logsByContainer,
-        this.selectedContainer,
-        state,
-        this.logViewport,
-        'follow',
-        true,
-      );
-    } catch (error) {
-      if (this.activeDetail === active && this.detailGeneration === detailGeneration) {
-        const message = toErrorMessage(error);
-        applyKubernetesLogOpenFailure({
-          requests: this.openingLogs,
-          key: openingKey,
-          token: openingToken,
-          selectedContainer: this.selectedContainer,
-          targetContainer: target.container,
-          cache: () => this.logErrorsByContainer.set(target.container, `Unable to load logs: ${message}`),
-          renderSelected: () => {
-            this.renderLogPanel();
-            setMessage(message, 'error');
-          },
-        });
-      }
-    } finally {
-      releaseKubernetesLogOpen(this.openingLogs, openingKey, openingToken);
-    }
-  }
-
-  private async toggleLogFollowing(): Promise<void> {
-    await runKubernetesLogFollowToggle({
-      sessions: this.logsByContainer,
-      mutations: this.logFollowMutations,
-      getSelectedContainer: () => this.selectedContainer,
-      viewport: this.logViewport,
-      setFollowing: (sessionId, following) => window.kubernetesApi.setLogFollowing(sessionId, following),
-      onError: (error) => setMessage(toErrorMessage(error), 'error'),
-    });
-  }
-
-  private async clearLogs(): Promise<void> {
-    const log = this.activeLog();
-    if (!log) return;
-    try {
-      const next = await window.kubernetesApi.clearLogs(log.sessionId);
-      applyKubernetesLogUpdate(
-        this.logsByContainer,
-        this.selectedContainer,
-        next,
-        this.logViewport,
-        'preserve',
-      );
-    } catch (error) {
+      if (!this.isCurrentDrawerRequest(request, query)) return;
       setMessage(toErrorMessage(error), 'error');
+      this.closeDetail();
     }
-  }
-
-  private async closeDetailLogs(): Promise<void> {
-    this.cancelLogAutoScroll();
-    const logs = [...this.logsByContainer.values()];
-    this.logsByContainer.clear();
-    this.logFollowMutations.clear();
-    this.openingLogs.clear();
-    this.logErrorsByContainer.clear();
-    this.logSearch.value = '';
-    this.renderLogPanel();
-    await Promise.all(logs.map((log) => window.kubernetesApi.closeLogs(log.sessionId).catch(() => undefined)));
-  }
-
-  private onLogChanged(state: KubernetesLogState): void {
-    const active = this.activeDetail;
-    if (!active || active.query.kind !== 'pods') return;
-    if (state.podName !== active.summary.name || state.namespace !== active.summary.namespace) return;
-    if (!shouldApplyKubernetesLogBroadcast(this.logFollowMutations, state)) return;
-    applyKubernetesLogUpdate(
-      this.logsByContainer,
-      this.selectedContainer,
-      state,
-      this.logViewport,
-      'follow',
-    );
-  }
-
-  private selectedPodTarget(): KubernetesPodTarget | undefined {
-    const active = this.activeDetail;
-    if (!active || active.query.kind !== 'pods' || !active.summary.namespace || !this.selectedContainer) return undefined;
-    return { namespace: active.summary.namespace, podName: active.summary.name, container: this.selectedContainer };
-  }
-
-  private async openTerminal(): Promise<void> {
-    const target = this.selectedPodTarget();
-    if (!target) return;
-    this.selectPodWorkspace('terminal');
-    const active = this.activeDetail;
-    const detailGeneration = this.detailGeneration;
-    await openKubernetesTerminalWorkspace({
-      target,
-      requests: this.openingTerminals,
-      selectWorkspace: (workspace) => {
-        if (this.podWorkspace !== workspace) this.selectPodWorkspace(workspace);
-      },
-      focusTarget: (candidate) => this.terminalDrawer?.focusTarget(candidate),
-      focusSession: (id) => this.terminalDrawer?.focusSession(id) ?? false,
-      claimSession: (id) => {
-        this.terminalWorkspaceSessionId = id;
-      },
-      openDrawer: (state) => this.terminalDrawer?.open(state, false),
-      requestTerminal: (candidate) => window.kubernetesApi.openTerminal(candidate),
-      isCurrent: () => this.visible
-        && this.activeDetail === active
-        && this.detailGeneration === detailGeneration
-        && this.podWorkspace === 'terminal'
-        && sameKubernetesPodTarget(this.selectedPodTarget(), target),
-      reportError: (error) => setMessage(toErrorMessage(error), 'error'),
-    });
-  }
-
-  private onTerminalChanged(state: KubernetesTerminalState): void {
-    if (!this.visible) return;
-    if (state.state === 'closed' || state.state === 'error') {
-      this.terminalDrawer?.open(state);
-      const selectedTarget = this.selectedPodTarget();
-      const replacementSessionId = selectedTarget
-        ? this.terminalDrawer?.sessionIdForTarget(selectedTarget)
-        : undefined;
-      routeKubernetesTerminalFinalState({
-        state,
-        selectedTarget,
-        workspace: this.podWorkspace,
-        workspaceSessionId: this.terminalWorkspaceSessionId,
-        replacementSessionId,
-        claimSession: (id) => {
-          this.terminalWorkspaceSessionId = id;
-        },
-        selectLogs: () => this.selectPodWorkspace('logs'),
-        reportError: () => setMessage(state.error ?? 'Kubernetes terminal failed.', 'error'),
-      });
-      return;
-    }
-    this.terminalDrawer?.open(state, false);
-  }
-
-  private onTerminalOutput(output: KubernetesTerminalOutput): void {
-    this.terminalDrawer?.write(output.id, output.data);
   }
 
   private openPortForwardDialog(): void {
-    if (this.detailLoading || this.detailPortForwardButton.disabled) return;
+    if (this.detailPortForwardButton.disabled) return;
     const active = this.activeDetail;
     const detail = this.displayDetail();
     const targetKind = active?.query.kind === 'pods' ? 'pod'
       : active?.query.kind === 'services' ? 'service'
         : undefined;
-    if (!active || !detail || !targetKind || !active.summary.namespace) return;
+    if (!active || !detail || !targetKind || !active.summary.namespace || !this.isCurrentActiveDrawer(active)) return;
     if (this.portForwards.size >= 10) {
       setMessage('Kubernetes supports at most 10 active port forwards.', 'error');
       return;

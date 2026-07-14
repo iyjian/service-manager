@@ -204,155 +204,113 @@
 
       <section class="kubernetes-page" aria-label="Kubernetes resources">
         <div id="kubernetes-list-page" class="kubernetes-list-page">
-        <div class="kubernetes-toolbar">
-          <label class="field field-xs kubernetes-context-field">
-            Context
-            <select id="kubernetes-context" class="input" aria-label="Kubernetes Context"></select>
-          </label>
-          <div class="kubernetes-namespace-control">
-            <span class="kubernetes-control-label">Namespace</span>
-            <button id="kubernetes-namespace-toggle" type="button" class="btn btn-secondary btn-sm">All Namespaces</button>
-            <div id="kubernetes-namespace-menu" class="kubernetes-namespace-menu hidden" aria-label="Namespaces"></div>
-          </div>
-        </div>
-
-        <div id="kubernetes-category-tabs" class="kubernetes-category-tabs" role="tablist" aria-label="Resource categories"></div>
-        <div id="kubernetes-resource-tabs" class="kubernetes-resource-tabs" role="tablist" aria-label="Resource types"></div>
-        <label id="kubernetes-custom-resource-control" class="field field-xs kubernetes-custom-resource-control hidden">
-          <span>Custom Resource</span>
-          <select id="kubernetes-custom-resource-select" class="input" aria-label="Custom Resource Definition">
-            <option value="">Select a discovered Custom Resource</option>
-          </select>
-        </label>
-
-        <div class="kubernetes-list-toolbar">
-          <label class="field field-xs kubernetes-search-field">
-            Search loaded resources
-            <input id="kubernetes-resource-search" class="input" type="search" placeholder="Filter by name" spellcheck="false" />
-          </label>
-        </div>
-
-        <div class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list">
-          <div id="kubernetes-table-header" class="kubernetes-table-header" role="row">
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="namespace" data-sort-label="Namespace" aria-label="Sort by Namespace">
-                <span>Namespace</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="ascending">
-              <button type="button" class="kubernetes-table-sort kubernetes-table-sort-active" data-kubernetes-sort="name" data-sort-label="Name" data-direction="asc" aria-label="Sort by Name, currently ascending">
-                <span>Name</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="cpu" data-sort-label="CPU" aria-label="Sort by CPU">
-                <span>CPU</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="memory" data-sort-label="Memory" aria-label="Sort by Memory">
-                <span>Memory</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="restarts" data-sort-label="Restarts" aria-label="Sort by Restarts">
-                <span>Restarts</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="status" data-sort-label="Status" aria-label="Sort by Status">
-                <span>Status</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="node" data-sort-label="Node" aria-label="Sort by Node">
-                <span>Node</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-            <span role="columnheader" aria-sort="none">
-              <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="age" data-sort-label="Age" aria-label="Sort by Age">
-                <span>Age</span>
-                <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
-              </button>
-            </span>
-          </div>
-          <div id="kubernetes-table-viewport" class="kubernetes-table-viewport" role="rowgroup">
-            <div id="kubernetes-table-spacer" class="kubernetes-table-spacer"></div>
-            <div id="kubernetes-table-rows" class="kubernetes-table-rows"></div>
-          </div>
-        </div>
-        <div id="kubernetes-empty-state" class="kubernetes-empty-state hidden"></div>
-        <div id="kubernetes-no-permission" class="kubernetes-state kubernetes-no-permission hidden">No permission</div>
-        <div id="kubernetes-error-state" class="kubernetes-state kubernetes-error-state hidden"></div>
-        <footer id="kubernetes-loaded-count" class="kubernetes-loaded-count" aria-live="polite">Choose a Kubernetes Context to load resources.</footer>
-        </div>
-
-        <section id="kubernetes-detail-page" class="kubernetes-detail-page hidden" aria-label="Kubernetes resource detail">
-          <header class="kubernetes-detail-head">
-            <button id="kubernetes-detail-back" type="button" class="btn btn-secondary kubernetes-detail-back">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12.5 5-5 5 5 5"/><path d="M8 10h8"/></svg>
-              <span>Back to list</span>
-            </button>
-            <div class="kubernetes-detail-title-wrap">
-              <h2 id="kubernetes-detail-title" class="section-title">Resource detail</h2>
-              <p id="kubernetes-detail-subtitle" class="kubernetes-detail-subtitle"></p>
+          <div class="kubernetes-control-row">
+            <select id="kubernetes-context" class="input kubernetes-context-select" aria-label="Kubernetes Context"></select>
+            <div class="kubernetes-namespace-control">
+              <button id="kubernetes-namespace-toggle" type="button" class="btn btn-secondary btn-sm" aria-label="Kubernetes Namespace scope">All Namespaces</button>
+              <div id="kubernetes-namespace-menu" class="kubernetes-namespace-menu hidden" aria-label="Namespaces"></div>
             </div>
-            <button id="kubernetes-detail-port-forward" type="button" class="btn btn-secondary kubernetes-detail-copy hidden">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6.5h9"/><path d="m10 4 2.5 2.5L10 9"/><path d="M16.5 13.5h-9"/><path d="m10 11-2.5 2.5L10 16"/></svg>
-              <span class="kubernetes-detail-port-forward-copy">
-                <span class="kubernetes-detail-port-forward-label">Port Forward</span>
-                <span id="kubernetes-detail-port-summary" class="kubernetes-detail-port-summary">No declared TCP ports</span>
-              </span>
-            </button>
-          </header>
-          <div id="kubernetes-detail-tabs" class="kubernetes-detail-tabs" role="tablist" aria-label="Resource detail sections">
-            <button type="button" class="kubernetes-detail-tab kubernetes-detail-tab-active" data-detail-tab="overview">Overview</button>
-            <button type="button" class="kubernetes-detail-tab" data-detail-tab="yaml">YAML</button>
-            <button type="button" class="kubernetes-detail-tab" data-detail-tab="events">Events</button>
+            <div id="kubernetes-category-tabs" class="kubernetes-category-tabs" role="tablist" aria-label="Resource categories"></div>
           </div>
-          <div class="kubernetes-detail-content-stack">
-            <section id="kubernetes-detail-overview" class="kubernetes-detail-content" aria-label="Overview"></section>
-            <section id="kubernetes-detail-yaml-section" class="kubernetes-detail-content hidden" aria-label="YAML"><pre id="kubernetes-detail-yaml" class="kubernetes-detail-code"></pre></section>
-            <section id="kubernetes-detail-events" class="kubernetes-detail-content hidden" aria-label="Events"></section>
-            <section id="kubernetes-detail-related" class="kubernetes-detail-related hidden"></section>
-          </div>
-          <section id="kubernetes-log-panel" class="kubernetes-log-panel hidden" aria-label="Pod logs">
-            <header class="kubernetes-log-toolbar">
-              <div role="tablist" aria-label="Pod workspace views">
-                <button type="button" class="kubernetes-log-view-tab kubernetes-log-view-tab-active" role="tab" aria-selected="true">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h6l3 3v11H6z"/><path d="M12 3v4h4M8.5 10h4M8.5 13h4"/></svg><span>Logs</span>
-                </button>
-                <button id="kubernetes-log-terminal-tab" type="button" class="kubernetes-log-view-tab" role="tab" aria-selected="false">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="m6.5 8 2 2-2 2M10.5 12h3"/></svg><span>Terminal</span>
-                </button>
-              </div>
-              <label class="kubernetes-log-search-wrap">
-                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="4.5"/><path d="m12 12 4 4"/></svg>
-                <input id="kubernetes-log-search" class="input kubernetes-log-search-field" type="search" placeholder="Search logs" aria-label="Search logs" spellcheck="false" />
-              </label>
-              <button id="kubernetes-log-follow" type="button" class="icon-btn" aria-label="Pause log follow" title="Pause log follow">
-                <svg id="kubernetes-log-follow-pause-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M7 5v10M13 5v10"/></svg>
-                <svg id="kubernetes-log-follow-play-icon" class="hidden" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="m7 4.75 8 5.25-8 5.25z"/></svg>
-              </button>
-              <button id="kubernetes-log-clear" type="button" class="btn btn-secondary btn-sm">Clear</button>
-              <label class="kubernetes-container-field"><span class="kubernetes-container-label">Container</span><select id="kubernetes-container-select" class="input"></select></label>
-            </header>
-            <pre id="kubernetes-log-output" class="kubernetes-log-output" tabindex="0"></pre>
-            <footer class="kubernetes-log-status">
-              <span id="kubernetes-log-count">0 lines</span>
-              <span id="kubernetes-log-state" class="kubernetes-log-state"><span class="kubernetes-log-live-dot" aria-hidden="true"></span><span>Paused</span></span>
-            </footer>
-          </section>
-        </section>
 
-        <aside id="kubernetes-terminal-drawer" class="kubernetes-terminal-drawer hidden" aria-label="Pod terminal sessions"></aside>
+          <div class="kubernetes-secondary-row">
+            <div id="kubernetes-resource-tabs" class="kubernetes-resource-tabs" role="tablist" aria-label="Resource types"></div>
+            <label id="kubernetes-custom-resource-control" class="kubernetes-custom-resource-control hidden">
+              <select id="kubernetes-custom-resource-select" class="input" aria-label="Custom Resource Definition">
+                <option value="">Select a discovered Custom Resource</option>
+              </select>
+            </label>
+            <input id="kubernetes-resource-search" class="input kubernetes-search-field" type="search" placeholder="Search resources" aria-label="Search loaded resources" spellcheck="false" />
+          </div>
+
+          <div class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list">
+            <div id="kubernetes-table-header" class="kubernetes-table-header" role="row">
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="namespace" data-sort-label="Namespace" aria-label="Sort by Namespace">
+                  <span>Namespace</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="ascending">
+                <button type="button" class="kubernetes-table-sort kubernetes-table-sort-active" data-kubernetes-sort="name" data-sort-label="Name" data-direction="asc" aria-label="Sort by Name, currently ascending">
+                  <span>Name</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="cpu" data-sort-label="CPU" aria-label="Sort by CPU">
+                  <span>CPU</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="memory" data-sort-label="Memory" aria-label="Sort by Memory">
+                  <span>Memory</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="restarts" data-sort-label="Restarts" aria-label="Sort by Restarts">
+                  <span>Restarts</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="status" data-sort-label="Status" aria-label="Sort by Status">
+                  <span>Status</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="node" data-sort-label="Node" aria-label="Sort by Node">
+                  <span>Node</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+              <span role="columnheader" aria-sort="none">
+                <button type="button" class="kubernetes-table-sort" data-kubernetes-sort="age" data-sort-label="Age" aria-label="Sort by Age">
+                  <span>Age</span>
+                  <svg class="kubernetes-sort-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="kubernetes-sort-icon-up" d="m3.5 4.5 2.5-2.5 2.5 2.5"></path><path class="kubernetes-sort-icon-down" d="m3.5 7.5 2.5 2.5 2.5-2.5"></path></svg>
+                </button>
+              </span>
+            </div>
+            <div id="kubernetes-table-viewport" class="kubernetes-table-viewport" role="rowgroup">
+              <div id="kubernetes-table-spacer" class="kubernetes-table-spacer"></div>
+              <div id="kubernetes-table-rows" class="kubernetes-table-rows"></div>
+            </div>
+          </div>
+
+          <div id="kubernetes-empty-state" class="kubernetes-empty-state hidden"></div>
+          <div id="kubernetes-no-permission" class="kubernetes-state kubernetes-no-permission hidden">No permission</div>
+          <div id="kubernetes-error-state" class="kubernetes-state kubernetes-error-state hidden"></div>
+          <footer id="kubernetes-loaded-count" class="kubernetes-loaded-count" aria-live="polite">Choose a Kubernetes Context to load resources.</footer>
+
+          <section id="kubernetes-workspace" class="kubernetes-workspace hidden" aria-label="Pod workspace">
+            <div id="kubernetes-workspace-tabs" class="kubernetes-workspace-tabs" role="tablist" aria-label="Open Logs and Shell tabs"></div>
+            <div id="kubernetes-workspace-pane" class="kubernetes-workspace-pane"></div>
+          </section>
+        </div>
+
+        <aside id="kubernetes-detail-drawer" class="kubernetes-detail-drawer hidden" aria-label="Kubernetes resource detail">
+          <button id="kubernetes-detail-drawer-scrim" class="kubernetes-detail-drawer-scrim" type="button" aria-label="Close resource detail"></button>
+          <section class="kubernetes-detail-drawer-panel">
+            <header class="kubernetes-detail-drawer-head">
+              <div class="kubernetes-detail-title-wrap">
+                <h2 id="kubernetes-detail-title" class="section-title">Resource detail</h2>
+                <p id="kubernetes-detail-subtitle" class="kubernetes-detail-subtitle"></p>
+              </div>
+              <div class="kubernetes-detail-drawer-actions">
+                <button id="kubernetes-detail-port-forward" class="btn btn-secondary btn-sm hidden" type="button"><span>Port Forward</span><span id="kubernetes-detail-port-summary"></span></button>
+                <button id="kubernetes-detail-yaml-toggle" class="icon-btn" type="button" aria-label="View YAML" aria-pressed="false">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h6l3 3v11H6z"/><path d="M12 3v4h4M8.5 10h4M8.5 13h4"/></svg>
+                </button>
+                <button id="kubernetes-detail-close" class="icon-btn" type="button" aria-label="Close resource detail">×</button>
+              </div>
+            </header>
+            <div id="kubernetes-detail-overview" class="kubernetes-detail-drawer-body"></div>
+            <pre id="kubernetes-detail-yaml" class="kubernetes-detail-code hidden"></pre>
+          </section>
+        </aside>
         <section id="kubernetes-port-forwards" class="kubernetes-port-forwards hidden" aria-label="Port Forwards">
           <header class="subcard-head">
             <h3 class="subcard-title">Port Forwards</h3>

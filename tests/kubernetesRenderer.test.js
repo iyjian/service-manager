@@ -322,20 +322,20 @@ test('Kubernetes page never auto-loads more pages for an active name filter', as
   assert.match(page, /if \(!shouldAutomaticallyLoadMore\(query\)\)\s+return;/);
 });
 
-test('Kubernetes resource details are full-page, read-only, render YAML, and clear active Secret data on close', async () => {
+test('Kubernetes resource details use a read-only overlay drawer and clear active Secret data on close', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
 
-  assert.match(html, /id="kubernetes-detail-page"/);
-  assert.match(html, />Overview</);
-  assert.match(html, />YAML</);
-  assert.match(html, />Events</);
+  assert.match(html, /id="kubernetes-detail-drawer"/);
+  assert.match(html, /id="kubernetes-detail-drawer-scrim"/);
+  assert.match(html, /id="kubernetes-detail-close"/);
+  assert.match(html, /id="kubernetes-detail-yaml-toggle"/);
   assert.match(html, /id="kubernetes-detail-yaml"/);
-  assert.match(page, /detailBackStack/);
+  assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
   assert.match(page, /getResourceDetail\(/);
   assert.match(page, /getResourceEvents\(/);
   assert.match(page, /serializeKubernetesDetailYaml\(detail\)/);
-  assert.match(page, /yaml\.textContent/);
+  assert.match(page, /detailYaml\.textContent/);
   assert.match(page, /decodedSecretDetail\s*=\s*undefined/);
   assert.match(page, /this\.detailYaml\.textContent = ''/);
   assert.match(page, /Backend resources/);
@@ -382,7 +382,7 @@ test('Kubernetes detail YAML uses the copied browser serializer and text-safe re
   assert.match(html, /<script src="\.\/js-yaml\.umd\.min\.js"><\/script>/);
   assert.match(browserYaml, /jsyaml/);
   assert.match(page, /serializeKubernetesDetailYaml/);
-  assert.match(page, /yaml\.textContent = serializeKubernetesDetailYaml\(detail\)/);
+  assert.match(page, /detailYaml\.textContent = serializeKubernetesDetailYaml\(detail\)/);
   assert.doesNotMatch(page, /copyKubernetesDetailYaml/);
   assert.doesNotMatch(html, /id="kubernetes-detail-copy"/);
   assert.doesNotMatch(page, /JSON\.stringify\(detail/);
@@ -444,157 +444,81 @@ test('Kubernetes related-resource loading does not render or report an old detai
   assert.deepEqual(updates, ['loading']);
 });
 
-test('Kubernetes detail close ignores a stale cleanup after a later close opens a new detail', async () => {
+test('Kubernetes drawer request identity ignores stale detail completions after replacement or close', async () => {
   const module = await import(path.join(distRenderer, 'kubernetesPage.js'));
-  const { isCurrentKubernetesDetailClose } = module;
-  assert.equal(typeof isCurrentKubernetesDetailClose, 'function');
-
-  let detailGeneration = 20;
-  const firstCloseGeneration = detailGeneration;
-  detailGeneration += 1;
-  const laterCloseGeneration = detailGeneration;
-  detailGeneration += 1;
-  const cleanups = [];
-  let loadingGeneration = firstCloseGeneration;
-  const completeClose = (generation, label) => {
-    if (!isCurrentKubernetesDetailClose(generation, detailGeneration)) return;
-    cleanups.push(label);
-    loadingGeneration = undefined;
-  };
-
-  completeClose(laterCloseGeneration, 'later close');
-  detailGeneration += 1; // The later close revealed the list and a new detail started.
-  completeClose(firstCloseGeneration, 'stale first close');
-
-  assert.deepEqual(cleanups, ['later close']);
-  assert.equal(loadingGeneration, undefined);
-  assert.equal(isCurrentKubernetesDetailClose(40, 41), true);
-  assert.equal(isCurrentKubernetesDetailClose(40, 42), false);
+  const { isCurrentKubernetesDrawerRequest } = module;
+  assert.equal(typeof isCurrentKubernetesDrawerRequest, 'function');
+  const active = { visible: true, pageGeneration: 8, drawerGeneration: 12, uid: 'service-a' };
+  assert.equal(isCurrentKubernetesDrawerRequest(active, active), true);
+  assert.equal(isCurrentKubernetesDrawerRequest(active, {
+    visible: true, pageGeneration: 8, drawerGeneration: 13, uid: 'pod-a',
+  }), false);
+  assert.equal(isCurrentKubernetesDrawerRequest(active, {
+    visible: false, pageGeneration: 8, drawerGeneration: 12, uid: 'service-a',
+  }), false);
 
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const closeStart = page.indexOf('    async closeDetail() {');
+  const closeStart = page.indexOf('    closeDetail() {');
   const closeEnd = page.indexOf('    displayDetail() {', closeStart);
   const close = page.slice(closeStart, closeEnd);
-  const logsAwait = close.indexOf('await this.closeDetailLogs()');
-  const ownerGuard = close.indexOf('if (!isCurrentKubernetesDetailClose(closingGeneration, this.detailGeneration))');
-  const postAwaitCleanup = [
-    'this.activeDetail = undefined',
-    'this.decodedSecretDetail = undefined',
-    "this.detailPage.classList.add('hidden')",
-    'this.clearDetailLoadingState();',
-    "this.listPage.classList.remove('hidden')",
-    'this.detailBackStack = undefined',
-  ];
 
   assert.ok(closeStart >= 0 && closeEnd > closeStart);
-  assert.ok(logsAwait >= 0);
-  assert.ok(ownerGuard > logsAwait);
-  for (const cleanup of postAwaitCleanup) {
-    assert.ok(close.indexOf(cleanup) > ownerGuard, `${cleanup} must remain close-owner guarded`);
-  }
+  assert.match(close, /this\.drawerRequest = \{/);
+  assert.match(close, /visible: false/);
+  assert.match(close, /this\.detailDrawer\.classList\.add\('hidden'\)/);
+  assert.doesNotMatch(close, /await |closeDetailLogs|closeTerminal|stopPortForward/);
 });
 
-test('Kubernetes Pod interactions expose bounded logs, an xterm drawer, and read-only forward controls', async () => {
+test('Kubernetes Task 4 keeps port forward controls while reserving Logs and Shell for the workspace task', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const terminal = await readFile(path.join(distRenderer, 'kubernetesTerminal.js'), 'utf8');
-  const preload = await readFile(path.join(__dirname, '..', 'dist', 'main', 'preload.js'), 'utf8');
-  const sharedTypes = await readFile(path.join(__dirname, '..', 'src', 'shared', 'types.ts'), 'utf8');
-  const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
 
-  assert.match(html, /id="kubernetes-log-panel"/);
-  assert.match(html, /id="kubernetes-log-terminal-tab"/);
-  assert.match(html, /id="kubernetes-log-count"/);
-  assert.match(html, /id="kubernetes-log-state"/);
-  assert.match(html, /class="kubernetes-log-toolbar"/);
-  assert.doesNotMatch(html, /class="kubernetes-log-view-tabs"|class="kubernetes-log-head"/);
-  const logToolbarStart = html.indexOf('<header class="kubernetes-log-toolbar">');
-  const logToolbar = html.slice(logToolbarStart, html.indexOf('</header>', logToolbarStart));
-  assert.ok(logToolbarStart >= 0);
-  assert.match(logToolbar, /id="kubernetes-log-search"/);
-  assert.match(logToolbar, /id="kubernetes-log-follow"/);
-  assert.match(logToolbar, /id="kubernetes-log-clear"/);
-  assert.match(logToolbar, /id="kubernetes-container-select"/);
-  assert.match(logToolbar, /id="kubernetes-log-follow-pause-icon"/);
-  assert.match(logToolbar, /id="kubernetes-log-follow-play-icon"/);
-  assert.doesNotMatch(html, /500 initial lines|2,000 retained lines|Search current 2,000-line buffer/);
-  assert.doesNotMatch(html, /kubernetes-log-load-older|Load older 500/);
-  assert.doesNotMatch(html, /id="kubernetes-log-open"|>Open logs</i);
-  assert.doesNotMatch(html, /id="kubernetes-detail-pod-actions"|id="kubernetes-detail-service-actions"/);
   assert.match(html, /id="kubernetes-detail-port-forward"/);
-  assert.match(html, /id="kubernetes-terminal-drawer"/);
-  assert.ok(html.indexOf('id="kubernetes-terminal-drawer"') < html.indexOf('id="kubernetes-port-forwards"'));
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
   assert.match(html, /id="kubernetes-port-forwards"/);
-  assert.match(page, /setLogFollowing/);
-  assert.doesNotMatch(page, /loadOlderLogs/);
-  assert.doesNotMatch(preload, /loadOlderLogs|kubernetes:load-older-logs/);
-  assert.doesNotMatch(sharedTypes, /interface KubernetesLogApi \{[\s\S]*?loadOlderLogs/);
-  assert.match(page, /clearLogs/);
-  assert.match(page, /closeLogs/);
-  assert.match(page, /void this\.openLogsForSelectedContainer\(\)/);
-  assert.match(page, /openTerminal/);
+  assert.match(html, /id="kubernetes-workspace"/);
+  assert.doesNotMatch(html, /id="kubernetes-log-panel"|id="kubernetes-terminal-drawer"/);
   assert.match(page, /startPortForward/);
   assert.match(page, /stopPortForward/);
-  assert.match(page, /setMessage\(message, 'error'\)/);
-  assert.match(terminal, /new runtime\.Terminal/);
-  assert.match(terminal, /new runtime\.FitAddon/);
-  assert.match(terminal, /terminal\.write/);
-  assert.match(terminal, /onData/);
-  assert.match(copyRenderer, /'@xterm', 'xterm', 'css', 'xterm\.css'/);
-  assert.match(html, /xterm\.css/);
+  assert.doesNotMatch(page, /createKubernetesTerminalDrawer|openLogsForSelectedContainer/);
 });
 
-test('Kubernetes detail tab rerenders keep existing log sessions incidental while real log actions follow', async () => {
+test('Kubernetes drawer rendering keeps YAML opt-in and Events guarded to the active request', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const selectDetailTab = page.slice(
-    page.indexOf('    async selectDetailTab(tab) {'),
-    page.indexOf('    renderEvents(events) {'),
-  );
   const renderDetail = page.slice(
     page.indexOf('    renderDetail() {'),
-    page.indexOf('    renderDetailTabs(tab) {'),
-  );
-  const podActions = page.slice(
-    page.indexOf('    renderPodActions(detail, active) {'),
-    page.indexOf('    appendContainerOption(value, label, init) {'),
-  );
-  const openLogs = page.slice(
-    page.indexOf('async openLogsForSelectedContainer()'),
-    page.indexOf('async toggleLogFollowing()'),
-  );
-  const containerChange = page.slice(
-    page.indexOf("this.containerSelect.addEventListener('change'"),
-    page.indexOf("this.logFollowButton.addEventListener('click'"),
-  );
-  const logChanged = page.slice(
-    page.indexOf('    onLogChanged(state) {'),
-    page.indexOf('    selectedPodTarget() {'),
+    page.indexOf('    renderOverview(detail, active) {'),
   );
 
-  assert.match(selectDetailTab, /this\.renderDetail\(\)/);
-  assert.match(renderDetail, /this\.renderPodActions\(detail, active\)/);
-  assert.match(podActions, /this\.renderLogPanel\(\);[\s\S]*?void this\.openLogsForSelectedContainer\(\)/);
-  assert.match(openLogs, /const existing = this\.logsByContainer\.get\(target\.container\);\s*if \(existing\)\s*return;/);
-  assert.doesNotMatch(openLogs, /if \(existing\)[\s\S]{0,120}renderLogPanel\('follow'\)/);
-  assert.match(containerChange, /this\.renderLogPanel\('follow'\);\s*void this\.openLogsForSelectedContainer\(\)/);
-  assert.match(openLogs, /applyKubernetesLogUpdate\([\s\S]*?'follow',\s*true,?\s*\)/);
-  assert.match(logChanged, /shouldApplyKubernetesLogBroadcast\(this\.logFollowMutations, state\)/);
-  assert.match(logChanged, /applyKubernetesLogUpdate\([\s\S]*?'follow',?\s*\)/);
+  const yaml = page.slice(
+    page.indexOf('    toggleDrawerYaml() {'),
+    page.indexOf('    requestDrawerEvents(active) {'),
+  );
+  const events = page.slice(
+    page.indexOf('    requestDrawerEvents(active) {'),
+    page.indexOf('    renderDrawerEvents(active) {'),
+  );
+
+  assert.match(renderDetail, /if \(!this\.detailYaml\.classList\.contains\('hidden'\)\)\s*this\.renderDrawerYaml\(detail\)/);
+  assert.match(yaml, /this\.detailYaml\.classList\.toggle\('hidden', !opening\)/);
+  assert.match(yaml, /this\.detailYaml\.textContent = ''/);
+  assert.match(events, /if \(!this\.isCurrentActiveDrawer\(active\)\)\s*return/);
+  assert.match(events, /window\.kubernetesApi\.getResourceEvents/);
 });
 
-test('Kubernetes page owns Follow mutation tokens and clears them with detail logs', async () => {
+test('Kubernetes drawer Events render dynamic values through textContent', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const toggleStart = page.indexOf('    async toggleLogFollowing() {');
-  const toggleEnd = page.indexOf('    async clearLogs() {', toggleStart);
-  const closeLogsStart = page.indexOf('    async closeDetailLogs() {');
-  const closeLogsEnd = page.indexOf('    onLogChanged(state) {', closeLogsStart);
-  const toggle = page.slice(toggleStart, toggleEnd);
-  const closeLogs = page.slice(closeLogsStart, closeLogsEnd);
+  const events = page.slice(
+    page.indexOf('    renderDrawerEvents(active) {'),
+    page.indexOf('    renderDrawerPortForward(detail, active) {'),
+  );
 
-  assert.match(page, /this\.logFollowMutations = new Map\(\);/);
-  assert.match(toggle, /mutations: this\.logFollowMutations/);
-  assert.match(closeLogs, /this\.logFollowMutations\.clear\(\)/);
+  assert.match(events, /reason\.textContent = /);
+  assert.match(events, /type\.textContent = /);
+  assert.match(events, /time\.textContent = /);
+  assert.match(events, /message\.textContent = /);
+  assert.match(events, /count\.textContent = /);
+  assert.doesNotMatch(events, /innerHTML/);
 });
 
 class FakeKubernetesLogClassList {
@@ -1584,109 +1508,60 @@ test('Kubernetes log auto-scroll coalesces high-frequency updates without starvi
   assert.equal(applied, 502);
 });
 
-test('Kubernetes detail layout uses bounded four-track Pod workspaces and compact one-row Overview metadata', async () => {
+test('Kubernetes layout uses a full-width list with a bounded overlay drawer and independent workspace', async () => {
   const root = path.join(__dirname, '..');
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const styles = await readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8');
 
   assert.match(html, /id="kubernetes-list-page" class="kubernetes-list-page"/);
-  assert.match(html, /class="kubernetes-detail-content-stack"/);
+  assert.match(html, /id="kubernetes-detail-drawer"/);
+  assert.match(html, /id="kubernetes-workspace"/);
   assert.match(page, /description\.title = field\.value/);
   assert.match(page, /portForwardPanel\.classList\.toggle\('hidden', forwards\.length === 0\)/);
-  assert.match(page, /detailPage\.classList\.toggle\('kubernetes-detail-pod', isPod\)/);
+  assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?@apply[^;]*mx-0[^;]*max-w-none/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?height:\s*100dvh/);
-  const detailRule = styles.match(/\.kubernetes-detail-page\s*\{([^}]*)\}/);
-  const podRule = styles.match(/\.kubernetes-detail-pod\s*\{([^}]*)\}/);
+  const listRule = styles.match(/\.kubernetes-list-page\s*\{([^}]*)\}/);
+  const drawerRule = styles.match(/\.kubernetes-detail-drawer\s*\{([^}]*)\}/);
+  const panelRule = styles.match(/\.kubernetes-detail-drawer-panel\s*\{([^}]*)\}/);
+  const drawerBodyRule = styles.match(/\.kubernetes-detail-drawer-body\s*\{([^}]*)\}/);
+  const tableRule = styles.match(/\.kubernetes-table-shell\s*\{([^}]*)\}/);
+  const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
   const overviewRule = styles.match(/\.kubernetes-detail-overview-grid\s*\{([^}]*)\}/);
-  const overviewItemRule = styles.match(/\.kubernetes-detail-overview-grid > div\s*\{([^}]*)\}/);
-  const overviewWrapperRule = styles.match(/#kubernetes-detail-overview\s*\{([^}]*)\}/);
-  const toolbarRule = styles.match(/\.kubernetes-log-toolbar\s*\{([^}]*)\}/);
-  const logPanelRule = styles.match(/\.kubernetes-log-panel\s*\{([^}]*)\}/);
-  const logOutputRule = styles.match(/\.kubernetes-log-output\s*\{([^}]*)\}/);
 
-  assert.ok(detailRule);
-  assert.ok(podRule);
+  assert.ok(listRule);
+  assert.ok(drawerRule);
+  assert.ok(panelRule);
+  assert.ok(drawerBodyRule);
+  assert.ok(tableRule);
+  assert.ok(workspaceRule);
   assert.ok(overviewRule);
-  assert.ok(overviewItemRule);
-  assert.ok(overviewWrapperRule);
-  assert.ok(toolbarRule);
-  assert.ok(logPanelRule);
-  assert.ok(logOutputRule);
-  assert.match(detailRule[1], /h-full/);
-  assert.match(detailRule[1], /min-h-0/);
-  assert.match(detailRule[1], /min-w-0/);
-  assert.match(detailRule[1], /overflow-hidden/);
-  assert.match(detailRule[1], /bg-white/);
-  assert.match(detailRule[1], /grid-template-rows:\s*auto auto minmax\(0, 1fr\);/);
-
-  const podRows = podRule[1].match(
-    /grid-template-rows:\s*auto\s+auto\s+minmax\((\d+)px,\s*([\d.]+)fr\)\s+minmax\((\d+)px,\s*([\d.]+)fr\);/,
-  );
-  assert.ok(podRows, 'Pod detail must use header, tabs, content, and runtime tracks only');
-  assert.ok(Number(podRows[4]) > Number(podRows[2]), 'the runtime panel receives the larger fractional track');
-  assert.doesNotMatch(styles, /\.kubernetes-detail-actions\s*\{/);
+  assert.match(listRule[1], /grid-template-rows:\s*auto auto minmax\(160px, 1fr\) auto;/);
+  assert.match(drawerRule[1], /@apply[^;]*absolute[^;]*inset-0/);
+  assert.match(panelRule[1], /width:\s*clamp\(560px,\s*38vw,\s*720px\)/);
+  assert.match(panelRule[1], /@apply[^;]*right-0[^;]*grid[^;]*min-h-0/);
+  assert.match(drawerBodyRule[1], /overflow-y-auto/);
+  assert.match(tableRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\)/);
+  assert.match(workspaceRule[1], /grid-rows-\[auto_minmax\(0,1fr\)\]/);
+  assert.doesNotMatch(styles, /\.kubernetes-detail-page\s*\{/);
   assert.doesNotMatch(styles, /\.kubernetes-detail-copy\s*\{/);
-  assert.doesNotMatch(styles, /\.kubernetes-log-head\s*\{/);
-  assert.doesNotMatch(styles, /\.kubernetes-log-view-tabs\s*\{/);
-
-  const overviewColumns = [...overviewRule[1].matchAll(/minmax\((\d+)px,\s*([\d.]+)fr\)/g)];
-  assert.equal(overviewColumns.length, 5);
-  assert.match(overviewRule[1], /min-w-\[\d+px\]/);
-  assert.ok(Number(overviewColumns[3][2]) > Math.max(
-    Number(overviewColumns[0][2]),
-    Number(overviewColumns[1][2]),
-    Number(overviewColumns[2][2]),
-    Number(overviewColumns[4][2]),
-  ), 'the fourth Name field receives flexible space');
-  assert.match(overviewItemRule[1], /gap-1\.5/);
-  assert.match(overviewItemRule[1], /px-2/);
-  assert.match(overviewItemRule[1], /py-1/);
-  assert.match(overviewWrapperRule[1], /overflow-x-auto/);
-  assert.match(styles, /\.kubernetes-detail-overview-grid dd\s*\{[\s\S]*?whitespace-nowrap/);
-
-  assert.match(toolbarRule[1], /flex-nowrap/);
-  assert.match(toolbarRule[1], /overflow-x-auto/);
-  assert.doesNotMatch(toolbarRule[1], /flex-wrap/);
-  assert.match(logPanelRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/);
-  assert.match(logOutputRule[1], /min-h-0/);
-  assert.match(logOutputRule[1], /overflow-y-auto/);
-  assert.match(logOutputRule[1], /white-space:\s*pre;/);
-  assert.match(styles, /\.kubernetes-terminal-drawer\s*\{[\s\S]*?absolute/);
   assert.match(styles, /\.kubernetes-port-forwards\s*\{[\s\S]*?absolute/);
-  assert.doesNotMatch(detailRule[1], /bg-zinc-100\/70/);
-  assert.match(styles, /\.kubernetes-list-page\s*\{[\s\S]*?@apply[^;]*grid[^;]*gap-3/);
-  assert.match(styles, /\.kubernetes-detail-overview-grid dt\s*\{[\s\S]*?whitespace-nowrap/);
-  assert.match(styles, /\.kubernetes-detail-overview-grid dd\s*\{[\s\S]*?m-0[^;]*whitespace-nowrap/);
-  assert.match(styles, /\.kubernetes-namespace-control > \.btn\s*\{[\s\S]*?h-8/);
   assert.match(styles, /\.kubernetes-related-list\s*\{/);
   assert.match(styles, /\.kubernetes-related-row\s*\{/);
   assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
 });
 
-test('Kubernetes minimum viewport preserves bounded four tracks and internal one-row overflow', async () => {
+test('Kubernetes drawer narrows to the viewport while compact controls retain internal overflow', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
-  const responsiveStart = styles.indexOf('@media (max-width: 900px)');
+  const responsiveStart = styles.indexOf('@media (max-width: 640px)');
   assert.ok(responsiveStart >= 0);
   const responsiveStyles = styles.slice(responsiveStart);
-  const podRows = responsiveStyles.match(
-    /\.kubernetes-detail-pod\s*\{[\s\S]*?grid-template-rows:\s*auto\s+auto\s+minmax\((\d+)px,\s*([\d.]+)fr\)\s+minmax\((\d+)px,\s*([\d.]+)fr\);/,
-  );
-  assert.ok(podRows);
-
-  const contentMinimum = Number(podRows[1]);
-  const contentFraction = Number(podRows[2]);
-  const logMinimum = Number(podRows[3]);
-  const logFraction = Number(podRows[4]);
-  const minimumMiddleTrackBudget = 260;
-  const fixedLogChrome = 44 + 28;
-  const minimumUsefulLogOutput = 48;
-  assert.ok(contentMinimum + logMinimum <= minimumMiddleTrackBudget);
-  assert.ok(logFraction > contentFraction);
-  assert.ok(logMinimum - fixedLogChrome >= minimumUsefulLogOutput);
-  assert.doesNotMatch(responsiveStyles, /\.kubernetes-detail-overview-grid\s*\{[^}]*grid-template-columns/);
-  assert.doesNotMatch(responsiveStyles, /\.kubernetes-log-toolbar\s*\{[^}]*flex-wrap/);
-  assert.match(styles, /\.kubernetes-log-toolbar\s*\{[^}]*@apply[^;]*flex-nowrap[^;]*overflow-x-auto/);
+  assert.match(responsiveStyles, /\.kubernetes-detail-drawer-panel\s*\{\s*width:\s*min\(100%,\s*560px\)/);
+  assert.match(responsiveStyles, /\.kubernetes-drawer-header-grid\s*\{[\s\S]*?grid-cols-1/);
+  assert.match(styles, /\.kubernetes-control-row\s*\{[\s\S]*?overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-secondary-row\s*\{[\s\S]*?overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-category-tabs\s*\{[\s\S]*?flex-nowrap[^;]*overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-resource-tabs\s*\{[\s\S]*?flex-nowrap[^;]*overflow-x-auto/);
 });
 
 test('Kubernetes simultaneous runtime layers share the page containing-block height budget', async () => {
@@ -2003,12 +1878,65 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
   }
 });
 
-test('Kubernetes terminal errors dispose the drawer before the page reports the error', async () => {
+test('Kubernetes Task 4 detail page does not own terminal runtime callbacks', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const handlerStart = page.indexOf('onTerminalChanged(state) {');
-  const handlerEnd = page.indexOf('onTerminalOutput', handlerStart);
-  const handler = page.slice(handlerStart, handlerEnd);
 
-  assert.match(handler, /state\.state === 'closed' \|\| state\.state === 'error'/);
-  assert.ok(handler.indexOf('terminalDrawer?.open(state)') < handler.indexOf('setMessage(state.error'));
+  assert.doesNotMatch(page, /onTerminalChanged\(state\)|onTerminalOutput\(output\)/);
+  assert.doesNotMatch(page, /createKubernetesTerminalDrawer/);
+  assert.match(page, /openPortForwardDialog\(\)/);
+});
+
+test('Kubernetes shell has label-free compact controls, no Cluster category, and one eight-column table', async () => {
+  const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const controlStart = html.indexOf('class="kubernetes-control-row"');
+  const controlEnd = html.indexOf('class="kubernetes-secondary-row"', controlStart);
+  const controls = html.slice(controlStart, controlEnd);
+
+  assert.match(html, /id="kubernetes-context"[^>]*aria-label="Kubernetes Context"/);
+  assert.match(html, /id="kubernetes-namespace-toggle"[^>]*aria-label="Kubernetes Namespace scope"/);
+  assert.doesNotMatch(controls, />Context\s*</);
+  assert.doesNotMatch(controls, />Namespace\s*</);
+  assert.doesNotMatch(page, /Cluster:\s*\[/);
+  for (const heading of ['Namespace', 'Name', 'CPU', 'Memory', 'Restarts', 'Status', 'Node', 'Age']) {
+    assert.match(html, new RegExp(`>${heading}<`));
+  }
+  assert.match(html, /id="kubernetes-detail-drawer"/);
+  assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
+  assert.doesNotMatch(html, />Search loaded resources\s*</);
+  assert.match(html, /id="kubernetes-resource-search"[^>]*aria-label="Search loaded resources"/);
+});
+
+test('Kubernetes drawer request identity fences stale replacement completions', async () => {
+  const { isCurrentKubernetesDrawerRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const current = { visible: true, pageGeneration: 2, drawerGeneration: 4, uid: 'pod-a' };
+
+  assert.equal(isCurrentKubernetesDrawerRequest(current, current), true);
+  assert.equal(isCurrentKubernetesDrawerRequest(current, {
+    visible: true, pageGeneration: 2, drawerGeneration: 5, uid: 'pod-b',
+  }), false);
+  assert.equal(isCurrentKubernetesDrawerRequest(current, {
+    visible: true, pageGeneration: 3, drawerGeneration: 4, uid: 'pod-a',
+  }), false);
+  assert.equal(isCurrentKubernetesDrawerRequest(current, {
+    visible: false, pageGeneration: 2, drawerGeneration: 4, uid: 'pod-a',
+  }), false);
+});
+
+test('Kubernetes list updates render behind an active drawer and drawer values remain text-safe', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const listStart = page.indexOf('    onListChanged(snapshot) {');
+  const listEnd = page.indexOf('    renderState() {', listStart);
+  const onListChanged = page.slice(listStart, listEnd);
+  const drawerStart = page.indexOf('    renderPodDrawer(detail, active) {');
+  const drawerEnd = page.indexOf('    renderRelatedDetail(detail, active) {', drawerStart);
+  const drawer = page.slice(drawerStart, drawerEnd);
+
+  assert.ok(listStart >= 0 && listEnd > listStart);
+  assert.match(onListChanged, /this\.renderList\(\);/);
+  assert.doesNotMatch(onListChanged, /if \(!this\.activeDetail\) this\.renderList\(\)/);
+  assert.ok(drawerStart >= 0 && drawerEnd > drawerStart);
+  assert.match(drawer, /buildKubernetesDrawerModel\(detail,/);
+  assert.match(drawer, /\.textContent = /);
+  assert.doesNotMatch(drawer, /innerHTML/);
 });

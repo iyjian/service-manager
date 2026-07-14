@@ -221,63 +221,38 @@ test('buildKubernetesOverviewFields returns only Kind Namespace Status Name and 
   ]);
 });
 
-test('Kubernetes detail header replaces Copy and action rows with Port Forward while Terminal remains a runtime tab', async () => {
+test('Kubernetes resource detail uses an overlay drawer header with Port Forward and YAML controls', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
-  const detailStart = html.indexOf('id="kubernetes-detail-page"');
-  const detailEnd = html.indexOf('id="kubernetes-terminal-drawer"', detailStart);
+  const detailStart = html.indexOf('id="kubernetes-detail-drawer"');
+  const detailEnd = html.indexOf('id="kubernetes-port-forwards"', detailStart);
   const detail = html.slice(detailStart, detailEnd);
 
   assert.ok(detailStart >= 0);
   assert.ok(detailEnd > detailStart);
+  assert.match(detail, /id="kubernetes-detail-drawer-scrim"/);
+  assert.match(detail, /id="kubernetes-detail-close"/);
+  assert.match(detail, /id="kubernetes-detail-yaml-toggle"/);
   assert.match(detail, /id="kubernetes-detail-port-forward"/);
   assert.match(detail, /id="kubernetes-detail-port-summary"/);
-  assert.match(detail, /id="kubernetes-detail-port-forward"[\s\S]*?<svg[\s\S]*?>Port Forward</);
+  assert.match(detail, /id="kubernetes-detail-overview"/);
+  assert.match(detail, /id="kubernetes-detail-yaml"/);
   assert.doesNotMatch(detail, /id="kubernetes-detail-copy"/);
-  assert.doesNotMatch(detail, /id="kubernetes-terminal-open"/);
-  assert.doesNotMatch(detail, /id="kubernetes-detail-pod-actions"/);
-  assert.doesNotMatch(detail, /id="kubernetes-detail-service-actions"/);
-  assert.match(detail, /id="kubernetes-log-terminal-tab"/);
+  assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
+  assert.doesNotMatch(html, /id="kubernetes-terminal-drawer"/);
+  assert.doesNotMatch(html, /id="kubernetes-log-panel"/);
 });
 
-test('Kubernetes Pod interactions use one ordered log toolbar with static Follow icons', async () => {
+test('Kubernetes reserves a hidden workspace shell for the later Logs and Shell integration', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
-  const panelStart = html.indexOf('id="kubernetes-log-panel"');
-  const panelEnd = html.indexOf('</section>', panelStart);
-  const panel = html.slice(panelStart, panelEnd);
-  const toolbarStart = panel.indexOf('<header class="kubernetes-log-toolbar">');
-  const toolbarEnd = panel.indexOf('</header>', toolbarStart);
-  const toolbar = panel.slice(toolbarStart, toolbarEnd);
+  const workspaceStart = html.indexOf('id="kubernetes-workspace"');
+  const workspaceEnd = html.indexOf('</section>', workspaceStart);
+  const workspace = html.slice(workspaceStart, workspaceEnd);
 
-  assert.ok(panelStart >= 0);
-  assert.ok(panelEnd > panelStart);
-  assert.ok(toolbarStart >= 0);
-  assert.ok(toolbarEnd > toolbarStart);
-  assert.equal(panel.match(/class="kubernetes-log-toolbar"/g)?.length, 1);
-  assert.doesNotMatch(panel, /kubernetes-log-view-tabs|kubernetes-log-head/);
-
-  const orderedControls = [
-    '<span>Logs</span>',
-    'id="kubernetes-log-terminal-tab"',
-    'id="kubernetes-log-search"',
-    'id="kubernetes-log-follow"',
-    'id="kubernetes-log-clear"',
-    'id="kubernetes-container-select"',
-  ];
-  let previous = -1;
-  for (const control of orderedControls) {
-    const index = toolbar.indexOf(control);
-    assert.ok(index > previous, `${control} should follow the previous toolbar control`);
-    previous = index;
-  }
-
-  const followStart = toolbar.indexOf('id="kubernetes-log-follow"');
-  const followEnd = toolbar.indexOf('</button>', followStart);
-  const follow = toolbar.slice(followStart, followEnd);
-  assert.match(follow, /aria-label="Pause log follow"/);
-  assert.match(follow, /title="Pause log follow"/);
-  assert.match(follow, /id="kubernetes-log-follow-pause-icon"/);
-  assert.match(follow, /id="kubernetes-log-follow-play-icon"[^>]*class="hidden"/);
-  assert.doesNotMatch(follow, /Pause Follow|Resume Follow/);
+  assert.ok(workspaceStart >= 0 && workspaceEnd > workspaceStart);
+  assert.match(workspace, /class="kubernetes-workspace hidden"/);
+  assert.match(workspace, /id="kubernetes-workspace-tabs"/);
+  assert.match(workspace, /id="kubernetes-workspace-pane"/);
+  assert.doesNotMatch(workspace, /kubernetes-log-|kubernetes-terminal-/);
 });
 
 test('Kubernetes terminal workspace selection keeps tab state accessible and hides sessions only for Logs', async () => {
@@ -321,65 +296,51 @@ test('Kubernetes terminal workspace selection keeps tab state accessible and hid
   assert.equal(hideCount, 1);
 });
 
-test('Kubernetes terminal tab click selects Terminal before opening and Logs hides without closing sessions', async () => {
+test('Kubernetes drawer binds local close, scrim, and YAML controls without starting workspace sessions', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
   const bindings = page.slice(
-    page.indexOf("this.containerSelect.addEventListener('change'"),
+    page.indexOf("this.detailCloseButton.addEventListener('click'"),
     page.indexOf("this.portForwardDeclaredPort.addEventListener('change'"),
   );
-  const openStart = page.indexOf('    async openTerminal() {');
-  const openEnd = page.indexOf('    onTerminalChanged(state) {', openStart);
-  const openTerminal = page.slice(openStart, openEnd);
 
-  assert.match(bindings, /this\.logTab\.addEventListener\('click',[\s\S]*?this\.selectPodWorkspace\('logs'\)/);
-  assert.match(bindings, /this\.logTerminalTab\.addEventListener\('click',[\s\S]*?this\.openTerminal\(\)/);
-  assert.ok(openTerminal.indexOf("this.selectPodWorkspace('terminal')")
-    < openTerminal.indexOf('openKubernetesTerminalWorkspace'));
-  assert.doesNotMatch(bindings, /closeTerminal/);
+  assert.match(bindings, /this\.detailCloseButton\.addEventListener\('click', \(\) => this\.closeDetail\(\)\)/);
+  assert.match(bindings, /this\.detailDrawerScrim\.addEventListener\('click', \(\) => this\.closeDetail\(\)\)/);
+  assert.match(bindings, /this\.detailYamlToggle\.addEventListener\('click', \(\) => this\.toggleDrawerYaml\(\)\)/);
+  assert.doesNotMatch(page, /createKubernetesTerminalDrawer/);
+  assert.doesNotMatch(page, /openLogsForSelectedContainer/);
 });
 
-test('Kubernetes terminal workspace resets to Logs and invalidates pending ownership on target transitions', async () => {
+test('Kubernetes drawer close invalidates only the active detail and preserves runtime resources', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
-  const containerChange = page.slice(
-    page.indexOf("this.containerSelect.addEventListener('change'"),
-    page.indexOf("this.logFollowButton.addEventListener('click'"),
-  );
-  const openDetail = page.slice(
-    page.indexOf('    async openDetail(summary) {'),
-    page.indexOf('    async closeDetail() {'),
-  );
   const closeDetail = page.slice(
-    page.indexOf('    async closeDetail() {'),
+    page.indexOf('    closeDetail() {'),
     page.indexOf('    displayDetail() {'),
   );
-  const openRelatedPod = page.slice(
-    page.indexOf('    async openRelatedPod(active, summary) {'),
-    page.indexOf('    activeLog() {'),
-  );
 
-  for (const transition of [containerChange, openDetail, openRelatedPod]) {
-    assert.match(transition, /this\.openingTerminals\.clear\(\)[\s\S]*?this\.selectPodWorkspace\('logs'\)/);
-  }
-  assert.match(closeDetail, /this\.openingTerminals\.clear\(\)[\s\S]*?await this\.closeDetailLogs\(\)/);
+  assert.match(closeDetail, /this\.activeDetail = undefined/);
+  assert.match(closeDetail, /this\.decodedSecretDetail = undefined/);
+  assert.match(closeDetail, /this\.detailDrawer\.classList\.add\('hidden'\)/);
+  assert.match(closeDetail, /this\.closePortForwardDialog\(\)/);
+  assert.doesNotMatch(closeDetail, /closeLogs|closeTerminal|stopPortForward|deactivatePage/);
+  assert.doesNotMatch(closeDetail, /await /);
 });
 
-test('Kubernetes terminal page binds final-state authority to an exact session ID', async () => {
+test('Kubernetes Pod drawer renders static containers and safe text-only values', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
-  const workspaceStart = page.indexOf('    selectPodWorkspace(workspace) {');
-  const workspaceEnd = page.indexOf('    cancelLogAutoScroll() {', workspaceStart);
-  const workspace = page.slice(workspaceStart, workspaceEnd);
-  const openStart = page.indexOf('    async openTerminal() {');
-  const openEnd = page.indexOf('    onTerminalChanged(state) {', openStart);
-  const openTerminal = page.slice(openStart, openEnd);
-  const finalStart = page.indexOf('    onTerminalChanged(state) {');
-  const finalEnd = page.indexOf('    onTerminalOutput(output) {', finalStart);
-  const finalHandler = page.slice(finalStart, finalEnd);
+  const drawer = page.slice(
+    page.indexOf('    renderPodDrawer(detail, active) {'),
+    page.indexOf('    createDrawerSection(', page.indexOf('    renderPodDrawer(detail, active) {')),
+  );
 
-  assert.match(page, /terminalWorkspaceSessionId/);
-  assert.match(workspace, /workspace === 'logs'[\s\S]*?this\.terminalWorkspaceSessionId = undefined/);
-  assert.match(openTerminal, /claimSession: \(id\) => \{\s*this\.terminalWorkspaceSessionId = id/);
-  assert.match(finalHandler, /workspaceSessionId: this\.terminalWorkspaceSessionId/);
-  assert.match(finalHandler, /claimSession: \(id\) => \{\s*this\.terminalWorkspaceSessionId = id/);
+  assert.match(page, /buildKubernetesDrawerModel/);
+  assert.match(drawer, /this\.createDrawerSection\('Labels'/);
+  assert.match(drawer, /this\.createDrawerSection\('Containers'/);
+  for (const label of ['Status', 'Image', 'Pull policy', 'Mounts', 'Command', 'Environment']) {
+    assert.match(drawer, new RegExp(`\\['${label}'`));
+  }
+  assert.match(drawer, /container\.environmentDeclared \? 'Declared' : 'Not declared'/);
+  assert.match(drawer, /\.textContent = /);
+  assert.doesNotMatch(drawer, /innerHTML|openLogs|openTerminal|getPodContainerEnvironment/);
 });
 
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
@@ -401,13 +362,13 @@ test('Kubernetes Port Forward dialog declares a hidden safe candidate selector b
 test('Kubernetes detail controller safely integrates Overview and declared Port Forward models', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
   const overviewStart = page.indexOf('    renderOverview(detail, active) {');
-  const overviewEnd = page.indexOf('    async selectDetailTab(tab) {', overviewStart);
+  const overviewEnd = page.indexOf('    toggleDrawerYaml() {', overviewStart);
   const overview = page.slice(overviewStart, overviewEnd);
   const dialogStart = page.indexOf('    openPortForwardDialog() {');
   const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
   const dialog = page.slice(dialogStart, dialogEnd);
-  const detailRuntimeStart = page.indexOf('    renderPodActions(detail, active) {');
-  const detailRuntimeEnd = page.indexOf('    appendContainerOption(value, label, init) {', detailRuntimeStart);
+  const detailRuntimeStart = page.indexOf('    renderDrawerPortForward(detail, active) {');
+  const detailRuntimeEnd = page.indexOf('    renderPodDrawer(detail, active) {', detailRuntimeStart);
   const detailRuntime = page.slice(detailRuntimeStart, detailRuntimeEnd);
 
   assert.match(page, /buildKubernetesOverviewFields/);
@@ -439,13 +400,13 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
 
 test('Kubernetes detail loading synchronously fences stale actions for direct and related Pod navigation', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
-  const resetStart = page.indexOf('    resetDetailLoadingState(generation) {');
-  const resetEnd = page.indexOf('    async openDetail(summary) {', resetStart);
+  const resetStart = page.indexOf('    beginDrawerReplacement() {');
+  const resetEnd = page.indexOf('    createDrawerRequest(', resetStart);
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
-  const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
+  const openDetailEnd = page.indexOf('    closeDetail() {', openDetailStart);
   const openDetail = page.slice(openDetailStart, openDetailEnd);
   const relatedStart = page.indexOf('    async openRelatedPod(active, summary) {');
-  const relatedEnd = page.indexOf('    activeLog() {', relatedStart);
+  const relatedEnd = page.indexOf('    openPortForwardDialog() {', relatedStart);
   const openRelatedPod = page.slice(relatedStart, relatedEnd);
   const reset = page.slice(resetStart, resetEnd);
   const dialogStart = page.indexOf('    openPortForwardDialog() {');
@@ -454,10 +415,9 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   const dialog = page.slice(dialogStart, closeDialogStart);
   const closeDialog = page.slice(closeDialogStart, closeDialogEnd);
   const detailRequestStart = openDetail.indexOf('await window.kubernetesApi.getResourceDetail');
-  const relatedLogCloseStart = openRelatedPod.indexOf('await this.closeDetailLogs()');
   const relatedRequestStart = openRelatedPod.indexOf('await window.kubernetesApi.getResourceDetail');
-  const detailResetStart = openDetail.indexOf('this.resetDetailLoadingState(detailGeneration);');
-  const relatedResetStart = openRelatedPod.indexOf('this.resetDetailLoadingState(generation);');
+  const detailResetStart = openDetail.indexOf('this.beginDrawerReplacement()');
+  const relatedResetStart = openRelatedPod.indexOf('this.beginDrawerReplacement()');
 
   assert.ok(resetStart >= 0);
   assert.ok(resetEnd > resetStart);
@@ -469,107 +429,75 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   assert.ok(closeDialogStart > dialogStart);
   assert.ok(closeDialogEnd > closeDialogStart);
   assert.ok(detailRequestStart >= 0);
-  assert.ok(relatedLogCloseStart >= 0);
   assert.ok(relatedRequestStart >= 0);
   assert.ok(detailResetStart >= 0);
   assert.ok(relatedResetStart >= 0);
+  assert.match(reset, /const generation = \+\+this\.detailGeneration/);
+  assert.match(reset, /this\.invalidateRelatedDetail\(\)/);
+  assert.match(reset, /this\.activeDetail = undefined/);
   assert.match(reset, /this\.detailPortForwardButton\.classList\.add\('hidden'\)/);
   assert.match(reset, /this\.detailPortForwardButton\.disabled = true/);
   assert.match(reset, /this\.detailPortSummary\.textContent = ''/);
   assert.match(reset, /this\.closePortForwardDialog\(\)/);
   assert.match(closeDialog, /this\.portForwardDraft = undefined/);
-  assert.match(reset, /this\.logPanel\.classList\.add\('hidden'\)/);
-  assert.match(reset, /this\.logTerminalTab\.disabled = true/);
-  assert.match(reset, /this\.detailPage\.classList\.remove\('kubernetes-detail-pod'\)/);
-  assert.doesNotMatch(reset, /this\.activeDetail\s*=/);
-  assert.match(dialog, /if \((?:this\.detailLoading \|\| )?this\.detailPortForwardButton\.disabled\)\s*return/);
+  assert.match(reset, /this\.detailOverview\.replaceChildren\(\)/);
+  assert.match(reset, /this\.detailYaml\.textContent = ''/);
+  assert.match(reset, /this\.detailDrawer\.classList\.remove\('hidden'\)/);
+  assert.match(dialog, /if \(this\.detailPortForwardButton\.disabled\)\s*return/);
   assert.ok(detailResetStart < detailRequestStart);
-  assert.ok(relatedResetStart < relatedLogCloseStart);
   assert.ok(relatedResetStart < relatedRequestStart);
 });
 
-test('Kubernetes related-Pod loading blocks stale Service tab renders and Port Forward drafts', async () => {
+test('Kubernetes related-Pod drawer navigation guards stale results and leaves the resource list active', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
-  const tabStateStart = page.indexOf('    setDetailTabsDisabled(disabled) {');
-  const resetStart = page.indexOf('    resetDetailLoadingState(generation) {');
-  const clearStart = page.indexOf('    clearDetailLoadingState() {');
-  const finishStart = page.indexOf('    finishDetailLoadingState(generation) {');
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
-  const openDetailEnd = page.indexOf('    async closeDetail() {', openDetailStart);
-  const closeDetailStart = openDetailEnd;
-  const closeDetailEnd = page.indexOf('    displayDetail() {', closeDetailStart);
+  const openDetailEnd = page.indexOf('    closeDetail() {', openDetailStart);
   const renderDetailStart = page.indexOf('    renderDetail() {');
-  const renderDetailEnd = page.indexOf('    renderDetailTabs(tab) {', renderDetailStart);
-  const selectTabStart = page.indexOf('    async selectDetailTab(tab) {');
-  const selectTabEnd = page.indexOf('    renderEvents(events) {', selectTabStart);
+  const renderDetailEnd = page.indexOf('    renderOverview(detail, active) {', renderDetailStart);
   const relatedStart = page.indexOf('    async openRelatedPod(active, summary) {');
-  const relatedEnd = page.indexOf('    activeLog() {', relatedStart);
-  const dialogStart = page.indexOf('    openPortForwardDialog() {');
-  const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
-  const tabState = page.slice(tabStateStart, resetStart);
-  const reset = page.slice(resetStart, clearStart);
-  const clear = page.slice(clearStart, finishStart);
-  const finish = page.slice(finishStart, openDetailStart);
+  const relatedEnd = page.indexOf('    openPortForwardDialog() {', relatedStart);
   const openDetail = page.slice(openDetailStart, openDetailEnd);
-  const closeDetail = page.slice(closeDetailStart, closeDetailEnd);
   const renderDetail = page.slice(renderDetailStart, renderDetailEnd);
-  const selectTab = page.slice(selectTabStart, selectTabEnd);
   const related = page.slice(relatedStart, relatedEnd);
-  const dialog = page.slice(dialogStart, dialogEnd);
-  const renderGuard = renderDetail.indexOf('if (this.detailLoading)');
-  const renderRuntime = renderDetail.indexOf('this.renderPodActions');
-  const selectGuard = selectTab.indexOf('if (this.detailLoading)');
-  const selectMutation = selectTab.indexOf('active.tab = tab');
-  const selectRender = selectTab.indexOf('this.renderDetail();');
-  const dialogGuard = dialog.indexOf('if (this.detailLoading || this.detailPortForwardButton.disabled)');
-  const dialogDraft = dialog.indexOf('this.portForwardDraft = {');
-  const directCatch = openDetail.indexOf('catch (error) {');
-  const relatedCatch = related.indexOf('catch (error) {');
-  const directSuccess = openDetail.slice(
-    openDetail.indexOf('const detail = await window.kubernetesApi.getResourceDetail'),
-    directCatch,
-  );
-  const relatedSuccess = related.slice(
-    related.indexOf('const detail = await window.kubernetesApi.getResourceDetail'),
-    relatedCatch,
-  );
-  const relatedRecovery = related.slice(relatedCatch);
-  const closeHidden = closeDetail.indexOf("this.detailPage.classList.add('hidden')");
-  const closeFinish = closeDetail.indexOf('this.clearDetailLoadingState();');
 
-  for (const index of [
-    tabStateStart,
-    resetStart,
-    clearStart,
-    finishStart,
-    openDetailStart,
-    closeDetailStart,
-    closeDetailEnd,
-    renderDetailStart,
-    renderDetailEnd,
-    selectTabStart,
-    selectTabEnd,
-    relatedStart,
-    relatedEnd,
-    dialogStart,
-    dialogEnd,
-    directCatch,
-    relatedCatch,
-  ]) assert.ok(index >= 0);
-  assert.match(tabState, /button\.disabled = disabled/);
-  assert.match(reset, /this\.detailLoading = true/);
-  assert.match(reset, /this\.detailLoadingGeneration = generation/);
-  assert.match(reset, /this\.setDetailTabsDisabled\(true\)/);
-  assert.match(finish, /this\.detailLoadingGeneration !== generation/);
-  assert.match(finish, /this\.clearDetailLoadingState\(\)/);
-  assert.match(clear, /this\.detailLoading = false/);
-  assert.match(clear, /this\.detailLoadingGeneration = undefined/);
-  assert.match(clear, /this\.setDetailTabsDisabled\(false\)/);
-  assert.ok(renderGuard >= 0 && renderGuard < renderRuntime);
-  assert.ok(selectGuard >= 0 && selectGuard < selectMutation && selectGuard < selectRender);
-  assert.ok(dialogGuard >= 0 && dialogGuard < dialogDraft);
-  assert.match(directSuccess, /this\.finishDetailLoadingState\(detailGeneration\)[\s\S]*?this\.renderDetail\(\)/);
-  assert.ok(closeHidden >= 0 && closeFinish > closeHidden);
-  assert.match(relatedSuccess, /this\.finishDetailLoadingState\(generation\)[\s\S]*?this\.renderDetail\(\)/);
-  assert.match(relatedRecovery, /this\.finishDetailLoadingState\(generation\)[\s\S]*?this\.renderDetail\(\)/);
+  for (const index of [openDetailStart, openDetailEnd, renderDetailStart, renderDetailEnd, relatedStart, relatedEnd]) {
+    assert.ok(index >= 0);
+  }
+  assert.match(openDetail, /this\.createDrawerRequest\(summary, detailGeneration\)/);
+  assert.match(openDetail, /if \(!this\.isCurrentDrawerRequest\(request, query\)\)\s*return/);
+  assert.match(related, /this\.createDrawerRequest\(summary, generation\)/);
+  assert.match(related, /if \(!this\.isCurrentDrawerRequest\(request, query\)\)\s*return/);
+  assert.match(renderDetail, /this\.renderDrawerPortForward\(detail, active\)/);
+  assert.doesNotMatch(openDetail, /listPage\.classList\.add\('hidden'\)/);
+  assert.doesNotMatch(related, /listPage\.classList\.add\('hidden'\)/);
+});
+
+test('Kubernetes drawer replacement synchronously clears stale Service actions before related Pod loading', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const replacementStart = page.indexOf('    beginDrawerReplacement() {');
+  const replacementEnd = page.indexOf('    async openDetail(summary) {', replacementStart);
+  const openDetailStart = page.indexOf('    async openDetail(summary) {');
+  const openDetailEnd = page.indexOf('    closeDetail() {', openDetailStart);
+  const relatedStart = page.indexOf('    async openRelatedPod(active, summary) {');
+  const relatedEnd = page.indexOf('    openPortForwardDialog() {', relatedStart);
+  const replacement = page.slice(replacementStart, replacementEnd);
+  const openDetail = page.slice(openDetailStart, openDetailEnd);
+  const related = page.slice(relatedStart, relatedEnd);
+
+  assert.ok(replacementStart >= 0 && replacementEnd > replacementStart);
+  assert.ok(openDetailStart >= 0 && openDetailEnd > openDetailStart);
+  assert.ok(relatedStart >= 0 && relatedEnd > relatedStart);
+  assert.match(replacement, /const generation = \+\+this\.detailGeneration/);
+  assert.match(replacement, /this\.invalidateRelatedDetail\(\)/);
+  assert.match(replacement, /this\.activeDetail = undefined/);
+  assert.match(replacement, /this\.detailPortForwardButton\.disabled = true/);
+  assert.match(replacement, /this\.detailPortForwardButton\.classList\.add\('hidden'\)/);
+  assert.match(replacement, /this\.detailPortSummary\.textContent = ''/);
+  assert.match(replacement, /this\.detailOverview\.replaceChildren\(\)/);
+  assert.match(replacement, /this\.detailYaml\.textContent = ''/);
+  assert.match(replacement, /this\.detailDrawer\.classList\.remove\('hidden'\)/);
+  assert.ok(openDetail.indexOf('this.beginDrawerReplacement()')
+    < openDetail.indexOf('await window.kubernetesApi.getResourceDetail'));
+  assert.ok(related.indexOf('this.beginDrawerReplacement()')
+    < related.indexOf('await window.kubernetesApi.getResourceDetail'));
 });
