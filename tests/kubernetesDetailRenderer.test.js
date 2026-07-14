@@ -310,6 +310,42 @@ test('Kubernetes drawer binds local close, scrim, and YAML controls without star
   assert.doesNotMatch(page, /openLogsForSelectedContainer/);
 });
 
+test('drawer container actions target the persistent workspace while drawer close leaves tabs alone', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const drawer = page.slice(
+    page.indexOf('    renderPodDrawer(detail, active) {'),
+    page.indexOf('    createDrawerSection(', page.indexOf('    renderPodDrawer(detail, active) {')),
+  );
+  const closeDetail = page.slice(
+    page.indexOf('    closeDetail() {'),
+    page.indexOf('    displayDetail() {'),
+  );
+
+  assert.match(drawer, /this\.workspace\.openLogs\(container\.target\)/);
+  assert.match(drawer, /this\.workspace\.openShell\(container\.target\)/);
+  assert.match(drawer, /aria-label.*View logs for/);
+  assert.match(drawer, /aria-label.*Open shell for/);
+  assert.doesNotMatch(closeDetail, /workspace\.dispose|closeLogs|closeTerminal/);
+});
+
+test('Kubernetes page owns one workspace and awaits it before hide, Context change, disconnect, and deactivation', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const show = page.slice(page.indexOf('    show() {'), page.indexOf('    hide() {'));
+  const hide = page.slice(page.indexOf('    hide() {'), page.indexOf('    destroy() {'));
+  const workspace = page.slice(page.indexOf('    ensureWorkspace() {'), page.indexOf('    disposeWorkspace() {'));
+  const state = page.slice(page.indexOf('    onStateChanged(state) {'), page.indexOf('    onListChanged(snapshot) {'));
+
+  assert.match(show, /this\.ensureWorkspace\(\)/);
+  assert.match(workspace, /createKubernetesWorkspace\(/);
+  assert.match(show, /onLogChanged\(\(state\) => this\.workspace\?\.onLogChanged\(state\)\)/);
+  assert.match(show, /onTerminalChanged\(\(state\) => this\.workspace\?\.onTerminalChanged\(state\)\)/);
+  assert.match(show, /onTerminalOutput\(\(output\) => this\.workspace\?\.onTerminalOutput\(output\)\)/);
+  assert.match(hide, /this\.disposeWorkspace\(\)/);
+  assert.match(state, /disposeWorkspace/);
+  assert.match(page, /deactivatePage\(\)[\s\S]{0,500}disposeWorkspace|disposeWorkspace[\s\S]{0,500}deactivatePage\(\)/);
+  assert.doesNotMatch(page, /kubernetes-terminal-drawer/);
+});
+
 test('Kubernetes drawer close invalidates only the active detail and preserves runtime resources', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
   const closeDetail = page.slice(
@@ -340,7 +376,11 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   }
   assert.match(drawer, /container\.environmentDeclared \? 'Declared' : 'Not declared'/);
   assert.match(drawer, /\.textContent = /);
-  assert.doesNotMatch(drawer, /innerHTML|openLogs|openTerminal|getPodContainerEnvironment/);
+  assert.doesNotMatch(drawer, /innerHTML|getPodContainerEnvironment/);
+  assert.match(drawer, /logs\.setAttribute\('aria-label', `View logs for \$\{container\.name\}`\)/);
+  assert.match(drawer, /shell\.setAttribute\('aria-label', `Open shell for \$\{container\.name\}`\)/);
+  assert.match(drawer, /this\.workspace\.openLogs\(container\.target\)/);
+  assert.match(drawer, /this\.workspace\.openShell\(container\.target\)/);
 });
 
 test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {

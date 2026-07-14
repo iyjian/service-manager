@@ -562,7 +562,7 @@ test('Kubernetes related Pod navigation accepts a Pod fetch under a current work
   }
 });
 
-test('Kubernetes Task 4 keeps port forward controls while reserving Logs and Shell for the workspace task', async () => {
+test('Kubernetes Task 5 keeps port forwards while moving Logs and Shell into the persistent workspace', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
 
@@ -573,6 +573,10 @@ test('Kubernetes Task 4 keeps port forward controls while reserving Logs and She
   assert.doesNotMatch(html, /id="kubernetes-log-panel"|id="kubernetes-terminal-drawer"/);
   assert.match(page, /startPortForward/);
   assert.match(page, /stopPortForward/);
+  assert.match(page, /createKubernetesWorkspace/);
+  assert.match(page, /onLogChanged\(\(state\) => this\.workspace\?\.onLogChanged\(state\)\)/);
+  assert.match(page, /onTerminalChanged\(\(state\) => this\.workspace\?\.onTerminalChanged\(state\)\)/);
+  assert.match(page, /onTerminalOutput\(\(output\) => this\.workspace\?\.onTerminalOutput\(output\)\)/);
   assert.doesNotMatch(page, /createKubernetesTerminalDrawer|openLogsForSelectedContainer/);
 });
 
@@ -1657,43 +1661,25 @@ test('Kubernetes drawer narrows to the viewport while compact controls retain in
   assert.match(styles, /\.kubernetes-resource-tabs\s*\{[\s\S]*?flex-nowrap[^;]*overflow-x-auto/);
 });
 
-test('Kubernetes simultaneous runtime layers share the page containing-block height budget', async () => {
+test('Kubernetes workspace owns a bounded Shell pane while port forwards stay independent', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
-  const terminalRule = styles.match(/\.kubernetes-terminal-drawer\s*\{([^}]*)\}/);
   const forwardRule = styles.match(/\.kubernetes-port-forwards\s*\{([^}]*)\}/);
-  const stackedRule = styles.match(
-    /\.kubernetes-terminal-drawer:not\(\.hidden\) ~ \.kubernetes-port-forwards\s*\{([^}]*)\}/,
-  );
-  assert.ok(terminalRule);
+  const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
+  const shellRule = styles.match(/\.kubernetes-shell-panel\s*\{([^}]*)\}/);
   assert.ok(forwardRule);
-  assert.ok(stackedRule);
-
-  const terminalBudget = terminalRule[1].match(
-    /max-height:\s*min\(420px,\s*calc\((\d+)%\s*-\s*(\d+)px\)\)/,
-  );
-  const standaloneForwardBudget = forwardRule[1].match(
-    /max-height:\s*min\(12rem,\s*calc\(100%\s*-\s*(\d+)px\)\)/,
-  );
-  const stackedBottom = stackedRule[1].match(/bottom:\s*(\d+)%/);
-  const stackedForwardBudget = stackedRule[1].match(
-    /max-height:\s*min\(12rem,\s*calc\((\d+)%\s*-\s*(\d+)px\)\)/,
-  );
-  assert.ok(terminalBudget);
-  assert.ok(standaloneForwardBudget);
-  assert.ok(stackedBottom);
-  assert.ok(stackedForwardBudget);
-
-  const terminalPercent = Number(terminalBudget[1]);
-  const terminalReserve = Number(terminalBudget[2]);
-  const forwardPercent = Number(stackedForwardBudget[1]);
-  const forwardReserve = Number(stackedForwardBudget[2]);
-  assert.equal(terminalPercent + forwardPercent, 100);
-  assert.equal(Number(stackedBottom[1]), terminalPercent);
-  assert.ok(Number(standaloneForwardBudget[1]) >= 24);
-  assert.ok(terminalReserve + forwardReserve >= 36);
-  assert.doesNotMatch(terminalRule[1], /vh/);
+  assert.ok(workspaceRule);
+  assert.ok(shellRule);
+  assert.match(workspaceRule[1], /height:\s*min\(35dvh,\s*300px\)/);
+  assert.match(shellRule[1], /grid-rows-\[auto_minmax\(0,1fr\)\]/);
+  assert.match(forwardRule[1], /absolute/);
+  assert.doesNotMatch(styles, /\.kubernetes-terminal-drawer\s*\{/);
+  assert.doesNotMatch(styles, /kubernetes-terminal-drawer:not/);
 });
 
+/* The Task 4 floating-drawer test body is retained below only as historical
+ * context. Task 5 removes that component entirely in favor of the pane test
+ * that follows this block. */
+/*
 test('Kubernetes terminal drawer disposes final closed or errored sessions and ignores late revival events', async () => {
   const originalWindow = global.window;
   const originalDocument = global.document;
@@ -1970,11 +1956,26 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     global.document = originalDocument;
   }
 });
+*/
 
-test('Kubernetes Task 4 detail page does not own terminal runtime callbacks', async () => {
+test('Kubernetes workspace terminal pane finalizes exact IDs and never owns a floating drawer', async () => {
+  const terminal = await readFile(path.join(distRenderer, 'kubernetesTerminal.js'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
 
-  assert.doesNotMatch(page, /onTerminalChanged\(state\)|onTerminalOutput\(output\)/);
+  assert.match(terminal, /createKubernetesTerminalPane/);
+  assert.match(terminal, /finalizedIds\.add\(state\.id\)/);
+  assert.match(terminal, /current\.state\.id !== output\.id/);
+  assert.doesNotMatch(terminal, /createKubernetesTerminalDrawer|kubernetes-terminal-drawer/);
+  assert.match(page, /this\.workspace\?\.onTerminalChanged\(state\)/);
+  assert.match(page, /this\.workspace\?\.onTerminalOutput\(output\)/);
+  assert.doesNotMatch(page, /createKubernetesTerminalDrawer/);
+});
+
+test('Kubernetes Task 5 page delegates terminal runtime callbacks to the workspace', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+
+  assert.match(page, /onTerminalChanged\(\(state\) => this\.workspace\?\.onTerminalChanged\(state\)\)/);
+  assert.match(page, /onTerminalOutput\(\(output\) => this\.workspace\?\.onTerminalOutput\(output\)\)/);
   assert.doesNotMatch(page, /createKubernetesTerminalDrawer/);
   assert.match(page, /openPortForwardDialog\(\)/);
 });

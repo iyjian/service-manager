@@ -18,6 +18,7 @@ import type {
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
 import { buildKubernetesDrawerModel } from './kubernetesDrawerModel.js';
+import { createKubernetesWorkspace, type KubernetesWorkspace } from './kubernetesWorkspace.js';
 import {
   buildKubernetesOverviewFields,
   buildKubernetesPortForwardDialogModel,
@@ -38,6 +39,23 @@ const KUBERNETES_NAV_ICON = `
     <path d="M8 1.8v6.1m5.4-3L8 7.9 2.6 4.9m5.4 3v6.3"></path>
   </svg>
 `;
+
+function createKubernetesDrawerIcon(paths: string[]): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.7');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const value of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', value);
+    svg.appendChild(path);
+  }
+  return svg;
+}
 
 export const RESOURCE_CATEGORIES = {
   Workloads: ['pods', 'deployments', 'statefulsets'],
@@ -799,6 +817,9 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailYamlToggle = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-toggle');
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
+  private readonly workspaceRoot = requireElement<HTMLElement>('#kubernetes-workspace');
+  private readonly workspaceTabs = requireElement<HTMLElement>('#kubernetes-workspace-tabs');
+  private readonly workspacePane = requireElement<HTMLElement>('#kubernetes-workspace-pane');
   private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
   private readonly portForwardList = requireElement<HTMLElement>('#kubernetes-port-forward-list');
   private readonly portForwardDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forward-dialog');
@@ -836,6 +857,9 @@ class KubernetesPage implements KubernetesPageController {
   private namespaceRequestGeneration = 0;
   private unsubscribeState: (() => void) | undefined;
   private unsubscribeList: (() => void) | undefined;
+  private unsubscribeLog: (() => void) | undefined;
+  private unsubscribeTerminal: (() => void) | undefined;
+  private unsubscribeTerminalOutput: (() => void) | undefined;
   private unsubscribePortForward: (() => void) | undefined;
   private bound = false;
   private pageGeneration = 0;
@@ -851,6 +875,7 @@ class KubernetesPage implements KubernetesPageController {
   private relatedGeneration = 0;
   /** Plaintext Secret material may exist only while its drawer detail is active. */
   private decodedSecretDetail: Record<string, unknown> | undefined;
+  private workspace: KubernetesWorkspace | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
 
@@ -860,8 +885,12 @@ class KubernetesPage implements KubernetesPageController {
     const pageGeneration = ++this.pageGeneration;
     this.ensureBound();
     this.ensureTable();
+    this.ensureWorkspace();
     this.unsubscribeState = window.kubernetesApi.onStateChanged((state) => this.onStateChanged(state));
     this.unsubscribeList = window.kubernetesApi.onListChanged((snapshot) => this.onListChanged(snapshot));
+    this.unsubscribeLog = window.kubernetesApi.onLogChanged((state) => this.workspace?.onLogChanged(state));
+    this.unsubscribeTerminal = window.kubernetesApi.onTerminalChanged((state) => this.workspace?.onTerminalChanged(state));
+    this.unsubscribeTerminalOutput = window.kubernetesApi.onTerminalOutput((output) => this.workspace?.onTerminalOutput(output));
     this.unsubscribePortForward = window.kubernetesApi.onPortForwardChanged((state) => this.onPortForwardChanged(state));
     void this.loadPortForwards();
     void this.waitForPriorDeactivation(pageGeneration);
@@ -884,19 +913,62 @@ class KubernetesPage implements KubernetesPageController {
     this.unsubscribeState = undefined;
     this.unsubscribeList?.();
     this.unsubscribeList = undefined;
+    this.unsubscribeLog?.();
+    this.unsubscribeLog = undefined;
+    this.unsubscribeTerminal?.();
+    this.unsubscribeTerminal = undefined;
+    this.unsubscribeTerminalOutput?.();
+    this.unsubscribeTerminalOutput = undefined;
     this.unsubscribePortForward?.();
     this.unsubscribePortForward = undefined;
     this.closePortForwardDialog();
     this.closeDetail();
     this.table?.dispose();
     this.table = undefined;
-    this.deactivation = window.kubernetesApi.deactivatePage().catch((error) => {
+    this.deactivation = this.disposeWorkspace().then(
+      () => window.kubernetesApi.deactivatePage(),
+      () => window.kubernetesApi.deactivatePage(),
+    ).catch((error) => {
       console.error('[kubernetes:deactivate-page]', error);
     });
   }
 
   public destroy(): void {
     this.hide();
+  }
+
+  private ensureWorkspace(): void {
+    if (this.workspace) return;
+    this.workspace = createKubernetesWorkspace({
+      root: this.workspaceRoot,
+      tabList: this.workspaceTabs,
+      pane: this.workspacePane,
+      openLogs: (target) => window.kubernetesApi.openLogs(target),
+      setLogFollowing: (id, following) => window.kubernetesApi.setLogFollowing(id, following),
+      clearLogs: (id) => window.kubernetesApi.clearLogs(id),
+      closeLogs: (id) => window.kubernetesApi.closeLogs(id),
+      openTerminal: (target) => window.kubernetesApi.openTerminal(target),
+      writeTerminal: (id, data) => window.kubernetesApi.writeTerminal(id, data),
+      resizeTerminal: (id, cols, rows) => window.kubernetesApi.resizeTerminal(id, cols, rows),
+      closeTerminal: (id) => window.kubernetesApi.closeTerminal(id),
+      reportError: (error) => setMessage(toErrorMessage(error), 'error'),
+    });
+  }
+
+  /** Keep the workspace reference until all owned remote sessions are closed. */
+  private async disposeWorkspace(): Promise<void> {
+    const workspace = this.workspace;
+    if (!workspace) return;
+    await workspace.dispose();
+    if (this.workspace === workspace) this.workspace = undefined;
+  }
+
+  private disposeWorkspaceForLifecycle(): void {
+    void this.disposeWorkspace().then(() => {
+      if (this.visible && this.state?.connection === 'connected') this.ensureWorkspace();
+    }).catch((error) => {
+      console.error('[kubernetes:workspace-dispose]', error);
+    });
   }
 
   private ensureBound(): void {
@@ -969,6 +1041,7 @@ class KubernetesPage implements KubernetesPageController {
   private async waitForPriorDeactivation(pageGeneration: number): Promise<void> {
     await this.deactivation;
     if (!this.visible || pageGeneration !== this.pageGeneration) return;
+    this.ensureWorkspace();
     await this.loadStateAndActivate(pageGeneration);
   }
 
@@ -984,13 +1057,18 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private onStateChanged(state: KubernetesState): void {
-    if (this.state?.selectedContext !== state.selectedContext) this.invalidateNamespaceOptions();
+    const previousState = this.state;
+    const contextChanged = previousState !== undefined && previousState.selectedContext !== state.selectedContext;
+    const disconnected = previousState?.connection !== 'disconnected' && state.connection === 'disconnected';
+    if (contextChanged) this.invalidateNamespaceOptions();
+    if (contextChanged || disconnected) this.disposeWorkspaceForLifecycle();
     if (this.customDefinitionsContext !== state.selectedContext) {
       this.customDefinitions = [];
       this.customDefinitionsContext = undefined;
       this.selectedCustomDefinition = undefined;
     }
     this.state = state;
+    if (this.visible && state.connection === 'connected' && !contextChanged && !disconnected) this.ensureWorkspace();
     const scope = state.namespaceScope ?? { mode: 'all', namespaces: [] };
     this.selectedNamespaces = new Set(scope.namespaces);
     this.renderState();
@@ -1818,10 +1896,38 @@ class KubernetesPage implements KubernetesPageController {
         const name = document.createElement('strong');
         name.className = 'kubernetes-drawer-container-name';
         name.textContent = container.name;
+        const actions = document.createElement('div');
+        actions.className = 'kubernetes-drawer-container-actions';
+        const logs = document.createElement('button');
+        logs.type = 'button';
+        logs.className = 'icon-btn';
+        logs.setAttribute('aria-label', `View logs for ${container.name}`);
+        logs.setAttribute('title', `View logs for ${container.name}`);
+        logs.appendChild(createKubernetesDrawerIcon([
+          'M5 3.5h10v13H5z',
+          'M7.5 7h5M7.5 10h5M7.5 13h3.5',
+        ]));
+        logs.addEventListener('click', () => {
+          if (!this.workspace) return;
+          void this.workspace.openLogs(container.target);
+        });
+        const shell = document.createElement('button');
+        shell.type = 'button';
+        shell.className = 'icon-btn';
+        shell.setAttribute('aria-label', `Open shell for ${container.name}`);
+        shell.setAttribute('title', `Open shell for ${container.name}`);
+        shell.appendChild(createKubernetesDrawerIcon([
+          'M4 5.5 8 9l-4 3.5M10.5 13h5',
+        ]));
+        shell.addEventListener('click', () => {
+          if (!this.workspace) return;
+          void this.workspace.openShell(container.target);
+        });
+        actions.append(logs, shell);
         const kind = document.createElement('span');
         kind.className = 'kubernetes-drawer-container-kind';
         kind.textContent = container.init ? 'Init container' : 'Container';
-        head.append(name, kind);
+        head.append(name, actions, kind);
         const facts = document.createElement('dl');
         facts.className = 'kubernetes-drawer-facts';
         for (const [label, value] of [
