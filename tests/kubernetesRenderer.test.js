@@ -1828,7 +1828,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
   global.document = { createElement: () => new FakeElement() };
 
   try {
-    const { createKubernetesTerminalDrawer } = await import(path.join(distRenderer, 'kubernetesTerminal.js'));
+    const { createKubernetesTerminalDrawer, createKubernetesTerminalPane } = await import(path.join(distRenderer, 'kubernetesTerminal.js'));
     const root = new FakeElement();
     const drawer = createKubernetesTerminalDrawer({
       root,
@@ -1958,6 +1958,43 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
     }), undefined);
     assert.equal(drawer.focusSession(buttonClosed.id), false);
     assert.deepEqual(closeCalls, [locallyClosed.id, buttonClosed.id]);
+
+    const paneCloseCalls = [];
+    const pane = createKubernetesTerminalPane({
+      onInput: async () => {},
+      onResize: async () => {},
+      onClose: async (id) => { paneCloseCalls.push(id); },
+    });
+    const paneHost = new FakeElement();
+    const paneOld = { ...normal, id: 'terminal-pane-old', container: 'worker' };
+    const paneNew = { ...normal, id: 'terminal-pane-new', container: 'worker' };
+    pane.mount(paneOld, paneHost);
+    const oldTerminal = instances.at(-1);
+    pane.write({ id: paneOld.id, data: 'old visible' });
+    assert.deepEqual(oldTerminal.writes, ['old visible']);
+    assert.equal(pane.finalize({ id: paneOld.id, state: 'closed' }), true);
+    pane.mount(paneNew, paneHost);
+    const newTerminal = instances.at(-1);
+    assert.notEqual(newTerminal, oldTerminal);
+    assert.equal(pane.write({ id: paneOld.id, data: 'stale output' }), false);
+    assert.deepEqual(newTerminal.writes, []);
+    assert.equal(pane.write({ id: paneNew.id, data: 'new output' }), true);
+    assert.deepEqual(newTerminal.writes, ['new output']);
+    assert.equal(pane.finalize({ id: paneOld.id, state: 'closed' }), false);
+    assert.equal(pane.finalize({ id: paneNew.id, state: 'closed' }), true);
+    assert.equal(pane.write({ id: paneNew.id, data: 'late output' }), false);
+    assert.deepEqual(paneCloseCalls, []);
+    pane.dispose();
+
+    const beforeMount = createKubernetesTerminalPane({
+      onInput: async () => {},
+      onResize: async () => {},
+      onClose: async () => {},
+    });
+    const beforeMountState = { ...normal, id: 'terminal-final-before-mount', container: 'worker' };
+    assert.equal(beforeMount.finalize({ id: beforeMountState.id, state: 'closed' }), false);
+    assert.equal(beforeMount.mount(beforeMountState, new FakeElement()), false);
+    assert.equal(beforeMount.write({ id: beforeMountState.id, data: 'stale output' }), false);
 
     drawer.dispose();
   } finally {

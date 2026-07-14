@@ -231,6 +231,7 @@ export class PodInteractionManager {
         lines: [],
         following: true,
         hasOlder: true,
+        revision: 0,
       },
       input: { ...input },
       pageGeneration: this.pageGeneration,
@@ -242,7 +243,7 @@ export class PodInteractionManager {
     this.logs.set(sessionId, session);
     try {
       await this.openFollowingLogStream(session, INITIAL_LOG_TAIL_LINES);
-      this.emitLog(session);
+      this.emitLog(session, false);
       return copyLogState(session.state);
     } catch (error) {
       if (this.logs.get(sessionId) === session) {
@@ -331,6 +332,9 @@ export class PodInteractionManager {
   public async setLogFollowing(sessionId: string, following: boolean): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
     if (!following) {
+      if (!session.state.following) {
+        return copyLogState(session.state);
+      }
       session.state.following = false;
       await this.closeLogStream(session, session.stream);
       this.emitLog(session);
@@ -821,9 +825,12 @@ export class PodInteractionManager {
       && session.allGeneration === this.allGeneration;
   }
 
-  private emitLog(session: LogSession): void {
+  private emitLog(session: LogSession, changed = true): void {
     if (!this.isLogSessionActive(session)) {
       return;
+    }
+    if (changed) {
+      session.state.revision += 1;
     }
     const state = copyLogState(session.state);
     for (const listener of this.logListeners) {

@@ -163,11 +163,11 @@ function createRuntime(options = {}) {
     disposePageScopedCalls: 0,
     async openLogs() {
       calls.push('open-logs');
-      return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: true };
+      return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: true, revision: 0 };
     },
-    async loadOlderLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: false }; },
-    async setLogFollowing() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false }; },
-    clearLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false }; },
+    async loadOlderLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: false, revision: 1 }; },
+    async setLogFollowing() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, revision: 2 }; },
+    clearLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, revision: 3 }; },
     async closeLogs() { calls.push('close-logs'); },
     async openTerminal() {
       calls.push('open-terminal');
@@ -747,16 +747,18 @@ test('KubernetesRuntime forwards interaction stream events and detaches subscrip
   runtime.onLogChanged((state) => logs.push(state));
   runtime.onTerminalOutput((event) => terminalOutput.push(event));
 
-  await runtime.openLogs(POD_TARGET);
+  const opened = await runtime.openLogs(POD_TARGET);
+  assert.equal(opened.revision, 0);
   await runtime.openTerminal(POD_TARGET);
-  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['followed'], following: true, hasOlder: true });
+  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['followed'], following: true, hasOlder: true, revision: 4 });
   fakeInteractions.emitTerminalOutput({ id: 'terminal-1', data: 'hello' });
   assert.deepEqual(logs.at(-1).lines, ['followed']);
+  assert.equal(logs.at(-1).revision, 4);
   assert.deepEqual(terminalOutput.at(-1), { id: 'terminal-1', data: 'hello' });
 
   const received = logs.length + terminalOutput.length;
   await runtime.deactivatePage();
-  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['late'], following: true, hasOlder: true });
+  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['late'], following: true, hasOlder: true, revision: 5 });
   fakeInteractions.emitTerminalOutput({ id: 'terminal-1', data: 'late' });
   assert.equal(logs.length + terminalOutput.length, received);
 });

@@ -251,6 +251,8 @@ export interface KubernetesLogState {
   lines: string[];
   following: boolean;
   hasOlder: boolean;
+  /** Monotonic per-session update version for stale renderer-event fencing. */
+  revision: number;
 }
 
 /** Renderer-safe contract for one bounded Pod log viewer. */

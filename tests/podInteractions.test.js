@@ -134,6 +134,40 @@ test('PodInteractionManager opens following logs with the 500-line initial tail'
   assert.equal(fakeClient.closedLogCount, 1);
 });
 
+test('PodInteractionManager emits monotonic log revisions for appended lines, older loads, Follow changes, and Clear', async () => {
+  const streams = [];
+  let calls = 0;
+  const manager = createManager({
+    async openPodLog(input, callbacks) {
+      calls += 1;
+      streams.push({ input, callbacks });
+      if (calls === 2) {
+        callbacks.onLine('older');
+        callbacks.onLine('first');
+      }
+      return createHandle();
+    },
+  });
+  const revisions = [];
+  manager.onLogChanged((state) => revisions.push(state.revision));
+
+  const opened = await manager.openLogs(POD_INPUT);
+  assert.equal(opened.revision, 0);
+  assert.deepEqual(revisions, [0]);
+
+  streams[0].callbacks.onLine('first');
+  assert.equal(revisions.at(-1), 1);
+  const older = await manager.loadOlderLogs(opened.sessionId);
+  assert.equal(older.revision, 2);
+  const paused = await manager.setLogFollowing(opened.sessionId, false);
+  assert.equal(paused.revision, 3);
+  const cleared = manager.clearLogs(opened.sessionId);
+  assert.equal(cleared.revision, 4);
+  const resumed = await manager.setLogFollowing(opened.sessionId, true);
+  assert.equal(resumed.revision, 5);
+  assert.deepEqual(revisions, [0, 1, 2, 3, 4, 5]);
+});
+
 test('PodInteractionManager publishes bounded follow-log and terminal-output events without late delivery after disposal', async () => {
   let logCallbacks;
   let terminalCallbacks;
