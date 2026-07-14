@@ -1,4 +1,10 @@
-import type { KubernetesPodTarget, KubernetesResourceSummary } from '../shared/types';
+import type {
+  KubernetesPodEnvironmentEntry,
+  KubernetesPodEnvironmentSource,
+  KubernetesPodEnvironmentUnavailable,
+  KubernetesPodTarget,
+  KubernetesResourceSummary,
+} from '../shared/types';
 
 export interface KubernetesDrawerContainer {
   name: string;
@@ -16,6 +22,47 @@ export interface KubernetesPodDrawerModel {
   header: Array<[string, string]>;
   labels: Array<[string, string]>;
   containers: KubernetesDrawerContainer[];
+}
+
+const ENVIRONMENT_SOURCE_LABELS: Record<KubernetesPodEnvironmentSource, string> = {
+  literal: 'Literal',
+  secretKeyRef: 'Secret key',
+  secretEnvFrom: 'Secret import',
+  configMapKeyRef: 'ConfigMap key',
+  configMapEnvFrom: 'ConfigMap import',
+  fieldRef: 'Pod field',
+  resourceFieldRef: 'Container resource',
+  unknown: 'Unknown source',
+};
+
+const ENVIRONMENT_UNAVAILABLE_LABELS: Record<KubernetesPodEnvironmentUnavailable, string> = {
+  missing: 'Referenced value is missing',
+  'no-permission': 'Value unavailable',
+  unsupported: 'Value cannot be resolved',
+  'too-large': 'Value omitted for safe display',
+};
+
+/** Keeps active-drawer filtering local to the already-held bounded result. */
+export function filterKubernetesEnvironmentEntries(
+  entries: readonly KubernetesPodEnvironmentEntry[],
+  search: string,
+): KubernetesPodEnvironmentEntry[] {
+  const query = search.trim().toLocaleLowerCase();
+  if (!query) return [...entries];
+  return entries.filter((entry) => [
+    entry.name,
+    entry.source,
+    entry.reference ?? '',
+    entry.value ?? '',
+  ].some((value) => value.toLocaleLowerCase().includes(query)));
+}
+
+export function environmentSourceLabel(entry: Pick<KubernetesPodEnvironmentEntry, 'source'>): string {
+  return ENVIRONMENT_SOURCE_LABELS[entry.source];
+}
+
+export function environmentUnavailableLabel(unavailable: KubernetesPodEnvironmentUnavailable | undefined): string {
+  return unavailable ? ENVIRONMENT_UNAVAILABLE_LABELS[unavailable] : 'Value unavailable';
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

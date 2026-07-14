@@ -4,6 +4,7 @@ import type {
   KubernetesListSnapshot,
   KubernetesLogState,
   KubernetesNamespaceScope,
+  KubernetesPodEnvironment,
   KubernetesPodTarget,
   KubernetesPortForwardInput,
   KubernetesPortForwardState,
@@ -17,7 +18,13 @@ import type {
 } from '../shared/types';
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
-import { buildKubernetesDrawerModel } from './kubernetesDrawerModel.js';
+import {
+  buildKubernetesDrawerModel,
+  environmentSourceLabel,
+  environmentUnavailableLabel,
+  filterKubernetesEnvironmentEntries,
+  type KubernetesDrawerContainer,
+} from './kubernetesDrawerModel.js';
 import { createKubernetesWorkspace, type KubernetesWorkspace } from './kubernetesWorkspace.js';
 import {
   buildKubernetesOverviewFields,
@@ -108,6 +115,16 @@ interface RelatedDetailState {
   loading: boolean;
   resources?: KubernetesRelatedResources;
   error?: string;
+}
+
+interface DrawerEnvironmentState {
+  target: KubernetesPodTarget;
+  drawerGeneration: number;
+  loading: boolean;
+  expanded: boolean;
+  search: string;
+  result?: KubernetesPodEnvironment;
+  error?: 'permission' | 'unavailable';
 }
 
 interface PortForwardDraft {
@@ -352,6 +369,17 @@ export function sameKubernetesPodTarget(
     && left.namespace === right.namespace
     && left.podName === right.podName
     && left.container === right.container);
+}
+
+/** Exact visible drawer and target fence for active-only Env completions. */
+export function isCurrentKubernetesEnvironmentRequest(
+  current: { visible: boolean; drawerGeneration: number; target: KubernetesPodTarget },
+  candidate: { visible: boolean; drawerGeneration: number; target: KubernetesPodTarget },
+): boolean {
+  return current.visible === candidate.visible
+    && current.visible
+    && current.drawerGeneration === candidate.drawerGeneration
+    && sameKubernetesPodTarget(current.target, candidate.target);
 }
 
 export async function openKubernetesTerminalWorkspace(options: {
@@ -875,6 +903,9 @@ class KubernetesPage implements KubernetesPageController {
   private relatedGeneration = 0;
   /** Plaintext Secret material may exist only while its drawer detail is active. */
   private decodedSecretDetail: Record<string, unknown> | undefined;
+  /** Active-drawer-only decoded Env values; never copied to a cache or workspace. */
+  private drawerEnvironment: DrawerEnvironmentState | undefined;
+  private drawerEnvironmentElement: HTMLElement | undefined;
   private workspace: KubernetesWorkspace | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardDraft: PortForwardDraft | undefined;
@@ -898,6 +929,7 @@ class KubernetesPage implements KubernetesPageController {
 
   public hide(): void {
     if (!this.visible) return;
+    this.clearDrawerEnvironment();
     this.visible = false;
     this.pageGeneration += 1;
     this.requestGeneration += 1;
@@ -1061,7 +1093,10 @@ class KubernetesPage implements KubernetesPageController {
     const contextChanged = previousState !== undefined && previousState.selectedContext !== state.selectedContext;
     const disconnected = previousState?.connection !== 'disconnected' && state.connection === 'disconnected';
     if (contextChanged) this.invalidateNamespaceOptions();
-    if (contextChanged || disconnected) this.disposeWorkspaceForLifecycle();
+    if (contextChanged || disconnected) {
+      this.clearDrawerEnvironment();
+      this.disposeWorkspaceForLifecycle();
+    }
     if (this.customDefinitionsContext !== state.selectedContext) {
       this.customDefinitions = [];
       this.customDefinitionsContext = undefined;
@@ -1602,6 +1637,7 @@ class KubernetesPage implements KubernetesPageController {
    * never retain a Port Forward action while another detail is loading.
    */
   private beginDrawerReplacement(): number {
+    this.clearDrawerEnvironment();
     const generation = ++this.detailGeneration;
     this.invalidateRelatedDetail();
     this.activeDetail = undefined;
@@ -1676,6 +1712,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private closeDetail(): void {
+    this.clearDrawerEnvironment();
     this.detailGeneration += 1;
     this.invalidateRelatedDetail();
     this.activeDetail = undefined;
@@ -1709,6 +1746,7 @@ class KubernetesPage implements KubernetesPageController {
     if (!active || !detail) return;
     this.detailTitle.textContent = detailName(active);
     this.detailSubtitle.textContent = resourceLabel(active.query.kind);
+    this.drawerEnvironmentElement = undefined;
     this.detailOverview.replaceChildren();
     if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
     else this.renderOverview(detail, active);
@@ -1847,6 +1885,10 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderPodDrawer(detail: Record<string, unknown>, active: ActiveDetail): void {
     const model = buildKubernetesDrawerModel(detail, active.summary);
+    if (this.drawerEnvironment && (!this.isCurrentDrawerEnvironment(this.drawerEnvironment)
+      || !model.containers.some((container) => sameKubernetesPodTarget(container.target, this.drawerEnvironment?.target)))) {
+      this.clearDrawerEnvironment();
+    }
     const header = document.createElement('dl');
     header.className = 'kubernetes-drawer-header-grid';
     for (const [label, value] of model.header) {
@@ -1947,10 +1989,155 @@ class KubernetesPage implements KubernetesPageController {
           fact.append(term, description);
           facts.appendChild(fact);
         }
-        card.append(head, facts);
+        card.append(head, facts, this.renderContainerEnvironment(container, active));
         content.appendChild(card);
       }
     }));
+  }
+
+  /** Drops the sole active-drawer Env result before its owner can change. */
+  private clearDrawerEnvironment(): void {
+    this.drawerEnvironment = undefined;
+    this.drawerEnvironmentElement?.remove();
+    this.drawerEnvironmentElement = undefined;
+  }
+
+  private isCurrentDrawerEnvironment(state: DrawerEnvironmentState): boolean {
+    return this.drawerEnvironment === state
+      && isCurrentKubernetesEnvironmentRequest(
+        {
+          visible: this.visible && this.drawerRequest.visible && this.activeDetail !== undefined,
+          drawerGeneration: this.detailGeneration,
+          target: state.target,
+        },
+        {
+          visible: true,
+          drawerGeneration: state.drawerGeneration,
+          target: state.target,
+        },
+      );
+  }
+
+  private renderContainerEnvironment(container: KubernetesDrawerContainer, active: ActiveDetail): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'kubernetes-drawer-container-env';
+    const state = this.drawerEnvironment
+      && this.isCurrentActiveDrawer(active)
+      && sameKubernetesPodTarget(this.drawerEnvironment.target, container.target)
+      ? this.drawerEnvironment
+      : undefined;
+    if (state) this.drawerEnvironmentElement = section;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'kubernetes-drawer-container-env-toggle';
+    toggle.setAttribute('aria-label', 'Toggle environment');
+    const label = document.createElement('span');
+    label.textContent = 'Env';
+    const indicator = document.createElement('span');
+    const content = document.createElement('div');
+    content.className = 'kubernetes-drawer-container-env-content';
+    const expanded = state?.expanded ?? false;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    indicator.textContent = expanded ? '▾' : '▸';
+    content.classList.toggle('hidden', !expanded);
+    if (state?.expanded) this.renderDrawerEnvironmentContent(content, state);
+    toggle.addEventListener('click', () => {
+      if (!this.isCurrentActiveDrawer(active)) return;
+      const current = this.drawerEnvironment;
+      if (current && sameKubernetesPodTarget(current.target, container.target)
+        && this.isCurrentDrawerEnvironment(current)) {
+        current.expanded = !current.expanded;
+        this.renderDetail();
+        if (current.expanded) this.requestDrawerEnvironment(current);
+        return;
+      }
+
+      this.clearDrawerEnvironment();
+      const next: DrawerEnvironmentState = {
+        target: { ...container.target },
+        drawerGeneration: this.detailGeneration,
+        loading: false,
+        expanded: false,
+        search: '',
+      };
+      next.expanded = true;
+      this.drawerEnvironment = next;
+      this.requestDrawerEnvironment(next);
+    });
+    toggle.append(label, indicator);
+    section.append(toggle, content);
+    return section;
+  }
+
+  private renderDrawerEnvironmentContent(content: HTMLElement, state: DrawerEnvironmentState): void {
+    if (state.loading) {
+      const loading = document.createElement('p');
+      loading.className = 'kubernetes-env-notice';
+      loading.textContent = 'Loading environment…';
+      content.appendChild(loading);
+      return;
+    }
+    if (state.error === 'unavailable' || !state.result) {
+      const error = document.createElement('p');
+      error.className = 'kubernetes-env-notice kubernetes-env-notice-error';
+      error.textContent = 'Unable to load environment';
+      content.appendChild(error);
+      return;
+    }
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'kubernetes-env-search';
+    search.setAttribute('aria-label', 'Search environment');
+    search.placeholder = 'Search environment';
+    search.value = state.search;
+    search.addEventListener('input', () => {
+      if (!this.isCurrentDrawerEnvironment(state)) return;
+      state.search = search.value;
+      this.renderDetail();
+    });
+    content.appendChild(search);
+
+    if (state.error === 'permission') {
+      const permission = document.createElement('p');
+      permission.className = 'kubernetes-env-notice kubernetes-env-notice-error';
+      permission.textContent = 'No permission to read referenced Secret';
+      content.appendChild(permission);
+    }
+    if (state.result.truncated) {
+      const truncated = document.createElement('p');
+      truncated.className = 'kubernetes-env-notice';
+      truncated.textContent = 'Environment values truncated for safe display';
+      content.appendChild(truncated);
+    }
+
+    const entries = filterKubernetesEnvironmentEntries(state.result.entries, state.search);
+    if (entries.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'kubernetes-env-notice';
+      empty.textContent = state.search ? 'No environment entries match the search.' : 'No environment variables declared.';
+      content.appendChild(empty);
+      return;
+    }
+    const list = document.createElement('div');
+    list.className = 'kubernetes-env-list';
+    for (const entry of entries) {
+      const row = document.createElement('div');
+      row.className = 'kubernetes-env-row';
+      const name = document.createElement('code');
+      name.textContent = entry.name;
+      const source = document.createElement('span');
+      source.textContent = environmentSourceLabel(entry);
+      const reference = document.createElement('span');
+      reference.className = 'kubernetes-env-reference';
+      reference.textContent = entry.reference ?? '—';
+      const value = document.createElement('pre');
+      value.textContent = entry.value ?? environmentUnavailableLabel(entry.unavailable);
+      row.append(name, source, reference, value);
+      list.appendChild(row);
+    }
+    content.appendChild(list);
   }
 
   private createDrawerSection(
@@ -1982,6 +2169,27 @@ class KubernetesPage implements KubernetesPageController {
     update();
     section.append(toggle, content);
     return section;
+  }
+
+  private requestDrawerEnvironment(state: DrawerEnvironmentState): void {
+    if (state.result || state.loading || state.error) return;
+    if (!this.isCurrentDrawerEnvironment(state)) return;
+    state.loading = true;
+    this.renderDetail();
+    void Promise.resolve().then(() => window.kubernetesApi.getPodContainerEnvironment(state.target)).then((result) => {
+      if (!this.isCurrentDrawerEnvironment(state)) return;
+      state.loading = false;
+      state.result = result;
+      state.error = result.permissionDenied ? 'permission' : undefined;
+      this.renderDetail();
+    }).catch(() => {
+      if (!this.isCurrentDrawerEnvironment(state)) return;
+      state.loading = false;
+      // The runtime already routes transient failures through Context recovery.
+      // The renderer deliberately retains no source error text or object.
+      state.error = 'unavailable';
+      this.renderDetail();
+    });
   }
 
   /**

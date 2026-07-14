@@ -2024,6 +2024,46 @@ test('Kubernetes drawer request identity fences stale replacement completions', 
   }), false);
 });
 
+test('Kubernetes drawer Env completion applies only to its current drawer generation and exact target', async () => {
+  const { isCurrentKubernetesEnvironmentRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const target = { namespace: 'apps', podName: 'api', container: 'api' };
+  const current = { visible: true, drawerGeneration: 7, target };
+
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, { visible: true, drawerGeneration: 7, target: { ...target } }), true);
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, { visible: true, drawerGeneration: 8, target }), false);
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, {
+    visible: true, drawerGeneration: 7, target: { ...target, namespace: 'other' },
+  }), false);
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, {
+    visible: true, drawerGeneration: 7, target: { ...target, podName: 'worker' },
+  }), false);
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, {
+    visible: true, drawerGeneration: 7, target: { ...target, container: 'sidecar' },
+  }), false);
+  assert.equal(isCurrentKubernetesEnvironmentRequest(current, { visible: false, drawerGeneration: 7, target }), false);
+});
+
+test('Kubernetes active drawer Env remains lazy, local, and text-safe', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const environmentStart = page.indexOf('    renderContainerEnvironment(');
+  const environmentEnd = page.indexOf('    createDrawerSection(', environmentStart);
+  const environment = page.slice(environmentStart, environmentEnd);
+
+  assert.ok(environmentStart >= 0 && environmentEnd > environmentStart);
+  assert.match(page, /drawerEnvironment/);
+  assert.match(environment, /expanded:\s*false/);
+  assert.match(page, /state\.result \|\| state\.loading \|\| state\.error/);
+  assert.match(page, /getPodContainerEnvironment\(state\.target\)/);
+  assert.match(environment, /aria-label', 'Search environment'/);
+  assert.match(environment, /filterKubernetesEnvironmentEntries\(state\.result\.entries, state\.search\)/);
+  assert.match(environment, /value\.textContent = entry\.value \?\? environmentUnavailableLabel\(entry\.unavailable\)/);
+  assert.match(environment, /No permission to read referenced Secret/);
+  assert.match(environment, /Unable to load environment/);
+  assert.match(environment, /Environment values truncated for safe display/);
+  assert.match(page, /isCurrentKubernetesEnvironmentRequest\(/);
+  assert.doesNotMatch(environment, /innerHTML|toErrorMessage\(error\)|setMessage\(/);
+});
+
 test('Kubernetes list updates render behind an active drawer and drawer values remain text-safe', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const listStart = page.indexOf('    onListChanged(snapshot) {');

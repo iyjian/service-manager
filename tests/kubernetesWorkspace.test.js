@@ -1,5 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { readFile } = require('node:fs/promises');
+const path = require('node:path');
+
+const distRenderer = path.join(__dirname, '..', 'dist', 'renderer');
 
 function deferred() {
   let resolve;
@@ -102,6 +106,31 @@ async function withWorkspaceDom(run) {
     global.document = originalDocument;
   }
 }
+
+test('active drawer Env clears page-local values before drawer and page lifecycle transitions', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const method = (name, after) => {
+    const start = page.indexOf(`    ${name}(`);
+    const end = page.indexOf(`    ${after}(`, start);
+    assert.ok(start >= 0 && end > start, `${name} method bounds`);
+    return page.slice(start, end);
+  };
+  const hide = method('hide', 'destroy');
+  const beginReplacement = method('beginDrawerReplacement', 'createDrawerRequest');
+  const close = method('closeDetail', 'displayDetail');
+  const state = method('onStateChanged', 'onListChanged');
+  const environmentStart = page.indexOf('    renderContainerEnvironment(');
+  const environmentEnd = page.indexOf('    createDrawerSection(', environmentStart);
+  const environment = page.slice(environmentStart, environmentEnd);
+
+  assert.match(hide, /this\.clearDrawerEnvironment\(\);/);
+  assert.match(beginReplacement, /this\.clearDrawerEnvironment\(\);/);
+  assert.match(close, /this\.clearDrawerEnvironment\(\);/);
+  assert.match(state, /if \(contextChanged \|\| disconnected\) \{\s*this\.clearDrawerEnvironment\(\);/);
+  assert.match(environment, /this\.clearDrawerEnvironment\(\);/);
+  assert.match(page, /clearDrawerEnvironment\(\) \{/);
+  assert.match(page, /this\.drawerEnvironment = undefined/);
+});
 
 test('same target and type reuses one tab while different types and Pods stay distinct', async () => {
   const { kubernetesWorkspaceTabKey, createKubernetesWorkspaceState } = await import('../dist/renderer/kubernetesWorkspace.js');

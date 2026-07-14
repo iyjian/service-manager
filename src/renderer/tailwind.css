@@ -914,6 +914,55 @@
     @apply m-0 grid gap-1.5;
   }
 
+  .kubernetes-drawer-container-env {
+    @apply overflow-hidden rounded-md border border-zinc-200 bg-zinc-50;
+  }
+
+  .kubernetes-drawer-container-env-toggle {
+    @apply flex w-full items-center justify-between gap-2 border-0 bg-transparent px-2 py-1.5 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-600 outline-none hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+  }
+
+  .kubernetes-drawer-container-env-content {
+    @apply grid min-h-0 gap-1.5 border-t border-zinc-200 bg-white p-2;
+  }
+
+  .kubernetes-env-search {
+    @apply h-7 min-w-0 rounded border border-zinc-200 bg-white px-2 font-mono text-[11px] text-zinc-800 outline-none placeholder:text-zinc-400 focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300;
+  }
+
+  .kubernetes-env-notice {
+    @apply m-0 rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-[11px] text-zinc-600;
+  }
+
+  .kubernetes-env-notice-error {
+    @apply border-amber-200 bg-amber-50 text-amber-800;
+  }
+
+  .kubernetes-env-list {
+    @apply grid max-h-64 min-h-0 gap-1 overflow-y-auto pr-0.5;
+  }
+
+  .kubernetes-env-row {
+    @apply grid min-w-0 gap-1 rounded border border-zinc-200 bg-zinc-50 p-1.5;
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .kubernetes-env-row code {
+    @apply min-w-0 truncate font-mono text-[11px] font-semibold text-zinc-900;
+  }
+
+  .kubernetes-env-row > span {
+    @apply justify-self-end font-mono text-[10px] text-zinc-500;
+  }
+
+  .kubernetes-env-row .kubernetes-env-reference {
+    @apply col-span-2 min-w-0 justify-self-auto truncate text-[10px] text-zinc-500;
+  }
+
+  .kubernetes-env-row pre {
+    @apply col-span-2 m-0 min-w-0 whitespace-pre-wrap break-all rounded bg-white px-1.5 py-1 font-mono text-[11px] leading-4 text-zinc-700;
+  }
+
   .kubernetes-drawer-events {
     @apply grid gap-2 rounded-lg border border-zinc-200 bg-white p-2.5;
   }

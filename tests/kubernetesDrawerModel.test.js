@@ -63,3 +63,18 @@ test('buildKubernetesDrawerModel keeps normal containers before init containers 
   assert.equal(model.containers[1].command, 'prepare --quiet');
   assert.equal(model.containers[1].environmentDeclared, false);
 });
+
+test('filterKubernetesEnvironmentEntries searches only the active entry fields', async () => {
+  const { filterKubernetesEnvironmentEntries } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const entries = [
+    { name: 'API_URL', source: 'literal', value: 'https://service.internal' },
+    { name: 'CONFIG_MODE', source: 'configMapKeyRef', reference: 'configmap/settings/mode', value: 'production' },
+    { name: 'TOKEN', source: 'secretKeyRef', reference: 'secret/app-env/token', value: 'rendered-locally' },
+  ];
+
+  assert.deepEqual(filterKubernetesEnvironmentEntries(entries, 'api').map((entry) => entry.name), ['API_URL']);
+  assert.deepEqual(filterKubernetesEnvironmentEntries(entries, 'configmap').map((entry) => entry.name), ['CONFIG_MODE']);
+  assert.deepEqual(filterKubernetesEnvironmentEntries(entries, 'app-env/token').map((entry) => entry.name), ['TOKEN']);
+  assert.deepEqual(filterKubernetesEnvironmentEntries(entries, 'rendered-locally').map((entry) => entry.name), ['TOKEN']);
+  assert.deepEqual(filterKubernetesEnvironmentEntries(entries, '').map((entry) => entry.name), ['API_URL', 'CONFIG_MODE', 'TOKEN']);
+});
