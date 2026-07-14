@@ -6,6 +6,26 @@ const path = require('node:path');
 const rendererPath = path.join(__dirname, '..', 'dist', 'renderer');
 const modelPath = path.join(rendererPath, 'kubernetesDetailModel.js');
 
+test('Kubernetes drawer-workspace documentation preserves the secret boundary and architecture map', async () => {
+  const root = path.join(__dirname, '..');
+  const documents = await Promise.all([
+    readFile(path.join(root, 'README.md'), 'utf8'),
+    readFile(path.join(root, 'AGENTS.md'), 'utf8'),
+  ]);
+
+  for (const document of documents) {
+    assert.match(document, /secretKeyRef.*envFrom.*active drawer|active drawer.*secretKeyRef.*envFrom/i);
+    assert.match(document, /main process.*(?:narrow|active-drawer) request|(?:narrow|active-drawer) request.*main process/i);
+    assert.match(document, /bound(?:ed|).*local(?:ly)? searchable|local(?:ly)? searchable.*bound(?:ed)/i);
+    assert.match(document, /never.*cache.*settings.*diagnostics.*disk|cache.*settings.*diagnostics.*disk.*never/i);
+    assert.match(document, /src\/main\/kubernetes\/podSummary\.ts/);
+    assert.match(document, /src\/main\/kubernetes\/podEnvironment\.ts/);
+    assert.match(document, /src\/renderer\/kubernetesDrawerModel\.ts/);
+    assert.match(document, /src\/renderer\/kubernetesWorkspace\.ts/);
+    assert.match(document, /src\/renderer\/kubernetesTerminal\.ts.*reusable xterm pane|reusable xterm pane.*src\/renderer\/kubernetesTerminal\.ts/i);
+  }
+});
+
 test('detectKubernetesForwardPorts extracts stable deduplicated Pod TCP declarations with provenance', async () => {
   const { detectKubernetesForwardPorts } = await import(modelPath);
   const detail = {

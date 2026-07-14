@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const distRenderer = path.join(__dirname, '..', 'dist', 'renderer');
 
-test('Kubernetes documentation states the supported read-only, bounded runtime contract', async () => {
+test('Kubernetes documentation states the supported read-only, bounded drawer-workspace contract', async () => {
   const root = path.join(__dirname, '..');
   const documents = await Promise.all([
     readFile(path.join(root, 'README.md'), 'utf8'),
@@ -29,12 +29,18 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
     assert.match(document, /Kubernetes 1\.28\+/);
     assert.match(document, /strictly read-only/i);
     assert.match(document, /one active Context/i);
+    assert.match(document, /full-width.*Kubernetes|Kubernetes.*full-width/i);
+    assert.match(document, /compact.*label-free.*Context.*Namespace|label-free.*Context.*Namespace.*compact/i);
+    assert.match(document, /non-?wrapping.*(?:categor(?:y|ies)|resource)|(?:categor(?:y|ies)|resource).*non-?wrapping/i);
+    assert.match(document, /no UI Cluster category/i);
     assert.match(document, /All Namespaces.*selected Namespaces|selected Namespaces.*All Namespaces/i);
     assert.match(document, /200(?:-item| items?| resource)? (?:page|paging)|page(?:s)? of 200/i);
     assert.match(document, /virtual (?:scrolling|table|list)/i);
+    assert.match(document, /Namespace.*Name.*CPU.*Memory.*Restarts.*Status.*Node.*Age/i);
+    assert.match(document, /ordinary containers.*resources\.requests|resources\.requests.*ordinary containers/i);
+    assert.match(document, /not limits.*live metrics|not live metrics.*limits/i);
     assert.match(document, /active(?:-view| view) Watch/i);
     assert.match(document, /2,000(?:-line| lines?) log/i);
-    assert.match(document, /Pod logs.*automatically|automatically.*Pod logs/i);
     assert.match(document, /Logs.*search.*Follow.*Clear|search.*Follow.*Clear.*Logs/i);
     assert.match(document, /Overview.*single-line|single-line.*Overview/i);
     assert.match(document, /Age.*creation timestamp|creation timestamp.*Age/i);
@@ -48,7 +54,7 @@ test('Kubernetes documentation states the supported read-only, bounded runtime c
   }
 });
 
-test('Kubernetes documentation describes the compact detail workbench without stale Copy behavior', async () => {
+test('Kubernetes documentation describes overlay drawers and reusable bottom workspaces', async () => {
   const root = path.join(__dirname, '..');
   const documents = await Promise.all([
     readFile(path.join(root, 'README.md'), 'utf8'),
@@ -56,10 +62,21 @@ test('Kubernetes documentation describes the compact detail workbench without st
   ]);
 
   for (const document of documents) {
+    assert.match(document, /right-side.*overlay drawer|overlay drawer.*right-side/i);
+    assert.match(document, /(?:list )?Watch.*scroll.*(?:active|beneath)|scroll.*(?:list )?Watch.*(?:active|beneath)/i);
+    assert.match(document, /labels.*Env.*collaps|Env.*labels.*collaps/i);
+    assert.match(document, /YAML.*icon|icon.*YAML/i);
+    assert.match(document, /Events.*read-only.*on-demand|read-only.*on-demand.*Events/i);
+    assert.match(document, /multiple.*closable.*Logs.*Shell|Logs.*Shell.*multiple.*closable/i);
+    assert.match(document, /namespace.*Pod.*container.*type|Pod.*container.*type.*namespace/i);
+    assert.match(document, /(?:closing|close).*drawer.*preserv(?:es|e).*tabs|preserv(?:es|e).*tabs.*(?:closing|close).*drawer/i);
+    assert.match(document, /Context.*page.*shutdown.*(?:close|clean)|(?:close|clean).*Context.*page.*shutdown/i);
+    assert.match(document, /bottom workspace/i);
     assert.match(document, /Overview.*Kind.*Namespace.*Status.*Name.*Pod IP/i);
     assert.match(document, /pause icon.*play icon|play icon.*pause icon/i);
-    assert.match(document, /Terminal tab.*(?:open|focus).*global terminal drawer/i);
-    assert.match(document, /no Open Terminal button/i);
+    assert.match(document, /(?:Logs|Shell).*(?:open|focus).*tab|(?:open|focus).*tab.*(?:Logs|Shell)/i);
+    assert.match(document, /terminal input.*(?:spaces|whitespace).*Enter|(?:spaces|whitespace).*Enter.*terminal input/i);
+    assert.match(document, /\/bin\/sh.*ash.*bash/i);
     assert.match(document, /header.*Port Forward.*replac(?:es|ing).*Copy/i);
     assert.match(document, /regular containers.*restartable(?: native)? sidecar.*TCP/i);
     assert.match(document, /Service.*spec\.ports\[\]\.port/i);
