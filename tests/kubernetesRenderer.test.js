@@ -1665,11 +1665,18 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const forwardRule = styles.match(/\.kubernetes-port-forwards\s*\{([^}]*)\}/);
   const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
+  const logPanelRule = styles.match(/\.kubernetes-log-panel\s*\{([^}]*)\}/);
+  const logOutputRule = styles.match(/\.kubernetes-log-output\s*\{([^}]*)\}/);
   const shellRule = styles.match(/\.kubernetes-shell-panel\s*\{([^}]*)\}/);
   assert.ok(forwardRule);
   assert.ok(workspaceRule);
+  assert.ok(logPanelRule);
+  assert.ok(logOutputRule);
   assert.ok(shellRule);
   assert.match(workspaceRule[1], /height:\s*min\(35dvh,\s*300px\)/);
+  assert.match(logPanelRule[1], /@apply[^;]*h-full[^;]*min-h-0/);
+  assert.match(logPanelRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/);
+  assert.match(logOutputRule[1], /min-h-0[^;]*overflow-y-auto/);
   assert.match(shellRule[1], /grid-rows-\[auto_minmax\(0,1fr\)\]/);
   assert.match(forwardRule[1], /absolute/);
   assert.doesNotMatch(styles, /\.kubernetes-terminal-drawer\s*\{/);

@@ -658,7 +658,7 @@
   }
 
   .kubernetes-log-panel {
-    @apply grid min-h-0 min-w-0 gap-0 overflow-hidden rounded-lg border border-zinc-200 bg-white;
+    @apply grid h-full min-h-0 min-w-0 gap-0 overflow-hidden rounded-lg border border-zinc-200 bg-white;
     grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
