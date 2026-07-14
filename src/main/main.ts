@@ -107,6 +107,7 @@ const IPC_CHANNELS = {
   kubernetesGetResourceDetail: 'kubernetes:get-resource-detail',
   kubernetesGetResourceEvents: 'kubernetes:get-resource-events',
   kubernetesGetRelatedResources: 'kubernetes:related-resources',
+  kubernetesGetPodEnvironment: 'kubernetes:get-pod-environment',
   kubernetesOpenLogs: 'kubernetes:open-logs',
   kubernetesLoadOlderLogs: 'kubernetes:load-older-logs',
   kubernetesSetLogFollowing: 'kubernetes:set-log-following',
@@ -1152,6 +1153,9 @@ function registerIpcHandlers(): void {
     async (_event, request: unknown) => getKubernetesRuntime().getRelatedResources(
       validateKubernetesRelatedResourceRequest(request)
     )
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesGetPodEnvironment, async (_event, input: unknown) =>
+    getKubernetesRuntime().getPodContainerEnvironment(validateKubernetesPodTarget(input))
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesOpenLogs, async (_event, input: unknown) =>
     getKubernetesRuntime().openLogs(validateKubernetesPodTarget(input))

@@ -70,6 +70,33 @@ test('Kubernetes documentation describes the compact detail workbench without st
   }
 });
 
+test('Kubernetes environment bridge exposes only the active Pod resolver and validates its IPC target', async () => {
+  const root = path.join(__dirname, '..');
+  const [preload, main, client, runtime] = await Promise.all([
+    readFile(path.join(root, 'dist', 'main', 'preload.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesClient.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesRuntime.js'), 'utf8'),
+  ]);
+
+  assert.match(preload, /getPodContainerEnvironment:\s*\(input\)\s*=>[\s\S]*?ipcRenderer\.invoke\('kubernetes:get-pod-environment', input\)/);
+  assert.match(main, /kubernetesGetPodEnvironment:\s*'kubernetes:get-pod-environment'/);
+  const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesGetPodEnvironment');
+  const handlerEnd = main.indexOf('IPC_CHANNELS.kubernetesOpenLogs', handlerStart);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  const handler = main.slice(handlerStart, handlerEnd);
+  assert.match(handler, /validateKubernetesPodTarget\(input\)/);
+
+  const clientStart = client.indexOf('async getPodContainerEnvironment(input)');
+  const clientEnd = client.indexOf('async listEvents', clientStart);
+  assert.ok(clientStart >= 0 && clientEnd > clientStart);
+  const clientMethod = client.slice(clientStart, clientEnd);
+  assert.match(clientMethod, /readNamespacedPod/);
+  assert.match(clientMethod, /readNamespacedSecret/);
+  assert.doesNotMatch(clientMethod, /sanitizeSecretForCache|ResourceCoordinator|ResourceCache/);
+  assert.match(runtime, /async getPodContainerEnvironment\(input\)[\s\S]*?entries:\s*environment\.entries\.map\(\(entry\)\s*=>\s*\(\{\s*\.\.\.entry\s*\}\)\)/);
+});
+
 test('Kubernetes page provides a read-only resource browser shell', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');

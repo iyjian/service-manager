@@ -259,6 +259,64 @@ test('KubernetesRuntime loads Service backends on demand without replacing the a
   assert.deepEqual(calls, []);
 });
 
+test('KubernetesRuntime resolves active Pod environment through the client without using the list coordinator and copies the response', async () => {
+  const clientCalls = [];
+  const source = {
+    entries: [{ name: 'PASSWORD', source: 'secretKeyRef', value: 'secret', reference: 'secret/app-env/password' }],
+    truncated: false,
+    permissionDenied: false,
+  };
+  const { runtime, calls, fakeCoordinator } = createRuntime({
+    client: {
+      async getPodContainerEnvironment(input) {
+        clientCalls.push(input);
+        return source;
+      },
+    },
+  });
+  await runtime.activateResources(POD_QUERY);
+  calls.length = 0;
+  const coordinatorCallsBefore = fakeCoordinator.disposePageScopedCalls;
+
+  const first = await runtime.getPodContainerEnvironment(POD_TARGET);
+
+  assert.deepEqual(clientCalls, [POD_TARGET]);
+  assert.deepEqual(calls, []);
+  assert.equal(fakeCoordinator.disposePageScopedCalls, coordinatorCallsBefore);
+  assert.notEqual(first, source);
+  assert.notEqual(first.entries, source.entries);
+  assert.notEqual(first.entries[0], source.entries[0]);
+  first.entries[0].value = 'changed';
+  assert.equal(source.entries[0].value, 'secret');
+
+  const second = await runtime.getPodContainerEnvironment(POD_TARGET);
+  assert.equal(clientCalls.length, 2, 'environment reads are never cached by the runtime');
+  assert.equal(second.entries[0].value, 'secret');
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime keeps Pod environment authorization errors local but forwards non-authorization failures to connection handling', async () => {
+  const authorizationError = Object.assign(new Error('forbidden'), { statusCode: 403 });
+  const transportError = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+  let attempt = 0;
+  const { runtime } = createRuntime({
+    client: {
+      async getPodContainerEnvironment() {
+        attempt += 1;
+        throw attempt === 1 ? authorizationError : transportError;
+      },
+    },
+  });
+  const failures = [];
+  runtime.onOperationFailure = (error) => failures.push(error);
+
+  await assert.rejects(runtime.getPodContainerEnvironment(POD_TARGET), (error) => error === authorizationError);
+  assert.deepEqual(failures, []);
+  await assert.rejects(runtime.getPodContainerEnvironment(POD_TARGET), (error) => error === transportError);
+  assert.deepEqual(failures, [transportError]);
+  await runtime.shutdown();
+});
+
 test('KubernetesRuntime discovers Custom Resources on demand and shares the active Context result', async () => {
   let calls = 0;
   const { runtime } = createRuntime({

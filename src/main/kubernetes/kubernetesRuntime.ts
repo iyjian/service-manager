@@ -6,6 +6,7 @@ import type {
   KubernetesCustomResourceDefinition,
   KubernetesLogState,
   KubernetesNamespaceScope,
+  KubernetesPodEnvironment,
   KubernetesPodTarget,
   KubernetesPortForwardInput,
   KubernetesPortForwardState,
@@ -708,6 +709,33 @@ export class KubernetesRuntime {
     }
   }
 
+  /**
+   * Resolves one selected Pod container directly through the active client.
+   * Decoded Secret values deliberately bypass detail/list caches and are
+   * copied before leaving this main-process runtime boundary.
+   */
+  public async getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment> {
+    this.assertUsable();
+    const target = this.validatePodTarget(input);
+    this.assertConnected();
+    try {
+      const environment = await this.observedClient().getPodContainerEnvironment(target);
+      return {
+        entries: environment.entries.map((entry) => ({ ...entry })),
+        truncated: environment.truncated,
+        permissionDenied: environment.permissionDenied,
+      };
+    } catch (error) {
+      // A referenced Secret RBAC failure is renderer-local state, not a
+      // Context failure. Other operations retain the standard connection
+      // loss handling without passing values into diagnostics or toasts.
+      if (classifyKubernetesConnectionError(error) !== 'authentication') {
+        this.onOperationFailure(error);
+      }
+      throw error;
+    }
+  }
+
   public async openLogs(input: KubernetesPodTarget): Promise<KubernetesLogState> {
     const target = this.validatePodTarget(input);
     this.assertConnected();
@@ -1029,6 +1057,7 @@ export class KubernetesRuntime {
       listEvents: (reference) => client.listEvents(reference),
       listCustomResourceDefinitions: () => client.listCustomResourceDefinitions(),
       getRelatedResources: (request) => client.getRelatedResources(request),
+      getPodContainerEnvironment: (input) => client.getPodContainerEnvironment(input),
       watch: (query, resourceVersion, onEvent) => {
         const generation = this.queryGeneration;
         return client.watch(query, resourceVersion, (event) => {

@@ -343,6 +343,38 @@ export interface KubernetesPodTarget {
   container: string;
 }
 
+export type KubernetesPodEnvironmentSource =
+  | 'literal'
+  | 'secretKeyRef'
+  | 'secretEnvFrom'
+  | 'configMapKeyRef'
+  | 'configMapEnvFrom'
+  | 'fieldRef'
+  | 'resourceFieldRef'
+  | 'unknown';
+
+export type KubernetesPodEnvironmentUnavailable =
+  | 'missing'
+  | 'no-permission'
+  | 'unsupported'
+  | 'too-large';
+
+/** A bounded, active-view-only declaration result; it never contains raw Secret objects. */
+export interface KubernetesPodEnvironmentEntry {
+  name: string;
+  source: KubernetesPodEnvironmentSource;
+  value?: string;
+  reference?: string;
+  unavailable?: KubernetesPodEnvironmentUnavailable;
+}
+
+/** Renderer-safe, non-cached environment data for one active Pod container. */
+export interface KubernetesPodEnvironment {
+  entries: KubernetesPodEnvironmentEntry[];
+  truncated: boolean;
+  permissionDenied: boolean;
+}
+
 export interface KubernetesPortForwardInput {
   targetKind: 'pod' | 'service';
   namespace: string;
@@ -397,6 +429,7 @@ export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
   getResourceDetail(query: KubernetesResourceQuery, name: string, namespace?: string): Promise<Record<string, unknown>>;
   getResourceEvents(uid: string, namespace?: string): Promise<KubernetesResourceSummary[]>;
   getRelatedResources(request: KubernetesRelatedResourceRequest): Promise<KubernetesRelatedResources>;
+  getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment>;
   openLogs(input: KubernetesPodTarget): Promise<KubernetesLogState>;
   openTerminal(input: KubernetesPodTarget): Promise<KubernetesTerminalState>;
   writeTerminal(id: string, data: string): Promise<void>;

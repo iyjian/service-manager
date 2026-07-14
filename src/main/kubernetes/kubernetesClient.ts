@@ -6,11 +6,14 @@ import yaml from 'js-yaml';
 import type * as KubernetesNode from '@kubernetes/client-node';
 import type {
   KubernetesCustomResourceDefinition,
+  KubernetesPodEnvironment,
+  KubernetesPodTarget,
   KubernetesRelatedResourceRequest,
   KubernetesRelatedResources,
   KubernetesResourceKind,
 } from '../../shared/types';
 import { preflightKubeconfigContext } from './kubeconfigStore';
+import { resolvePodContainerEnvironment } from './podEnvironment';
 import { POD_SUMMARY_EMPTY, summarizePodListColumns } from './podSummary';
 import { sanitizeSecretForCache } from './resourceQuery';
 import type {
@@ -91,6 +94,7 @@ export interface KubernetesClient {
   listEvents(reference: { uid: string; namespace?: string }): Promise<KubernetesResourceSummary[]>;
   listCustomResourceDefinitions(): Promise<KubernetesCustomResourceDefinition[]>;
   getRelatedResources(request: KubernetesRelatedResourceRequest): Promise<KubernetesRelatedResources>;
+  getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment>;
   watch(
     query: KubernetesResourceQuery,
     resourceVersion: string,
@@ -786,6 +790,30 @@ class KubernetesClientAdapter implements KubernetesClient {
       name,
       ...(targetNamespace ? { namespace: targetNamespace } : {}),
     }));
+  }
+
+  /**
+   * Active-detail-only Pod environment resolution. This deliberately avoids
+   * list summaries, ResourceCoordinator, and every cache because decoded
+   * Secret values must exist only for the immediate caller.
+   */
+  public async getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment> {
+    this.assertOpen();
+    this.assertPodStreamRequest(input);
+    const pod = asRecord(await this.call(this.core, 'readNamespacedPod', {
+      name: input.podName,
+      namespace: input.namespace,
+    }));
+    return resolvePodContainerEnvironment(pod, input.container, {
+      readSecret: async (name) => asRecord(await this.call(this.core, 'readNamespacedSecret', {
+        name,
+        namespace: input.namespace,
+      })),
+      isPermissionError: (error) => {
+        const code = statusCodeFrom(error);
+        return code === 401 || code === 403;
+      },
+    });
   }
 
   public async listEvents(reference: { uid: string; namespace?: string }): Promise<KubernetesResourceSummary[]> {
