@@ -26,6 +26,8 @@ export interface KubernetesTerminalPane {
   mount(state: KubernetesTerminalState, host: HTMLElement): boolean;
   /** Detaches the active DOM host without disposing any retained xterm view. */
   detach(): void;
+  /** Refits the active xterm without changing focus or scrolling the page. */
+  resizeActive(): boolean;
   focus(): boolean;
   write(output: KubernetesTerminalOutput): boolean;
   finalize(state: Pick<KubernetesTerminalState, 'id' | 'state'>): boolean;
@@ -176,6 +178,14 @@ export function createKubernetesTerminalPane(options: {
 
     detach() {
       detachActive();
+    },
+
+    resizeActive() {
+      const id = activeId;
+      const current = id ? views.get(id) : undefined;
+      if (!id || !current || finalizedIds.has(id)) return false;
+      current.resize();
+      return true;
     },
 
     focus() {

@@ -270,8 +270,13 @@ test('Kubernetes reserves a hidden workspace shell for the later Logs and Shell 
 
   assert.ok(workspaceStart >= 0 && workspaceEnd > workspaceStart);
   assert.match(workspace, /class="kubernetes-workspace hidden"/);
+  assert.match(workspace, /id="kubernetes-workspace-resize-handle"/);
+  assert.match(workspace, /role="separator"/);
+  assert.match(workspace, /aria-orientation="horizontal"/);
+  assert.match(workspace, /tabindex="0"/);
   assert.match(workspace, /id="kubernetes-workspace-tabs"/);
   assert.match(workspace, /id="kubernetes-workspace-pane"/);
+  assert.match(workspace, /id="kubernetes-workspace-pane" class="kubernetes-workspace-pane" role="tabpanel"/);
   assert.doesNotMatch(workspace, /kubernetes-log-|kubernetes-terminal-/);
 });
 

@@ -20,7 +20,6 @@ import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
 import {
   buildKubernetesDrawerModel,
-  environmentSourceLabel,
   environmentUnavailableLabel,
   filterKubernetesEnvironmentEntries,
   type KubernetesDrawerContainer,
@@ -846,6 +845,7 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
   private readonly workspaceRoot = requireElement<HTMLElement>('#kubernetes-workspace');
+  private readonly workspaceResizeHandle = requireElement<HTMLElement>('#kubernetes-workspace-resize-handle');
   private readonly workspaceTabs = requireElement<HTMLElement>('#kubernetes-workspace-tabs');
   private readonly workspacePane = requireElement<HTMLElement>('#kubernetes-workspace-pane');
   private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
@@ -973,6 +973,7 @@ class KubernetesPage implements KubernetesPageController {
     if (this.workspace) return;
     this.workspace = createKubernetesWorkspace({
       root: this.workspaceRoot,
+      resizeHandle: this.workspaceResizeHandle,
       tabList: this.workspaceTabs,
       pane: this.workspacePane,
       openLogs: (target) => window.kubernetesApi.openLogs(target),
@@ -1915,6 +1916,7 @@ class KubernetesPage implements KubernetesPageController {
         row.className = 'kubernetes-drawer-label-row';
         const label = document.createElement('span');
         label.textContent = key;
+        label.title = key;
         const text = document.createElement('span');
         text.textContent = value;
         text.title = value;
@@ -2089,6 +2091,7 @@ class KubernetesPage implements KubernetesPageController {
       content.appendChild(error);
       return;
     }
+    const result = state.result;
 
     const search = document.createElement('input');
     search.type = 'search';
@@ -2096,52 +2099,50 @@ class KubernetesPage implements KubernetesPageController {
     search.setAttribute('aria-label', 'Search environment');
     search.placeholder = 'Search environment';
     search.value = state.search;
+    const renderEntries = (): void => {
+      if (state.error === 'permission') {
+        const permission = document.createElement('p');
+        permission.className = 'kubernetes-env-notice kubernetes-env-notice-error';
+        permission.textContent = 'No permission to read referenced Secret';
+        content.appendChild(permission);
+      }
+      if (result.truncated) {
+        const truncated = document.createElement('p');
+        truncated.className = 'kubernetes-env-notice';
+        truncated.textContent = 'Environment values truncated for safe display';
+        content.appendChild(truncated);
+      }
+
+      const entries = filterKubernetesEnvironmentEntries(result.entries, state.search);
+      if (entries.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'kubernetes-env-notice';
+        empty.textContent = state.search ? 'No environment entries match the search.' : 'No environment variables declared.';
+        content.appendChild(empty);
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'kubernetes-env-list';
+      for (const entry of entries) {
+        const row = document.createElement('div');
+        row.className = 'kubernetes-env-row';
+        const name = document.createElement('code');
+        name.textContent = entry.name;
+        const value = document.createElement('pre');
+        value.textContent = entry.value ?? environmentUnavailableLabel(entry.unavailable);
+        row.append(name, value);
+        list.appendChild(row);
+      }
+      content.appendChild(list);
+    };
     search.addEventListener('input', () => {
       if (!this.isCurrentDrawerEnvironment(state)) return;
       state.search = search.value;
-      this.renderDetail();
+      while (search.nextSibling) search.nextSibling.remove();
+      renderEntries();
     });
     content.appendChild(search);
-
-    if (state.error === 'permission') {
-      const permission = document.createElement('p');
-      permission.className = 'kubernetes-env-notice kubernetes-env-notice-error';
-      permission.textContent = 'No permission to read referenced Secret';
-      content.appendChild(permission);
-    }
-    if (state.result.truncated) {
-      const truncated = document.createElement('p');
-      truncated.className = 'kubernetes-env-notice';
-      truncated.textContent = 'Environment values truncated for safe display';
-      content.appendChild(truncated);
-    }
-
-    const entries = filterKubernetesEnvironmentEntries(state.result.entries, state.search);
-    if (entries.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'kubernetes-env-notice';
-      empty.textContent = state.search ? 'No environment entries match the search.' : 'No environment variables declared.';
-      content.appendChild(empty);
-      return;
-    }
-    const list = document.createElement('div');
-    list.className = 'kubernetes-env-list';
-    for (const entry of entries) {
-      const row = document.createElement('div');
-      row.className = 'kubernetes-env-row';
-      const name = document.createElement('code');
-      name.textContent = entry.name;
-      const source = document.createElement('span');
-      source.textContent = environmentSourceLabel(entry);
-      const reference = document.createElement('span');
-      reference.className = 'kubernetes-env-reference';
-      reference.textContent = entry.reference ?? '—';
-      const value = document.createElement('pre');
-      value.textContent = entry.value ?? environmentUnavailableLabel(entry.unavailable);
-      row.append(name, source, reference, value);
-      list.appendChild(row);
-    }
-    content.appendChild(list);
+    renderEntries();
   }
 
   private createDrawerSection(

@@ -263,11 +263,11 @@
 
   .kubernetes-list-page {
     @apply grid h-full min-h-0 min-w-0 gap-2 overflow-hidden;
-    grid-template-rows: auto auto minmax(160px, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .kubernetes-control-row {
-    @apply flex min-w-0 items-center gap-1.5 overflow-x-auto;
+    @apply flex min-w-0 items-center gap-1.5 overflow-visible;
   }
 
   .kubernetes-secondary-row {
@@ -663,7 +663,7 @@
   }
 
   .kubernetes-log-toolbar {
-    @apply flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
+    @apply flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-1.5 py-1;
   }
 
   .kubernetes-log-toolbar > [role='tablist'] {
@@ -691,16 +691,24 @@
   }
 
   .kubernetes-log-toolbar .kubernetes-log-search-field {
-    @apply h-8 w-full pl-8 font-mono text-[12.5px];
+    @apply h-6 min-w-[120px] flex-1 px-2 font-mono text-[11px];
+  }
+
+  .kubernetes-log-toolbar > .icon-btn {
+    @apply h-6 w-6 rounded;
+  }
+
+  .kubernetes-log-toolbar > .btn {
+    @apply h-6 px-2 text-[11px];
   }
 
   .kubernetes-log-output {
-    @apply m-0 min-h-0 min-w-0 overflow-x-auto overflow-y-auto border-0 bg-zinc-950 p-2.5 font-mono text-[12px] leading-5 text-zinc-100;
+    @apply m-0 min-h-0 min-w-0 overflow-x-auto overflow-y-auto border-0 bg-zinc-950 p-2 font-mono text-[12px] leading-5 text-zinc-100;
     white-space: pre;
   }
 
   .kubernetes-log-status {
-    @apply flex h-7 min-w-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-2.5 font-mono text-[11px] text-zinc-400;
+    @apply flex h-6 min-w-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-2 font-mono text-[10.5px] text-zinc-400;
   }
 
   .kubernetes-log-state {
@@ -750,12 +758,28 @@
   }
 
   .kubernetes-workspace {
-    height: min(35dvh, 300px);
-    @apply grid min-h-[180px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-lg border border-zinc-200;
+    height: min(30dvh, 240px);
+    min-height: 120px;
+    max-height: 80dvh;
+    grid-template-rows: 6px auto minmax(0, 1fr);
+    @apply grid overflow-hidden rounded-lg border border-zinc-200;
+  }
+
+  .kubernetes-workspace-resize-handle {
+    @apply relative cursor-ns-resize touch-none bg-zinc-50 outline-none hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+  }
+
+  .kubernetes-workspace-resize-handle::after {
+    content: '';
+    @apply absolute left-1/2 top-1/2 h-0.5 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-300;
+  }
+
+  .kubernetes-workspace-resizing {
+    @apply select-none;
   }
 
   .kubernetes-workspace-tabs {
-    @apply flex min-w-0 items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
+    @apply flex min-w-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-1.5 py-0.5;
   }
 
   .kubernetes-workspace-tab {
@@ -771,7 +795,7 @@
   }
 
   .kubernetes-workspace-tab-select {
-    @apply h-8 max-w-[280px] min-w-0 cursor-pointer truncate border-0 bg-transparent px-2 text-left font-mono text-[11.5px] text-inherit outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset;
+    @apply h-6 max-w-[140px] min-w-0 cursor-pointer truncate border-0 bg-transparent px-1.5 text-left font-mono text-[11px] text-inherit outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset;
   }
 
   .kubernetes-workspace-tab-logs .kubernetes-workspace-tab-select {
@@ -795,27 +819,23 @@
   }
 
   .kubernetes-workspace-tab-close {
-    @apply !h-8 w-7 !rounded-none !border-0 !bg-transparent !text-inherit hover:!bg-black/10 focus-visible:ring-2 focus-visible:ring-inset;
+    @apply !h-6 w-6 !rounded-none !border-0 !bg-transparent !text-inherit hover:!bg-black/10 focus-visible:ring-2 focus-visible:ring-inset;
+  }
+
+  .kubernetes-workspace-tab-close svg {
+    @apply h-3.5 w-3.5;
   }
 
   .kubernetes-workspace-pane {
     @apply min-h-0 min-w-0 overflow-hidden bg-white;
   }
 
-  .kubernetes-workspace-pane-title {
-    @apply min-w-0 shrink-0 truncate font-mono text-[11px] font-medium text-zinc-600;
-  }
-
   .kubernetes-shell-panel {
-    @apply grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-zinc-950;
-  }
-
-  .kubernetes-shell-panel-head {
-    @apply min-w-0 truncate border-b border-zinc-800 bg-zinc-900 px-2.5 py-1.5 font-mono text-[12px] text-zinc-200;
+    @apply h-full min-h-0 min-w-0 overflow-hidden bg-zinc-950;
   }
 
   .kubernetes-shell-pane-host {
-    @apply min-h-0 min-w-0 overflow-hidden;
+    @apply h-full min-h-0 min-w-0 overflow-hidden;
   }
 
   .kubernetes-shell-pane-host .kubernetes-terminal-host {
@@ -857,6 +877,7 @@
 
   .kubernetes-detail-drawer-body {
     @apply grid min-h-0 min-w-0 content-start gap-3 overflow-y-auto p-3;
+    grid-auto-rows: max-content;
   }
 
   .kubernetes-detail-drawer-panel > .kubernetes-detail-code {
@@ -888,6 +909,18 @@
   .kubernetes-drawer-facts dd,
   .kubernetes-drawer-label-row span:last-child {
     @apply m-0 min-w-0 truncate font-mono text-[12px] text-zinc-800;
+  }
+
+  .kubernetes-drawer-label-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .kubernetes-drawer-label-row > span:first-child {
+    @apply min-w-0 justify-self-start truncate text-left;
+  }
+
+  .kubernetes-drawer-label-row > span:last-child {
+    @apply min-w-0 justify-self-stretch truncate text-right;
   }
 
   .kubernetes-drawer-section {
@@ -975,28 +1008,20 @@
   }
 
   .kubernetes-env-list {
-    @apply grid max-h-64 min-h-0 gap-1 overflow-y-auto pr-0.5;
+    @apply grid min-h-0 gap-1;
   }
 
   .kubernetes-env-row {
-    @apply grid min-w-0 gap-1 rounded border border-zinc-200 bg-zinc-50 p-1.5;
-    grid-template-columns: minmax(0, 1fr) max-content;
+    @apply grid min-w-0 items-start gap-2 rounded border border-zinc-200 bg-zinc-50 p-1.5;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   }
 
   .kubernetes-env-row code {
     @apply min-w-0 truncate font-mono text-[11px] font-semibold text-zinc-900;
   }
 
-  .kubernetes-env-row > span {
-    @apply justify-self-end font-mono text-[10px] text-zinc-500;
-  }
-
-  .kubernetes-env-row .kubernetes-env-reference {
-    @apply col-span-2 min-w-0 justify-self-auto truncate text-[10px] text-zinc-500;
-  }
-
   .kubernetes-env-row pre {
-    @apply col-span-2 m-0 min-w-0 whitespace-pre-wrap break-all rounded bg-white px-1.5 py-1 font-mono text-[11px] leading-4 text-zinc-700;
+    @apply m-0 min-w-0 whitespace-pre-wrap break-all rounded bg-white px-1.5 py-1 font-mono text-[11px] leading-4 text-zinc-700;
   }
 
   .kubernetes-drawer-events {

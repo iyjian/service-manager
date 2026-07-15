@@ -1,6 +1,5 @@
 import type {
   KubernetesPodEnvironmentEntry,
-  KubernetesPodEnvironmentSource,
   KubernetesPodEnvironmentUnavailable,
   KubernetesPodTarget,
   KubernetesResourceSummary,
@@ -24,17 +23,6 @@ export interface KubernetesPodDrawerModel {
   containers: KubernetesDrawerContainer[];
 }
 
-const ENVIRONMENT_SOURCE_LABELS: Record<KubernetesPodEnvironmentSource, string> = {
-  literal: 'Literal',
-  secretKeyRef: 'Secret key',
-  secretEnvFrom: 'Secret import',
-  configMapKeyRef: 'ConfigMap key',
-  configMapEnvFrom: 'ConfigMap import',
-  fieldRef: 'Pod field',
-  resourceFieldRef: 'Container resource',
-  unknown: 'Unknown source',
-};
-
 const ENVIRONMENT_UNAVAILABLE_LABELS: Record<KubernetesPodEnvironmentUnavailable, string> = {
   missing: 'Referenced value is missing',
   'no-permission': 'Value unavailable',
@@ -55,10 +43,6 @@ export function filterKubernetesEnvironmentEntries(
     entry.reference ?? '',
     entry.value ?? '',
   ].some((value) => value.toLocaleLowerCase().includes(query)));
-}
-
-export function environmentSourceLabel(entry: Pick<KubernetesPodEnvironmentEntry, 'source'>): string {
-  return ENVIRONMENT_SOURCE_LABELS[entry.source];
 }
 
 export function environmentUnavailableLabel(unavailable: KubernetesPodEnvironmentUnavailable | undefined): string {

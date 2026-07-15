@@ -46,6 +46,7 @@ export interface KubernetesWorkspace {
 
 export interface KubernetesWorkspaceOptions {
   root: HTMLElement;
+  resizeHandle?: HTMLElement;
   tabList: HTMLElement;
   pane: HTMLElement;
   openLogs(target: KubernetesPodTarget): Promise<KubernetesLogState>;
@@ -68,6 +69,17 @@ type KubernetesWorkspaceScrollIntent = 'none' | 'follow';
 
 const MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS = 64 * 1024;
 const MAX_PENDING_TERMINAL_OUTPUT_CHUNKS = 256;
+const KUBERNETES_WORKSPACE_MIN_HEIGHT = 120;
+const KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO = 0.8;
+const KUBERNETES_WORKSPACE_KEYBOARD_STEP = 20;
+
+export function clampKubernetesWorkspaceHeight(requestedHeight: number, pageHeight: number): number {
+  const safePageHeight = Number.isFinite(pageHeight) ? Math.max(0, pageHeight) : 0;
+  const maximum = Math.floor(safePageHeight * KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO);
+  const minimum = Math.min(KUBERNETES_WORKSPACE_MIN_HEIGHT, maximum);
+  const requested = Number.isFinite(requestedHeight) ? Math.round(requestedHeight) : minimum;
+  return Math.min(maximum, Math.max(minimum, requested));
+}
 
 export function kubernetesWorkspaceTabKey(type: KubernetesWorkspaceTabType, target: KubernetesPodTarget): string {
   return [type, target.namespace, target.podName, target.container].join('\u0000');
@@ -314,6 +326,146 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   let autoScrollKey: string | undefined;
   let pendingTerminalOutputCharacters = 0;
   let pendingTerminalOutputChunks = 0;
+  let workspaceResizeFrame: number | undefined;
+  let workspaceResizeDrag: { pointerId: number; startY: number; startHeight: number } | undefined;
+
+  const workspacePageHeight = (): number => {
+    const parentHeight = options.root.parentElement?.clientHeight ?? 0;
+    return parentHeight > 0 ? parentHeight : window.innerHeight;
+  };
+
+  const workspaceHeightBounds = (): { minimum: number; maximum: number } => {
+    const maximum = Math.floor(Math.max(0, workspacePageHeight()) * KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO);
+    return { minimum: Math.min(KUBERNETES_WORKSPACE_MIN_HEIGHT, maximum), maximum };
+  };
+
+  const scheduleTerminalResize = (): void => {
+    if (workspaceResizeFrame !== undefined) return;
+    workspaceResizeFrame = window.requestAnimationFrame(() => {
+      workspaceResizeFrame = undefined;
+      terminalPane.resizeActive();
+    });
+  };
+
+  const applyWorkspaceHeight = (requestedHeight: number, resizeTerminal = true): void => {
+    const pageHeight = workspacePageHeight();
+    const height = clampKubernetesWorkspaceHeight(requestedHeight, pageHeight);
+    const bounds = workspaceHeightBounds();
+    options.root.style.maxHeight = `${bounds.maximum}px`;
+    options.root.style.height = `${height}px`;
+    options.resizeHandle?.setAttribute('aria-valuemin', String(bounds.minimum));
+    options.resizeHandle?.setAttribute('aria-valuemax', String(bounds.maximum));
+    options.resizeHandle?.setAttribute('aria-valuenow', String(height));
+    if (resizeTerminal) scheduleTerminalResize();
+  };
+
+  const finishWorkspaceResize = (pointerId?: number, releaseCapture = true): void => {
+    const drag = workspaceResizeDrag;
+    if (!drag || (pointerId !== undefined && pointerId !== drag.pointerId)) return;
+    workspaceResizeDrag = undefined;
+    options.root.classList.remove('kubernetes-workspace-resizing');
+    const handle = options.resizeHandle;
+    if (releaseCapture && handle?.hasPointerCapture(drag.pointerId)) {
+      try {
+        handle.releasePointerCapture(drag.pointerId);
+      } catch {
+        // Pointer capture can already be gone after a native cancellation.
+      }
+    }
+  };
+
+  const onWorkspaceResizePointerDown = (event: PointerEvent): void => {
+    if (disposed || event.button !== 0 || event.isPrimary === false) return;
+    finishWorkspaceResize();
+    const currentHeight = options.root.getBoundingClientRect().height;
+    workspaceResizeDrag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: clampKubernetesWorkspaceHeight(currentHeight, workspacePageHeight()),
+    };
+    options.root.classList.add('kubernetes-workspace-resizing');
+    options.resizeHandle?.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+
+  const onWorkspaceResizePointerMove = (event: PointerEvent): void => {
+    const drag = workspaceResizeDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    applyWorkspaceHeight(drag.startHeight + drag.startY - event.clientY);
+    event.preventDefault();
+  };
+
+  const onWorkspaceResizePointerEnd = (event: PointerEvent): void => {
+    finishWorkspaceResize(event.pointerId);
+  };
+
+  const onWorkspaceResizeLostCapture = (event: PointerEvent): void => {
+    finishWorkspaceResize(event.pointerId, false);
+  };
+
+  const onWorkspaceResizeKeyDown = (event: KeyboardEvent): void => {
+    const currentHeight = options.root.getBoundingClientRect().height;
+    const { minimum, maximum } = workspaceHeightBounds();
+    let requested: number | undefined;
+    if (event.key === 'ArrowUp') requested = currentHeight + KUBERNETES_WORKSPACE_KEYBOARD_STEP;
+    if (event.key === 'ArrowDown') requested = currentHeight - KUBERNETES_WORKSPACE_KEYBOARD_STEP;
+    if (event.key === 'Home') requested = minimum;
+    if (event.key === 'End') requested = maximum;
+    if (requested === undefined) return;
+    applyWorkspaceHeight(requested);
+    event.preventDefault();
+  };
+
+  const syncWorkspaceResizeAttributes = (): void => {
+    const handle = options.resizeHandle;
+    if (!handle) return;
+    const { minimum, maximum } = workspaceHeightBounds();
+    const currentHeight = clampKubernetesWorkspaceHeight(options.root.getBoundingClientRect().height, workspacePageHeight());
+    options.root.style.maxHeight = `${maximum}px`;
+    handle.setAttribute('aria-valuemin', String(minimum));
+    handle.setAttribute('aria-valuemax', String(maximum));
+    handle.setAttribute('aria-valuenow', String(currentHeight));
+  };
+
+  const onWorkspaceWindowResize = (): void => {
+    finishWorkspaceResize();
+    const inlineHeight = Number.parseFloat(options.root.style.height);
+    if (Number.isFinite(inlineHeight)) {
+      // The active terminal pane owns the native window resize fit. Avoid a
+      // second request-animation-frame fit/IPC from the workspace listener.
+      applyWorkspaceHeight(inlineHeight, false);
+      return;
+    }
+    syncWorkspaceResizeAttributes();
+  };
+
+  const bindWorkspaceResize = (): void => {
+    const handle = options.resizeHandle;
+    if (!handle) return;
+    syncWorkspaceResizeAttributes();
+    handle.addEventListener('pointerdown', onWorkspaceResizePointerDown);
+    handle.addEventListener('pointermove', onWorkspaceResizePointerMove);
+    handle.addEventListener('pointerup', onWorkspaceResizePointerEnd);
+    handle.addEventListener('pointercancel', onWorkspaceResizePointerEnd);
+    handle.addEventListener('lostpointercapture', onWorkspaceResizeLostCapture);
+    handle.addEventListener('keydown', onWorkspaceResizeKeyDown);
+    window.addEventListener('resize', onWorkspaceWindowResize);
+  };
+
+  const unbindWorkspaceResize = (): void => {
+    const handle = options.resizeHandle;
+    finishWorkspaceResize();
+    if (!handle) return;
+    handle.removeEventListener('pointerdown', onWorkspaceResizePointerDown);
+    handle.removeEventListener('pointermove', onWorkspaceResizePointerMove);
+    handle.removeEventListener('pointerup', onWorkspaceResizePointerEnd);
+    handle.removeEventListener('pointercancel', onWorkspaceResizePointerEnd);
+    handle.removeEventListener('lostpointercapture', onWorkspaceResizeLostCapture);
+    handle.removeEventListener('keydown', onWorkspaceResizeKeyDown);
+    window.removeEventListener('resize', onWorkspaceWindowResize);
+  };
+
+  bindWorkspaceResize();
 
   const closeRemoteLog = async (id: string): Promise<void> => {
     if (remotelyClosedLogIds.has(id)) return;
@@ -402,6 +554,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (selectedTabId && !currentTab(selectedTabId)) selectedTabId = undefined;
     if (!selectedTabId && tabs.length > 0) selectedTabId = tabs[tabs.length - 1].id;
     options.root.classList.toggle('hidden', tabs.length === 0);
+    if (tabs.length === 0) finishWorkspaceResize();
+    else syncWorkspaceResizeAttributes();
     options.tabList.replaceChildren();
     for (const tab of tabs) {
       const item = document.createElement('div');
@@ -416,6 +570,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       select.setAttribute('aria-selected', String(selectedTabId === tab.id));
       select.setAttribute('aria-label', tabLabel(tab));
       select.textContent = tabTargetCaption(tab);
+      select.title = tabTargetCaption(tab);
       select.addEventListener('click', () => {
         if (!currentTab(tab.id)) return;
         selectedTabId = tab.id;
@@ -475,9 +630,6 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     panel.className = 'kubernetes-log-panel';
     const toolbar = document.createElement('div');
     toolbar.className = 'kubernetes-log-toolbar';
-    const title = document.createElement('span');
-    title.className = 'kubernetes-workspace-pane-title';
-    title.textContent = tabLabel(tab);
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'input kubernetes-log-search-field';
@@ -543,7 +695,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       }
     }
     status.append(stateLabel, count);
-    toolbar.append(title, search, follow, clear);
+    toolbar.append(search, follow, clear);
     panel.append(toolbar, output, status);
     options.pane.appendChild(panel);
   };
@@ -563,12 +715,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     options.pane.replaceChildren();
     const panel = document.createElement('section');
     panel.className = 'kubernetes-shell-panel';
-    const title = document.createElement('header');
-    title.className = 'kubernetes-shell-panel-head';
-    title.textContent = tabLabel(tab);
     const host = document.createElement('div');
     host.className = 'kubernetes-shell-pane-host';
-    panel.append(title, host);
+    panel.appendChild(host);
     options.pane.appendChild(panel);
     if (!terminal) {
       const opening = document.createElement('p');
@@ -590,12 +739,14 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const renderPane = (scrollIntent: KubernetesWorkspaceScrollIntent = 'none'): void => {
     const tab = selectedTabId ? currentTab(selectedTabId) : undefined;
     if (!tab) {
+      options.pane.removeAttribute('aria-label');
       detachTerminalPane();
       renderedLogOutputs.clear();
       options.pane.replaceChildren();
       cancelAutoScroll();
       return;
     }
+    options.pane.setAttribute('aria-label', tabLabel(tab));
     if (tab.type === 'logs') renderLogPane(tab, scrollIntent);
     else renderShellPane(tab);
   };
@@ -815,13 +966,19 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       clearPendingTerminalOutputs();
       renderedLogOutputs.clear();
       cancelAutoScroll();
+      unbindWorkspaceResize();
+      if (workspaceResizeFrame !== undefined) window.cancelAnimationFrame(workspaceResizeFrame);
+      workspaceResizeFrame = undefined;
       mountedTerminalTabId = undefined;
       mountedTerminalId = undefined;
       mountedTerminalHost = undefined;
       terminalPane.dispose();
       options.tabList.replaceChildren();
       options.pane.replaceChildren();
+      options.pane.removeAttribute('aria-label');
       options.root.classList.add('hidden');
+      options.root.style.height = '';
+      options.root.style.maxHeight = '';
       disposal = disposeKubernetesWorkspaceSessions(tabs, {
         closeLogs: closeRemoteLog,
         closeTerminal: closeRemoteTerminal,

@@ -46,6 +46,10 @@ class FakeElement {
     this.disabled = false;
     this.scrollTop = 0;
     this.scrollHeight = 400;
+    this.clientHeight = 0;
+    this.rectHeight = 0;
+    this.style = { height: '', maxHeight: '' };
+    this.capturedPointers = new Set();
   }
 
   append(...children) {
@@ -74,7 +78,18 @@ class FakeElement {
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(name, listener) { this.listeners.set(name, listener); }
+  removeEventListener(name, listener) {
+    if (this.listeners.get(name) === listener) this.listeners.delete(name);
+  }
+  setPointerCapture(pointerId) { this.capturedPointers.add(pointerId); }
+  releasePointerCapture(pointerId) { this.capturedPointers.delete(pointerId); }
+  hasPointerCapture(pointerId) { return this.capturedPointers.has(pointerId); }
+  getBoundingClientRect() {
+    const inlineHeight = Number.parseFloat(this.style.height);
+    return { height: Number.isFinite(inlineHeight) ? inlineHeight : this.rectHeight };
+  }
   scrollIntoView() {}
 }
 
@@ -119,6 +134,15 @@ function findByAriaLabel(root, label) {
   return undefined;
 }
 
+function findByClassName(root, className) {
+  if ((root.className ?? '').split(/\s+/).includes(className)) return root;
+  for (const child of root.children ?? []) {
+    const found = findByClassName(child, className);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = false } = {}) {
   const originalWindow = global.window;
   const originalDocument = global.document;
@@ -139,6 +163,7 @@ async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = fal
       return id;
     },
     cancelAnimationFrame(id) { frames.delete(id); },
+    innerHeight: 800,
   };
   if (xterm) {
     FakeTerminal.instances = [];
@@ -154,6 +179,9 @@ async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = fal
     const controls = {
       ...(xterm ? { Terminal: FakeTerminal, FitAddon: FakeFitAddon } : {}),
       listenerCount: (name) => listeners.get(name)?.size ?? 0,
+      dispatchWindowEvent: (name, event = {}) => {
+        for (const listener of listeners.get(name) ?? []) listener(event);
+      },
       flushAnimationFrames: () => {
         const queued = [...frames.values()];
         frames.clear();
@@ -480,16 +508,18 @@ test('workspace replays terminal output emitted before its Shell open result bin
   }, { xterm: true });
 });
 
-test('workspace retains one active Shell resize listener and cancels stale focus frames', async () => {
-  await withWorkspaceDom(async ({ Terminal, listenerCount, flushAnimationFrames }) => {
+test('workspace retains one shared resize listener plus the active Shell listener without duplicate refits', async () => {
+  await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
     const root = new FakeElement('section');
+    const resizeHandle = new FakeElement('div');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
     const api = { namespace: 'apps', podName: 'api', container: 'web' };
     const api2 = { ...api, podName: 'api-2' };
     const workspace = createKubernetesWorkspace({
       root,
+      resizeHandle,
       tabList,
       pane,
       openLogs: async (target) => ({
@@ -515,19 +545,27 @@ test('workspace retains one active Shell resize listener and cancels stale focus
       reportError: (error) => assert.fail(String(error)),
     });
 
+    assert.equal(listenerCount('resize'), 1, 'resizable workspace owns one baseline listener');
     await workspace.openShell(api);
     const first = Terminal.instances[0];
-    assert.equal(listenerCount('resize'), 1);
+    assert.equal(listenerCount('resize'), 2);
     await workspace.openShell(api2);
     const second = Terminal.instances[1];
-    assert.equal(listenerCount('resize'), 1);
+    assert.equal(listenerCount('resize'), 2);
     flushAnimationFrames();
     assert.equal(first.focused, undefined, 'first Shell focus callback was invalidated after selection changed');
     assert.equal(second.focused, true);
 
+    root.style.height = '240px';
+    const fitCountBeforeResize = second.addon.fitCount;
+    dispatchWindowEvent('resize');
+    flushAnimationFrames();
+    assert.equal(second.addon.fitCount, fitCountBeforeResize + 1, 'window resize refits the active xterm once');
+
     await workspace.openLogs(api2);
-    assert.equal(listenerCount('resize'), 0, 'Logs selection detaches the active Shell listener');
+    assert.equal(listenerCount('resize'), 1, 'Logs selection keeps only the workspace listener');
     await workspace.dispose();
+    assert.equal(listenerCount('resize'), 0);
   }, { xterm: true, deferAnimationFrames: true });
 });
 
@@ -609,4 +647,132 @@ test('workspace retains exact Shell xterms across tab changes and disposes only 
 
     await workspace.dispose();
   }, { xterm: true });
+});
+
+test('workspace height clamps between a compact minimum and eighty percent of its page', async () => {
+  const { clampKubernetesWorkspaceHeight } = await import('../dist/renderer/kubernetesWorkspace.js');
+
+  assert.equal(clampKubernetesWorkspaceHeight(20, 800), 120);
+  assert.equal(clampKubernetesWorkspaceHeight(500, 800), 500);
+  assert.equal(clampKubernetesWorkspaceHeight(900, 800), 640);
+  assert.equal(clampKubernetesWorkspaceHeight(200, 100), 80, 'small pages keep the maximum authoritative');
+});
+
+test('workspace resize handle clamps pointer, keyboard, and window resize height, refits Shell, and cleans up listeners', async () => {
+  await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const page = new FakeElement('div');
+    page.clientHeight = 800;
+    const root = new FakeElement('section');
+    root.rectHeight = 240;
+    const resizeHandle = new FakeElement('div');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    page.append(root);
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const terminalResizes = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      resizeHandle,
+      tabList,
+      pane,
+      openLogs: async () => assert.fail('not used'),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => assert.fail('not used'),
+      openTerminal: async () => ({ id: 'terminal-api', ...target, shell: '/bin/sh', state: 'open' }),
+      writeTerminal: async () => {},
+      resizeTerminal: async (id, cols, rows) => { terminalResizes.push({ id, cols, rows }); },
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openShell(target);
+    flushAnimationFrames();
+    const initialFitCount = Terminal.instances[0].addon.fitCount;
+    const preventDefault = () => {};
+    resizeHandle.listeners.get('pointerdown')({ pointerId: 7, clientY: 300, button: 0, isPrimary: true, preventDefault });
+    resizeHandle.listeners.get('pointermove')({ pointerId: 7, clientY: -1000, preventDefault });
+    assert.equal(root.style.height, '640px');
+    assert.equal(root.style.maxHeight, '640px');
+    assert.equal(resizeHandle.getAttribute('aria-valuemax'), '640');
+    assert.equal(resizeHandle.getAttribute('aria-valuenow'), '640');
+    assert.equal(resizeHandle.hasPointerCapture(7), true);
+    flushAnimationFrames();
+    assert.equal(Terminal.instances[0].addon.fitCount, initialFitCount + 1, 'drag refits without recreating xterm');
+    assert.equal(terminalResizes.at(-1)?.id, 'terminal-api');
+
+    resizeHandle.listeners.get('pointerup')({ pointerId: 7 });
+    assert.equal(resizeHandle.hasPointerCapture(7), false);
+    const heightAfterRelease = root.style.height;
+    resizeHandle.listeners.get('pointermove')({ pointerId: 7, clientY: 500, preventDefault });
+    assert.equal(root.style.height, heightAfterRelease, 'released pointer no longer changes workspace height');
+
+    let prevented = false;
+    resizeHandle.listeners.get('keydown')({ key: 'ArrowDown', preventDefault: () => { prevented = true; } });
+    assert.equal(root.style.height, '620px');
+    assert.equal(prevented, true);
+    resizeHandle.listeners.get('keydown')({ key: 'Home', preventDefault });
+    assert.equal(root.style.height, '120px');
+    resizeHandle.listeners.get('keydown')({ key: 'End', preventDefault });
+    assert.equal(root.style.height, '640px');
+
+    page.clientHeight = 500;
+    dispatchWindowEvent('resize');
+    assert.equal(root.style.height, '400px');
+    assert.equal(root.style.maxHeight, '400px');
+    assert.equal(resizeHandle.getAttribute('aria-valuemax'), '400');
+    assert.equal(resizeHandle.getAttribute('aria-valuenow'), '400');
+
+    await workspace.dispose();
+    assert.equal(resizeHandle.listeners.has('pointerdown'), false);
+    assert.equal(listenerCount('resize'), 0);
+    assert.equal(root.style.height, '');
+    assert.equal(root.style.maxHeight, '');
+  }, { xterm: true, deferAnimationFrames: true });
+});
+
+test('workspace panes omit duplicate target titles while tab accessible names remain complete', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const resizeHandle = new FakeElement('div');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const workspace = createKubernetesWorkspace({
+      root,
+      resizeHandle,
+      tabList,
+      pane,
+      openLogs: async () => ({ sessionId: 'log-api', ...target, lines: ['ready'], following: true, hasOlder: false, revision: 1 }),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => ({ id: 'terminal-api', ...target, shell: '/bin/sh', state: 'open' }),
+      writeTerminal: async () => {},
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const logsTab = findByAriaLabel(tabList, 'Logs apps/api · web');
+    assert.ok(logsTab);
+    assert.equal(logsTab.textContent, 'apps/api · web');
+    assert.equal(findByClassName(pane, 'kubernetes-workspace-pane-title'), undefined);
+    assert.equal(pane.getAttribute('aria-label'), 'Logs apps/api · web');
+    const toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
+    assert.ok(toolbar);
+    assert.equal(toolbar.children.length, 3, 'toolbar contains only search, follow, and clear');
+
+    await workspace.openShell(target);
+    assert.equal(pane.getAttribute('aria-label'), 'Shell apps/api · web');
+    assert.equal(findByClassName(pane, 'kubernetes-shell-panel-head'), undefined);
+    const shellPanel = findByClassName(pane, 'kubernetes-shell-panel');
+    assert.ok(shellPanel);
+    assert.equal(shellPanel.children.length, 1, 'Shell pane gives all remaining space to xterm');
+
+    await workspace.dispose();
+  });
 });
