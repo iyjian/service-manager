@@ -783,7 +783,7 @@
   }
 
   .kubernetes-workspace-tab-select[aria-selected='true'] {
-    @apply bg-transparent text-inherit hover:bg-white/10;
+    @apply bg-transparent text-inherit hover:bg-black/10;
   }
 
   .kubernetes-workspace-tab-logs:has(.kubernetes-workspace-tab-select[aria-selected='true']) {
