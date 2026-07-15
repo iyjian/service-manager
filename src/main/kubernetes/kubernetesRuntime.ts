@@ -5,6 +5,7 @@ import type {
   KubernetesListSnapshot as RendererKubernetesListSnapshot,
   KubernetesCustomResourceDefinition,
   KubernetesLogState,
+  KubernetesLogScope,
   KubernetesNamespaceScope,
   KubernetesPodEnvironment,
   KubernetesPodTarget,
@@ -82,6 +83,7 @@ export interface KubernetesCoordinator {
 export interface KubernetesInteractions {
   openLogs(input: KubernetesPodInteractionTarget): Promise<KubernetesLogState>;
   loadOlderLogs(id: string): Promise<KubernetesLogState>;
+  setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): KubernetesLogState;
   closeLogs(id: string): Promise<void>;
@@ -201,7 +203,11 @@ function projectSnapshotWindow(
 }
 
 function copyLogState(state: KubernetesLogState): KubernetesLogState {
-  return { ...state, lines: [...state.lines] };
+  return {
+    ...state,
+    lines: [...state.lines],
+    ...(state.deployment ? { deployment: { ...state.deployment } } : {}),
+  };
 }
 
 function copyTerminalState(state: KubernetesTerminalState): KubernetesTerminalState {
@@ -414,7 +420,11 @@ export class KubernetesRuntime {
     return this.enqueueLifecycle(async () => {
       try {
         await this.deactivateInvalidatedQuery(transition.query, transition.coordinator);
+        const previousContext = this.session.getState().selectedContext;
         const state = await this.session.selectContext(contextName);
+        if (state.selectedContext !== previousContext) {
+          this.namespaceScope = { mode: 'all', namespaces: [] };
+        }
         await this.persistSelectedContext(state);
         const safeState = copyState(state, this.namespaceScope, this.kubeconfigReloadAvailable);
         this.emitState(safeState);
@@ -756,6 +766,21 @@ export class KubernetesRuntime {
     return copyLogState(state);
   }
 
+  public async setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState> {
+    const sessionId = assertText(id, 'log session ID');
+    if (scope !== 'pod' && scope !== 'deployment') {
+      throw new Error('Kubernetes log scope must be pod or deployment.');
+    }
+    try {
+      const state = await this.ensureInteractions().setLogScope(sessionId, scope);
+      this.emitLog(state);
+      return copyLogState(state);
+    } catch (error) {
+      this.onOperationFailure(error);
+      throw error;
+    }
+  }
+
   public async setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState> {
     const sessionId = assertText(id, 'log session ID');
     if (typeof following !== 'boolean') {
@@ -1058,6 +1083,9 @@ export class KubernetesRuntime {
       listCustomResourceDefinitions: () => client.listCustomResourceDefinitions(),
       getRelatedResources: (request) => client.getRelatedResources(request),
       getPodContainerEnvironment: (input) => client.getPodContainerEnvironment(input),
+      resolvePodDeploymentLogTargets: client.resolvePodDeploymentLogTargets
+        ? (input) => client.resolvePodDeploymentLogTargets!(input)
+        : undefined,
       watch: (query, resourceVersion, onEvent) => {
         const generation = this.queryGeneration;
         return client.watch(query, resourceVersion, (event) => {

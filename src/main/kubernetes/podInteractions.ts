@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  KubernetesLogScope,
   KubernetesLogState,
   KubernetesPortForwardState,
   KubernetesTerminalState,
@@ -7,6 +8,7 @@ import type {
 } from '../../shared/types';
 import type {
   KubernetesClient,
+  KubernetesPodDeploymentLogTargets,
   KubernetesPodExecHandle,
   KubernetesPodLogHandle,
   KubernetesPortForwardHandle,
@@ -14,6 +16,7 @@ import type {
 
 const INITIAL_LOG_TAIL_LINES = 500;
 const MAXIMUM_LOG_LINES = 2_000;
+const MAXIMUM_DEPLOYMENT_LOG_PODS = 50;
 const MAXIMUM_PORT_FORWARDS = 10;
 const MAXIMUM_TERMINAL_OUTPUT_CHUNK_LENGTH = 16_384;
 const SHELL_FALLBACKS = ['/bin/sh', 'ash', 'bash'] as const;
@@ -40,6 +43,8 @@ export interface PodInteractionManagerOptions {
 
 interface LogStream {
   generation: number;
+  scopeGeneration: number;
+  podName: string;
   handle?: KubernetesPodLogHandle;
   closeRequested: boolean;
   handleClosed: boolean;
@@ -48,6 +53,7 @@ interface LogStream {
 
 interface OlderLogLoad {
   generation: number;
+  scopeGeneration: number;
   handle?: KubernetesPodLogHandle;
   closeRequested: boolean;
   handleClosed: boolean;
@@ -60,9 +66,29 @@ interface LogSession {
   allGeneration: number;
   closed: boolean;
   nextGeneration: number;
-  stream?: LogStream;
+  scopeGeneration: number;
+  streams: Map<string, LogStream>;
+  lastRawLines: Map<string, string>;
+  aggregateLines: AggregateLogLine[];
+  aggregateSequence: number;
+  deploymentTargets?: KubernetesPodDeploymentLogTargets;
   olderLoads: Set<OlderLogLoad>;
   olderLoad?: Promise<KubernetesLogState>;
+}
+
+interface AggregateLogLine {
+  display: string;
+  podName: string;
+  timestamp?: number;
+  sequence: number;
+}
+
+interface LogScopeSnapshot {
+  state: KubernetesLogState;
+  lastRawLines: Map<string, string>;
+  aggregateLines: AggregateLogLine[];
+  aggregateSequence: number;
+  deploymentTargets?: KubernetesPodDeploymentLogTargets;
 }
 
 interface TerminalAttempt {
@@ -96,7 +122,19 @@ interface PortForwardSession {
 }
 
 function copyLogState(state: KubernetesLogState): KubernetesLogState {
-  return { ...state, lines: [...state.lines] };
+  return {
+    ...state,
+    lines: [...state.lines],
+    ...(state.deployment ? { deployment: { ...state.deployment } } : {}),
+  };
+}
+
+function copyDeploymentTargets(
+  targets: KubernetesPodDeploymentLogTargets | undefined
+): KubernetesPodDeploymentLogTargets | undefined {
+  return targets
+    ? { name: targets.name, pods: targets.pods.map((pod) => ({ ...pod })) }
+    : undefined;
 }
 
 function copyTerminalState(state: KubernetesTerminalState): KubernetesTerminalState {
@@ -123,6 +161,30 @@ function timestampFromLogLine(value: string): string | undefined {
   }
   const timestamp = new Date(match[1]);
   return Number.isNaN(timestamp.getTime()) ? undefined : timestamp.toISOString();
+}
+
+function aggregateDisplayLine(podName: string, value: string): string {
+  const timestamp = LOG_TIMESTAMP_PREFIX.exec(value);
+  if (!timestamp) {
+    return `[${podName}] ${value}`;
+  }
+  return `${timestamp[1]} [${podName}] ${value.slice(timestamp[0].length)}`;
+}
+
+function aggregateTimestamp(value: string): number | undefined {
+  const timestamp = timestampFromLogLine(value);
+  if (!timestamp) return undefined;
+  const milliseconds = new Date(timestamp).getTime();
+  return Number.isNaN(milliseconds) ? undefined : milliseconds;
+}
+
+function compareAggregateLogLines(left: AggregateLogLine, right: AggregateLogLine): number {
+  if (left.timestamp !== undefined && right.timestamp !== undefined && left.timestamp !== right.timestamp) {
+    return left.timestamp - right.timestamp;
+  }
+  if (left.timestamp !== undefined && right.timestamp === undefined) return -1;
+  if (left.timestamp === undefined && right.timestamp !== undefined) return 1;
+  return left.podName.localeCompare(right.podName) || left.sequence - right.sequence;
 }
 
 /**
@@ -231,6 +293,7 @@ export class PodInteractionManager {
         lines: [],
         following: true,
         hasOlder: true,
+        scope: 'pod',
         revision: 0,
       },
       input: { ...input },
@@ -238,11 +301,24 @@ export class PodInteractionManager {
       allGeneration: this.allGeneration,
       closed: false,
       nextGeneration: 0,
+      scopeGeneration: 0,
+      streams: new Map(),
+      lastRawLines: new Map(),
+      aggregateLines: [],
+      aggregateSequence: 0,
       olderLoads: new Set(),
     };
     this.logs.set(sessionId, session);
     try {
-      await this.openFollowingLogStream(session, INITIAL_LOG_TAIL_LINES);
+      const pendingDeployment = this.resolveDeploymentTargets(session);
+      const deployment = pendingDeployment ? await pendingDeployment : undefined;
+      if (deployment) {
+        session.deploymentTargets = deployment;
+        session.state.scope = 'deployment';
+        session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
+        session.state.hasOlder = false;
+      }
+      await this.openCurrentLogStreams(session, true, session.scopeGeneration);
       this.emitLog(session, false);
       return copyLogState(session.state);
     } catch (error) {
@@ -250,7 +326,7 @@ export class PodInteractionManager {
         this.logs.delete(sessionId);
         session.closed = true;
       }
-      await this.closeLogStream(session, session.stream);
+      await this.closeLogStreams([...session.streams.values()]).catch(() => undefined);
       throw error;
     }
   }
@@ -273,6 +349,10 @@ export class PodInteractionManager {
   }
 
   private async loadOlderLogSnapshot(session: LogSession): Promise<KubernetesLogState> {
+    if (session.state.scope !== 'pod') {
+      session.state.hasOlder = false;
+      return copyLogState(session.state);
+    }
     const retainedAtStart = [...session.state.lines];
     if (retainedAtStart.length === 0) {
       session.state.hasOlder = false;
@@ -283,6 +363,7 @@ export class PodInteractionManager {
     const tailLines = Math.min(MAXIMUM_LOG_LINES, retainedAtStart.length + INITIAL_LOG_TAIL_LINES);
     const pending: OlderLogLoad = {
       generation: ++session.nextGeneration,
+      scopeGeneration: session.scopeGeneration,
       closeRequested: false,
       handleClosed: false,
     };
@@ -335,24 +416,123 @@ export class PodInteractionManager {
       if (!session.state.following) {
         return copyLogState(session.state);
       }
+      session.scopeGeneration += 1;
       session.state.following = false;
-      await this.closeLogStream(session, session.stream);
       this.emitLog(session);
+      const streams = this.detachLogStreams(session);
+      await this.closeLogStreams(streams).catch(() => undefined);
       return copyLogState(session.state);
     }
-    if (session.state.following && session.stream && !session.stream.closeRequested) {
+    if (session.state.following && session.streams.size > 0) {
       return copyLogState(session.state);
     }
 
+    const scopeGeneration = ++session.scopeGeneration;
     session.state.following = true;
-    const previousLine = session.state.lines.at(-1);
     try {
-      await this.openFollowingLogStream(session, 1, timestampFromLogLine(previousLine ?? ''), previousLine);
+      if (session.state.scope === 'deployment') {
+        const pendingDeployment = this.resolveDeploymentTargets(session);
+        const deployment = pendingDeployment ? await pendingDeployment : undefined;
+        if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
+          return copyLogState(session.state);
+        }
+        if (!deployment) {
+          session.deploymentTargets = undefined;
+          session.state.deployment = undefined;
+          session.state.scope = 'pod';
+          session.state.hasOlder = true;
+        } else {
+          session.deploymentTargets = deployment;
+          session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
+        }
+      }
+      await this.openCurrentLogStreams(session, false, scopeGeneration);
+      if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
+        return copyLogState(session.state);
+      }
       this.emitLog(session);
       return copyLogState(session.state);
     } catch (error) {
-      session.state.following = false;
+      if (this.isLogTransitionCurrent(session, scopeGeneration)) {
+        session.state.following = false;
+        this.emitLog(session);
+      }
+      throw error;
+    }
+  }
+
+  public async setLogScope(sessionId: string, scope: KubernetesLogScope): Promise<KubernetesLogState> {
+    const session = this.requireLog(sessionId);
+    if (scope !== 'pod' && scope !== 'deployment') {
+      throw new Error('Kubernetes log scope must be pod or deployment.');
+    }
+    if (session.state.scope === scope) {
+      return copyLogState(session.state);
+    }
+    if (scope === 'deployment' && !session.state.deployment) {
+      throw new Error('This Pod is not owned by a Deployment.');
+    }
+
+    const previous: LogScopeSnapshot = {
+      state: copyLogState(session.state),
+      lastRawLines: new Map(session.lastRawLines),
+      aggregateLines: session.aggregateLines.map((line) => ({ ...line })),
+      aggregateSequence: session.aggregateSequence,
+      deploymentTargets: copyDeploymentTargets(session.deploymentTargets),
+    };
+    const wasFollowing = session.state.following;
+    const scopeGeneration = ++session.scopeGeneration;
+    const streams = this.detachLogStreams(session);
+    session.state.scope = scope;
+    session.state.lines = [];
+    session.state.hasOlder = scope === 'pod';
+    session.lastRawLines.clear();
+    session.aggregateLines = [];
+    session.aggregateSequence = 0;
+    try {
+      await this.closeLogStreams(streams).catch(() => undefined);
+      if (!this.isLogTransitionCurrent(session, scopeGeneration)) {
+        return copyLogState(session.state);
+      }
+
+      if (scope === 'deployment') {
+        const pendingDeployment = this.resolveDeploymentTargets(session);
+        const deployment = pendingDeployment ? await pendingDeployment : undefined;
+        if (!this.isLogTransitionCurrent(session, scopeGeneration)) {
+          return copyLogState(session.state);
+        }
+        if (!deployment) {
+          throw new Error('Deployment log scope is no longer available for this Pod.');
+        }
+        session.deploymentTargets = deployment;
+        session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
+      }
+
+      if (wasFollowing) {
+        await this.openCurrentLogStreams(session, true, scopeGeneration);
+        if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
+          return copyLogState(session.state);
+        }
+      }
       this.emitLog(session);
+      return copyLogState(session.state);
+    } catch (error) {
+      if (this.isLogTransitionCurrent(session, scopeGeneration)) {
+        // A failed switch must never leave the renderer showing its optimistic
+        // previous scope while main owns a different live scope. Restore the
+        // complete prior buffer/capability, but keep it explicitly paused: all
+        // prior streams were already detached, and retrying an unknown failure
+        // here could silently create a second stream or repeat the failure.
+        const failedStreams = this.detachLogStreams(session);
+        const revision = Math.max(previous.state.revision, session.state.revision);
+        session.state = { ...copyLogState(previous.state), following: false, revision };
+        session.lastRawLines = new Map(previous.lastRawLines);
+        session.aggregateLines = previous.aggregateLines.map((line) => ({ ...line }));
+        session.aggregateSequence = previous.aggregateSequence;
+        session.deploymentTargets = copyDeploymentTargets(previous.deploymentTargets);
+        this.emitLog(session);
+        await this.closeLogStreams(failedStreams).catch(() => undefined);
+      }
       throw error;
     }
   }
@@ -360,6 +540,8 @@ export class PodInteractionManager {
   public clearLogs(sessionId: string): KubernetesLogState {
     const session = this.requireLog(sessionId);
     session.state.lines = [];
+    session.aggregateLines = [];
+    session.aggregateSequence = 0;
     session.state.hasOlder = false;
     this.emitLog(session);
     return copyLogState(session.state);
@@ -373,7 +555,7 @@ export class PodInteractionManager {
     this.logs.delete(sessionId);
     session.closed = true;
     const results = await Promise.allSettled([
-      this.closeLogStream(session, session.stream),
+      ...this.detachLogStreams(session).map((stream) => this.closeLogStream(stream)),
       ...[...session.olderLoads].map((pending) => this.closeOlderLoad(pending)),
     ]);
     const failures = results
@@ -530,32 +712,103 @@ export class PodInteractionManager {
     }
   }
 
+  private resolveDeploymentTargets(
+    session: LogSession
+  ): Promise<KubernetesPodDeploymentLogTargets | undefined> | undefined {
+    const client = this.options.client();
+    const resolveTargets = client.resolvePodDeploymentLogTargets;
+    if (!resolveTargets) return undefined;
+    return resolveTargets.call(client, { ...session.input }).then((resolved) => {
+      if (!resolved || resolved.pods.length === 0 || resolved.pods.length > MAXIMUM_DEPLOYMENT_LOG_PODS) {
+        return undefined;
+      }
+      return {
+        name: resolved.name,
+        pods: resolved.pods.map((pod) => ({ ...pod })),
+      };
+    });
+  }
+
+  private async openCurrentLogStreams(
+    session: LogSession,
+    initial: boolean,
+    scopeGeneration: number
+  ): Promise<void> {
+    if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
+      throw closedBefore('log session');
+    }
+    const targets = session.state.scope === 'deployment'
+      ? session.deploymentTargets?.pods ?? []
+      : [{ uid: session.input.podName, podName: session.input.podName }];
+    if (targets.length === 0) {
+      throw new Error('No Deployment Pods currently expose this container.');
+    }
+    const boundedTailLines = session.state.scope === 'deployment'
+      ? Math.max(1, Math.ceil(INITIAL_LOG_TAIL_LINES / targets.length))
+      : INITIAL_LOG_TAIL_LINES;
+    try {
+      await Promise.all(targets.map((target) => {
+        const resumeSkipLine = initial ? undefined : session.lastRawLines.get(target.podName);
+        // The stream is genuinely closed while paused. On Resume, ask for a
+        // small bounded backlog after the last timestamp instead of requesting
+        // only the newest line and silently dropping everything in between.
+        // A non-timestamped legacy/fake anchor cannot be queried safely, so it
+        // keeps the former one-line behavior to avoid replaying old content.
+        const tailLines = initial || !resumeSkipLine || timestampFromLogLine(resumeSkipLine)
+          ? boundedTailLines
+          : 1;
+        return this.openFollowingLogStream(
+          session,
+          target.podName,
+          tailLines,
+          scopeGeneration,
+          resumeSkipLine
+        );
+      }));
+      if (initial && session.state.scope === 'deployment' && session.aggregateLines.length > INITIAL_LOG_TAIL_LINES) {
+        session.aggregateLines = session.aggregateLines.slice(-INITIAL_LOG_TAIL_LINES);
+        session.state.lines = session.aggregateLines.map((line) => line.display);
+      }
+    } catch (error) {
+      const streams = [...session.streams.values()].filter((stream) => stream.scopeGeneration === scopeGeneration);
+      for (const stream of streams) {
+        if (session.streams.get(stream.podName) === stream) session.streams.delete(stream.podName);
+      }
+      await this.closeLogStreams(streams).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async openFollowingLogStream(
     session: LogSession,
+    podName: string,
     tailLines: number,
-    sinceTime?: string,
+    scopeGeneration: number,
     resumeSkipLine?: string
   ): Promise<void> {
-    if (!this.isLogSessionActive(session)) {
+    if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
       throw closedBefore('log session');
     }
     const stream: LogStream = {
       generation: ++session.nextGeneration,
+      scopeGeneration,
+      podName,
       closeRequested: false,
       handleClosed: false,
       ...(resumeSkipLine ? { resumeSkipLine } : {}),
     };
-    session.stream = stream;
+    session.streams.set(podName, stream);
+    const sinceTime = resumeSkipLine ? timestampFromLogLine(resumeSkipLine) : undefined;
     const handle = await this.options.client().openPodLog({
-      ...session.input,
+      namespace: session.input.namespace,
+      podName,
+      container: session.input.container,
       tailLines,
       follow: true,
       ...(sinceTime ? { sinceTime } : {}),
     }, {
       onLine: (line) => {
-        if (!this.isCurrentLogStream(session, stream) || !session.state.following) {
-          return;
-        }
+        if (!this.isCurrentLogStream(session, stream)) return;
         let incoming = splitCompleteLines(line);
         if (stream.resumeSkipLine && incoming[0] === stream.resumeSkipLine) {
           incoming = incoming.slice(1);
@@ -563,27 +816,52 @@ export class PodInteractionManager {
         } else if (incoming.length > 0) {
           stream.resumeSkipLine = undefined;
         }
-        if (incoming.length > 0) {
-          session.state.lines = appendBoundedLogLines(session.state.lines, incoming);
-          this.emitLog(session);
+        if (incoming.length === 0) return;
+        for (const rawLine of incoming) {
+          session.lastRawLines.set(podName, rawLine);
+          if (session.state.scope === 'deployment') {
+            session.aggregateLines.push({
+              display: aggregateDisplayLine(podName, rawLine),
+              podName,
+              timestamp: aggregateTimestamp(rawLine),
+              sequence: ++session.aggregateSequence,
+            });
+          }
         }
+        if (session.state.scope === 'deployment') {
+          session.aggregateLines.sort(compareAggregateLogLines);
+          session.aggregateLines = session.aggregateLines.slice(-MAXIMUM_LOG_LINES);
+          session.state.lines = session.aggregateLines.map((entry) => entry.display);
+        } else {
+          session.state.lines = appendBoundedLogLines(session.state.lines, incoming);
+        }
+        this.emitLog(session);
       },
     });
     stream.handle = handle;
     if (!this.isCurrentLogStream(session, stream)) {
-      await this.closeLogStream(session, stream);
+      await this.closeLogStream(stream);
       throw closedBefore('log session');
     }
   }
 
-  private async closeLogStream(session: LogSession, stream: LogStream | undefined): Promise<void> {
-    if (!stream) {
-      return;
-    }
+  private detachLogStreams(session: LogSession): LogStream[] {
+    const streams = [...session.streams.values()];
+    session.streams.clear();
+    for (const stream of streams) stream.closeRequested = true;
+    return streams;
+  }
+
+  private async closeLogStreams(streams: LogStream[]): Promise<void> {
+    const results = await Promise.allSettled(streams.map((stream) => this.closeLogStream(stream)));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) throw errorFromFailures(failures, 'Kubernetes log cleanup failed.');
+  }
+
+  private async closeLogStream(stream: LogStream): Promise<void> {
     stream.closeRequested = true;
-    if (session.stream === stream) {
-      session.stream = undefined;
-    }
     if (stream.handle && !stream.handleClosed) {
       stream.handleClosed = true;
       await stream.handle.close();
@@ -802,12 +1080,26 @@ export class PodInteractionManager {
 
   private isCurrentLogStream(session: LogSession, stream: LogStream): boolean {
     return this.isLogSessionActive(session)
-      && session.stream === stream
+      && session.state.following
+      && session.scopeGeneration === stream.scopeGeneration
+      && session.streams.get(stream.podName) === stream
       && !stream.closeRequested;
+  }
+
+  private isLogTransitionCurrent(
+    session: LogSession,
+    scopeGeneration: number,
+    following?: boolean
+  ): boolean {
+    return this.isLogSessionActive(session)
+      && session.scopeGeneration === scopeGeneration
+      && (following === undefined || session.state.following === following);
   }
 
   private isCurrentOlderLoad(session: LogSession, pending: OlderLogLoad): boolean {
     return this.isLogSessionActive(session)
+      && session.state.scope === 'pod'
+      && session.scopeGeneration === pending.scopeGeneration
       && session.olderLoads.has(pending)
       && !pending.closeRequested;
   }

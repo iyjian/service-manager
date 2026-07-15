@@ -3,6 +3,7 @@ import type {
   HostDraft,
   KubernetesApi,
   KubernetesListSnapshot,
+  KubernetesLogScope,
   KubernetesLogState,
   KubernetesNamespaceScope,
   KubernetesPodTarget,
@@ -137,6 +138,7 @@ const kubernetesApi: KubernetesApi = {
   getPodContainerEnvironment: (input: KubernetesPodTarget) =>
     ipcRenderer.invoke('kubernetes:get-pod-environment', input),
   openLogs: (input: KubernetesPodTarget) => ipcRenderer.invoke('kubernetes:open-logs', input),
+  setLogScope: (id: string, scope: KubernetesLogScope) => ipcRenderer.invoke('kubernetes:set-log-scope', { id, scope }),
   setLogFollowing: (id: string, following: boolean) => ipcRenderer.invoke('kubernetes:set-log-following', { id, following }),
   clearLogs: (id: string) => ipcRenderer.invoke('kubernetes:clear-logs', id),
   closeLogs: (id: string) => ipcRenderer.invoke('kubernetes:close-logs', id),

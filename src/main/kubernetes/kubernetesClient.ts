@@ -54,6 +54,15 @@ export interface KubernetesPodLogHandle {
   close(): Promise<void>;
 }
 
+/**
+ * Main-process-only Deployment membership resolved from a selected Pod's
+ * controller chain. The Deployment selector never crosses into the renderer.
+ */
+export interface KubernetesPodDeploymentLogTargets {
+  name: string;
+  pods: Array<{ uid: string; podName: string }>;
+}
+
 export interface KubernetesPodExecRequest {
   namespace: string;
   podName: string;
@@ -99,6 +108,10 @@ export interface KubernetesClient {
   listCustomResourceDefinitions(): Promise<KubernetesCustomResourceDefinition[]>;
   getRelatedResources(request: KubernetesRelatedResourceRequest): Promise<KubernetesRelatedResources>;
   getPodContainerEnvironment(input: KubernetesPodTarget): Promise<KubernetesPodEnvironment>;
+  /** Optional for compatibility with focused client fakes; the production adapter always implements it. */
+  resolvePodDeploymentLogTargets?(
+    input: KubernetesPodTarget
+  ): Promise<KubernetesPodDeploymentLogTargets | undefined>;
   watch(
     query: KubernetesResourceQuery,
     resourceVersion: string,
@@ -321,6 +334,113 @@ function objectValue(value: unknown, key: string): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+interface KubernetesControllerOwner {
+  name: string;
+  uid: string;
+}
+
+function controllerOwner(
+  resource: Record<string, unknown>,
+  kind: 'ReplicaSet' | 'Deployment'
+): KubernetesControllerOwner | undefined {
+  const references = objectValue(resource, 'metadata').ownerReferences;
+  if (!Array.isArray(references)) {
+    return undefined;
+  }
+  for (const value of references) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      continue;
+    }
+    const reference = value as Record<string, unknown>;
+    const name = stringValue(reference.name);
+    const uid = stringValue(reference.uid);
+    if (
+      reference.controller === true
+      && reference.apiVersion === 'apps/v1'
+      && reference.kind === kind
+      && name
+      && uid
+    ) {
+      return { name, uid };
+    }
+  }
+  return undefined;
+}
+
+function deploymentLabelSelector(deployment: Record<string, unknown>): string | undefined {
+  const rawSelector = objectValue(deployment, 'spec').selector;
+  if (!rawSelector || typeof rawSelector !== 'object' || Array.isArray(rawSelector)) {
+    return undefined;
+  }
+  const selector = rawSelector as Record<string, unknown>;
+  const requirements: string[] = [];
+  if (selector.matchLabels !== undefined) {
+    if (!selector.matchLabels || typeof selector.matchLabels !== 'object' || Array.isArray(selector.matchLabels)) {
+      return undefined;
+    }
+    const labels = selector.matchLabels as Record<string, unknown>;
+    for (const key of Object.keys(labels).sort()) {
+      const value = labels[key];
+      if (!isNonEmptyString(key) || typeof value !== 'string') {
+        return undefined;
+      }
+      requirements.push(`${key}=${value}`);
+    }
+  }
+
+  if (selector.matchExpressions !== undefined) {
+    if (!Array.isArray(selector.matchExpressions)) {
+      return undefined;
+    }
+    for (const value of selector.matchExpressions) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return undefined;
+      }
+      const expression = value as Record<string, unknown>;
+      const key = stringValue(expression.key);
+      const operator = stringValue(expression.operator);
+      if (!key || !operator) {
+        return undefined;
+      }
+      if (operator === 'Exists') {
+        requirements.push(key);
+        continue;
+      }
+      if (operator === 'DoesNotExist') {
+        requirements.push(`!${key}`);
+        continue;
+      }
+      if (operator !== 'In' && operator !== 'NotIn') {
+        return undefined;
+      }
+      if (!Array.isArray(expression.values)
+        || expression.values.length === 0
+        || !expression.values.every((item): item is string => typeof item === 'string')) {
+        return undefined;
+      }
+      requirements.push(`${key} ${operator.toLowerCase()} (${expression.values.join(',')})`);
+    }
+  }
+  return requirements.length > 0 ? requirements.join(',') : undefined;
+}
+
+function podDeclaresContainer(pod: Record<string, unknown>, containerName: string): boolean {
+  const spec = objectValue(pod, 'spec');
+  return [spec.containers, spec.initContainers].some((containers) => (
+    Array.isArray(containers) && containers.some((container) => (
+      container !== null
+      && typeof container === 'object'
+      && !Array.isArray(container)
+      && (container as Record<string, unknown>).name === containerName
+    ))
+  ));
+}
+
+function isUnavailableDeploymentLogDiscoveryError(error: unknown): boolean {
+  const status = statusCodeFrom(error);
+  return status === 401 || status === 403 || status === 404;
 }
 
 function timestampValue(value: unknown): string | undefined {
@@ -794,6 +914,104 @@ class KubernetesClientAdapter implements KubernetesClient {
       name,
       ...(targetNamespace ? { namespace: targetNamespace } : {}),
     }));
+  }
+
+  /**
+   * Resolves Deployment-wide log membership without accepting a renderer-
+   * supplied Deployment or selector. Every controller hop is read directly
+   * and its UID is checked before the next resource is trusted.
+   */
+  public async resolvePodDeploymentLogTargets(
+    input: KubernetesPodTarget
+  ): Promise<KubernetesPodDeploymentLogTargets | undefined> {
+    this.assertOpen();
+    this.assertPodStreamRequest(input);
+    try {
+      const pod = asRecord(await this.call(this.core, 'readNamespacedPod', {
+        name: input.podName,
+        namespace: input.namespace,
+      }));
+      const replicaSetOwner = controllerOwner(pod, 'ReplicaSet');
+      if (!replicaSetOwner) {
+        return undefined;
+      }
+
+      const replicaSet = asRecord(await this.call(this.apps, 'readNamespacedReplicaSet', {
+        name: replicaSetOwner.name,
+        namespace: input.namespace,
+      }));
+      if (stringValue(objectValue(replicaSet, 'metadata').uid) !== replicaSetOwner.uid) {
+        return undefined;
+      }
+      const deploymentOwner = controllerOwner(replicaSet, 'Deployment');
+      if (!deploymentOwner) {
+        return undefined;
+      }
+
+      const deployment = asRecord(await this.call(this.apps, 'readNamespacedDeployment', {
+        name: deploymentOwner.name,
+        namespace: input.namespace,
+      }));
+      const deploymentMetadata = objectValue(deployment, 'metadata');
+      const deploymentName = stringValue(deploymentMetadata.name);
+      if (stringValue(deploymentMetadata.uid) !== deploymentOwner.uid
+        || deploymentName !== deploymentOwner.name) {
+        return undefined;
+      }
+      const labelSelector = deploymentLabelSelector(deployment);
+      if (!labelSelector) {
+        return undefined;
+      }
+
+      const pods: Array<{ uid: string; podName: string }> = [];
+      const seenUids = new Set<string>();
+      const seenNames = new Set<string>();
+      const seenContinuations = new Set<string>();
+      let continueToken: string | undefined;
+      do {
+        const page = asRecord(await this.call(this.core, 'listNamespacedPod', {
+          namespace: input.namespace,
+          labelSelector,
+          limit: PAGE_SIZE,
+          ...(continueToken ? { _continue: continueToken } : {}),
+        })) as KubernetesListObject;
+        if (page.items !== undefined && !Array.isArray(page.items)) {
+          throw new Error('Kubernetes API returned an invalid Pod list.');
+        }
+        for (const value of page.items ?? []) {
+          const candidate = asRecord(value);
+          const metadata = objectValue(candidate, 'metadata');
+          const uid = stringValue(metadata.uid);
+          const podName = stringValue(metadata.name);
+          if (!uid || !podName || seenUids.has(uid) || seenNames.has(podName)
+            || !podDeclaresContainer(candidate, input.container)) {
+            continue;
+          }
+          seenUids.add(uid);
+          seenNames.add(podName);
+          pods.push({ uid, podName });
+        }
+        const next = stringValue(page.metadata?.continue);
+        if (next && seenContinuations.has(next)) {
+          throw new Error('Kubernetes API returned a repeated Pod list continuation.');
+        }
+        if (next) seenContinuations.add(next);
+        continueToken = next;
+      } while (continueToken);
+
+      pods.sort((left, right) => (
+        left.podName < right.podName ? -1
+          : left.podName > right.podName ? 1
+            : left.uid < right.uid ? -1
+              : left.uid > right.uid ? 1 : 0
+      ));
+      return { name: deploymentName, pods };
+    } catch (error) {
+      if (isUnavailableDeploymentLogDiscoveryError(error)) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   /**

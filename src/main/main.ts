@@ -14,6 +14,7 @@ import type {
   TunnelStatusChange,
   UpdateState,
   KubernetesLogState,
+  KubernetesLogScope,
   KubernetesNamespaceScope,
   KubernetesPodTarget,
   KubernetesPortForwardInput,
@@ -110,6 +111,7 @@ const IPC_CHANNELS = {
   kubernetesGetPodEnvironment: 'kubernetes:get-pod-environment',
   kubernetesOpenLogs: 'kubernetes:open-logs',
   kubernetesLoadOlderLogs: 'kubernetes:load-older-logs',
+  kubernetesSetLogScope: 'kubernetes:set-log-scope',
   kubernetesSetLogFollowing: 'kubernetes:set-log-following',
   kubernetesClearLogs: 'kubernetes:clear-logs',
   kubernetesCloseLogs: 'kubernetes:close-logs',
@@ -1162,6 +1164,18 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesLoadOlderLogs, async (_event, id: unknown) =>
     getKubernetesRuntime().loadOlderLogs(validateKubernetesText(id, 'log session ID'))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesSetLogScope,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload) || (payload.scope !== 'pod' && payload.scope !== 'deployment')) {
+        throw new Error('Kubernetes log scope request is invalid.');
+      }
+      return getKubernetesRuntime().setLogScope(
+        validateKubernetesText(payload.id, 'log session ID'),
+        payload.scope as KubernetesLogScope
+      );
+    }
   );
   ipcMain.handle(
     IPC_CHANNELS.kubernetesSetLogFollowing,

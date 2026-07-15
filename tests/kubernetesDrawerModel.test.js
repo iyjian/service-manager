@@ -78,3 +78,30 @@ test('filterKubernetesEnvironmentEntries searches only the active entry fields',
   assert.deepEqual(filterKubernetesEnvironmentEntries(entries, 'rendered-locally').map((entry) => entry.name), ['TOKEN']);
   assert.deepEqual(filterKubernetesEnvironmentEntries(entries, '').map((entry) => entry.name), ['API_URL', 'CONFIG_MODE', 'TOKEN']);
 });
+
+test('shouldRenderKubernetesEnvironment hides only absent or successfully resolved empty Env', async () => {
+  const { shouldRenderKubernetesEnvironment } = await import('../dist/renderer/kubernetesDrawerModel.js');
+
+  assert.equal(shouldRenderKubernetesEnvironment(false), false);
+  assert.equal(shouldRenderKubernetesEnvironment(true), true, 'declared Env remains available before lazy loading');
+  assert.equal(shouldRenderKubernetesEnvironment(true, {
+    entries: [],
+    truncated: false,
+    permissionDenied: false,
+  }), false, 'a successful empty resolution removes the Env section');
+  assert.equal(shouldRenderKubernetesEnvironment(true, {
+    entries: [],
+    truncated: true,
+    permissionDenied: false,
+  }), true, 'a truncated response keeps its safety notice visible');
+  assert.equal(shouldRenderKubernetesEnvironment(true, {
+    entries: [],
+    truncated: false,
+    permissionDenied: true,
+  }), true, 'a permission failure keeps its warning visible');
+  assert.equal(shouldRenderKubernetesEnvironment(true, {
+    entries: [{ name: 'MODE', source: 'literal', value: 'production' }],
+    truncated: false,
+    permissionDenied: false,
+  }), true);
+});

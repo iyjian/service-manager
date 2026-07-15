@@ -32,6 +32,8 @@ class FakeClassList {
 }
 
 class FakeElement {
+  static clampDetachedPreScroll = false;
+
   constructor(tagName = 'div') {
     this.tagName = tagName.toUpperCase();
     this.children = [];
@@ -44,12 +46,21 @@ class FakeElement {
     this.value = '';
     this.title = '';
     this.disabled = false;
-    this.scrollTop = 0;
+    this._scrollTop = 0;
     this.scrollHeight = 400;
     this.clientHeight = 0;
     this.rectHeight = 0;
     this.style = { height: '', maxHeight: '' };
     this.capturedPointers = new Set();
+  }
+
+  get scrollTop() { return this._scrollTop; }
+  set scrollTop(value) {
+    this._scrollTop = FakeElement.clampDetachedPreScroll
+      && this.tagName === 'PRE'
+      && !this.parentElement
+      ? 0
+      : value;
   }
 
   append(...children) {
@@ -143,7 +154,10 @@ function findByClassName(root, className) {
   return undefined;
 }
 
-async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = false } = {}) {
+async function withWorkspaceDom(
+  run,
+  { xterm = false, deferAnimationFrames = false, clampDetachedPreScroll = false } = {}
+) {
   const originalWindow = global.window;
   const originalDocument = global.document;
   const listeners = new Map();
@@ -171,6 +185,8 @@ async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = fal
     fakeWindow.FitAddon = { FitAddon: FakeFitAddon };
   }
   global.window = fakeWindow;
+  const previousClampDetachedPreScroll = FakeElement.clampDetachedPreScroll;
+  FakeElement.clampDetachedPreScroll = clampDetachedPreScroll;
   global.document = {
     createElement: (tagName) => new FakeElement(tagName),
     createElementNS: (_namespace, tagName) => new FakeElement(tagName),
@@ -190,6 +206,7 @@ async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = fal
     };
     return await run(controls);
   } finally {
+    FakeElement.clampDetachedPreScroll = previousClampDetachedPreScroll;
     global.window = originalWindow;
     global.document = originalDocument;
   }
@@ -775,4 +792,188 @@ test('workspace panes omit duplicate target titles while tab accessible names re
 
     await workspace.dispose();
   });
+});
+
+test('Deployment log tabs expose a default-on scope switch before search and retain it in Pod-only mode', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api-a', container: 'web' };
+    const scopeCalls = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api',
+        ...target,
+        lines: ['ready'],
+        following: true,
+        hasOlder: false,
+        revision: 1,
+        scope: 'deployment',
+        deployment: { name: 'api', podCount: 2 },
+      }),
+      setLogScope: async (id, scope) => {
+        scopeCalls.push([id, scope]);
+        return {
+          sessionId: id,
+          ...target,
+          lines: [],
+          following: true,
+          hasOlder: scope === 'pod',
+          revision: 2,
+          scope,
+          deployment: { name: 'api', podCount: 2 },
+        };
+      },
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    let toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
+    assert.equal(toolbar.children.length, 4);
+    const scopeSwitch = toolbar.children[0];
+    assert.equal(scopeSwitch.getAttribute('role'), 'switch');
+    assert.equal(scopeSwitch.getAttribute('aria-checked'), 'true');
+    assert.equal(scopeSwitch.getAttribute('aria-label'), 'Include all Pods in Deployment api');
+    assert.equal(scopeSwitch.textContent, 'Deployment pods (2)');
+    scopeSwitch.listeners.get('click')();
+    assert.equal(findByClassName(pane, 'kubernetes-log-scope-switch').disabled, true);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(scopeCalls, [['log-api', 'pod']]);
+    toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
+    assert.equal(toolbar.children[0].getAttribute('aria-checked'), 'false');
+    assert.equal(toolbar.children[0].getAttribute('aria-label'), 'Include all Pods in Deployment api');
+    assert.equal(toolbar.children[0].textContent, 'Deployment pods (2)');
+    assert.equal(toolbar.children[0].disabled, false, 'a settled scope request re-enables the switch without another log event');
+    await workspace.dispose();
+  });
+});
+
+test('workspace keeps a newer stopped rollback authoritative after a scope-switch rejection', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api-a', container: 'web' };
+    const scopeResult = deferred();
+    const errors = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api',
+        ...target,
+        lines: ['retained'],
+        following: true,
+        hasOlder: true,
+        revision: 1,
+        scope: 'pod',
+        deployment: { name: 'api', podCount: 2 },
+      }),
+      setLogScope: () => scopeResult.promise,
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+    });
+    await workspace.openLogs(target);
+    findByClassName(pane, 'kubernetes-log-scope-switch').listeners.get('click')();
+    assert.equal(findByClassName(pane, 'kubernetes-log-scope-switch').disabled, true);
+
+    workspace.onLogChanged({
+      sessionId: 'log-api',
+      ...target,
+      lines: ['retained'],
+      following: false,
+      hasOlder: true,
+      revision: 2,
+      scope: 'pod',
+      deployment: { name: 'api', podCount: 2 },
+    });
+    scopeResult.reject(new Error('scope transport failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const scopeSwitch = findByClassName(pane, 'kubernetes-log-scope-switch');
+    assert.equal(scopeSwitch.getAttribute('aria-checked'), 'false');
+    assert.equal(scopeSwitch.getAttribute('aria-label'), 'Include all Pods in Deployment api');
+    assert.equal(scopeSwitch.disabled, false, 'a rejected scope request re-enables the switch without another log event');
+    assert.ok(findByAriaLabel(pane, 'Resume log follow'));
+    assert.equal(findByClassName(pane, 'kubernetes-log-status').children[0].textContent, 'Paused');
+    assert.deepEqual(errors, ['scope transport failed']);
+    await workspace.dispose();
+  });
+});
+
+test('pausing logs restores the exact attached viewport after optimistic and confirmed pane rebuilds', async () => {
+  await withWorkspaceDom(async ({ flushAnimationFrames }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api-a', container: 'web' };
+    const pauseResult = deferred();
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['one', 'two', 'three'],
+        following: true, hasOlder: false, revision: 1, scope: 'pod',
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogFollowing: () => pauseResult.promise,
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    flushAnimationFrames();
+    let output = findByClassName(pane, 'kubernetes-log-output');
+    output.scrollTop = 137;
+    output.listeners.get('scroll')();
+    findByAriaLabel(pane, 'Pause log follow').listeners.get('click')();
+    output = findByClassName(pane, 'kubernetes-log-output');
+    assert.equal(output.scrollTop, 137, 'the attached optimistic pane restores before it can flash at the top');
+    flushAnimationFrames();
+    assert.equal(output.scrollTop, 137, 'optimistic paused pane restores after attachment');
+
+    pauseResult.resolve({
+      sessionId: 'log-api', ...target, lines: ['one', 'two', 'three'],
+      following: false, hasOlder: false, revision: 2, scope: 'pod',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    output = findByClassName(pane, 'kubernetes-log-output');
+    assert.equal(output.scrollTop, 137, 'the attached confirmed pane also restores synchronously');
+    flushAnimationFrames();
+    assert.equal(output.scrollTop, 137, 'confirmation rerender preserves the paused viewport too');
+    await workspace.dispose();
+  }, { deferAnimationFrames: true, clampDetachedPreScroll: true });
 });

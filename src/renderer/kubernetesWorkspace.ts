@@ -1,4 +1,5 @@
 import type {
+  KubernetesLogScope,
   KubernetesLogState,
   KubernetesPodTarget,
   KubernetesTerminalOutput,
@@ -50,6 +51,7 @@ export interface KubernetesWorkspaceOptions {
   tabList: HTMLElement;
   pane: HTMLElement;
   openLogs(target: KubernetesPodTarget): Promise<KubernetesLogState>;
+  setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): Promise<KubernetesLogState>;
   closeLogs(id: string): Promise<void>;
@@ -62,6 +64,11 @@ export interface KubernetesWorkspaceOptions {
 
 interface KubernetesWorkspaceFollowIntent {
   following: boolean;
+  revision: number;
+}
+
+interface KubernetesWorkspaceScopeIntent {
+  scope: KubernetesLogScope;
   revision: number;
 }
 
@@ -90,7 +97,11 @@ function copyTarget(target: KubernetesPodTarget): KubernetesPodTarget {
 }
 
 function copyLog(log: KubernetesLogState): KubernetesLogState {
-  return { ...log, lines: [...log.lines] };
+  return {
+    ...log,
+    lines: [...log.lines],
+    ...(log.deployment ? { deployment: { ...log.deployment } } : {}),
+  };
 }
 
 function copyTab(tab: KubernetesWorkspaceTab): KubernetesWorkspaceTab {
@@ -308,6 +319,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const pendingTerminalOutputs = new Map<string, string[]>();
   const followRequests = new Map<string, symbol>();
   const followIntents = new Map<string, KubernetesWorkspaceFollowIntent>();
+  const scopeRequests = new Map<string, symbol>();
+  const scopeIntents = new Map<string, KubernetesWorkspaceScopeIntent>();
   const logScrollTops = new Map<string, number>();
   const renderedLogOutputs = new Map<string, HTMLPreElement>();
   const remotelyClosedLogIds = new Set<string>();
@@ -324,6 +337,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   let disposal: Promise<void> | undefined;
   let autoScrollFrame: number | undefined;
   let autoScrollKey: string | undefined;
+  let preserveScrollFrame: number | undefined;
+  let preserveScrollTabId: string | undefined;
   let pendingTerminalOutputCharacters = 0;
   let pendingTerminalOutputChunks = 0;
   let workspaceResizeFrame: number | undefined;
@@ -524,10 +539,46 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     autoScrollKey = undefined;
   };
 
+  const cancelPreserveScroll = (): void => {
+    if (preserveScrollFrame !== undefined) window.cancelAnimationFrame(preserveScrollFrame);
+    preserveScrollFrame = undefined;
+    preserveScrollTabId = undefined;
+  };
+
+  const captureRenderedLogScroll = (tabId: string): void => {
+    if (preserveScrollFrame !== undefined && preserveScrollTabId === tabId) return;
+    const output = renderedLogOutputs.get(tabId);
+    if (output?.parentElement) logScrollTops.set(tabId, output.scrollTop);
+  };
+
+  const scheduleLogScrollRestore = (
+    tab: KubernetesWorkspaceTab,
+    log: KubernetesLogState,
+    scrollTop: number,
+    expectedFollowing: boolean
+  ): void => {
+    cancelPreserveScroll();
+    preserveScrollTabId = tab.id;
+    preserveScrollFrame = window.requestAnimationFrame(() => {
+      preserveScrollFrame = undefined;
+      preserveScrollTabId = undefined;
+      const current = currentTab(tab.id, 'logs');
+      if (!current?.log || selectedTabId !== tab.id) return;
+      if (current.log.sessionId !== log.sessionId
+        || current.log.revision !== log.revision
+        || current.log.following !== expectedFollowing) return;
+      const output = renderedLogOutputs.get(tab.id);
+      if (!output?.parentElement) return;
+      output.scrollTop = scrollTop;
+      logScrollTops.set(tab.id, output.scrollTop);
+    });
+  };
+
   const scheduleLogBottom = (tab: KubernetesWorkspaceTab, log: KubernetesLogState): void => {
     const key = `${tab.id}\u0000${log.sessionId}\u0000${log.revision}`;
     if (autoScrollFrame !== undefined && autoScrollKey === key) return;
     cancelAutoScroll();
+    cancelPreserveScroll();
     autoScrollKey = key;
     autoScrollFrame = window.requestAnimationFrame(() => {
       autoScrollFrame = undefined;
@@ -573,6 +624,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       select.title = tabTargetCaption(tab);
       select.addEventListener('click', () => {
         if (!currentTab(tab.id)) return;
+        if (selectedTabId) captureRenderedLogScroll(selectedTabId);
         selectedTabId = tab.id;
         render();
       });
@@ -623,6 +675,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   };
 
   const renderLogPane = (tab: KubernetesWorkspaceTab, scrollIntent: KubernetesWorkspaceScrollIntent): void => {
+    captureRenderedLogScroll(tab.id);
     detachTerminalPane();
     renderedLogOutputs.clear();
     options.pane.replaceChildren();
@@ -655,6 +708,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const stateLabel = document.createElement('span');
     const count = document.createElement('span');
     const log = tab.log;
+    let scopeSwitch: HTMLButtonElement | undefined;
+    let restoreScrollTop: number | undefined;
+    let scrollToBottom = false;
     if (!log) {
       follow.disabled = true;
       clear.disabled = true;
@@ -664,7 +720,22 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       stateLabel.textContent = 'Opening';
       count.textContent = '0 lines';
       cancelAutoScroll();
+      cancelPreserveScroll();
     } else {
+      if (log.deployment) {
+        scopeSwitch = document.createElement('button');
+        scopeSwitch.type = 'button';
+        scopeSwitch.className = 'kubernetes-log-scope-switch';
+        scopeSwitch.setAttribute('role', 'switch');
+        scopeSwitch.setAttribute('aria-checked', String(log.scope === 'deployment'));
+        scopeSwitch.setAttribute('aria-label', `Include all Pods in Deployment ${log.deployment.name}`);
+        scopeSwitch.title = log.scope === 'deployment'
+          ? `Showing all ${log.deployment.name} Deployment Pods; click for this Pod only`
+          : `Showing this Pod only; click for all ${log.deployment.name} Deployment Pods`;
+        scopeSwitch.textContent = `Deployment pods (${log.deployment.podCount})`;
+        scopeSwitch.disabled = scopeRequests.has(log.sessionId);
+        scopeSwitch.addEventListener('click', () => toggleLogScope(tab.id));
+      }
       const following = log.following;
       follow.setAttribute('aria-label', following ? 'Pause log follow' : 'Resume log follow');
       follow.setAttribute('title', following ? 'Pause log follow' : 'Resume log follow');
@@ -688,20 +759,33 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       });
       renderedLogOutputs.set(tab.id, output);
       if (following && scrollIntent === 'follow') {
-        scheduleLogBottom(tab, log);
+        scrollToBottom = true;
       } else {
         if (!following) cancelAutoScroll();
-        output.scrollTop = logScrollTops.get(tab.id) ?? 0;
+        restoreScrollTop = logScrollTops.get(tab.id) ?? 0;
       }
     }
     status.append(stateLabel, count);
+    if (scopeSwitch) toolbar.appendChild(scopeSwitch);
     toolbar.append(search, follow, clear);
     panel.append(toolbar, output, status);
     options.pane.appendChild(panel);
+    if (scrollToBottom && log) {
+      scheduleLogBottom(tab, log);
+    } else if (restoreScrollTop !== undefined && log) {
+      // The replacement output is attached now, so restore immediately to
+      // avoid a visible one-frame jump to the top. Reapply on the next frame
+      // because Chromium can still clamp during the same layout turn.
+      output.scrollTop = restoreScrollTop;
+      logScrollTops.set(tab.id, output.scrollTop);
+      scheduleLogScrollRestore(tab, log, restoreScrollTop, log.following);
+    }
   };
 
   const renderShellPane = (tab: KubernetesWorkspaceTab): void => {
+    for (const tabId of renderedLogOutputs.keys()) captureRenderedLogScroll(tabId);
     renderedLogOutputs.clear();
+    cancelPreserveScroll();
     const terminal = tab.terminalId ? terminalStates.get(tab.terminalId) : undefined;
     if (terminal && mountedTerminalTabId === tab.id && mountedTerminalId === terminal.id && mountedTerminalHost) {
       if (!terminalPane.mount(terminal, mountedTerminalHost)) {
@@ -766,6 +850,13 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (openingTerminalTabIds.size === 0) clearPendingTerminalOutputs();
     logScrollTops.delete(tab.id);
     renderedLogOutputs.delete(tab.id);
+    if (preserveScrollTabId === tab.id) cancelPreserveScroll();
+    if (tab.log) {
+      followRequests.delete(tab.log.sessionId);
+      followIntents.delete(tab.log.sessionId);
+      scopeRequests.delete(tab.log.sessionId);
+      scopeIntents.delete(tab.log.sessionId);
+    }
     if (tab.terminalId) {
       terminalFinalIds.add(tab.terminalId);
       takePendingTerminalOutput(tab.terminalId);
@@ -794,13 +885,19 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const before = tabId ? isCurrentLogTab(tabId, next.sessionId) : undefined;
     if (!tabId || !before?.log) return { followed: false };
     const intent = followIntents.get(next.sessionId);
+    const scopeIntent = scopeIntents.get(next.sessionId);
     if (next.revision < before.log.revision) return { followed: false };
     if (intent && (next.revision < intent.revision
       || (next.revision === intent.revision && next.following !== intent.following))) {
       return { followed: false };
     }
+    if (scopeIntent && (next.revision < scopeIntent.revision
+      || (next.revision === scopeIntent.revision && next.scope !== scopeIntent.scope))) {
+      return { followed: false };
+    }
     if (!state.applyLog(next)) return { followed: false };
     if (intent && next.revision > intent.revision) followIntents.delete(next.sessionId);
+    if (scopeIntent && next.revision > scopeIntent.revision) scopeIntents.delete(next.sessionId);
     const tab = isCurrentLogTab(tabId, next.sessionId);
     return { tab, followed: Boolean(tab && next.following && next.revision > before.log.revision) };
   };
@@ -810,6 +907,10 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const previous = tab?.log;
     if (!tab || !previous) return;
     const desired = !previous.following;
+    if (!desired) {
+      captureRenderedLogScroll(tab.id);
+      cancelAutoScroll();
+    }
     const token = Symbol(previous.sessionId);
     followRequests.set(previous.sessionId, token);
     followIntents.set(previous.sessionId, { following: desired, revision: previous.revision });
@@ -822,12 +923,51 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
     }).catch((error) => {
       if (followRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
+      if (!desired) {
+        options.reportError(error);
+        return;
+      }
       followIntents.set(previous.sessionId, { following: previous.following, revision: previous.revision });
       state.bindLog(tab.id, previous);
       if (selectedTabId === tab.id) renderPane(previous.following ? 'follow' : 'none');
       options.reportError(error);
     }).finally(() => {
       if (followRequests.get(previous.sessionId) === token) followRequests.delete(previous.sessionId);
+    });
+  };
+
+  const toggleLogScope = (tabId: string): void => {
+    const tab = isCurrentLogTab(tabId);
+    const previous = tab?.log;
+    if (!tab || !previous?.deployment) return;
+    const desired: KubernetesLogScope = previous.scope === 'deployment' ? 'pod' : 'deployment';
+    const token = Symbol(previous.sessionId);
+    scopeRequests.set(previous.sessionId, token);
+    scopeIntents.set(previous.sessionId, { scope: desired, revision: previous.revision });
+    state.bindLog(tab.id, {
+      ...previous,
+      scope: desired,
+      lines: [],
+      hasOlder: desired === 'pod',
+    });
+    if (selectedTabId === tab.id) renderPane('none');
+    void options.setLogScope(previous.sessionId, desired).then((next) => {
+      if (scopeRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
+      scopeIntents.set(previous.sessionId, { scope: next.scope, revision: next.revision });
+      const applied = applyIncomingLog(next);
+      if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
+    }).catch((error) => {
+      if (scopeRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
+      scopeIntents.set(previous.sessionId, { scope: previous.scope, revision: previous.revision });
+      state.bindLog(tab.id, previous);
+      if (selectedTabId === tab.id) renderPane(previous.following ? 'follow' : 'none');
+      options.reportError(error);
+    }).finally(() => {
+      if (scopeRequests.get(previous.sessionId) !== token) return;
+      scopeRequests.delete(previous.sessionId);
+      if (selectedTabId === tab.id && isCurrentLogTab(tab.id, previous.sessionId)) {
+        renderPane('none');
+      }
     });
   };
 
@@ -966,6 +1106,11 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       clearPendingTerminalOutputs();
       renderedLogOutputs.clear();
       cancelAutoScroll();
+      cancelPreserveScroll();
+      followRequests.clear();
+      followIntents.clear();
+      scopeRequests.clear();
+      scopeIntents.clear();
       unbindWorkspaceResize();
       if (workspaceResizeFrame !== undefined) window.cancelAnimationFrame(workspaceResizeFrame);
       workspaceResizeFrame = undefined;

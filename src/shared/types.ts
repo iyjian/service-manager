@@ -243,6 +243,8 @@ export interface KubernetesApiBase {
 }
 
 /** Display-safe state only. Kubernetes stream transports remain in main. */
+export type KubernetesLogScope = 'pod' | 'deployment';
+
 export interface KubernetesLogState {
   sessionId: string;
   podName: string;
@@ -251,12 +253,20 @@ export interface KubernetesLogState {
   lines: string[];
   following: boolean;
   hasOlder: boolean;
+  /** Current source selection. Deployment scope is resolved only in main. */
+  scope: KubernetesLogScope;
+  /** Presence means this viewer can switch between the current Pod and its Deployment. */
+  deployment?: {
+    name: string;
+    podCount: number;
+  };
   /** Monotonic per-session update version for stale renderer-event fencing. */
   revision: number;
 }
 
 /** Renderer-safe contract for one bounded Pod log viewer. */
 export interface KubernetesLogApi {
+  setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): Promise<KubernetesLogState>;
   closeLogs(id: string): Promise<void>;

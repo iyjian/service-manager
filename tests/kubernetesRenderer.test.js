@@ -145,6 +145,11 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /window\.kubernetesApi\.listNamespaces\(\)/);
   assert.match(page, /Loading Namespaces/);
   assert.match(page, /input\.type = 'checkbox'/);
+  assert.match(page, /allLabel\.append\(all, document\.createTextNode\('All'\)\)/);
+  assert.doesNotMatch(page, /allLabel\.append\(all, document\.createTextNode\('All Namespaces'\)\)/);
+  assert.match(page, /if \(contextChanged\)\s*this\.invalidateNamespaceOptions\(\)/);
+  assert.match(page, /this\.namespaceContext !== state\.selectedContext[\s\S]*?this\.loadNamespaces\(state\.selectedContext\)/);
+  assert.match(page, /generation !== this\.namespaceRequestGeneration[\s\S]*?this\.state\?\.selectedContext !== context/);
   assert.match(page, /context\.supported \? context\.displayName : `\$\{context\.displayName\} \(unsupported\)`/);
   assert.doesNotMatch(page, /option\.textContent = context\.supported \? context\.name/);
   assert.match(page, /listCustomResourceDefinitions\(\)/);
@@ -1728,6 +1733,8 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   const tabsRule = styles.match(/\.kubernetes-workspace-tabs\s*\{([^}]*)\}/);
   const logToolbarRule = styles.match(/\.kubernetes-log-toolbar\s*\{([^}]*)\}/);
   const logSearchRule = styles.match(/\.kubernetes-log-toolbar \.kubernetes-log-search-field\s*\{([^}]*)\}/);
+  const logScopeRule = styles.match(/\.kubernetes-log-scope-switch\s*\{([^}]*)\}/);
+  const activeLogScopeRule = styles.match(/\.kubernetes-log-scope-switch\[aria-checked='true'\]\s*\{([^}]*)\}/);
   const containersContentRule = styles.match(/\.kubernetes-drawer-containers-content\s*\{([^}]*)\}/);
   const containerRule = styles.match(/\.kubernetes-drawer-container\s*\{([^}]*)\}/);
   const primaryRule = styles.match(/\.kubernetes-drawer-container-primary\s*\{([^}]*)\}/);
@@ -1744,6 +1751,8 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   assert.ok(tabsRule);
   assert.ok(logToolbarRule);
   assert.ok(logSearchRule);
+  assert.ok(logScopeRule);
+  assert.ok(activeLogScopeRule);
   assert.ok(containersContentRule);
   assert.ok(containerRule);
   assert.ok(primaryRule);
@@ -1764,6 +1773,10 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   assert.match(logToolbarRule[1], /gap-1/);
   assert.match(logToolbarRule[1], /px-1\.5[^;]*py-1/);
   assert.match(logSearchRule[1], /h-6/);
+  assert.match(logScopeRule[1], /h-6/);
+  assert.match(logScopeRule[1], /shrink-0/);
+  assert.match(activeLogScopeRule[1], /amber/);
+  assert.match(builtStyles, /\.kubernetes-log-scope-switch\[aria-checked=true\]/);
   assert.match(closeRule[1], /text-inherit/);
   assert.match(closeRule[1], /bg-transparent/);
   assert.match(closeRule[1], /!h-6/);
@@ -2155,6 +2168,10 @@ test('Kubernetes active drawer Env remains lazy, local, and text-safe', async ()
   const envListRule = styles.match(/\.kubernetes-env-list\s*\{([^}]*)\}/);
   const envRowRule = styles.match(/\.kubernetes-env-row\s*\{([^}]*)\}/);
   const envValueRule = styles.match(/\.kubernetes-env-row pre\s*\{([^}]*)\}/);
+  const factRowRule = styles.match(/\.kubernetes-drawer-facts > div\s*\{([^}]*)\}/);
+  const containerBlockRule = styles.match(/\.kubernetes-drawer-container-block\s*\{([^}]*)\}/);
+  const infoTitleRule = styles.match(/\.kubernetes-drawer-container-info-title\s*\{([^}]*)\}/);
+  const envTitleRule = styles.match(/\.kubernetes-drawer-container-env-toggle\s*\{([^}]*)\}/);
   const labelKeyRule = styles.match(/\.kubernetes-drawer-label-row > span:first-child\s*\{([^}]*)\}/);
   const labelValueRule = styles.match(/\.kubernetes-drawer-label-row > span:last-child\s*\{([^}]*)\}/);
 
@@ -2162,6 +2179,10 @@ test('Kubernetes active drawer Env remains lazy, local, and text-safe', async ()
   assert.ok(envListRule);
   assert.ok(envRowRule);
   assert.ok(envValueRule);
+  assert.ok(factRowRule);
+  assert.ok(containerBlockRule);
+  assert.ok(infoTitleRule);
+  assert.ok(envTitleRule);
   assert.ok(labelKeyRule);
   assert.ok(labelValueRule);
   assert.ok(searchHandlerStart >= 0 && searchHandlerEnd > searchHandlerStart);
@@ -2177,8 +2198,14 @@ test('Kubernetes active drawer Env remains lazy, local, and text-safe', async ()
   assert.match(environment, /row\.append\(name, value\)/);
   assert.doesNotMatch(environment, /environmentSourceLabel|kubernetes-env-reference|source\.textContent/);
   assert.doesNotMatch(envListRule[1], /max-h-|overflow-y-auto/);
+  assert.match(factRowRule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*2fr\)/);
   assert.match(envRowRule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*2fr\)/);
+  assert.match(envRowRule[1], /items-center/);
+  assert.doesNotMatch(envRowRule[1], /items-start|p-1\.5/);
+  assert.match(infoTitleRule[1], /bg-sky-100/);
+  assert.match(envTitleRule[1], /bg-emerald-100/);
   assert.doesNotMatch(envValueRule[1], /col-span-2/);
+  assert.doesNotMatch(envValueRule[1], /py-1/);
   assert.match(envValueRule[1], /whitespace-pre-wrap/);
   assert.match(labelKeyRule[1], /justify-self-start[^;]*text-left|text-left[^;]*justify-self-start/);
   assert.match(labelValueRule[1], /justify-self-stretch[^;]*text-right|text-right[^;]*justify-self-stretch/);

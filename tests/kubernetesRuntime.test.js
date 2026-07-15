@@ -163,11 +163,18 @@ function createRuntime(options = {}) {
     disposePageScopedCalls: 0,
     async openLogs() {
       calls.push('open-logs');
-      return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: true, revision: 0 };
+      return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: true, scope: 'pod', revision: 0 };
     },
-    async loadOlderLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: false, revision: 1 }; },
-    async setLogFollowing() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, revision: 2 }; },
-    clearLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, revision: 3 }; },
+    async loadOlderLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: false, scope: 'pod', revision: 1 }; },
+    async setLogScope(_id, scope) {
+      calls.push(`log-scope:${scope}`);
+      return {
+        sessionId: 'log-1', ...POD_TARGET, lines: [], following: true, hasOlder: scope === 'pod',
+        scope, deployment: { name: 'api', podCount: 2 }, revision: 2,
+      };
+    },
+    async setLogFollowing() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, scope: 'pod', revision: 3 }; },
+    clearLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, scope: 'pod', revision: 4 }; },
     async closeLogs() { calls.push('close-logs'); },
     async openTerminal() {
       calls.push('open-terminal');
@@ -455,6 +462,25 @@ test('KubernetesRuntime emits display-safe state and list snapshots through type
   assert.deepEqual(states.at(-1).namespaceScope, { mode: 'selected', namespaces: ['apps'] });
   assert.equal(lists.at(-1).items[0].name, 'api');
   assert.doesNotMatch(JSON.stringify(states), /token|client-certificate-data|exec\.command/i);
+});
+
+test('KubernetesRuntime resets Namespace scope only when the selected Context changes', async () => {
+  const { runtime } = createRuntime();
+  const states = [];
+  const stopState = runtime.onStateChanged((state) => states.push(state));
+
+  await runtime.setNamespaceScope({ mode: 'selected', namespaces: ['apps'] });
+  const changed = await runtime.selectContext('staging');
+
+  assert.deepEqual(changed.namespaceScope, { mode: 'all', namespaces: [] });
+  assert.deepEqual(states.at(-1).namespaceScope, { mode: 'all', namespaces: [] });
+
+  await runtime.setNamespaceScope({ mode: 'selected', namespaces: ['monitoring'] });
+  const unchanged = await runtime.selectContext('staging');
+
+  stopState();
+  assert.deepEqual(unchanged.namespaceScope, { mode: 'selected', namespaces: ['monitoring'] });
+  assert.deepEqual(states.at(-1).namespaceScope, { mode: 'selected', namespaces: ['monitoring'] });
 });
 
 test('KubernetesRuntime shares a pending same-query activation and preserves the latest loaded-only view', async () => {
@@ -763,6 +789,31 @@ test('KubernetesRuntime forwards interaction stream events and detaches subscrip
   assert.equal(logs.length + terminalOutput.length, received);
 });
 
+test('KubernetesRuntime forwards only validated log scopes and copies Deployment capability metadata', async () => {
+  const { runtime, calls } = createRuntime();
+  const state = await runtime.setLogScope('log-1', 'deployment');
+
+  assert.equal(state.scope, 'deployment');
+  assert.deepEqual(state.deployment, { name: 'api', podCount: 2 });
+  assert.ok(calls.includes('log-scope:deployment'));
+  state.deployment.podCount = 99;
+  await assert.rejects(runtime.setLogScope('log-1', 'all'), /scope must be pod or deployment/i);
+  assert.equal(calls.filter((call) => call.startsWith('log-scope:')).length, 1);
+});
+
+test('KubernetesRuntime routes transient log scope failures through Context cleanup and reconnect', async () => {
+  const transportError = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+  const { runtime, fakeInteractions, calls } = createRuntime();
+  fakeInteractions.setLogScope = async () => { throw transportError; };
+
+  await assert.rejects(runtime.setLogScope('log-1', 'deployment'), (error) => error === transportError);
+  await waitFor(() => calls.includes('reconnect'));
+
+  assert.ok(calls.includes('disconnect:The Kubernetes API connection was lost.'));
+  assert.equal(calls.filter((call) => call === 'reconnect').length, 1);
+  await runtime.shutdown();
+});
+
 test('KubernetesRuntime does not duplicate synchronous onClose or onError terminal finals during open', async () => {
   let attempt = 0;
   const manager = new PodInteractionManager({
@@ -819,6 +870,7 @@ test('KubernetesRuntime validates renderer inputs before calling resource intera
   await assert.rejects(runtime.startPortForward({ ...FORWARD, remotePort: 0 }), /remote port/i);
   await assert.rejects(runtime.writeTerminal('terminal-1', 42), /input must be text/i);
   await assert.rejects(runtime.resizeTerminal('terminal-1', 0, 24), /dimensions/i);
+  await assert.rejects(runtime.setLogScope('log-1', 'all'), /scope must be pod or deployment/i);
   assert.deepEqual(calls, []);
 });
 

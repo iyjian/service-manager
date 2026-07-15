@@ -396,10 +396,16 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   assert.match(page, /buildKubernetesDrawerModel/);
   assert.match(drawer, /this\.createDrawerSection\('Labels'/);
   assert.match(drawer, /this\.createDrawerSection\('Containers'/);
-  for (const label of ['Status', 'Image', 'Pull policy', 'Mounts', 'Command', 'Environment']) {
+  for (const label of ['Status', 'Image', 'Pull policy', 'Mounts', 'Command']) {
     assert.match(drawer, new RegExp(`\\['${label}'`));
   }
-  assert.match(drawer, /container\.environmentDeclared \? 'Declared' : 'Not declared'/);
+  assert.doesNotMatch(drawer, /\['Environment'|'Not declared'|'Declared'/);
+  assert.match(drawer, /info\.className = 'kubernetes-drawer-container-block kubernetes-drawer-container-info'/);
+  assert.match(drawer, /infoTitle\.className = 'kubernetes-drawer-container-subtitle kubernetes-drawer-container-info-title'/);
+  assert.match(drawer, /infoTitle\.textContent = 'Info'/);
+  assert.match(drawer, /info\.append\(infoTitle, facts\)/);
+  assert.match(drawer, /shouldRenderKubernetesEnvironment\(container\.environmentDeclared, environmentState\?\.result\)/);
+  assert.match(drawer, /card\.appendChild\(this\.renderContainerEnvironment\(container, active\)\)/);
   assert.match(drawer, /\.textContent = /);
   assert.doesNotMatch(drawer, /innerHTML|getPodContainerEnvironment/);
   assert.match(drawer, /content\.classList\.add\('kubernetes-drawer-containers-content'\)/);

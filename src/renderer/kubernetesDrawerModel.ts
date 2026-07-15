@@ -1,4 +1,5 @@
 import type {
+  KubernetesPodEnvironment,
   KubernetesPodEnvironmentEntry,
   KubernetesPodEnvironmentUnavailable,
   KubernetesPodTarget,
@@ -47,6 +48,19 @@ export function filterKubernetesEnvironmentEntries(
 
 export function environmentUnavailableLabel(unavailable: KubernetesPodEnvironmentUnavailable | undefined): string {
   return unavailable ? ENVIRONMENT_UNAVAILABLE_LABELS[unavailable] : 'Value unavailable';
+}
+
+/**
+ * Keeps declared Env available for its lazy read, but hides a definitively
+ * empty result without suppressing permission or truncation notices.
+ */
+export function shouldRenderKubernetesEnvironment(
+  environmentDeclared: boolean,
+  result?: KubernetesPodEnvironment,
+): boolean {
+  if (!environmentDeclared) return false;
+  if (!result) return true;
+  return result.entries.length > 0 || result.permissionDenied || result.truncated;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

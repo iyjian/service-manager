@@ -22,6 +22,7 @@ import {
   buildKubernetesDrawerModel,
   environmentUnavailableLabel,
   filterKubernetesEnvironmentEntries,
+  shouldRenderKubernetesEnvironment,
   type KubernetesDrawerContainer,
 } from './kubernetesDrawerModel.js';
 import { createKubernetesWorkspace, type KubernetesWorkspace } from './kubernetesWorkspace.js';
@@ -977,6 +978,7 @@ class KubernetesPage implements KubernetesPageController {
       tabList: this.workspaceTabs,
       pane: this.workspacePane,
       openLogs: (target) => window.kubernetesApi.openLogs(target),
+      setLogScope: (id, scope) => window.kubernetesApi.setLogScope(id, scope),
       setLogFollowing: (id, following) => window.kubernetesApi.setLogFollowing(id, following),
       clearLogs: (id) => window.kubernetesApi.clearLogs(id),
       closeLogs: (id) => window.kubernetesApi.closeLogs(id),
@@ -1199,7 +1201,7 @@ class KubernetesPage implements KubernetesPageController {
     const all = document.createElement('input');
     all.type = 'checkbox';
     all.checked = scope.mode === 'all';
-    allLabel.append(all, document.createTextNode('All Namespaces'));
+    allLabel.append(all, document.createTextNode('All'));
     all.addEventListener('change', () => {
       if (all.checked) {
         this.selectedNamespaces.clear();
@@ -1934,6 +1936,11 @@ class KubernetesPage implements KubernetesPageController {
         return;
       }
       for (const container of model.containers) {
+        const environmentState = this.drawerEnvironment
+          && this.isCurrentActiveDrawer(active)
+          && sameKubernetesPodTarget(this.drawerEnvironment.target, container.target)
+          ? this.drawerEnvironment
+          : undefined;
         const card = document.createElement('article');
         card.className = 'kubernetes-drawer-container';
         const head = document.createElement('div');
@@ -1976,6 +1983,11 @@ class KubernetesPage implements KubernetesPageController {
         kind.className = 'kubernetes-drawer-container-kind';
         kind.textContent = container.init ? 'Init container' : 'Container';
         head.append(primary, kind);
+        const info = document.createElement('section');
+        info.className = 'kubernetes-drawer-container-block kubernetes-drawer-container-info';
+        const infoTitle = document.createElement('h4');
+        infoTitle.className = 'kubernetes-drawer-container-subtitle kubernetes-drawer-container-info-title';
+        infoTitle.textContent = 'Info';
         const facts = document.createElement('dl');
         facts.className = 'kubernetes-drawer-facts';
         for (const [label, value] of [
@@ -1984,7 +1996,6 @@ class KubernetesPage implements KubernetesPageController {
           ['Pull policy', container.imagePullPolicy],
           ['Mounts', container.mounts],
           ['Command', container.command],
-          ['Environment', container.environmentDeclared ? 'Declared' : 'Not declared'],
         ]) {
           const fact = document.createElement('div');
           const term = document.createElement('dt');
@@ -1995,7 +2006,11 @@ class KubernetesPage implements KubernetesPageController {
           fact.append(term, description);
           facts.appendChild(fact);
         }
-        card.append(head, facts, this.renderContainerEnvironment(container, active));
+        info.append(infoTitle, facts);
+        card.append(head, info);
+        if (shouldRenderKubernetesEnvironment(container.environmentDeclared, environmentState?.result)) {
+          card.appendChild(this.renderContainerEnvironment(container, active));
+        }
         content.appendChild(card);
       }
     }));
@@ -2026,7 +2041,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private renderContainerEnvironment(container: KubernetesDrawerContainer, active: ActiveDetail): HTMLElement {
     const section = document.createElement('section');
-    section.className = 'kubernetes-drawer-container-env';
+    section.className = 'kubernetes-drawer-container-block kubernetes-drawer-container-env';
     const state = this.drawerEnvironment
       && this.isCurrentActiveDrawer(active)
       && sameKubernetesPodTarget(this.drawerEnvironment.target, container.target)
@@ -2036,7 +2051,7 @@ class KubernetesPage implements KubernetesPageController {
 
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'kubernetes-drawer-container-env-toggle';
+    toggle.className = 'kubernetes-drawer-container-subtitle kubernetes-drawer-container-env-toggle';
     toggle.setAttribute('aria-label', 'Toggle environment');
     const label = document.createElement('span');
     label.textContent = 'Env';
