@@ -53,6 +53,7 @@ class FakeElement {
   }
 
   appendChild(child) {
+    child.remove();
     child.parentElement = this;
     this.children.push(child);
     return child;
@@ -77,6 +78,38 @@ class FakeElement {
   scrollIntoView() {}
 }
 
+class FakeTerminal {
+  static instances = [];
+
+  constructor(options) {
+    this.options = options;
+    this.writes = [];
+    this.disposed = false;
+    this.cols = 80;
+    this.rows = 24;
+    this.dataListener = undefined;
+    FakeTerminal.instances.push(this);
+  }
+
+  loadAddon(addon) { this.addon = addon; }
+  open(host) { this.host = host; }
+  onData(listener) {
+    this.dataListener = listener;
+    return { dispose: () => { this.dataListener = undefined; } };
+  }
+  write(data) { this.writes.push(data); }
+  focus() { this.focused = true; }
+  dispose() { this.disposed = true; }
+}
+
+class FakeFitAddon {
+  constructor() {
+    this.fitCount = 0;
+  }
+
+  fit() { this.fitCount += 1; }
+}
+
 function findByAriaLabel(root, label) {
   if (root.getAttribute?.('aria-label') === label) return root;
   for (const child of root.children ?? []) {
@@ -86,21 +119,48 @@ function findByAriaLabel(root, label) {
   return undefined;
 }
 
-async function withWorkspaceDom(run) {
+async function withWorkspaceDom(run, { xterm = false, deferAnimationFrames = false } = {}) {
   const originalWindow = global.window;
   const originalDocument = global.document;
   const listeners = new Map();
-  global.window = {
-    addEventListener(name, listener) { listeners.set(name, listener); },
-    removeEventListener(name) { listeners.delete(name); },
-    requestAnimationFrame(callback) { callback(0); return 1; },
-    cancelAnimationFrame() {},
+  const frames = new Map();
+  let nextFrameId = 0;
+  const fakeWindow = {
+    addEventListener(name, listener) {
+      const handlers = listeners.get(name) ?? new Set();
+      handlers.add(listener);
+      listeners.set(name, handlers);
+    },
+    removeEventListener(name, listener) { listeners.get(name)?.delete(listener); },
+    requestAnimationFrame(callback) {
+      const id = ++nextFrameId;
+      if (deferAnimationFrames) frames.set(id, callback);
+      else callback(0);
+      return id;
+    },
+    cancelAnimationFrame(id) { frames.delete(id); },
   };
+  if (xterm) {
+    FakeTerminal.instances = [];
+    fakeWindow.Terminal = FakeTerminal;
+    fakeWindow.FitAddon = { FitAddon: FakeFitAddon };
+  }
+  global.window = fakeWindow;
   global.document = {
     createElement: (tagName) => new FakeElement(tagName),
+    createElementNS: (_namespace, tagName) => new FakeElement(tagName),
   };
   try {
-    return await run();
+    const controls = {
+      ...(xterm ? { Terminal: FakeTerminal, FitAddon: FakeFitAddon } : {}),
+      listenerCount: (name) => listeners.get(name)?.size ?? 0,
+      flushAnimationFrames: () => {
+        const queued = [...frames.values()];
+        frames.clear();
+        for (const callback of queued) callback(0);
+      },
+    };
+    return await run(controls);
   } finally {
     global.window = originalWindow;
     global.document = originalDocument;
@@ -381,4 +441,164 @@ test('workspace reports a Shell open error after finalizing and closing only tha
     assert.deepEqual(terminalCloses, ['terminal-failed']);
     assert.deepEqual(errors, ['exec forbidden']);
   });
+});
+
+test('workspace replays terminal output emitted before its Shell open result binds', async () => {
+  await withWorkspaceDom(async ({ Terminal }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const opening = deferred();
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => assert.fail('not used'),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => assert.fail('not used'),
+      openTerminal: () => opening.promise,
+      writeTerminal: async () => {},
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    const open = workspace.openShell(target);
+    workspace.onTerminalOutput({ id: 'terminal-early', data: '# ' });
+    opening.resolve({ id: 'terminal-early', ...target, shell: '/bin/sh', state: 'open' });
+    await open;
+
+    assert.equal(Terminal.instances.length, 1);
+    assert.deepEqual(Terminal.instances[0].writes, ['# ']);
+    workspace.onTerminalOutput({ id: 'terminal-early', data: 'ready\r\n' });
+    assert.deepEqual(Terminal.instances[0].writes, ['# ', 'ready\r\n']);
+
+    await workspace.dispose();
+  }, { xterm: true });
+});
+
+test('workspace retains one active Shell resize listener and cancels stale focus frames', async () => {
+  await withWorkspaceDom(async ({ Terminal, listenerCount, flushAnimationFrames }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const api = { namespace: 'apps', podName: 'api', container: 'web' };
+    const api2 = { ...api, podName: 'api-2' };
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async (target) => ({
+        sessionId: `log-${target.podName}`,
+        ...target,
+        lines: [],
+        following: true,
+        hasOlder: false,
+        revision: 1,
+      }),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async (target) => ({
+        id: `terminal-${target.podName}`,
+        ...target,
+        shell: '/bin/sh',
+        state: 'open',
+      }),
+      writeTerminal: async () => {},
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openShell(api);
+    const first = Terminal.instances[0];
+    assert.equal(listenerCount('resize'), 1);
+    await workspace.openShell(api2);
+    const second = Terminal.instances[1];
+    assert.equal(listenerCount('resize'), 1);
+    flushAnimationFrames();
+    assert.equal(first.focused, undefined, 'first Shell focus callback was invalidated after selection changed');
+    assert.equal(second.focused, true);
+
+    await workspace.openLogs(api2);
+    assert.equal(listenerCount('resize'), 0, 'Logs selection detaches the active Shell listener');
+    await workspace.dispose();
+  }, { xterm: true, deferAnimationFrames: true });
+});
+
+test('workspace retains exact Shell xterms across tab changes and disposes only the closed terminal', async () => {
+  await withWorkspaceDom(async ({ Terminal }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const api = { namespace: 'apps', podName: 'api', container: 'web' };
+    const api2 = { ...api, podName: 'api-2' };
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async (target) => ({
+        sessionId: `log-${target.podName}`,
+        ...target,
+        lines: [],
+        following: true,
+        hasOlder: false,
+        revision: 1,
+      }),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async (target) => ({
+        id: `terminal-${target.podName}`,
+        ...target,
+        shell: '/bin/sh',
+        state: 'open',
+      }),
+      writeTerminal: async () => {},
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openShell(api);
+    workspace.onTerminalOutput({ id: 'terminal-api', data: '# ' });
+    await workspace.openLogs(api);
+    workspace.onTerminalOutput({ id: 'terminal-api', data: 'echo retained\r\n' });
+    const selectApi = findByAriaLabel(tabList, 'Shell apps/api · web');
+    assert.ok(selectApi);
+    selectApi.listeners.get('click')();
+
+    assert.equal(Terminal.instances.length, 1, 'returning to Shell reparents its retained xterm');
+    const apiTerminal = Terminal.instances[0];
+    assert.equal(apiTerminal.disposed, false);
+    assert.deepEqual(apiTerminal.writes, ['# ', 'echo retained\r\n']);
+
+    await workspace.openShell(api2);
+    const api2Terminal = Terminal.instances[1];
+    workspace.onTerminalOutput({ id: 'terminal-api', data: 'api background\r\n' });
+    workspace.onTerminalOutput({ id: 'terminal-api-2', data: 'api-2 foreground\r\n' });
+    const selectFirstApi = findByAriaLabel(tabList, 'Shell apps/api · web');
+    assert.ok(selectFirstApi);
+    selectFirstApi.listeners.get('click')();
+
+    assert.deepEqual(apiTerminal.writes, ['# ', 'echo retained\r\n', 'api background\r\n']);
+    assert.deepEqual(api2Terminal.writes, ['api-2 foreground\r\n']);
+    const closeApi = findByAriaLabel(tabList, 'Close Shell apps/api · web');
+    assert.ok(closeApi);
+    closeApi.listeners.get('click')();
+
+    assert.equal(apiTerminal.disposed, true);
+    assert.equal(api2Terminal.disposed, false);
+    workspace.onTerminalOutput({ id: 'terminal-api', data: 'late output\r\n' });
+    assert.equal(Terminal.instances.length, 2);
+    assert.deepEqual(apiTerminal.writes, ['# ', 'echo retained\r\n', 'api background\r\n']);
+
+    await workspace.dispose();
+  }, { xterm: true });
 });

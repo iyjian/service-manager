@@ -66,6 +66,9 @@ interface KubernetesWorkspaceFollowIntent {
 
 type KubernetesWorkspaceScrollIntent = 'none' | 'follow';
 
+const MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS = 64 * 1024;
+const MAX_PENDING_TERMINAL_OUTPUT_CHUNKS = 256;
+
 export function kubernetesWorkspaceTabKey(type: KubernetesWorkspaceTabType, target: KubernetesPodTarget): string {
   return [type, target.namespace, target.podName, target.container].join('\u0000');
 }
@@ -264,12 +267,15 @@ export async function disposeKubernetesWorkspaceSessions(
 /**
  * The only live Logs/Shell owner for the Kubernetes page. It never creates a
  * global drawer; its selected xterm host lives inside the supplied workspace
- * pane, while all background remote sessions remain represented only by tabs.
+ * pane, while background remote sessions retain their exact local xterm view
+ * and remain represented by their tabs.
  */
 export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): KubernetesWorkspace {
   const state = createKubernetesWorkspaceState();
   const terminalStates = new Map<string, KubernetesTerminalState>();
   const terminalFinalIds = new Set<string>();
+  const openingTerminalTabIds = new Set<string>();
+  const pendingTerminalOutputs = new Map<string, string[]>();
   const followRequests = new Map<string, symbol>();
   const followIntents = new Map<string, KubernetesWorkspaceFollowIntent>();
   const logScrollTops = new Map<string, number>();
@@ -288,6 +294,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   let disposal: Promise<void> | undefined;
   let autoScrollFrame: number | undefined;
   let autoScrollKey: string | undefined;
+  let pendingTerminalOutputCharacters = 0;
+  let pendingTerminalOutputChunks = 0;
 
   const closeRemoteLog = async (id: string): Promise<void> => {
     if (remotelyClosedLogIds.has(id)) return;
@@ -299,6 +307,40 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (remotelyClosedTerminalIds.has(id)) return;
     remotelyClosedTerminalIds.add(id);
     await options.closeTerminal(id);
+  };
+
+  /**
+   * Exec output can arrive before its asynchronous open result exposes the
+   * terminal ID to the workspace. Keep only a small renderer-memory bridge
+   * until that exact ID binds, then drain it synchronously into its xterm.
+   */
+  const takePendingTerminalOutput = (id: string): string[] => {
+    const output = pendingTerminalOutputs.get(id) ?? [];
+    if (output.length === 0) return output;
+    pendingTerminalOutputs.delete(id);
+    pendingTerminalOutputChunks -= output.length;
+    pendingTerminalOutputCharacters -= output.reduce((total, value) => total + value.length, 0);
+    return output;
+  };
+
+  const clearPendingTerminalOutputs = (): void => {
+    pendingTerminalOutputs.clear();
+    pendingTerminalOutputCharacters = 0;
+    pendingTerminalOutputChunks = 0;
+  };
+
+  const queuePendingTerminalOutput = (output: KubernetesTerminalOutput): void => {
+    if (!output.data || terminalFinalIds.has(output.id)
+      || pendingTerminalOutputChunks >= MAX_PENDING_TERMINAL_OUTPUT_CHUNKS
+      || pendingTerminalOutputCharacters >= MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS) return;
+    const available = MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS - pendingTerminalOutputCharacters;
+    const data = output.data.slice(0, available);
+    if (!data) return;
+    const queued = pendingTerminalOutputs.get(output.id) ?? [];
+    queued.push(data);
+    pendingTerminalOutputs.set(output.id, queued);
+    pendingTerminalOutputChunks += 1;
+    pendingTerminalOutputCharacters += data.length;
   };
 
   const currentTab = (id: string, type?: KubernetesWorkspaceTabType): KubernetesWorkspaceTab | undefined => {
@@ -330,8 +372,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     });
   };
 
-  const releaseTerminalPane = (): void => {
-    terminalPane.dispose();
+  const detachTerminalPane = (): void => {
+    terminalPane.detach();
     mountedTerminalTabId = undefined;
     mountedTerminalId = undefined;
     mountedTerminalHost = undefined;
@@ -405,7 +447,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   };
 
   const renderLogPane = (tab: KubernetesWorkspaceTab, scrollIntent: KubernetesWorkspaceScrollIntent): void => {
-    releaseTerminalPane();
+    detachTerminalPane();
     renderedLogOutputs.clear();
     options.pane.replaceChildren();
     const panel = document.createElement('section');
@@ -489,11 +531,14 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     renderedLogOutputs.clear();
     const terminal = tab.terminalId ? terminalStates.get(tab.terminalId) : undefined;
     if (terminal && mountedTerminalTabId === tab.id && mountedTerminalId === terminal.id && mountedTerminalHost) {
-      terminalPane.mount(terminal, mountedTerminalHost);
+      if (!terminalPane.mount(terminal, mountedTerminalHost)) {
+        closeTab(tab.id, true);
+        return;
+      }
       terminalPane.focus();
       return;
     }
-    releaseTerminalPane();
+    detachTerminalPane();
     options.pane.replaceChildren();
     const panel = document.createElement('section');
     panel.className = 'kubernetes-shell-panel';
@@ -524,7 +569,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const renderPane = (scrollIntent: KubernetesWorkspaceScrollIntent = 'none'): void => {
     const tab = selectedTabId ? currentTab(selectedTabId) : undefined;
     if (!tab) {
-      releaseTerminalPane();
+      detachTerminalPane();
       renderedLogOutputs.clear();
       options.pane.replaceChildren();
       cancelAutoScroll();
@@ -545,9 +590,21 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     // Local removal is intentionally first. Any returned remote open result
     // is checked against this unique tab ID and can only be closed/discarded.
     state.close(tab.id);
+    openingTerminalTabIds.delete(tab.id);
+    if (openingTerminalTabIds.size === 0) clearPendingTerminalOutputs();
     logScrollTops.delete(tab.id);
     renderedLogOutputs.delete(tab.id);
-    if (tab.terminalId) terminalStates.delete(tab.terminalId);
+    if (tab.terminalId) {
+      terminalFinalIds.add(tab.terminalId);
+      takePendingTerminalOutput(tab.terminalId);
+      terminalStates.delete(tab.terminalId);
+      terminalPane.remove(tab.terminalId);
+      if (mountedTerminalId === tab.terminalId) {
+        mountedTerminalTabId = undefined;
+        mountedTerminalId = undefined;
+        mountedTerminalHost = undefined;
+      }
+    }
     if (selectedTabId === tab.id) selectedTabId = undefined;
     render();
     if (!closeRemote) return;
@@ -642,10 +699,12 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     selectedTabId = opened.tab.id;
     render();
     if (!opened.created) return;
+    openingTerminalTabIds.add(opened.tab.id);
     try {
       const terminal = await options.openTerminal(target);
       if (isTerminalFinal(terminal)) {
         terminalFinalIds.add(terminal.id);
+        takePendingTerminalOutput(terminal.id);
         terminalPane.finalize(terminal);
         if (terminal.state === 'error') {
           options.reportError(terminal.error ?? 'Kubernetes terminal failed.');
@@ -654,17 +713,30 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       if (disposed || terminalFinalIds.has(terminal.id)
         || !terminalStateMatchesTarget(terminal, target)
         || !state.bindTerminal(opened.tab.id, terminal.id)) {
+        takePendingTerminalOutput(terminal.id);
         if (currentTab(opened.tab.id, 'shell')) closeTab(opened.tab.id, false);
         await closeRemoteTerminal(terminal.id).catch(() => undefined);
         return;
       }
       terminalStates.set(terminal.id, terminal);
+      if (!terminalPane.prepare(terminal)) {
+        takePendingTerminalOutput(terminal.id);
+        if (currentTab(opened.tab.id, 'shell')) closeTab(opened.tab.id, false);
+        await closeRemoteTerminal(terminal.id).catch(() => undefined);
+        return;
+      }
+      for (const data of takePendingTerminalOutput(terminal.id)) {
+        terminalPane.write({ id: terminal.id, data });
+      }
       if (selectedTabId === opened.tab.id) renderPane();
       else renderTabs();
     } catch (error) {
       if (!currentTab(opened.tab.id, 'shell')) return;
       closeTab(opened.tab.id, false);
       options.reportError(error);
+    } finally {
+      openingTerminalTabIds.delete(opened.tab.id);
+      if (openingTerminalTabIds.size === 0) clearPendingTerminalOutputs();
     }
   };
 
@@ -682,6 +754,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
         // This runs before ownership lookup by design. A pre-bind final must
         // tombstone the ID inside the pane so a late open cannot mount it.
         terminalFinalIds.add(next.id);
+        takePendingTerminalOutput(next.id);
         terminalPane.finalize(next);
         const tabId = state.tabIdForTerminal(next.id);
         if (!tabId) return;
@@ -695,13 +768,19 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       const tab = tabId ? currentTab(tabId, 'shell') : undefined;
       if (!tab || tab.terminalId !== next.id || !terminalStateMatchesTarget(next, tab.target)) return;
       terminalStates.set(next.id, next);
+      if (!terminalPane.prepare(next)) {
+        closeTab(tab.id, false);
+        return;
+      }
       if (selectedTabId === tab.id) renderPane();
     },
 
     onTerminalOutput(output) {
-      // The pane accepts only its currently mounted exact ID; background tabs
-      // have no hidden xterm owner and cannot consume another tab's output.
-      terminalPane.write(output);
+      // Retained views route only their exact terminal ID, including when a
+      // still-owned Shell tab is currently in the background. An unknown ID
+      // can be the first exec chunk racing before an open result binds it.
+      if (terminalPane.write(output) || openingTerminalTabIds.size === 0) return;
+      queuePendingTerminalOutput(output);
     },
 
     dispose() {
@@ -711,9 +790,14 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       for (const tab of tabs) state.close(tab.id);
       selectedTabId = undefined;
       terminalStates.clear();
+      openingTerminalTabIds.clear();
+      clearPendingTerminalOutputs();
       renderedLogOutputs.clear();
       cancelAutoScroll();
-      releaseTerminalPane();
+      mountedTerminalTabId = undefined;
+      mountedTerminalId = undefined;
+      mountedTerminalHost = undefined;
+      terminalPane.dispose();
       options.tabList.replaceChildren();
       options.pane.replaceChildren();
       options.root.classList.add('hidden');
