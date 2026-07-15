@@ -1924,6 +1924,7 @@ class KubernetesPage implements KubernetesPageController {
     }));
 
     this.detailOverview.appendChild(this.createDrawerSection('Containers', true, (content) => {
+      content.classList.add('kubernetes-drawer-containers-content');
       if (model.containers.length === 0) {
         const empty = document.createElement('p');
         empty.textContent = 'No containers declared.';
@@ -1938,11 +1939,13 @@ class KubernetesPage implements KubernetesPageController {
         const name = document.createElement('strong');
         name.className = 'kubernetes-drawer-container-name';
         name.textContent = container.name;
+        const primary = document.createElement('div');
+        primary.className = 'kubernetes-drawer-container-primary';
         const actions = document.createElement('div');
         actions.className = 'kubernetes-drawer-container-actions';
         const logs = document.createElement('button');
         logs.type = 'button';
-        logs.className = 'icon-btn';
+        logs.className = 'icon-btn kubernetes-drawer-container-action-logs';
         logs.setAttribute('aria-label', `View logs for ${container.name}`);
         logs.setAttribute('title', `View logs for ${container.name}`);
         logs.appendChild(createKubernetesDrawerIcon([
@@ -1955,7 +1958,7 @@ class KubernetesPage implements KubernetesPageController {
         });
         const shell = document.createElement('button');
         shell.type = 'button';
-        shell.className = 'icon-btn';
+        shell.className = 'icon-btn kubernetes-drawer-container-action-shell';
         shell.setAttribute('aria-label', `Open shell for ${container.name}`);
         shell.setAttribute('title', `Open shell for ${container.name}`);
         shell.appendChild(createKubernetesDrawerIcon([
@@ -1966,10 +1969,11 @@ class KubernetesPage implements KubernetesPageController {
           void this.workspace.openShell(container.target);
         });
         actions.append(logs, shell);
+        primary.append(name, actions);
         const kind = document.createElement('span');
         kind.className = 'kubernetes-drawer-container-kind';
         kind.textContent = container.init ? 'Init container' : 'Container';
-        head.append(name, actions, kind);
+        head.append(primary, kind);
         const facts = document.createElement('dl');
         facts.className = 'kubernetes-drawer-facts';
         for (const [label, value] of [

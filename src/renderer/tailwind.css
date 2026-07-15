@@ -762,20 +762,40 @@
     @apply inline-flex min-w-0 shrink-0 items-center overflow-hidden rounded-md border border-transparent bg-white shadow-sm;
   }
 
+  .kubernetes-workspace-tab-logs {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+
+  .kubernetes-workspace-tab-shell {
+    @apply border-blue-200 bg-blue-50 text-blue-900;
+  }
+
   .kubernetes-workspace-tab-select {
-    @apply h-8 max-w-[280px] min-w-0 cursor-pointer truncate border-0 bg-transparent px-2 text-left font-mono text-[11.5px] text-zinc-600 outline-none hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+    @apply h-8 max-w-[280px] min-w-0 cursor-pointer truncate border-0 bg-transparent px-2 text-left font-mono text-[11.5px] text-inherit outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset;
+  }
+
+  .kubernetes-workspace-tab-logs .kubernetes-workspace-tab-select {
+    @apply focus-visible:ring-amber-300;
+  }
+
+  .kubernetes-workspace-tab-shell .kubernetes-workspace-tab-select {
+    @apply focus-visible:ring-blue-300;
   }
 
   .kubernetes-workspace-tab-select[aria-selected='true'] {
-    @apply bg-zinc-950 text-white hover:bg-zinc-800 hover:text-white;
+    @apply bg-transparent text-inherit hover:bg-white/10;
+  }
+
+  .kubernetes-workspace-tab-logs:has(.kubernetes-workspace-tab-select[aria-selected='true']) {
+    @apply border-amber-600 bg-amber-600 text-white;
+  }
+
+  .kubernetes-workspace-tab-shell:has(.kubernetes-workspace-tab-select[aria-selected='true']) {
+    @apply border-blue-600 bg-blue-600 text-white;
   }
 
   .kubernetes-workspace-tab-close {
-    @apply h-8 w-7 rounded-none border-0 border-l border-zinc-200 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
-  }
-
-  .kubernetes-workspace-tab:has(.kubernetes-workspace-tab-select[aria-selected='true']) .kubernetes-workspace-tab-close {
-    @apply border-zinc-700 bg-zinc-950 text-zinc-300 hover:bg-zinc-800 hover:text-white;
+    @apply !h-8 w-7 !rounded-none !border-0 !bg-transparent !text-inherit hover:!bg-black/10 focus-visible:ring-2 focus-visible:ring-inset;
   }
 
   .kubernetes-workspace-pane {
@@ -882,12 +902,20 @@
     @apply grid gap-2 p-2.5;
   }
 
+  .kubernetes-drawer-containers-content {
+    @apply gap-0 p-0;
+  }
+
   .kubernetes-drawer-container {
-    @apply grid gap-2 rounded-md border border-zinc-200 bg-white p-2.5;
+    @apply grid gap-2 border-0 border-b border-zinc-200 bg-white px-2.5 py-2.5 last:border-b-0;
   }
 
   .kubernetes-drawer-container-head {
     @apply flex min-w-0 items-center justify-between gap-2;
+  }
+
+  .kubernetes-drawer-container-primary {
+    @apply flex min-w-0 flex-1 items-center gap-1;
   }
 
   .kubernetes-drawer-container-name {
@@ -899,11 +927,19 @@
   }
 
   .kubernetes-drawer-container-actions {
-    @apply inline-flex shrink-0 items-center gap-1;
+    @apply inline-flex shrink-0 items-center gap-0.5;
   }
 
   .kubernetes-drawer-container-actions .icon-btn {
-    @apply h-7 w-7 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-zinc-300;
+    @apply h-7 w-7;
+  }
+
+  .kubernetes-drawer-container-action-logs {
+    @apply !text-amber-600 hover:!bg-amber-50 hover:!text-amber-800 focus-visible:!ring-amber-300;
+  }
+
+  .kubernetes-drawer-container-action-shell {
+    @apply !text-blue-600 hover:!bg-blue-50 hover:!text-blue-800 focus-visible:!ring-blue-300;
   }
 
   .kubernetes-drawer-container-actions svg {

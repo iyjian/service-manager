@@ -397,6 +397,13 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   assert.match(drawer, /container\.environmentDeclared \? 'Declared' : 'Not declared'/);
   assert.match(drawer, /\.textContent = /);
   assert.doesNotMatch(drawer, /innerHTML|getPodContainerEnvironment/);
+  assert.match(drawer, /content\.classList\.add\('kubernetes-drawer-containers-content'\)/);
+  assert.match(drawer, /primary\.className = 'kubernetes-drawer-container-primary'/);
+  assert.match(drawer, /actions\.className = 'kubernetes-drawer-container-actions'/);
+  assert.match(drawer, /logs\.className = 'icon-btn kubernetes-drawer-container-action-logs'/);
+  assert.match(drawer, /shell\.className = 'icon-btn kubernetes-drawer-container-action-shell'/);
+  assert.match(drawer, /primary\.append\(name, actions\)/);
+  assert.match(drawer, /head\.append\(primary, kind\)/);
   assert.match(drawer, /logs\.setAttribute\('aria-label', `View logs for \$\{container\.name\}`\)/);
   assert.match(drawer, /shell\.setAttribute\('aria-label', `Open shell for \$\{container\.name\}`\)/);
   assert.match(drawer, /this\.workspace\.openLogs\(container\.target\)/);

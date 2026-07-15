@@ -101,7 +101,25 @@ function isTerminalFinal(state: Pick<KubernetesTerminalState, 'state'>): boolean
 
 function tabLabel(tab: Pick<KubernetesWorkspaceTab, 'type' | 'target'>): string {
   const type = tab.type === 'logs' ? 'Logs' : 'Shell';
-  return `${type} ${tab.target.namespace}/${tab.target.podName} · ${tab.target.container}`;
+  return `${type} ${tabTargetCaption(tab)}`;
+}
+
+function tabTargetCaption(tab: Pick<KubernetesWorkspaceTab, 'target'>): string {
+  return `${tab.target.namespace}/${tab.target.podName} · ${tab.target.container}`;
+}
+
+function createWorkspaceCloseIcon(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'm5 5 6 6m0-6-6 6');
+  svg.appendChild(path);
+  return svg;
 }
 
 function terminalStateMatchesTarget(state: KubernetesTerminalState, target: KubernetesPodTarget): boolean {
@@ -387,14 +405,17 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     options.tabList.replaceChildren();
     for (const tab of tabs) {
       const item = document.createElement('div');
-      item.className = 'kubernetes-workspace-tab';
+      const tabTypeClass = tab.type === 'logs'
+        ? 'kubernetes-workspace-tab-logs'
+        : 'kubernetes-workspace-tab-shell';
+      item.className = `kubernetes-workspace-tab ${tabTypeClass}`;
       const select = document.createElement('button');
       select.type = 'button';
       select.className = 'kubernetes-workspace-tab-select';
       select.setAttribute('role', 'tab');
       select.setAttribute('aria-selected', String(selectedTabId === tab.id));
       select.setAttribute('aria-label', tabLabel(tab));
-      select.textContent = tabLabel(tab);
+      select.textContent = tabTargetCaption(tab);
       select.addEventListener('click', () => {
         if (!currentTab(tab.id)) return;
         selectedTabId = tab.id;
@@ -404,7 +425,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       close.type = 'button';
       close.className = 'icon-btn kubernetes-workspace-tab-close';
       close.setAttribute('aria-label', `Close ${tabLabel(tab)}`);
-      close.textContent = '×';
+      close.appendChild(createWorkspaceCloseIcon());
       close.addEventListener('click', () => {
         closeTab(tab.id, true);
       });

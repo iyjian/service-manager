@@ -1702,6 +1702,57 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   assert.doesNotMatch(styles, /kubernetes-terminal-drawer:not/);
 });
 
+test('Kubernetes workspace tabs and Pod container actions use semantic typed palettes', async () => {
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+  const builtStyles = await readFile(path.join(distRenderer, 'tailwind.css'), 'utf8');
+  const logsTabRule = styles.match(/\.kubernetes-workspace-tab-logs\s*\{([^}]*)\}/);
+  const shellTabRule = styles.match(/\.kubernetes-workspace-tab-shell\s*\{([^}]*)\}/);
+  const selectedLogsTabRule = styles.match(/\.kubernetes-workspace-tab-logs:has\(\.kubernetes-workspace-tab-select\[aria-selected='true'\]\)\s*\{([^}]*)\}/);
+  const selectedShellTabRule = styles.match(/\.kubernetes-workspace-tab-shell:has\(\.kubernetes-workspace-tab-select\[aria-selected='true'\]\)\s*\{([^}]*)\}/);
+  const closeRule = styles.match(/\.kubernetes-workspace-tab-close\s*\{([^}]*)\}/);
+  const containersContentRule = styles.match(/\.kubernetes-drawer-containers-content\s*\{([^}]*)\}/);
+  const containerRule = styles.match(/\.kubernetes-drawer-container\s*\{([^}]*)\}/);
+  const primaryRule = styles.match(/\.kubernetes-drawer-container-primary\s*\{([^}]*)\}/);
+  const actionsRule = styles.match(/\.kubernetes-drawer-container-actions\s*\{([^}]*)\}/);
+  const logsActionRule = styles.match(/\.kubernetes-drawer-container-action-logs\s*\{([^}]*)\}/);
+  const shellActionRule = styles.match(/\.kubernetes-drawer-container-action-shell\s*\{([^}]*)\}/);
+
+  assert.ok(logsTabRule);
+  assert.ok(shellTabRule);
+  assert.ok(selectedLogsTabRule);
+  assert.ok(selectedShellTabRule);
+  assert.ok(closeRule);
+  assert.ok(containersContentRule);
+  assert.ok(containerRule);
+  assert.ok(primaryRule);
+  assert.ok(actionsRule);
+  assert.ok(logsActionRule);
+  assert.ok(shellActionRule);
+  assert.match(logsTabRule[1], /amber/);
+  assert.match(shellTabRule[1], /blue/);
+  assert.match(builtStyles, /\.kubernetes-workspace-tab-logs(?:\{|,)/);
+  assert.match(builtStyles, /\.kubernetes-workspace-tab-shell(?:\{|,)/);
+  assert.match(selectedLogsTabRule[1], /amber/);
+  assert.match(selectedShellTabRule[1], /blue/);
+  assert.match(closeRule[1], /text-inherit/);
+  assert.match(closeRule[1], /bg-transparent/);
+  assert.match(closeRule[1], /!h-8/);
+  assert.match(closeRule[1], /!rounded-none/);
+  assert.doesNotMatch(closeRule[1], /\bborder-l\b/);
+  const builtCloseRule = builtStyles.match(/\.kubernetes-workspace-tab-close\{([^}]*)\}/);
+  assert.ok(builtCloseRule);
+  assert.match(builtCloseRule[1], /height:2rem!important/);
+  assert.match(builtCloseRule[1], /border-radius:0!important/);
+  assert.match(containersContentRule[1], /gap-0[^;]*p-0/);
+  assert.match(containerRule[1], /border-0/);
+  assert.match(containerRule[1], /border-b/);
+  assert.doesNotMatch(containerRule[1], /rounded/);
+  assert.match(primaryRule[1], /flex[^;]*min-w-0[^;]*flex-1[^;]*items-center[^;]*gap-1/);
+  assert.match(actionsRule[1], /gap-0\.5/);
+  assert.match(logsActionRule[1], /amber/);
+  assert.match(shellActionRule[1], /blue/);
+});
+
 /* The Task 4 floating-drawer test body is retained below only as historical
  * context. Task 5 removes that component entirely in favor of the pane test
  * that follows this block. */

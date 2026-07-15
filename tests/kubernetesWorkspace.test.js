@@ -567,6 +567,14 @@ test('workspace retains exact Shell xterms across tab changes and disposes only 
     });
 
     await workspace.openShell(api);
+    const selectedShell = findByAriaLabel(tabList, 'Shell apps/api · web');
+    assert.ok(selectedShell);
+    assert.equal(selectedShell.getAttribute('aria-selected'), 'true');
+    assert.equal(selectedShell.textContent, 'apps/api · web');
+    assert.match(selectedShell.parentElement?.className ?? '', /kubernetes-workspace-tab-shell/);
+    const selectedShellClose = findByAriaLabel(tabList, 'Close Shell apps/api · web');
+    assert.ok(selectedShellClose);
+    assert.equal(selectedShellClose.children[0]?.tagName, 'SVG');
     workspace.onTerminalOutput({ id: 'terminal-api', data: '# ' });
     await workspace.openLogs(api);
     workspace.onTerminalOutput({ id: 'terminal-api', data: 'echo retained\r\n' });
