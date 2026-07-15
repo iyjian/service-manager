@@ -1732,7 +1732,7 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   assert.match(shellTabRule[1], /blue/);
   assert.match(builtStyles, /\.kubernetes-workspace-tab-logs(?:\{|,)/);
   assert.match(builtStyles, /\.kubernetes-workspace-tab-shell(?:\{|,)/);
-  assert.match(selectedLogsTabRule[1], /amber/);
+  assert.match(selectedLogsTabRule[1], /amber-700/);
   assert.match(selectedShellTabRule[1], /blue/);
   assert.match(closeRule[1], /text-inherit/);
   assert.match(closeRule[1], /bg-transparent/);

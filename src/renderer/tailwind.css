@@ -787,7 +787,7 @@
   }
 
   .kubernetes-workspace-tab-logs:has(.kubernetes-workspace-tab-select[aria-selected='true']) {
-    @apply border-amber-600 bg-amber-600 text-white;
+    @apply border-amber-700 bg-amber-700 text-white;
   }
 
   .kubernetes-workspace-tab-shell:has(.kubernetes-workspace-tab-select[aria-selected='true']) {
