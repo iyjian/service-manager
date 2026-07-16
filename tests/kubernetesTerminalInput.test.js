@@ -14,6 +14,8 @@ test('validateKubernetesTerminalInput preserves exact non-empty terminal input',
     '\n',
     '\t',
     '\u001b[A',
+    '中文',
+    '\u001b[D',
     '\u0003',
     'ls -l\r',
   ];

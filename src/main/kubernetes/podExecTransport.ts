@@ -8,6 +8,16 @@ const UTF8_LOCALE_CANDIDATES = ['C.UTF-8', 'C.utf8', 'en_US.UTF-8', 'en_US.utf8'
  * the terminal's first prompt.
  */
 const POD_EXEC_SHELL_BOOTSTRAP = `
+_sm_shell_exe=$(readlink /proc/$$/exe 2>/dev/null || :)
+case "\${1-0}:$_sm_shell_exe" in
+  0:*/dash)
+    # dash can accept an emacs option while still being built without a line
+    # editor. The final explicitly degraded attempt opts back in after every
+    # preferred interactive-shell candidate has failed.
+    exit 126
+    ;;
+esac
+
 _sm_charmap=$(locale charmap 2>/dev/null || :)
 case "$_sm_charmap" in
   UTF-8|utf-8|UTF8|utf8)
@@ -59,12 +69,15 @@ exec "$0" -i
  * Builds a shell-only Kubernetes Exec command without interpolating the shell
  * name into script text. The fourth argv entry becomes `$0` for `-c`, so even
  * an unusual but valid shell path remains data rather than executable script.
+ * The fifth entry becomes `$1` and explicitly controls the final degraded dash
+ * attempt without interpolating that control into the script either.
  */
-export const buildPodExecCommand = (shell: string): string[] => [
+export const buildPodExecCommand = (shell: string, allowDegradedDash = false): string[] => [
   shell,
   '-c',
   POD_EXEC_SHELL_BOOTSTRAP,
   shell,
+  allowDegradedDash ? '1' : '0',
 ];
 
 export interface Utf8ChunkDecoder {

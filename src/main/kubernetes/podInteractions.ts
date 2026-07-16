@@ -20,7 +20,7 @@ const MAXIMUM_DEPLOYMENT_LOG_PODS = 50;
 const MAXIMUM_PORT_FORWARDS = 10;
 const MAXIMUM_TERMINAL_OUTPUT_CHUNK_LENGTH = 16_384;
 const DEFAULT_TERMINAL_READY_TIMEOUT_MS = 1_000;
-const SHELL_FALLBACKS = ['/bin/sh', 'ash', 'bash'] as const;
+const SHELL_FALLBACKS = ['/bin/sh', 'ash', 'bash', '/bin/sh'] as const;
 const LOG_TIMESTAMP_PREFIX = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))(?:\s|$)/;
 
 export interface KubernetesPodInteractionTarget {
@@ -104,6 +104,7 @@ interface TerminalAttempt {
   retrying: boolean;
   normalClose: boolean;
   openPublished: boolean;
+  receivedOutput: boolean;
   readinessSettled: boolean;
   readiness: Promise<void>;
   resolveReadiness: () => void;
@@ -233,7 +234,7 @@ export function appendBoundedLogLines(
   return maximum === 0 ? [] : appended.slice(-maximum);
 }
 
-export function shellFallbacks(): readonly ['/bin/sh', 'ash', 'bash'] {
+export function shellFallbacks(): readonly ['/bin/sh', 'ash', 'bash', '/bin/sh'] {
   return SHELL_FALLBACKS;
 }
 
@@ -939,6 +940,7 @@ export class PodInteractionManager {
       retrying: false,
       normalClose: false,
       openPublished: false,
+      receivedOutput: false,
       readinessSettled: false,
       readiness,
       resolveReadiness,
@@ -950,7 +952,11 @@ export class PodInteractionManager {
     session.state.error = undefined;
     let handle: KubernetesPodExecHandle;
     try {
-      handle = await this.options.client().openPodExec({ ...input, shell }, {
+      handle = await this.options.client().openPodExec({
+        ...input,
+        shell,
+        allowDegradedDash: shellIndex === SHELL_FALLBACKS.length - 1,
+      }, {
         onData: (data) => {
           if (!this.isTerminalSessionActive(session)
             || session.attempt !== attempt
@@ -958,6 +964,9 @@ export class PodInteractionManager {
             || attempt.statusFailure
             || attempt.normalClose) {
             return;
+          }
+          if (data.length > 0) {
+            attempt.receivedOutput = true;
           }
           this.emitTerminalOutput(session, data);
           if (data.length > 0) {
@@ -1042,6 +1051,10 @@ export class PodInteractionManager {
     attempt.statusFailure = error;
     this.markTerminalAttemptReady(attempt);
     if (attempt.handle && attempt.openPublished && !attempt.retrying) {
+      if (attempt.receivedOutput) {
+        void this.finalizeTerminal(session, 'error', error.message).catch(() => undefined);
+        return;
+      }
       attempt.retrying = true;
       session.state.state = 'connecting';
       session.handle = undefined;

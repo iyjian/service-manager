@@ -83,19 +83,20 @@ test('compiled main preserves silent refreshes through every forward-status re-e
   }
 });
 
-test('compiled main waits for runtime diagnostics before every normal quit continues', async () => {
+test('compiled main routes every normal quit through the asynchronous coordinator', async () => {
   const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
   const beforeQuitStart = main.indexOf("app.on('before-quit'");
   const beforeQuit = main.slice(beforeQuitStart, beforeQuitStart + 800);
 
   assert.ok(beforeQuitStart >= 0);
+  assert.match(beforeQuit, /quitCoordinator\.canQuitImmediately\(\)/);
   assert.match(beforeQuit, /event\.preventDefault\(\)/);
   assert.match(beforeQuit, /requestQuitAfterRuntimeShutdown\(\)/);
-  assert.match(main, /await flushRuntimeLog\(\);[\s\S]*?allowQuitAfterRuntimeShutdown = true;[\s\S]*?app\.quit\(\);/);
-  assert.match(
-    main,
-    /quitShutdownPromise = shutdownRuntimesForQuit\(\)\.catch\(async \(error\) => \{[\s\S]*?logRuntimeError\('app:shutdown', error, \{ operation: 'runtime-stop' \}\);[\s\S]*?await flushRuntimeLog\(\);/
-  );
+  assert.match(main, /cleanup: shutdownRuntimesForQuit/);
+  assert.match(main, /reportCleanupError: async \(error\) => \{[\s\S]*?await flushRuntimeLog\(\);/);
+  assert.match(main, /function runFinalExitAction\(action\)/);
+  assert.match(main, /setTimeout\(\(\) => process\.exit\(0\), FINAL_PROCESS_EXIT_DELAY_MS\)/);
+  assert.match(main, /quit: \(\) => runFinalExitAction\(\(\) => electron_1\.app\.quit\(\)\)/);
   assert.match(main, /app\.on\('window-all-closed', \(\) => \{[\s\S]*?app\.quit\(\);/);
 });
 
@@ -105,13 +106,27 @@ test('compiled main shares one guarded cleanup path for normal quits and termina
   assert.match(main, /process\.once\('SIGINT'/);
   assert.match(main, /process\.once\('SIGTERM'/);
   assert.match(main, /function requestQuitAfterRuntimeShutdown\(signal = false\)/);
-  assert.match(main, /await flushRuntimeLog\(\);[\s\S]*?allowQuitAfterRuntimeShutdown = true;[\s\S]*?app\.exit\(0\);/);
-  assert.match(main, /if \(signal\) \{[\s\S]*?app\.exit\(0\);[\s\S]*?\}\s*else \{[\s\S]*?app\.quit\(\);/);
+  assert.match(main, /quitCoordinator\.request\(signal \? 'signal' : 'normal'\)/);
+  assert.match(main, /exit: \(\) => runFinalExitAction\(\(\) => electron_1\.app\.exit\(0\)\)/);
 });
 
 test('compiled main aborts auto-start retries before proxy shutdown begins', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const dist = path.join(__dirname, '..', 'dist', 'main');
+  const main = await readFile(path.join(dist, 'main.js'), 'utf8');
+  const coordinator = await readFile(path.join(dist, 'quitCoordinator.js'), 'utf8');
 
-  assert.match(main, /autoStartAbortController\.abort\(\);[\s\S]*?shutdownRuntimesForQuit\(\)/);
+  assert.match(main, /abortAutoStart: \(\) => autoStartAbortController\.abort\(\)/);
+  assert.ok(coordinator.indexOf('abortAutoStart()') < coordinator.indexOf('await this.options.cleanup()'));
   assert.match(main, /scheduleProxyAutoStart\)\(initializedProxyRuntime,[\s\S]*?autoStartAbortController\.signal\)/);
+});
+
+test('compiled updater requests cleanup before the coordinator launches NSIS', async () => {
+  const dist = path.join(__dirname, '..', 'dist', 'main');
+  const main = await readFile(path.join(dist, 'main.js'), 'utf8');
+  const updater = await readFile(path.join(dist, 'updater.js'), 'utf8');
+
+  assert.match(updater, /this\.requestInstall\(\);/);
+  assert.match(updater, /installDownloadedUpdate\(\) \{[\s\S]*?autoUpdater\.quitAndInstall\(false, true\);/);
+  assert.match(main, /quitCoordinator\.request\('install-update'\)/);
+  assert.match(main, /installUpdate: \(\) => runFinalExitAction\(\(\) => updater\.installDownloadedUpdate\(\)\)/);
 });

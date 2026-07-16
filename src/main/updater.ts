@@ -28,7 +28,10 @@ export class AppUpdater extends EventEmitter {
   private promptedDownloadVersion?: string;
   private promptedInstallVersion?: string;
 
-  constructor(private readonly getWindow: () => BrowserWindow | null) {
+  constructor(
+    private readonly getWindow: () => BrowserWindow | null,
+    private readonly requestInstall: () => void,
+  ) {
     super();
 
     this.state = this.isPackaged
@@ -241,6 +244,11 @@ export class AppUpdater extends EventEmitter {
       return;
     }
 
+    this.requestInstall();
+  }
+
+  /** Called by the quit coordinator only after app-owned runtimes are down. */
+  installDownloadedUpdate(): void {
     autoUpdater.quitAndInstall(false, true);
   }
 

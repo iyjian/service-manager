@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const { createKubernetesClient } = require('../dist/main/kubernetes/kubernetesClient');
@@ -17,6 +18,7 @@ test('Pod Exec bootstrap preserves the requested shell as argv data', () => {
   assert.equal(command[0], shell);
   assert.equal(command[1], '-c');
   assert.equal(command[3], shell);
+  assert.equal(command[4], '0');
   assert.equal(command[2].includes(shell), false);
   assert.match(command[2], /exec "\$0" -i/);
 });
@@ -32,6 +34,45 @@ test('Pod Exec bootstrap silently probes UTF-8 locales in priority order', () =>
   assert.match(script, /unset LC_ALL/);
   assert.match(script, /LC_CTYPE=\$_sm_utf8_locale/);
   assert.match(script, /stty iutf8 >\/dev\/null 2>&1 \|\| :/);
+});
+
+test('Pod Exec bootstrap silently rejects preferred dash candidates and permits the explicit degraded attempt', () => {
+  const preferred = buildPodExecCommand('/bin/sh');
+  const degraded = buildPodExecCommand('/bin/sh', true);
+  const script = preferred[2];
+
+  assert.match(script, /readlink \/proc\/\$\$\/exe 2>\/dev\/null/);
+  assert.match(script, /0:\*\/dash\)/);
+  assert.doesNotMatch(script, /command -v (?:ash|bash)/);
+  assert.match(script, /exit 126/);
+  assert.equal(preferred[4], '0');
+  assert.equal(degraded[4], '1');
+  assert.ok(script.indexOf('0:*/dash)') < script.indexOf('locale charmap'));
+});
+
+test('Pod Exec dash preference exits silently while the degraded flag continues', {
+  skip: process.platform === 'win32',
+}, () => {
+  const run = (allowDegradedDash) => {
+    const command = buildPodExecCommand('/bin/sh', allowDegradedDash);
+    const script = command[2]
+      .replace('_sm_shell_exe=$(readlink /proc/$$/exe 2>/dev/null || :)', '_sm_shell_exe=/usr/bin/dash')
+      .replace('exec "$0" -i', 'exit 0');
+    return spawnSync('/bin/sh', ['-c', script, command[3], command[4]], {
+      encoding: 'utf8',
+      env: { ...process.env, TERM: 'dumb' },
+    });
+  };
+
+  const preferred = run(false);
+  assert.equal(preferred.status, 126);
+  assert.equal(preferred.stdout, '');
+  assert.equal(preferred.stderr, '');
+
+  const degraded = run(true);
+  assert.equal(degraded.status, 0);
+  assert.equal(degraded.stdout, '');
+  assert.equal(degraded.stderr, '');
 });
 
 test('Pod Exec bootstrap upgrades only missing or dumb TERM without probe output', () => {
@@ -133,6 +174,7 @@ users:
     podName: 'api-0',
     container: 'api',
     shell: '/bin/sh',
+    allowDegradedDash: false,
   }, {
     onData: (data) => events.push(`data:${data}`),
     onClose: () => events.push('close'),
@@ -142,7 +184,7 @@ users:
 
   assert.equal(execCalls.length, 1);
   const call = execCalls[0];
-  assert.deepEqual(call.command, buildPodExecCommand('/bin/sh'));
+  assert.deepEqual(call.command, buildPodExecCommand('/bin/sh', false));
   assert.equal(call.tty, true);
 
   const chinese = Buffer.from('中', 'utf8');
@@ -152,7 +194,9 @@ users:
   assert.deepEqual(events, ['data:E', 'data:中']);
 
   handle.write('中文');
-  assert.equal(call.stdin.read().toString('utf8'), '中文');
+  handle.write('\u001b[D');
+  handle.write('X');
+  assert.equal(call.stdin.read().toString('utf8'), '中文\u001b[DX');
   handle.resize(120, 40);
   assert.equal(call.stdout.columns, 120);
   assert.equal(call.stdout.rows, 40);

@@ -70,6 +70,7 @@ export interface KubernetesPodExecRequest {
   podName: string;
   container: string;
   shell: string;
+  allowDegradedDash: boolean;
 }
 
 export interface KubernetesPodExecCallbacks {
@@ -1200,6 +1201,9 @@ class KubernetesClientAdapter implements KubernetesClient {
     if (!isNonEmptyString(request.shell)) {
       throw new Error('Kubernetes Pod shell is required.');
     }
+    if (typeof request.allowDegradedDash !== 'boolean') {
+      throw new Error('Kubernetes Pod degraded dash preference is required.');
+    }
 
     const stdin = new PassThrough();
     type ExecOutput = Writable & {
@@ -1257,7 +1261,7 @@ class KubernetesClientAdapter implements KubernetesClient {
         request.namespace,
         request.podName,
         request.container,
-        buildPodExecCommand(request.shell),
+        buildPodExecCommand(request.shell, request.allowDegradedDash),
         stdout,
         stderr,
         stdin,

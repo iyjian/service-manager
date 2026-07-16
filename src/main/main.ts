@@ -50,6 +50,7 @@ import type { ProxyExceptionDraft, ProxyMode, ProxyState, ProxyTraffic } from '.
 import { KubernetesRuntime } from './kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from './kubernetes/contextPreference';
 import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
+import { AppQuitCoordinator } from './quitCoordinator';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -136,16 +137,16 @@ let store: ServiceStore | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
-let allowQuitAfterRuntimeShutdown = false;
-let quitShutdownPromise: Promise<void> | null = null;
 const autoStartAbortController = new AbortController();
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
-const updater = new AppUpdater(() => BrowserWindow.getAllWindows()[0] ?? null);
+let updater: AppUpdater;
+let quitCoordinator: AppQuitCoordinator;
 const APP_DISPLAY_NAME = 'Service Manager';
 const APP_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+const FINAL_PROCESS_EXIT_DELAY_MS = 1_500;
 
 app.setName(APP_DISPLAY_NAME);
 app.setAboutPanelOptions({
@@ -495,7 +496,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
   }
 
   const shutdownResults = await Promise.allSettled([
-    Promise.resolve().then(() => portForwardManager.stopAll()),
+    Promise.resolve().then(() => portForwardManager.shutdown()),
     Promise.resolve().then(() => tunnelManager.stopAll()),
     Promise.resolve().then(() => proxyRuntime?.shutdown()),
     Promise.resolve().then(() => kubernetesRuntime?.shutdown()),
@@ -510,24 +511,30 @@ async function shutdownRuntimesForQuit(): Promise<void> {
 }
 
 function requestQuitAfterRuntimeShutdown(signal = false): void {
-  if (allowQuitAfterRuntimeShutdown || quitShutdownPromise) {
-    return;
-  }
+  void quitCoordinator.request(signal ? 'signal' : 'normal');
+}
 
-  autoStartAbortController.abort();
-  quitShutdownPromise = shutdownRuntimesForQuit().catch(async (error) => {
+function runFinalExitAction(action: () => void): void {
+  const forcedExit = setTimeout(() => process.exit(0), FINAL_PROCESS_EXIT_DELAY_MS);
+  forcedExit.unref();
+  action();
+}
+
+updater = new AppUpdater(
+  () => BrowserWindow.getAllWindows()[0] ?? null,
+  () => { void quitCoordinator.request('install-update'); },
+);
+quitCoordinator = new AppQuitCoordinator({
+  abortAutoStart: () => autoStartAbortController.abort(),
+  cleanup: shutdownRuntimesForQuit,
+  reportCleanupError: async (error) => {
     logRuntimeError('app:shutdown', error, { operation: 'runtime-stop' });
     await flushRuntimeLog();
-  });
-  void quitShutdownPromise.then(() => {
-    allowQuitAfterRuntimeShutdown = true;
-    if (signal) {
-      app.exit(0);
-    } else {
-      app.quit();
-    }
-  });
-}
+  },
+  quit: () => runFinalExitAction(() => app.quit()),
+  installUpdate: () => runFinalExitAction(() => updater.installDownloadedUpdate()),
+  exit: () => runFinalExitAction(() => app.exit(0)),
+});
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -1364,7 +1371,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
-  if (allowQuitAfterRuntimeShutdown) {
+  if (quitCoordinator.canQuitImmediately()) {
     return;
   }
 

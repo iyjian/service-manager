@@ -527,6 +527,52 @@ test('workspace replays terminal output emitted before its Shell open result bin
   }, { xterm: true });
 });
 
+test('workspace forwards Chinese and ArrowLeft xterm data exactly only while the Shell is open', async () => {
+  await withWorkspaceDom(async ({ Terminal }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const writes = [];
+    const state = { id: 'terminal-api', ...target, shell: '/bin/sh', state: 'open' };
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => assert.fail('not used'),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => assert.fail('not used'),
+      openTerminal: async () => state,
+      writeTerminal: async (id, data) => { writes.push({ id, data }); },
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openShell(target);
+    const terminal = Terminal.instances[0];
+    terminal.dataListener('中文');
+    terminal.dataListener('\u001b[D');
+    terminal.dataListener('X');
+    assert.deepEqual(writes, [
+      { id: state.id, data: '中文' },
+      { id: state.id, data: '\u001b[D' },
+      { id: state.id, data: 'X' },
+    ]);
+
+    workspace.onTerminalChanged({ ...state, state: 'connecting' });
+    terminal.dataListener('\u001b[D');
+    assert.equal(writes.length, 3, 'fallback state blocks stale terminal input');
+
+    workspace.onTerminalChanged(state);
+    terminal.dataListener('\u001b[D');
+    assert.deepEqual(writes.at(-1), { id: state.id, data: '\u001b[D' });
+    await workspace.dispose();
+  }, { xterm: true });
+});
+
 test('workspace retains one shared resize listener plus the active Shell listener without duplicate refits', async () => {
   await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');

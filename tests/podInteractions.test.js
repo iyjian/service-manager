@@ -496,9 +496,13 @@ test('PodInteractionManager opens the default shell and closes page-scoped strea
   const manager = createManager(fakeClient);
   const terminal = await manager.openTerminal(POD_INPUT);
 
-  assert.deepEqual(shellFallbacks(), ['/bin/sh', 'ash', 'bash']);
+  assert.deepEqual(shellFallbacks(), ['/bin/sh', 'ash', 'bash', '/bin/sh']);
   assert.equal(terminal.shell, '/bin/sh');
-  assert.deepEqual(fakeClient.terminalInputs.map((input) => input.shell), ['/bin/sh']);
+  assert.deepEqual(fakeClient.terminalInputs, [{
+    ...POD_INPUT,
+    shell: '/bin/sh',
+    allowDegradedDash: false,
+  }]);
 
   await manager.disposePageScoped();
   assert.equal(fakeClient.closedTerminalCount, 1);
@@ -543,9 +547,11 @@ test('PodInteractionManager waits for first terminal output before opening or ac
 
   assert.equal(terminal.state, 'open');
   assert.deepEqual(lifecycle, ['output:\u001b[?1034hsh-4.2# ', 'state:open']);
-  manager.writeTerminal(terminal.id, 'ready');
+  manager.writeTerminal(terminal.id, '中文');
+  manager.writeTerminal(terminal.id, '\u001b[D');
+  manager.writeTerminal(terminal.id, 'X');
   manager.resizeTerminal(terminal.id, 100, 30);
-  assert.deepEqual(writes, ['ready']);
+  assert.deepEqual(writes, ['中文', '\u001b[D', 'X']);
   assert.deepEqual(resizes, [{ cols: 100, rows: 30 }]);
   await manager.closeTerminal(terminal.id);
 });
@@ -623,9 +629,47 @@ test('PodInteractionManager fences late output when a shell fails before readine
   await manager.closeTerminal(terminal.id);
 });
 
-test('PodInteractionManager disables input while an opened shell falls back and waits for readiness', async () => {
+test('PodInteractionManager retries preferred candidates before the explicit degraded dash attempt', async () => {
+  const attempts = [];
+  const manager = createManager({
+    async openPodExec(input, callbacks) {
+      attempts.push({ input, callbacks });
+      return {
+        write() {},
+        resize() {},
+        async close() {},
+      };
+    },
+  }, { terminalReadyTimeoutMs: 1_000 });
+
+  const opening = manager.openTerminal(POD_INPUT);
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let index = 0; index < 3; index += 1) {
+    attempts[index].callbacks.onStatusFailure(new Error(`candidate ${index} rejected`));
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.deepEqual(attempts.map(({ input }) => ({
+    shell: input.shell,
+    allowDegradedDash: input.allowDegradedDash,
+  })), [
+    { shell: '/bin/sh', allowDegradedDash: false },
+    { shell: 'ash', allowDegradedDash: false },
+    { shell: 'bash', allowDegradedDash: false },
+    { shell: '/bin/sh', allowDegradedDash: true },
+  ]);
+
+  attempts[3].callbacks.onData('degraded-sh# ');
+  const terminal = await opening;
+  assert.equal(terminal.shell, '/bin/sh');
+  assert.equal(terminal.state, 'open');
+  await manager.closeTerminal(terminal.id);
+});
+
+test('PodInteractionManager finalizes an opened shell with output on non-zero status without fallback', async () => {
   const attempts = [];
   const states = [];
+  let closed = 0;
   const manager = createManager({
     async openPodExec(input, callbacks) {
       const attempt = {
@@ -642,7 +686,9 @@ test('PodInteractionManager disables input while an opened shell falls back and 
         resize(cols, rows) {
           attempt.resizes.push({ cols, rows });
         },
-        async close() {},
+        async close() {
+          closed += 1;
+        },
       };
     },
   }, { terminalReadyTimeoutMs: 1_000 });
@@ -655,24 +701,16 @@ test('PodInteractionManager disables input while an opened shell falls back and 
   assert.equal(terminal.state, 'open');
 
   attempts[0].callbacks.onStatusFailure(new Error('/bin/sh exited'));
-  assert.equal(states.at(-1).state, 'connecting');
-  assert.throws(() => manager.writeTerminal(terminal.id, 'during fallback'), /not ready for input/i);
-  assert.throws(() => manager.resizeTerminal(terminal.id, 120, 40), /not ready to resize/i);
+  assert.equal(states.at(-1).state, 'error');
+  assert.equal(states.at(-1).error, '/bin/sh exited');
+  assert.throws(() => manager.writeTerminal(terminal.id, 'after exit'), /not active/i);
+  assert.throws(() => manager.resizeTerminal(terminal.id, 120, 40), /not active/i);
   assert.deepEqual(attempts[0].writes, []);
   assert.deepEqual(attempts[0].resizes, []);
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(attempts.map(({ input }) => input.shell), ['/bin/sh', 'ash']);
-  attempts[1].callbacks.onData('ash# ');
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(states.at(-1).state, 'open');
-  assert.equal(states.at(-1).shell, 'ash');
-  manager.writeTerminal(terminal.id, 'after fallback');
-  manager.resizeTerminal(terminal.id, 120, 40);
-  assert.deepEqual(attempts[1].writes, ['after fallback']);
-  assert.deepEqual(attempts[1].resizes, [{ cols: 120, rows: 40 }]);
-  await manager.closeTerminal(terminal.id);
+  assert.deepEqual(attempts.map(({ input }) => input.shell), ['/bin/sh']);
+  assert.equal(closed, 1);
 });
 
 test('PodInteractionManager never publishes open after a terminal closes before readiness', async (t) => {
@@ -1026,7 +1064,7 @@ test('PodInteractionManager finds the newest repeated-line overlap while retaini
   await manager.closeLogs(logs.sessionId);
 });
 
-test('PodInteractionManager retries an asynchronous shell-status failure but not a normal terminal close', async () => {
+test('PodInteractionManager retries a silent shell-status failure but not a normal terminal close', async () => {
   const attempts = [];
   let closed = 0;
   const manager = createManager({
