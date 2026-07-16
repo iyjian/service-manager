@@ -60,7 +60,7 @@ function numericStatus(value: unknown): number | undefined {
 }
 
 function nestedStatus(record: ConnectionErrorLike): number | undefined {
-  const direct = numericStatus(record.statusCode) ?? numericStatus(record.status);
+  const direct = numericStatus(record.statusCode) ?? numericStatus(record.status) ?? numericStatus(record.code);
   if (direct !== undefined) {
     return direct;
   }
@@ -83,6 +83,9 @@ export function classifyKubernetesConnectionError(error: unknown): KubernetesCon
 
   if (status === 401 || status === 403) {
     return 'authentication';
+  }
+  if (status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599)) {
+    return 'transient';
   }
   if (
     TLS_CODES.has(code)
@@ -328,6 +331,16 @@ export class ClusterSession {
         // Leave it owned by the queued invalidating operation so it can run
         // the normal resource-then-client cleanup sequence before publishing
         // the next disconnected state.
+        this.client = client;
+        return this.getState();
+      }
+      try {
+        await client.probeConnection();
+      } catch (error) {
+        await client.close().catch(() => undefined);
+        throw error;
+      }
+      if (!this.isCurrentAttempt(context.name, generation)) {
         this.client = client;
         return this.getState();
       }

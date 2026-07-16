@@ -368,6 +368,30 @@ export function filterKubernetesNamespaces(namespaces: Iterable<string>, query: 
     .filter((name) => !normalizedQuery || name.toLocaleLowerCase().includes(normalizedQuery));
 }
 
+export interface KubernetesContextActivationIntent {
+  id: number;
+  context: string;
+  pageGeneration: number;
+}
+
+export type KubernetesContextActivationDecision = 'wait' | 'activate' | 'terminal' | 'stale';
+
+export function decideKubernetesContextActivation(
+  intent: KubernetesContextActivationIntent,
+  state: Pick<KubernetesState, 'selectedContext' | 'connection'>,
+  visible: boolean,
+  pageGeneration: number,
+): KubernetesContextActivationDecision {
+  if (!visible || intent.pageGeneration !== pageGeneration) return 'stale';
+  if (state.selectedContext && state.selectedContext !== intent.context) return 'wait';
+  if (!state.selectedContext && state.connection !== 'disconnected' && state.connection !== 'unsupported-auth') {
+    return 'wait';
+  }
+  if (state.connection === 'connected') return 'activate';
+  if (state.connection === 'connecting' || state.connection === 'reconnecting') return 'wait';
+  return 'terminal';
+}
+
 export function shouldCloseNamespaceMenu(
   control: Pick<HTMLElement, 'contains'>,
   target: Node | null,
@@ -1055,6 +1079,8 @@ class KubernetesPage implements KubernetesPageController {
   private requestedWindow: string | undefined;
   private searchTimer: number | undefined;
   private reconnecting = false;
+  private contextActivationIntentGeneration = 0;
+  private pendingContextActivation: KubernetesContextActivationIntent | undefined;
   private requestGeneration = 0;
   private selectedNamespaces = new Set<string>();
   private availableNamespaces: string[] = [];
@@ -1109,6 +1135,7 @@ class KubernetesPage implements KubernetesPageController {
   public hide(): void {
     if (!this.visible) return;
     this.closeSelectorMenus();
+    this.cancelContextActivation();
     this.clearDrawerEnvironment();
     this.visible = false;
     this.pageGeneration += 1;
@@ -1354,8 +1381,14 @@ class KubernetesPage implements KubernetesPageController {
     try {
       const state = await window.kubernetesApi.getState();
       if (!this.visible || pageGeneration !== this.pageGeneration) return;
+      const selected = state.contexts.find((context) => context.name === state.selectedContext);
+      if (state.selectedContext && selected?.supported) {
+        this.armContextActivation(state.selectedContext);
+      }
       this.onStateChanged(state);
-      await this.activateCurrentList();
+      if (!this.pendingContextActivation && state.connection !== 'connected') {
+        await this.activateCurrentList();
+      }
     } catch (error) {
       if (this.visible && pageGeneration === this.pageGeneration) this.showError(toErrorMessage(error));
     }
@@ -1363,7 +1396,9 @@ class KubernetesPage implements KubernetesPageController {
 
   private onStateChanged(state: KubernetesState): void {
     const previousState = this.state;
+    const hadContextActivationIntent = Boolean(this.pendingContextActivation);
     const contextChanged = previousState !== undefined && previousState.selectedContext !== state.selectedContext;
+    const connectionChanged = previousState?.connection !== state.connection;
     const disconnected = previousState?.connection !== 'disconnected' && state.connection === 'disconnected';
     if (contextChanged) this.invalidateNamespaceOptions();
     if (contextChanged || disconnected) {
@@ -1381,6 +1416,9 @@ class KubernetesPage implements KubernetesPageController {
     const scope = state.namespaceScope ?? { mode: 'all', namespaces: [] };
     this.selectedNamespaces = new Set(scope.namespaces);
     this.renderState();
+    if (state.connection !== 'connected' && (contextChanged || connectionChanged)) {
+      this.renderConnectionListState(state);
+    }
     if (this.visible && state.connection === 'connected' && state.selectedContext
       && this.namespaceContext !== state.selectedContext
       && this.namespaceLoadingContext !== state.selectedContext) {
@@ -1390,6 +1428,58 @@ class KubernetesPage implements KubernetesPageController {
       && this.customDefinitionsContext !== state.selectedContext) {
       void this.loadCustomResourceDefinitions();
     }
+    this.settleContextActivation(state);
+    if (this.visible && state.connection === 'connected' && connectionChanged && !hadContextActivationIntent) {
+      void this.activateCurrentList();
+    }
+  }
+
+  private armContextActivation(context: string): KubernetesContextActivationIntent {
+    const intent = {
+      id: ++this.contextActivationIntentGeneration,
+      context,
+      pageGeneration: this.pageGeneration,
+    };
+    this.pendingContextActivation = intent;
+    return intent;
+  }
+
+  private cancelContextActivation(): void {
+    this.contextActivationIntentGeneration += 1;
+    this.pendingContextActivation = undefined;
+  }
+
+  private isCurrentContextActivation(intent: KubernetesContextActivationIntent): boolean {
+    return this.pendingContextActivation?.id === intent.id
+      && intent.pageGeneration === this.pageGeneration;
+  }
+
+  private settleContextActivation(state: KubernetesState): void {
+    const intent = this.pendingContextActivation;
+    if (!intent) return;
+    const decision = decideKubernetesContextActivation(intent, state, this.visible, this.pageGeneration);
+    if (decision === 'wait') return;
+    if (this.pendingContextActivation?.id === intent.id) {
+      this.pendingContextActivation = undefined;
+    }
+    if (decision === 'activate') {
+      void this.activateCurrentList();
+    }
+  }
+
+  private renderConnectionListState(state: KubernetesState): void {
+    this.clearTransientStates();
+    this.table?.setWindow({ start: 0, end: 0, total: 0, items: [] });
+    const message = state.connection === 'connecting'
+      ? 'Connecting to Kubernetes…'
+      : state.connection === 'reconnecting'
+        ? 'Reconnecting to Kubernetes…'
+        : state.error ?? (state.selectedContext
+          ? 'The Kubernetes Context is disconnected.'
+          : 'Choose a supported Kubernetes Context to load resources.');
+    this.loadedCount.textContent = message;
+    this.emptyState.textContent = message;
+    this.emptyState.classList.remove('hidden');
   }
 
   private onListChanged(snapshot: KubernetesListSnapshot): void {
@@ -1755,6 +1845,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private currentQuery(): KubernetesResourceQuery | undefined {
+    if (this.state?.connection !== 'connected') return undefined;
     const context = this.state?.selectedContext;
     if (!context) return undefined;
     if (this.resourceKind === 'custom-resources') {
@@ -1785,16 +1876,19 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async selectContext(context: string): Promise<void> {
+    const intent = this.armContextActivation(context);
     this.closeSelectorMenus();
     this.closeDetail();
     this.clearResourceTable();
     try {
       const state = await window.kubernetesApi.selectContext(context);
-      if (!this.visible) return;
+      if (!this.visible || !this.isCurrentContextActivation(intent)) return;
       this.onStateChanged(state);
-      await this.activateCurrentList();
     } catch (error) {
-      this.showError(toErrorMessage(error));
+      if (this.isCurrentContextActivation(intent)) {
+        this.cancelContextActivation();
+        this.showError(toErrorMessage(error));
+      }
     }
   }
 
@@ -1817,18 +1911,23 @@ class KubernetesPage implements KubernetesPageController {
     if (this.reconnecting || this.state?.connection !== 'disconnected') {
       return;
     }
+    const selectedContext = this.state.selectedContext;
+    const intent = selectedContext ? this.armContextActivation(selectedContext) : undefined;
     this.reconnecting = true;
     this.renderState();
     try {
       const state = await window.kubernetesApi.reconnect();
-      if (!this.visible) return;
+      if (!this.visible || (intent && !this.isCurrentContextActivation(intent))) return;
       this.invalidateNamespaceOptions();
       this.onStateChanged(state);
-      if (state.connection !== 'connected' && state.error) {
+      if (state.connection !== 'connected' && state.connection !== 'reconnecting' && state.error) {
         this.showError(state.error);
       }
     } catch (error) {
-      if (this.visible) this.showError(toErrorMessage(error));
+      if (this.visible && (!intent || this.isCurrentContextActivation(intent))) {
+        this.cancelContextActivation();
+        this.showError(toErrorMessage(error));
+      }
     } finally {
       this.reconnecting = false;
       if (this.visible) this.renderState();
@@ -1910,9 +2009,15 @@ class KubernetesPage implements KubernetesPageController {
     if (!query) {
       this.snapshot = undefined;
       this.table?.setWindow({ start: 0, end: 0, total: 0, items: [] });
-      this.loadedCount.textContent = this.resourceKind === 'custom-resources'
-        ? 'Select a discovered Custom Resource definition to load instances.'
-        : 'Choose a supported Kubernetes Context to load resources.';
+      this.loadedCount.textContent = this.state?.connection !== 'connected'
+        ? this.state?.connection === 'connecting'
+          ? 'Connecting to Kubernetes…'
+          : this.state?.connection === 'reconnecting'
+            ? 'Reconnecting to Kubernetes…'
+            : this.state?.error ?? 'Choose a supported Kubernetes Context to load resources.'
+        : this.resourceKind === 'custom-resources'
+          ? 'Select a discovered Custom Resource definition to load instances.'
+          : 'Choose a supported Kubernetes Context to load resources.';
       this.emptyState.textContent = this.loadedCount.textContent;
       this.emptyState.classList.remove('hidden');
       return;

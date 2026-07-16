@@ -71,6 +71,7 @@ function kubeconfigFixture() {
 
 function emptyClient(onClose = () => undefined) {
   return {
+    async probeConnection() {},
     async list() { return { items: [], resourceVersion: '1' }; },
     async get() { return {}; },
     async listEvents() { return []; },
@@ -724,6 +725,120 @@ test('KubernetesRuntime sends a transient non-410 Watch failure through Context 
   await runtime.shutdown();
 });
 
+test('KubernetesRuntime keeps one connection-loss recovery through a delayed retry', async () => {
+  const { runtime, fakeSession, calls } = createRuntime();
+  const states = [];
+  runtime.onStateChanged((state) => states.push(state));
+  await runtime.activateResources(POD_QUERY);
+  fakeSession.reconnect = async function reconnectLater() {
+    calls.push('reconnect');
+    this.replaceState(currentState({ connection: 'reconnecting' }));
+    return this.getState();
+  };
+  calls.length = 0;
+
+  const first = runtime.handleConnectionLoss(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }));
+  await waitFor(() => calls.includes('reconnect'));
+  const second = runtime.handleConnectionLoss(Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }));
+
+  assert.equal(second, first);
+  fakeSession.replaceState(currentState());
+  await first;
+
+  assert.equal(calls.filter((call) => call === 'reconnect').length, 1);
+  assert.equal(calls.filter((call) => call.startsWith('disconnect:')).length, 1);
+  assert.equal(calls.filter((call) => call === 'activate:pods').length, 1);
+  assert.equal(states.filter((state) => state.connection === 'connected').length, 1);
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime replaces an old Context reconnect monitor with the new Context monitor', async () => {
+  const { runtime, fakeSession, calls } = createRuntime();
+  const contexts = [
+    ...currentState().contexts,
+    { name: 'staging', clusterName: 'staging', userName: 'developer', supported: true, tlsVerificationDisabled: false },
+  ];
+  fakeSession.replaceState(currentState({ contexts }));
+  fakeSession.selectContext = async function selectReconnectingContext(name) {
+    calls.push(`select:${name}`);
+    this.replaceState(currentState({ contexts, selectedContext: name, connection: 'reconnecting' }));
+    return this.getState();
+  };
+  const states = [];
+  runtime.onStateChanged((state) => states.push(state));
+
+  await runtime.selectContext('development');
+  await runtime.selectContext('staging');
+  fakeSession.replaceState(currentState({ contexts, selectedContext: 'staging' }));
+  await waitFor(() => states.some((state) => state.selectedContext === 'staging' && state.connection === 'connected'));
+
+  assert.deepEqual(calls.filter((call) => call.startsWith('select:')), ['select:development', 'select:staging']);
+  assert.equal(
+    states.filter((state) => state.selectedContext === 'staging' && state.connection === 'connected').length,
+    1
+  );
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime suppresses a superseded Context selection broadcast', async () => {
+  const { runtime, fakeSession, calls } = createRuntime();
+  const releaseFirst = deferred();
+  const contexts = [
+    ...currentState().contexts,
+    { name: 'staging', clusterName: 'staging', userName: 'developer', supported: true, tlsVerificationDisabled: false },
+  ];
+  fakeSession.replaceState(currentState({ contexts }));
+  fakeSession.selectContext = async function selectWithDelayedFirst(name) {
+    calls.push(`select:${name}`);
+    if (name === 'development') await releaseFirst.promise;
+    this.replaceState(currentState({ contexts, selectedContext: name }));
+    return this.getState();
+  };
+  const states = [];
+  runtime.onStateChanged((state) => states.push(state));
+
+  const first = runtime.selectContext('development');
+  await waitFor(() => calls.includes('select:development'));
+  const second = runtime.selectContext('staging');
+  releaseFirst.resolve();
+  await Promise.all([first, second]);
+
+  assert.equal(states.some((state) => state.selectedContext === 'development'), false);
+  assert.equal(states.filter((state) => state.selectedContext === 'staging').length, 1);
+  assert.equal(runtime.getState().selectedContext, 'staging');
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime does not reconnect a superseded Context after cleanup finishes', async () => {
+  const { runtime, fakeSession, fakeInteractions, calls } = createRuntime();
+  const cleanupStarted = deferred();
+  const releaseCleanup = deferred();
+  const contexts = [
+    ...currentState().contexts,
+    { name: 'staging', clusterName: 'staging', userName: 'developer', supported: true, tlsVerificationDisabled: false },
+  ];
+  fakeSession.replaceState(currentState({ contexts }));
+  fakeInteractions.disposeAll = async () => {
+    calls.push('dispose-all-interactions');
+    cleanupStarted.resolve();
+    await releaseCleanup.promise;
+  };
+  await runtime.activateResources(POD_QUERY);
+  calls.length = 0;
+
+  const recovery = runtime.handleConnectionLoss(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }));
+  await cleanupStarted.promise;
+  const switching = runtime.selectContext('staging');
+  releaseCleanup.resolve();
+  await Promise.all([recovery, switching]);
+
+  assert.equal(calls.includes('reconnect'), false);
+  assert.ok(calls.includes('select:staging'));
+  assert.equal(runtime.getState().selectedContext, 'staging');
+  assert.equal(runtime.getState().connection, 'connected');
+  await runtime.shutdown();
+});
+
 test('KubernetesRuntime publishes the relisted active view after a 410 Watch recovery', async () => {
   let emitWatchEvent;
   let listCalls = 0;
@@ -1130,6 +1245,7 @@ test('KubernetesRuntime rebuilds the active client after a confirmed content-onl
       const id = createdClients.length + 1;
       createdClients.push(id);
       return {
+        async probeConnection() {},
         async list(query) {
           listClients.push(id);
           return {

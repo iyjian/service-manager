@@ -103,6 +103,8 @@ export interface KubernetesPortForwardHandle {
  * transport types are shared with the renderer.
  */
 export interface KubernetesClient {
+  /** Verifies API transport/TLS reachability without reading a cluster resource. */
+  probeConnection(): Promise<void>;
   list(query: KubernetesResourceQuery, continueToken?: string): Promise<KubernetesResourcePage>;
   get(query: KubernetesResourceQuery, name: string, namespace?: string): Promise<Record<string, unknown>>;
   listEvents(reference: { uid: string; namespace?: string }): Promise<KubernetesResourceSummary[]>;
@@ -708,6 +710,7 @@ export async function createKubernetesClient(
 }
 
 class KubernetesClientAdapter implements KubernetesClient {
+  private readonly version: ReadOnlyApi;
   private readonly core: ReadOnlyApi;
   private readonly discovery: ReadOnlyApi;
   private readonly apps: ReadOnlyApi;
@@ -724,6 +727,7 @@ class KubernetesClientAdapter implements KubernetesClient {
 
   public constructor(kubernetes: KubernetesNodeModule, kubeConfig: KubeConfigLike) {
     this.runtimeKubeConfig = kubeConfig as unknown as KubernetesNode.KubeConfig;
+    this.version = kubeConfig.makeApiClient(kubernetes.VersionApi) as unknown as ReadOnlyApi;
     this.core = kubeConfig.makeApiClient(kubernetes.CoreV1Api) as unknown as ReadOnlyApi;
     this.discovery = kubeConfig.makeApiClient(kubernetes.DiscoveryV1Api) as unknown as ReadOnlyApi;
     this.apps = kubeConfig.makeApiClient(kubernetes.AppsV1Api) as unknown as ReadOnlyApi;
@@ -736,6 +740,19 @@ class KubernetesClientAdapter implements KubernetesClient {
     this.logApi = new kubernetes.Log(this.runtimeKubeConfig);
     this.execApi = new kubernetes.Exec(this.runtimeKubeConfig);
     this.portForwardApi = new kubernetes.PortForward(this.runtimeKubeConfig);
+  }
+
+  public async probeConnection(): Promise<void> {
+    this.assertOpen();
+    try {
+      await this.call(this.version, 'getCode', {});
+    } catch (error) {
+      const status = statusCodeFrom(error);
+      if (status === 401 || status === 403) {
+        return;
+      }
+      throw error;
+    }
   }
 
   public async list(query: KubernetesResourceQuery, continueToken?: string): Promise<KubernetesResourcePage> {

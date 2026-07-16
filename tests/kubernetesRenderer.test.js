@@ -43,6 +43,10 @@ test('Kubernetes documentation states the supported read-only, bounded drawer-wo
     assert.match(document, /ordinary containers.*resources\.requests|resources\.requests.*ordinary containers/i);
     assert.match(document, /not limits.*live metrics|not live metrics.*limits/i);
     assert.match(document, /active(?:-view| view) Watch/i);
+    assert.match(document, /Version (?:endpoint )?(?:reachability )?probe|Version reachability probe/i);
+    assert.match(document, /(?:probe-before-connected|before.*publish.*connected|before.*connected.*probe)/i);
+    assert.match(document, /Context-scoped.*(?:recovery|retry)|(?:recovery|retry).*Context-scoped/i);
+    assert.match(document, /no resource LIST|without resource LIST|sends no resource LIST/i);
     assert.match(document, /2,000(?:-line| lines?) log/i);
     assert.match(document, /Logs.*search.*Follow.*Clear|search.*Follow.*Clear.*Logs/i);
     assert.match(document, /Overview.*single-line|single-line.*Overview/i);
@@ -212,6 +216,48 @@ test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves
     '',
   ), ['ai-dev', 'kube-system', 'monitoring']);
   assert.deepEqual(filterKubernetesNamespaces(['ai-dev'], 'missing'), []);
+});
+
+test('Kubernetes Context activation waits for the matching delayed connection exactly until it is usable', async () => {
+  const { decideKubernetesContextActivation } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const intent = { id: 7, context: 'tunneled', pageGeneration: 3 };
+  const decision = (selectedContext, connection, visible = true, pageGeneration = 3) => (
+    decideKubernetesContextActivation(intent, { selectedContext, connection }, visible, pageGeneration)
+  );
+
+  assert.equal(decision('tunneled', 'connecting'), 'wait');
+  assert.equal(decision('tunneled', 'reconnecting'), 'wait');
+  assert.equal(decision('tunneled', 'connected'), 'activate');
+  assert.equal(decision('tunneled', 'disconnected'), 'terminal');
+  assert.equal(decision('tunneled', 'unsupported-auth'), 'terminal');
+  assert.equal(decision('older-context', 'connected'), 'wait');
+  assert.equal(decision('tunneled', 'connected', false), 'stale');
+  assert.equal(decision('tunneled', 'connected', true, 4), 'stale');
+});
+
+test('Kubernetes renderer never sends a resource LIST while a Context is reconnecting', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const currentQueryStart = page.indexOf('    currentQuery() {');
+  const selectContextStart = page.indexOf('    async selectContext(context) {', currentQueryStart);
+  const reloadStart = page.indexOf('    async reloadKubeconfig() {', selectContextStart);
+  const settleStart = page.indexOf('    settleContextActivation(state) {');
+  const connectionStateStart = page.indexOf('    renderConnectionListState(state) {', settleStart);
+  const activateStart = page.indexOf('    async activateCurrentList() {');
+  const renderListStart = page.indexOf('    renderList() {', activateStart);
+
+  assert.ok(currentQueryStart >= 0 && selectContextStart > currentQueryStart);
+  assert.ok(reloadStart > selectContextStart && connectionStateStart > settleStart);
+  assert.ok(activateStart >= 0 && renderListStart > activateStart);
+  const currentQuery = page.slice(currentQueryStart, selectContextStart);
+  const selectContext = page.slice(selectContextStart, reloadStart);
+  const settle = page.slice(settleStart, connectionStateStart);
+  const activate = page.slice(activateStart, renderListStart);
+
+  assert.match(currentQuery, /this\.state\?\.connection !== 'connected'[\s\S]*?return undefined/);
+  assert.doesNotMatch(selectContext, /activateCurrentList/);
+  assert.ok(settle.indexOf('this.pendingContextActivation = undefined') < settle.indexOf('this.activateCurrentList()'));
+  assert.ok(activate.indexOf('if (!query)') < activate.indexOf('window.kubernetesApi.listResources(query)'));
+  assert.ok(activate.indexOf('return;', activate.indexOf('if (!query)')) < activate.indexOf('window.kubernetesApi.listResources(query)'));
 });
 
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {

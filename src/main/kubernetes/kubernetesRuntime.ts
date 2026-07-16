@@ -287,6 +287,16 @@ interface PendingListBroadcast {
   generation: number;
 }
 
+interface ReconnectMonitor {
+  context?: string;
+  promise: Promise<void>;
+}
+
+interface ConnectionLossRecovery {
+  context?: string;
+  promise: Promise<void>;
+}
+
 /**
  * Main-process lifecycle owner for one Kubernetes Context. The renderer only
  * receives copies of display-safe state; kubeconfig contents and transports
@@ -310,6 +320,7 @@ export class KubernetesRuntime {
   private restoreQuery?: KubernetesResourceQuery;
   private queryGeneration = 0;
   private contextTransitionGeneration?: number;
+  private contextMutationGeneration = 0;
   private namespaceScope: KubernetesNamespaceScope = { mode: 'all', namespaces: [] };
   private activeCatalog: KubeconfigCatalog = { contexts: [], sources: new Map(), fingerprint: '' };
   private kubeconfigReloadAvailable = false;
@@ -317,7 +328,8 @@ export class KubernetesRuntime {
   private stopWatchingKubeconfig?: () => void;
   private lifecycle: Promise<void> = Promise.resolve();
   private shutdownPromise?: Promise<void>;
-  private reconnectMonitor?: Promise<void>;
+  private reconnectMonitor?: ReconnectMonitor;
+  private connectionLossRecovery?: ConnectionLossRecovery;
   private disposed = false;
   private readonly stateListeners = new Set<StateListener>();
   private readonly listListeners = new Set<ListListener>();
@@ -416,18 +428,25 @@ export class KubernetesRuntime {
   public async selectContext(name: string): Promise<KubernetesState> {
     const contextName = assertText(name, 'Context name');
     this.assertUsable();
+    const mutationGeneration = ++this.contextMutationGeneration;
     const transition = this.beginContextTransition(false);
     return this.enqueueLifecycle(async () => {
       try {
         await this.deactivateInvalidatedQuery(transition.query, transition.coordinator);
         const previousContext = this.session.getState().selectedContext;
         const state = await this.session.selectContext(contextName);
+        if (this.contextMutationGeneration !== mutationGeneration) {
+          return copyState(state, this.namespaceScope, this.kubeconfigReloadAvailable);
+        }
         if (state.selectedContext !== previousContext) {
           this.namespaceScope = { mode: 'all', namespaces: [] };
         }
         await this.persistSelectedContext(state);
         const safeState = copyState(state, this.namespaceScope, this.kubeconfigReloadAvailable);
         this.emitState(safeState);
+        if (state.connection === 'reconnecting') {
+          this.startReconnectMonitor();
+        }
         return safeState;
       } finally {
         this.finishContextTransition(transition.generation);
@@ -437,6 +456,7 @@ export class KubernetesRuntime {
 
   public async reloadKubeconfig(): Promise<KubernetesState> {
     this.assertUsable();
+    const mutationGeneration = ++this.contextMutationGeneration;
     const transition = this.beginContextTransition(true);
     return this.enqueueLifecycle(async () => {
       try {
@@ -444,6 +464,9 @@ export class KubernetesRuntime {
         const catalog = await this.readKubeconfigCatalog();
         this.activeCatalog = catalog;
         await this.session.setContexts(catalog.contexts, { reconnectActiveContext: true });
+        if (this.contextMutationGeneration !== mutationGeneration) {
+          return this.getState();
+        }
         const selectedAfterReload = this.session.getState().selectedContext;
         if (!selectedAfterReload || !catalog.contexts.find((context) => (
           context.name === selectedAfterReload && context.supported
@@ -522,20 +545,27 @@ export class KubernetesRuntime {
     if (this.session.getState().connection !== 'disconnected') {
       throw new Error('The Kubernetes Context is not disconnected.');
     }
+    const mutationGeneration = this.contextMutationGeneration;
     return this.enqueueLifecycle(async () => {
       this.assertUsable();
       if (this.session.getState().connection !== 'disconnected') {
         throw new Error('The Kubernetes Context is not disconnected.');
       }
       const state = await this.session.reconnect();
-      const safeState = copyState(state, this.namespaceScope, this.kubeconfigReloadAvailable);
-      this.emitState(safeState);
+      if (this.contextMutationGeneration !== mutationGeneration) {
+        return this.getState();
+      }
       if (state.connection === 'connected') {
-        await this.restoreCurrentListQuery();
+        await this.restoreCurrentListBeforeConnectedState();
       } else if (state.connection === 'reconnecting') {
         this.startReconnectMonitor();
       }
-      return this.getState();
+      if (this.contextMutationGeneration !== mutationGeneration) {
+        return this.getState();
+      }
+      const safeState = this.getState();
+      this.emitState(safeState);
+      return safeState;
     });
   }
 
@@ -889,6 +919,7 @@ export class KubernetesRuntime {
   /** Invoked by main shutdown; it is idempotent and releases every owned stream. */
   public shutdown(): Promise<void> {
     if (!this.shutdownPromise) {
+      this.contextMutationGeneration += 1;
       const transition = this.beginContextTransition(false);
       this.shutdownPromise = this.enqueueLifecycle(async () => {
         if (this.disposed) {
@@ -923,9 +954,17 @@ export class KubernetesRuntime {
    * transient category starts ClusterSession's bounded reconnect policy.
    */
   public handleConnectionLoss(error: unknown): Promise<void> {
+    const recoveryContext = this.session.getState().selectedContext;
+    const activeRecovery = this.connectionLossRecovery;
+    if (activeRecovery && activeRecovery.context === recoveryContext) {
+      return activeRecovery.promise;
+    }
     const kind = classifyKubernetesConnectionError(error);
+    const recoveryMutationGeneration = this.contextMutationGeneration;
     const transition = this.beginContextTransition(true);
-    return this.enqueueLifecycle(async () => {
+    let retryMonitor: Promise<void> | undefined;
+    let cleanupFailure: Error | undefined;
+    const initialRecovery = this.enqueueLifecycle(async () => {
       if (this.disposed) {
         return;
       }
@@ -940,24 +979,47 @@ export class KubernetesRuntime {
         if (disconnectFailure) {
           failures.push(disconnectFailure);
         }
+        cleanupFailure = cleanupFailureError(failures, 'Kubernetes connection cleanup failed.');
+        if (this.contextMutationGeneration !== recoveryMutationGeneration) {
+          return;
+        }
         this.emitState();
         if (kind !== 'transient') {
-          throwCleanupFailures(failures, 'Kubernetes connection cleanup failed.');
           return;
         }
         const state = await this.session.reconnect();
-        this.emitState(copyState(state, this.namespaceScope, this.kubeconfigReloadAvailable));
+        if (this.contextMutationGeneration !== recoveryMutationGeneration) {
+          return;
+        }
         this.finishContextTransition(transition.generation);
         if (state.connection === 'connected') {
-          await this.restoreCurrentListQuery();
+          await this.restoreCurrentListBeforeConnectedState();
         } else {
-          this.startReconnectMonitor();
+          retryMonitor = this.startReconnectMonitor();
         }
-        throwCleanupFailures(failures, 'Kubernetes connection cleanup failed.');
+        if (this.contextMutationGeneration !== recoveryMutationGeneration) {
+          return;
+        }
+        this.emitState();
       } finally {
         this.finishContextTransition(transition.generation);
       }
     });
+    const recovery = initialRecovery.then(async () => {
+      await retryMonitor;
+      if (cleanupFailure) {
+        throw cleanupFailure;
+      }
+    });
+    const trackedRecovery: ConnectionLossRecovery = { context: recoveryContext, promise: recovery };
+    this.connectionLossRecovery = trackedRecovery;
+    const clearRecovery = (): void => {
+      if (this.connectionLossRecovery === trackedRecovery) {
+        this.connectionLossRecovery = undefined;
+      }
+    };
+    void recovery.then(clearRecovery, clearRecovery);
+    return recovery;
   }
 
   public onStateChanged(listener: StateListener): () => void {
@@ -998,6 +1060,9 @@ export class KubernetesRuntime {
       return;
     }
     const state = await this.session.selectContext(preferred);
+    if (state.connection === 'reconnecting') {
+      this.startReconnectMonitor();
+    }
     // A failed connection remains visible in ClusterSession state. It is not a
     // successful selection and must not overwrite the remembered preference.
     if (state.connection === 'connected' && state.selectedContext === preferred) {
@@ -1077,6 +1142,7 @@ export class KubernetesRuntime {
   private observedClient(): KubernetesClient {
     const client = this.session.getClient();
     return {
+      probeConnection: () => client.probeConnection(),
       list: (query, continueToken) => client.list(query, continueToken),
       get: (query, name, namespace) => client.get(query, name, namespace),
       listEvents: (reference) => client.listEvents(reference),
@@ -1152,43 +1218,91 @@ export class KubernetesRuntime {
     this.currentQuery = copyQuery(query);
     this.currentSnapshot = undefined;
     this.restoreQuery = undefined;
-    const snapshot = await coordinator.activate(query);
-    if (!this.isCurrentQuery(query, generation) || this.coordinator !== coordinator) {
-      await coordinator.deactivate(query).catch(() => undefined);
-      return;
-    }
-    this.currentSnapshot = snapshot;
-    this.emitList(snapshot);
+    this.rendererRange = { start: 0, end: DEFAULT_RENDERER_WINDOW_SIZE };
+    const pending: PendingListActivation = {
+      key: resourceQueryKey(query),
+      generation,
+      coordinator,
+      promise: Promise.resolve(undefined as never),
+    };
+    pending.promise = coordinator.activate(query).then(async (snapshot) => {
+      if (!this.isCurrentQuery(query, generation) || this.coordinator !== coordinator) {
+        await coordinator.deactivate(query).catch(() => undefined);
+        throw new Error('The Kubernetes resource request was invalidated by a Context change.');
+      }
+      this.currentSnapshot = snapshot;
+      this.emitList(snapshot);
+      return snapshot;
+    }).finally(() => {
+      if (this.pendingListActivation === pending) {
+        this.pendingListActivation = undefined;
+      }
+    });
+    this.pendingListActivation = pending;
+    await pending.promise;
   }
 
-  private startReconnectMonitor(): void {
-    if (this.reconnectMonitor) {
-      return;
+  /**
+   * A restored resource request may independently lose transport after the
+   * Version probe succeeds. Publish the connected state so the renderer can
+   * surface a resource-local error, then schedule a fresh transport recovery.
+   */
+  private async restoreCurrentListBeforeConnectedState(): Promise<void> {
+    try {
+      await this.restoreCurrentListQuery();
+    } catch (error) {
+      if (classifyKubernetesConnectionError(error) === 'transient') {
+        const failedContext = this.session.getState().selectedContext;
+        setTimeout(() => {
+          if (!this.disposed && this.session.getState().selectedContext === failedContext) {
+            void this.handleConnectionLoss(error).catch(() => this.reportConnectionLossCleanupFailure());
+          }
+        }, 0).unref?.();
+      }
+    }
+  }
+
+  private startReconnectMonitor(): Promise<void> {
+    const selectedContext = this.session.getState().selectedContext;
+    const activeMonitor = this.reconnectMonitor;
+    if (activeMonitor && activeMonitor.context === selectedContext) {
+      return activeMonitor.promise;
     }
     const monitor = (async () => {
-      let lastConnection: KubernetesState['connection'] | undefined;
+      let lastConnection: KubernetesState['connection'] | undefined = this.getState().connection;
       while (!this.disposed) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
         const state = this.getState();
-        if (state.connection !== lastConnection) {
+        if (state.selectedContext !== selectedContext) {
+          return;
+        }
+        const connectionChanged = state.connection !== lastConnection;
+        if (state.connection === 'connected') {
+          await this.restoreCurrentListBeforeConnectedState();
+          const connectedState = this.getState();
+          if (connectedState.selectedContext === selectedContext && connectedState.connection === 'connected') {
+            this.emitState(connectedState);
+          }
+          return;
+        }
+        if (connectionChanged) {
           lastConnection = state.connection;
           this.emitState(state);
-        }
-        if (state.connection === 'connected') {
-          await this.restoreCurrentListQuery();
-          return;
         }
         if (state.connection === 'disconnected' || state.connection === 'unsupported-auth') {
           return;
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, 50));
       }
     })();
-    this.reconnectMonitor = monitor;
-    void monitor.finally(() => {
-      if (this.reconnectMonitor === monitor) {
+    const trackedMonitor: ReconnectMonitor = { context: selectedContext, promise: monitor };
+    this.reconnectMonitor = trackedMonitor;
+    const clearMonitor = (): void => {
+      if (this.reconnectMonitor === trackedMonitor) {
         this.reconnectMonitor = undefined;
       }
-    });
+    };
+    void monitor.then(clearMonitor, clearMonitor);
+    return monitor;
   }
 
   private onOperationFailure(error: unknown): void {

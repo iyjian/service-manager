@@ -43,6 +43,7 @@ const UNSUPPORTED_EXEC = {
 
 function createClient(name, calls) {
   return {
+    probeConnection: async () => undefined,
     list: async () => ({ items: [], resourceVersion: '' }),
     get: async () => ({}),
     listEvents: async () => [],
@@ -453,6 +454,66 @@ test('ClusterSession retries only transient connection failures using the config
   assert.deepEqual(DEFAULT_KUBERNETES_RETRY_DELAYS_MS, [200, 500, 1_000, 2_000, 5_000]);
 });
 
+test('ClusterSession does not publish connected until the Version probe succeeds', async () => {
+  let attempts = 0;
+  const probes = [];
+  const closed = [];
+  const session = new ClusterSession({
+    createClient: async () => {
+      const attempt = ++attempts;
+      return {
+        ...createClient(`a:${attempt}`, closed),
+        async probeConnection() {
+          probes.push(attempt);
+          if (attempt < 3) {
+            throw Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+          }
+        },
+      };
+    },
+    disposeOwnedResources: async () => undefined,
+    retryDelaysMs: [1, 1],
+  });
+
+  session.setContexts([SUPPORTED_A]);
+  const initial = await session.selectContext('a');
+  assert.equal(initial.connection, 'reconnecting');
+  await waitFor(() => session.getState().connection === 'connected');
+
+  assert.deepEqual(probes, [1, 2, 3]);
+  assert.deepEqual(closed, ['close:a:1', 'close:a:2']);
+  assert.equal(attempts, 3);
+});
+
+test('ClusterSession exhausts transient Version probes without a false connected state', async () => {
+  let attempts = 0;
+  const probeStates = [];
+  const session = new ClusterSession({
+    createClient: async () => {
+      attempts += 1;
+      return {
+        ...createClient(`a:${attempts}`, []),
+        async probeConnection() {
+          probeStates.push(session.getState().connection);
+          throw Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+        },
+      };
+    },
+    disposeOwnedResources: async () => undefined,
+    retryDelaysMs: [1, 1],
+  });
+
+  session.setContexts([SUPPORTED_A]);
+  const initial = await session.selectContext('a');
+  assert.equal(initial.connection, 'reconnecting');
+  await waitFor(() => session.getState().connection === 'disconnected');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(attempts, 3);
+  assert.deepEqual(probeStates, ['connecting', 'reconnecting', 'reconnecting']);
+  assert.equal(probeStates.includes('connected'), false);
+});
+
 test('ClusterSession leaves authentication and TLS failures disconnected without automatic retry', async () => {
   for (const error of [
     Object.assign(new Error('forbidden'), { statusCode: 403 }),
@@ -482,6 +543,8 @@ test('classifyKubernetesConnectionError recognizes transport, authentication, TL
   assert.equal(classifyKubernetesConnectionError({ code: 'ETIMEDOUT' }), 'transient');
   assert.equal(classifyKubernetesConnectionError({ statusCode: 401 }), 'authentication');
   assert.equal(classifyKubernetesConnectionError({ status: 403 }), 'authentication');
+  assert.equal(classifyKubernetesConnectionError({ code: 401 }), 'authentication');
+  assert.equal(classifyKubernetesConnectionError({ response: { code: 503 } }), 'transient');
   assert.equal(classifyKubernetesConnectionError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID' }), 'tls');
   assert.equal(classifyKubernetesConnectionError(new Error('certificate verify failed')), 'tls');
   assert.equal(classifyKubernetesConnectionError(new Error('unexpected')), 'other');
@@ -593,6 +656,58 @@ test('mapCustomResourceDefinitions exposes only served Group Version Kind plural
     { group: 'infra.example.test', version: 'v1beta1', kind: 'ClusterWidget', plural: 'clusterwidgets', scope: 'cluster' },
   ]);
   assert.doesNotMatch(JSON.stringify(definitions), /secret|annotations|shortNames/i);
+});
+
+test('KubernetesClient probes the read-only Version endpoint and preserves reachable RBAC failures', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-version-probe-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const kubeconfigPath = path.join(directory, 'config.yaml');
+  await fs.writeFile(kubeconfigPath, [
+    'apiVersion: v1', 'kind: Config',
+    'clusters:', '- name: local', '  cluster:', '    server: https://127.0.0.1:6443',
+    'users:', '- name: token-user', '  user:', '    token: test-token',
+    'contexts:', '- name: token', '  context:', '    cluster: local', '    user: token-user', '',
+  ].join('\n'));
+  const calls = [];
+  let probeFailure;
+  class VersionApi {}
+  class KubeConfig {
+    loadFromString() {}
+    makePathsAbsolute() {}
+    setCurrentContext() {}
+    getContextObject() { return { name: 'token' }; }
+    getCurrentUser() { return { token: 'test-token' }; }
+    makeApiClient(Api) {
+      if (Api === VersionApi) {
+        return {
+          async getCode(params) {
+            calls.push(params);
+            if (probeFailure) throw probeFailure;
+            return { gitVersion: 'v1.30.0' };
+          },
+        };
+      }
+      return {};
+    }
+  }
+  const client = await createKubernetesClient({ kubeconfigPath, context: 'token' }, {
+    loadKubernetesNode: async () => ({
+      KubeConfig, VersionApi,
+      CoreV1Api: class CoreV1Api {}, DiscoveryV1Api: class DiscoveryV1Api {},
+      AppsV1Api: class AppsV1Api {}, NetworkingV1Api: class NetworkingV1Api {},
+      ApiextensionsV1Api: class ApiextensionsV1Api {}, CustomObjectsApi: class CustomObjectsApi {},
+      Watch: class Watch {}, Log: class Log {}, Exec: class Exec {}, PortForward: class PortForward {},
+    }),
+  });
+
+  await client.probeConnection();
+  probeFailure = { response: { statusCode: 403 } };
+  await client.probeConnection();
+  probeFailure = Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+  await assert.rejects(client.probeConnection(), /connect refused/i);
+
+  assert.deepEqual(calls, [{}, {}, {}]);
+  await client.close();
 });
 
 test('KubernetesClient discovers CRDs through ApiextensionsV1Api without opening a Watch', async (t) => {
