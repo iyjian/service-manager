@@ -510,7 +510,7 @@ test('mapKubernetesResourceSummary normalizes Date creation timestamps and strip
     resourceVersion: '12',
     createdAt: '2026-07-12T00:00:00.000Z',
     status: 'Opaque',
-    columns: { type: 'Opaque' },
+    columns: { type: 'Opaque', data: '1', immutable: 'No', labels: '0', annotations: '0' },
   });
   assert.doesNotMatch(JSON.stringify(summary), /c2VjcmV0|"password":"secret"/);
   assert.equal(Object.hasOwn(summary, 'data'), false);

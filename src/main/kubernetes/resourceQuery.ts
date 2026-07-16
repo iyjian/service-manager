@@ -144,6 +144,45 @@ function valueForSort(item: KubernetesResourceSummary, column: string): string {
   return item.columns[column] ?? '';
 }
 
+const INTEGER_SORT_COLUMNS = new Set([
+  'restarts',
+  'updated',
+  'available',
+  'unavailable',
+  'current',
+  'data',
+  'binary',
+  'labels',
+  'annotations',
+  'generation',
+]);
+
+function integerSortValue(value: string): number | undefined {
+  return /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+function readySortValue(value: string): [number, number] | undefined {
+  const match = /^(\d+)\/(\d+)$/.exec(value);
+  return match ? [Number(match[1]), Number(match[2])] : undefined;
+}
+
+/** Numeric operational columns sort numerically while all other fields keep natural text order. */
+export function compareKubernetesSortValues(column: string, left: string, right: string): number {
+  if (column === 'ready') {
+    const leftReady = readySortValue(left);
+    const rightReady = readySortValue(right);
+    if (leftReady && rightReady) {
+      return leftReady[0] - rightReady[0] || leftReady[1] - rightReady[1];
+    }
+  }
+  if (INTEGER_SORT_COLUMNS.has(column)) {
+    const leftNumber = integerSortValue(left);
+    const rightNumber = integerSortValue(right);
+    if (leftNumber !== undefined && rightNumber !== undefined) return leftNumber - rightNumber;
+  }
+  return left.localeCompare(right, undefined, { numeric: true });
+}
+
 /**
  * Performs loaded-only search and ordering in the main process. This keeps
  * the renderer's scroll path limited to virtual-window calculations and DOM
@@ -169,7 +208,11 @@ export function projectLoadedResourceItems(
 
   const { column, direction } = query.sort;
   return projected.sort((left, right) => {
-    const lexical = valueForSort(left, column).localeCompare(valueForSort(right, column));
+    const lexical = compareKubernetesSortValues(
+      column,
+      valueForSort(left, column),
+      valueForSort(right, column),
+    );
     // A newer creation timestamp represents a smaller visible Age. Reverse
     // timestamp chronology so the arrow describes the displayed duration.
     const result = column === 'age' ? -lexical : lexical;

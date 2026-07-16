@@ -18,8 +18,7 @@ import {
   resolvePodContainerEnvironment,
   safePodEnvironmentReadError,
 } from './podEnvironment';
-import { POD_SUMMARY_EMPTY, summarizePodListColumns } from './podSummary';
-import { sanitizeSecretForCache } from './resourceQuery';
+import { mapKubernetesResourceSummary } from './resourceSummary';
 import type {
   KubernetesResourcePage,
   KubernetesResourceQuery,
@@ -34,6 +33,8 @@ export interface KubernetesWatchEvent {
   /** Main-process-only transport cause; it is never sent to the renderer. */
   error?: unknown;
 }
+
+export { mapKubernetesResourceSummary } from './resourceSummary';
 
 export interface KubernetesPodLogRequest {
   namespace: string;
@@ -443,17 +444,6 @@ function isUnavailableDeploymentLogDiscoveryError(error: unknown): boolean {
   return status === 401 || status === 403 || status === 404;
 }
 
-function timestampValue(value: unknown): string | undefined {
-  const timestamp = value instanceof Date
-    ? value
-    : typeof value === 'string'
-      ? new Date(value)
-      : undefined;
-  return timestamp && !Number.isNaN(timestamp.getTime())
-    ? timestamp.toISOString()
-    : undefined;
-}
-
 function numericValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -485,106 +475,6 @@ function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => resolve());
   });
-}
-
-function replicaStatus(status: Record<string, unknown>): string | undefined {
-  const desired = numericValue(status.replicas);
-  const ready = numericValue(status.readyReplicas) ?? numericValue(status.availableReplicas);
-  if (desired === undefined && ready === undefined) {
-    return undefined;
-  }
-  return `${ready ?? 0}/${desired ?? 0}`;
-}
-
-function nodeStatus(status: Record<string, unknown>): string | undefined {
-  const conditions = status.conditions;
-  if (!Array.isArray(conditions)) {
-    return undefined;
-  }
-  const ready = conditions.find((condition) => (
-    condition && typeof condition === 'object'
-    && (condition as Record<string, unknown>).type === 'Ready'
-  )) as Record<string, unknown> | undefined;
-  return stringValue(ready?.status);
-}
-
-function resourceStatus(kind: KubernetesResourceKind | 'events', value: Record<string, unknown>): string | undefined {
-  const status = objectValue(value, 'status');
-  const spec = objectValue(value, 'spec');
-
-  switch (kind) {
-    case 'pods':
-      return stringValue(status.phase);
-    case 'deployments':
-    case 'statefulsets':
-      return replicaStatus(status);
-    case 'services':
-      return stringValue(spec.type) ?? stringValue(spec.clusterIP);
-    case 'ingresses':
-      return stringValue(spec.ingressClassName);
-    case 'secrets':
-      return stringValue(value.type);
-    case 'persistentvolumeclaims':
-      return stringValue(status.phase);
-    case 'nodes':
-      return nodeStatus(status);
-    case 'namespaces':
-      return stringValue(status.phase);
-    case 'events':
-      return stringValue(value.reason) ?? stringValue(value.type);
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Maps raw Kubernetes responses to a small, display-safe summary. The input
- * object never crosses IPC, and Secret payload fields are stripped before any
- * summary field is inspected.
- */
-export function mapKubernetesResourceSummary(
-  kind: KubernetesResourceKind | 'events',
-  value: Record<string, unknown>
-): KubernetesResourceSummary {
-  const createdAt = timestampValue(objectValue(value, 'metadata').creationTimestamp);
-  const source = kind === 'secrets' ? sanitizeSecretForCache(value) : value;
-  const metadata = objectValue(source, 'metadata');
-  const uid = stringValue(metadata.uid);
-  const name = stringValue(metadata.name);
-  const resourceVersion = stringValue(metadata.resourceVersion);
-  if (!uid || !name || !resourceVersion) {
-    throw new Error('Kubernetes resource response is missing required metadata.');
-  }
-
-  const status = resourceStatus(kind, source);
-  const columns: Record<string, string> = {};
-  if (kind === 'pods') {
-    if (status) columns.status = status;
-    Object.assign(columns, summarizePodListColumns(source));
-  } else if (kind === 'events') {
-    columns.reason = stringValue(source.reason) ?? POD_SUMMARY_EMPTY;
-    columns.type = stringValue(source.type) ?? POD_SUMMARY_EMPTY;
-    columns.message = (stringValue(source.message) ?? POD_SUMMARY_EMPTY).slice(0, 16_384);
-    columns.count = String(numericValue(source.count) ?? 0);
-    const observed = timestampValue(source.eventTime)
-      ?? timestampValue(objectValue(source, 'series').lastObservedTime)
-      ?? timestampValue(source.lastTimestamp)
-      ?? createdAt;
-    if (observed) columns.observedAt = observed;
-  } else if (status) {
-    if (kind === 'secrets') columns.type = status;
-    else columns.status = status;
-  }
-
-  return {
-    uid,
-    name,
-    ...(stringValue(metadata.namespace) ? { namespace: stringValue(metadata.namespace) } : {}),
-    resourceVersion,
-    ...(createdAt ? { createdAt } : {}),
-    ...(status ? { status } : {}),
-    columns,
-  };
 }
 
 /**

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  compareKubernetesSortValues,
   mergeResourcePage,
   projectLoadedResourceItems,
   projectVirtualWindow,
@@ -104,6 +105,22 @@ test('projectLoadedResourceItems sorts Age by the visible duration semantics', (
     ['oldest', 'newest']
   );
   assert.deepEqual(items, [oldest, newest]);
+});
+
+test('resource-specific count and readiness columns sort numerically', () => {
+  assert.ok(compareKubernetesSortValues('data', '2', '10') < 0);
+  assert.ok(compareKubernetesSortValues('generation', '10', '2') > 0);
+  assert.ok(compareKubernetesSortValues('ready', '2/10', '10/10') < 0);
+
+  const items = [
+    { ...summary('ten', '1'), columns: { data: '10' } },
+    { ...summary('two', '1'), columns: { data: '2' } },
+  ];
+  assert.deepEqual(
+    projectLoadedResourceItems(items, { ...POD_QUERY, sort: { column: 'data', direction: 'asc' } })
+      .map((item) => item.name),
+    ['two', 'ten'],
+  );
 });
 
 test('projectVirtualWindow renders only a bounded slice of 10,000 rows', () => {

@@ -37,6 +37,9 @@ test('Kubernetes documentation states the supported read-only, bounded drawer-wo
     assert.match(document, /200(?:-item| items?| resource)? (?:page|paging)|page(?:s)? of 200/i);
     assert.match(document, /virtual (?:scrolling|table|list)/i);
     assert.match(document, /Namespace.*Name.*CPU.*Memory.*Restarts.*Status.*Node.*Age/i);
+    assert.match(document, /per-resource.*eight columns|eight-column.*per-resource|resource-specific.*eight columns/i);
+    assert.match(document, /searchable.*Namespace|Namespace.*searchable/i);
+    assert.match(document, /Context.*Namespace.*matching.*selector|matching.*Context.*Namespace.*selector/i);
     assert.match(document, /ordinary containers.*resources\.requests|resources\.requests.*ordinary containers/i);
     assert.match(document, /not limits.*live metrics|not live metrics.*limits/i);
     assert.match(document, /active(?:-view| view) Watch/i);
@@ -122,9 +125,17 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
 
   assert.match(html, /<main class="app-shell hidden" data-page="kubernetes">/);
   assert.match(html, /class="kubernetes-page"/);
-  assert.match(html, /id="kubernetes-context"/);
+  assert.match(html, /id="kubernetes-context-toggle"/);
+  assert.match(html, /id="kubernetes-context-value"/);
+  assert.match(html, /id="kubernetes-context-menu"/);
+  assert.doesNotMatch(html, /<select[^>]+id="kubernetes-context"/);
   assert.match(html, /id="kubernetes-reconnect"/);
+  assert.match(html, /id="kubernetes-namespace-search"[^>]+type="search"/);
+  assert.match(html, /id="kubernetes-namespace-options"/);
   assert.match(html, /id="kubernetes-namespace-menu"/);
+  assert.match(html, /id="kubernetes-namespace-toggle"[^>]+aria-haspopup="dialog"/);
+  assert.match(html, /id="kubernetes-namespace-menu"[^>]+role="dialog"/);
+  assert.match(html, /id="kubernetes-namespace-options"[^>]+role="group"/);
   assert.doesNotMatch(html, /kubernetes-namespace-add|kubernetes-namespace-tags/);
   assert.match(html, /All Namespaces/);
   assert.match(html, /id="kubernetes-category-tabs"/);
@@ -151,6 +162,7 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /this\.namespaceContext !== state\.selectedContext[\s\S]*?this\.loadNamespaces\(state\.selectedContext\)/);
   assert.match(page, /generation !== this\.namespaceRequestGeneration[\s\S]*?this\.state\?\.selectedContext !== context/);
   assert.match(page, /context\.supported \? context\.displayName : `\$\{context\.displayName\} \(unsupported\)`/);
+  assert.match(page, /option\.dataset\.context = context\.name/);
   assert.doesNotMatch(page, /option\.textContent = context\.supported \? context\.name/);
   assert.match(page, /listCustomResourceDefinitions\(\)/);
   assert.match(page, /apiVersion: `\$\{definition\.group\}\/\$\{definition\.version\}`/);
@@ -188,6 +200,20 @@ test('Kubernetes Namespace menu closes only for an outside pointer target', asyn
   assert.equal(shouldCloseNamespaceMenu(control, null), false);
 });
 
+test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves sorted unique values', async () => {
+  const { filterKubernetesNamespaces } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+
+  assert.deepEqual(filterKubernetesNamespaces(
+    ['monitoring', 'ai-dev', 'kube-system', 'ai-dev'],
+    ' DEV ',
+  ), ['ai-dev']);
+  assert.deepEqual(filterKubernetesNamespaces(
+    ['monitoring', 'ai-dev', 'kube-system'],
+    '',
+  ), ['ai-dev', 'kube-system', 'monitoring']);
+  assert.deepEqual(filterKubernetesNamespaces(['ai-dev'], 'missing'), []);
+});
+
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {
   const { calculateVirtualWindow } = await import(path.join(distRenderer, 'kubernetesVirtualTable.js'));
   const window = calculateVirtualWindow({
@@ -207,11 +233,25 @@ test('Kubernetes virtual table calculates a bounded render window for ten thousa
 test('Kubernetes renderer keeps dynamic resource names text-safe and debounces loaded-only filtering', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const table = await readFile(path.join(distRenderer, 'kubernetesVirtualTable.js'), 'utf8');
+  const renderer = await import(path.join(distRenderer, 'kubernetesPage.js'));
 
   assert.match(page, /SEARCH_DEBOUNCE_MS = 200/);
   assert.match(page, /nameFilter:/);
   assert.doesNotMatch(page, /Sorted loaded items only/);
-  assert.match(page, /const fields = \[\s*item\.namespace \?\? '—',\s*item\.name,\s*item\.columns\.cpu \?\? '—',\s*item\.columns\.memory \?\? '—',\s*item\.columns\.restarts \?\? '—',\s*item\.status \?\? '—',\s*item\.columns\.node \?\? '—',\s*formatAge\(item\.createdAt\),\s*\]/);
+  assert.deepEqual(renderer.getKubernetesResourceRowValues('services', {
+    uid: 'service-1',
+    name: '<unsafe-service>',
+    namespace: 'apps',
+    resourceVersion: '1',
+    columns: {
+      type: 'ClusterIP',
+      clusterIP: '10.96.0.1',
+      externalIP: '—',
+      ports: '80→8080/TCP',
+      selector: 'app=api',
+    },
+  }), ['apps', '<unsafe-service>', 'ClusterIP', '10.96.0.1', '—', '80→8080/TCP', 'app=api', '—']);
+  assert.match(page, /getKubernetesResourceRowValues\(this\.resourceKind, item\)/);
   assert.match(page, /cell\.textContent = value/);
   assert.doesNotMatch(page, /innerHTML\s*=\s*[^;]*(?:item|summary)\.(?:name|namespace)/);
   assert.doesNotMatch(page, /snapshot\.items\.filter\(/);
@@ -239,24 +279,62 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
     column: 'age',
     direction: 'asc',
   });
-  const columns = ['namespace', 'name', 'cpu', 'memory', 'restarts', 'status', 'node', 'age'];
-  assert.deepEqual(
-    [...html.matchAll(/data-kubernetes-sort="([^"]+)"/g)].map((match) => match[1]),
-    columns,
-  );
-  for (const column of columns) {
-    assert.match(html, new RegExp(`data-kubernetes-sort="${column}"`));
+  const expected = {
+    pods: [['namespace', 'Namespace'], ['name', 'Name'], ['cpu', 'CPU'], ['memory', 'Memory'], ['restarts', 'Restarts'], ['status', 'Status'], ['node', 'Node'], ['age', 'Age']],
+    deployments: [['namespace', 'Namespace'], ['name', 'Name'], ['ready', 'Ready'], ['updated', 'Up-to-date'], ['available', 'Available'], ['unavailable', 'Unavailable'], ['strategy', 'Strategy'], ['age', 'Age']],
+    statefulsets: [['namespace', 'Namespace'], ['name', 'Name'], ['ready', 'Ready'], ['current', 'Current'], ['updated', 'Updated'], ['service', 'Service'], ['strategy', 'Strategy'], ['age', 'Age']],
+    services: [['namespace', 'Namespace'], ['name', 'Name'], ['type', 'Type'], ['clusterIP', 'Cluster IP'], ['externalIP', 'External IP'], ['ports', 'Ports'], ['selector', 'Selector'], ['age', 'Age']],
+    ingresses: [['namespace', 'Namespace'], ['name', 'Name'], ['class', 'Class'], ['hosts', 'Hosts'], ['address', 'Address'], ['ports', 'Ports'], ['tls', 'TLS'], ['age', 'Age']],
+    configmaps: [['namespace', 'Namespace'], ['name', 'Name'], ['data', 'Data'], ['binary', 'Binary Data'], ['immutable', 'Immutable'], ['labels', 'Labels'], ['annotations', 'Annotations'], ['age', 'Age']],
+    secrets: [['namespace', 'Namespace'], ['name', 'Name'], ['type', 'Type'], ['data', 'Data Keys'], ['immutable', 'Immutable'], ['labels', 'Labels'], ['annotations', 'Annotations'], ['age', 'Age']],
+    persistentvolumeclaims: [['namespace', 'Namespace'], ['name', 'Name'], ['status', 'Status'], ['volume', 'Volume'], ['capacity', 'Capacity'], ['accessModes', 'Access Modes'], ['storageClass', 'Storage Class'], ['age', 'Age']],
+    'custom-resources': [['namespace', 'Namespace'], ['name', 'Name'], ['kind', 'Kind'], ['apiVersion', 'API Version'], ['status', 'Status'], ['generation', 'Generation'], ['labels', 'Labels'], ['age', 'Age']],
+  };
+  for (const [kind, columns] of Object.entries(expected)) {
+    assert.deepEqual(page.getKubernetesListColumns(kind).map(({ key, label }) => [key, label]), columns);
+    assert.equal(page.getKubernetesListColumns(kind).length, 8);
   }
-  assert.match(html, /class="kubernetes-sort-icon"/);
+  assert.doesNotMatch(html, /data-kubernetes-sort=/);
+  assert.match(pageSource, /createElementNS/);
   assert.match(pageSource, /aria-sort/);
   assert.match(pageSource, /nextKubernetesSort/);
   assert.match(styles, /\.kubernetes-table-sort\s*\{/);
   assert.match(styles, /\.kubernetes-sort-icon\s*\{/);
-  assert.match(styles, /grid-template-columns:\s*minmax\(128px, 1\.05fr\) minmax\(240px, 2fr\) 88px 106px 82px\s*minmax\(104px, 0\.95fr\) minmax\(148px, 1\.2fr\) 68px;/);
-  assert.match(styles, /min-width:\s*1064px;/);
+  assert.match(styles, /--kubernetes-table-columns/);
+  assert.match(styles, /--kubernetes-table-min-width/);
   assert.match(styles, /\.kubernetes-table-shell\s*\{[\s\S]*?overflow-x:\s*auto;/);
   assert.match(styles, /\.kubernetes-table-viewport\s*\{[\s\S]*?overflow-y:\s*auto;/);
   assert.doesNotMatch(html, /kubernetes-sort-column|kubernetes-sort-direction|kubernetes-sort-hint|Sorted loaded items only/);
+});
+
+test('Kubernetes query transitions synchronously clear stale virtual rows and fence delayed menu focus', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const method = (name, after) => {
+    const start = [page.indexOf(`    ${name}(`), page.indexOf(`    async ${name}(`)].find((index) => index >= 0) ?? -1;
+    const end = [page.indexOf(`    ${after}(`, start), page.indexOf(`    async ${after}(`, start)]
+      .filter((index) => index > start)
+      .sort((left, right) => left - right)[0] ?? -1;
+    assert.ok(start >= 0 && end > start, `${name} method bounds`);
+    return page.slice(start, end);
+  };
+
+  for (const [name, after] of [
+    ['selectCategory', 'selectResource'],
+    ['selectResource', 'currentScope'],
+    ['selectCustomResourceDefinition', 'currentQuery'],
+    ['selectContext', 'reloadKubeconfig'],
+    ['setNamespaceScope', 'debounceSearch'],
+  ]) {
+    assert.match(method(name, after), /this\.clearResourceTable\(\);/, `${name} must clear stale rows`);
+  }
+  const clear = method('clearResourceTable', 'waitForPriorDeactivation');
+  assert.match(clear, /this\.requestGeneration \+= 1/);
+  assert.match(clear, /this\.table\?\.setWindow\(\{ start: 0, end: 0, total: 0, items: \[\] \}\)/);
+  assert.match(clear, /this\.tableViewport\.scrollTop = 0/);
+  assert.match(page, /if \(this\.contextMenu\.classList\.contains\('hidden'\)\)\s*return;/);
+  assert.match(page, /if \(!this\.namespaceMenu\.classList\.contains\('hidden'\)\)\s*this\.namespaceSearch\.focus\(\)/);
+  assert.match(page, /this\.contextControl\.addEventListener\('focusout'/);
+  assert.match(page, /this\.namespaceControl\.addEventListener\('focusout'/);
 });
 
 test('Custom Resources opens its discovery select without a redundant resource tab', async () => {
@@ -2102,19 +2180,20 @@ test('Kubernetes Task 5 page delegates terminal runtime callbacks to the workspa
 
 test('Kubernetes shell has label-free compact controls, no Cluster category, and one eight-column table', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const controlStart = html.indexOf('class="kubernetes-control-row"');
   const controlEnd = html.indexOf('class="kubernetes-secondary-row"', controlStart);
   const controls = html.slice(controlStart, controlEnd);
 
-  assert.match(html, /id="kubernetes-context"[^>]*aria-label="Kubernetes Context"/);
+  assert.match(html, /id="kubernetes-context-toggle"[^>]*aria-label="Kubernetes Context"/);
   assert.match(html, /id="kubernetes-namespace-toggle"[^>]*aria-label="Kubernetes Namespace scope"/);
   assert.doesNotMatch(controls, />Context\s*</);
   assert.doesNotMatch(controls, />Namespace\s*</);
-  assert.doesNotMatch(page, /Cluster:\s*\[/);
-  for (const heading of ['Namespace', 'Name', 'CPU', 'Memory', 'Restarts', 'Status', 'Node', 'Age']) {
-    assert.match(html, new RegExp(`>${heading}<`));
-  }
+  assert.doesNotMatch(pageSource, /Cluster:\s*\[/);
+  assert.deepEqual(page.getKubernetesListColumns('pods').map(({ label }) => label),
+    ['Namespace', 'Name', 'CPU', 'Memory', 'Restarts', 'Status', 'Node', 'Age']);
+  assert.match(html, /id="kubernetes-table-header"[^>]*><\/div>/);
   assert.match(html, /id="kubernetes-detail-drawer"/);
   assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
   assert.doesNotMatch(html, />Search loaded resources\s*</);

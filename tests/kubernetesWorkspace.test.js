@@ -231,7 +231,9 @@ test('active drawer Env clears page-local values before drawer and page lifecycl
   assert.match(hide, /this\.clearDrawerEnvironment\(\);/);
   assert.match(beginReplacement, /this\.clearDrawerEnvironment\(\);/);
   assert.match(close, /this\.clearDrawerEnvironment\(\);/);
-  assert.match(state, /if \(contextChanged \|\| disconnected\) \{\s*this\.clearDrawerEnvironment\(\);/);
+  const lifecycleBranch = state.match(/if \(contextChanged \|\| disconnected\) \{([\s\S]*?)\n\s*\}/)?.[1] ?? '';
+  assert.match(lifecycleBranch, /this\.clearResourceTable\(\);/);
+  assert.match(lifecycleBranch, /this\.clearDrawerEnvironment\(\);/);
   assert.match(environment, /this\.clearDrawerEnvironment\(\);/);
   assert.match(page, /clearDrawerEnvironment\(\) \{/);
   assert.match(page, /this\.drawerEnvironment = undefined/);
