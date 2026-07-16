@@ -81,11 +81,12 @@ function createFakeClient(options = {}) {
   };
 }
 
-function createManager(fakeClient) {
+function createManager(fakeClient, options = {}) {
   let identifier = 0;
   return new PodInteractionManager({
     client: () => fakeClient,
     createId: () => `interaction-${++identifier}`,
+    terminalReadyTimeoutMs: options.terminalReadyTimeoutMs ?? 0,
   });
 }
 
@@ -502,6 +503,241 @@ test('PodInteractionManager opens the default shell and closes page-scoped strea
   await manager.disposePageScoped();
   assert.equal(fakeClient.closedTerminalCount, 1);
   assert.equal(fakeClient.closedLogCount, 0);
+});
+
+test('PodInteractionManager waits for first terminal output before opening or accepting input', async () => {
+  let callbacks;
+  const writes = [];
+  const resizes = [];
+  const lifecycle = [];
+  const manager = createManager({
+    async openPodExec(_input, nextCallbacks) {
+      callbacks = nextCallbacks;
+      return {
+        write(data) {
+          writes.push(data);
+        },
+        resize(cols, rows) {
+          resizes.push({ cols, rows });
+        },
+        async close() {},
+      };
+    },
+  }, { terminalReadyTimeoutMs: 1_000 });
+  manager.onTerminalOutput((output) => lifecycle.push(`output:${output.data}`));
+  manager.onTerminalChanged((state) => lifecycle.push(`state:${state.state}`));
+
+  let settled = false;
+  const opening = manager.openTerminal(POD_INPUT).then((state) => {
+    settled = true;
+    return state;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(settled, false);
+  assert.throws(() => manager.writeTerminal('interaction-1', 'early'), /not ready for input/i);
+  assert.throws(() => manager.resizeTerminal('interaction-1', 100, 30), /not ready to resize/i);
+
+  callbacks.onData('\u001b[?1034hsh-4.2# ');
+  const terminal = await opening;
+
+  assert.equal(terminal.state, 'open');
+  assert.deepEqual(lifecycle, ['output:\u001b[?1034hsh-4.2# ', 'state:open']);
+  manager.writeTerminal(terminal.id, 'ready');
+  manager.resizeTerminal(terminal.id, 100, 30);
+  assert.deepEqual(writes, ['ready']);
+  assert.deepEqual(resizes, [{ cols: 100, rows: 30 }]);
+  await manager.closeTerminal(terminal.id);
+});
+
+test('PodInteractionManager uses the bounded default readiness fallback for silent interactive shells', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const manager = new PodInteractionManager({
+    client: () => ({
+      async openPodExec() {
+        return {
+          write() {},
+          resize() {},
+          async close() {},
+        };
+      },
+    }),
+    createId: () => 'silent-terminal',
+  });
+
+  let settled = false;
+  const opening = manager.openTerminal(POD_INPUT).then((state) => {
+    settled = true;
+    return state;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  t.mock.timers.tick(999);
+  await Promise.resolve();
+  assert.equal(settled, false);
+
+  t.mock.timers.tick(1);
+  const terminal = await opening;
+  assert.equal(terminal.state, 'open');
+  await manager.closeTerminal(terminal.id);
+});
+
+test('PodInteractionManager fences late output when a shell fails before readiness', async () => {
+  const attempts = [];
+  let closed = 0;
+  const output = [];
+  const manager = createManager({
+    async openPodExec(input, callbacks) {
+      attempts.push({ input, callbacks });
+      return {
+        write() {},
+        resize() {},
+        async close() {
+          closed += 1;
+        },
+      };
+    },
+  }, { terminalReadyTimeoutMs: 1_000 });
+  manager.onTerminalOutput((event) => output.push(event.data));
+
+  let settled = false;
+  const opening = manager.openTerminal(POD_INPUT).then((state) => {
+    settled = true;
+    return state;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  attempts[0].callbacks.onStatusFailure(new Error('/bin/sh: not found'));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(attempts.map(({ input }) => input.shell), ['/bin/sh', 'ash']);
+  assert.equal(settled, false);
+  assert.equal(closed, 1);
+  attempts[0].callbacks.onData('late /bin/sh output');
+  assert.deepEqual(output, []);
+
+  attempts[1].callbacks.onData('ash# ');
+  const terminal = await opening;
+  assert.equal(terminal.shell, 'ash');
+  assert.equal(terminal.state, 'open');
+  assert.deepEqual(output, ['ash# ']);
+  await manager.closeTerminal(terminal.id);
+});
+
+test('PodInteractionManager disables input while an opened shell falls back and waits for readiness', async () => {
+  const attempts = [];
+  const states = [];
+  const manager = createManager({
+    async openPodExec(input, callbacks) {
+      const attempt = {
+        input,
+        callbacks,
+        writes: [],
+        resizes: [],
+      };
+      attempts.push(attempt);
+      return {
+        write(data) {
+          attempt.writes.push(data);
+        },
+        resize(cols, rows) {
+          attempt.resizes.push({ cols, rows });
+        },
+        async close() {},
+      };
+    },
+  }, { terminalReadyTimeoutMs: 1_000 });
+  manager.onTerminalChanged((state) => states.push({ ...state }));
+
+  const opening = manager.openTerminal(POD_INPUT);
+  await new Promise((resolve) => setImmediate(resolve));
+  attempts[0].callbacks.onData('sh# ');
+  const terminal = await opening;
+  assert.equal(terminal.state, 'open');
+
+  attempts[0].callbacks.onStatusFailure(new Error('/bin/sh exited'));
+  assert.equal(states.at(-1).state, 'connecting');
+  assert.throws(() => manager.writeTerminal(terminal.id, 'during fallback'), /not ready for input/i);
+  assert.throws(() => manager.resizeTerminal(terminal.id, 120, 40), /not ready to resize/i);
+  assert.deepEqual(attempts[0].writes, []);
+  assert.deepEqual(attempts[0].resizes, []);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(attempts.map(({ input }) => input.shell), ['/bin/sh', 'ash']);
+  attempts[1].callbacks.onData('ash# ');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(states.at(-1).state, 'open');
+  assert.equal(states.at(-1).shell, 'ash');
+  manager.writeTerminal(terminal.id, 'after fallback');
+  manager.resizeTerminal(terminal.id, 120, 40);
+  assert.deepEqual(attempts[1].writes, ['after fallback']);
+  assert.deepEqual(attempts[1].resizes, [{ cols: 120, rows: 40 }]);
+  await manager.closeTerminal(terminal.id);
+});
+
+test('PodInteractionManager never publishes open after a terminal closes before readiness', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let callbacks;
+  const states = [];
+  const manager = createManager({
+    async openPodExec(_input, nextCallbacks) {
+      callbacks = nextCallbacks;
+      return {
+        write() {},
+        resize() {},
+        async close() {},
+      };
+    },
+  }, { terminalReadyTimeoutMs: 20 });
+  manager.onTerminalChanged((state) => states.push(state.state));
+
+  const opening = manager.openTerminal(POD_INPUT);
+  await new Promise((resolve) => setImmediate(resolve));
+  callbacks.onClose();
+
+  const terminal = await opening;
+  assert.equal(terminal.state, 'closed');
+  t.mock.timers.tick(20);
+  await Promise.resolve();
+  assert.deepEqual(states, ['closed']);
+});
+
+test('PodInteractionManager cancels readiness when page disposal closes an established handle', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let callbacks;
+  let closed = 0;
+  const states = [];
+  const output = [];
+  const manager = createManager({
+    async openPodExec(_input, nextCallbacks) {
+      callbacks = nextCallbacks;
+      return {
+        write() {},
+        resize() {},
+        async close() {
+          closed += 1;
+        },
+      };
+    },
+  }, { terminalReadyTimeoutMs: 1_000 });
+  manager.onTerminalChanged((state) => states.push(state.state));
+  manager.onTerminalOutput((event) => output.push(event.data));
+
+  const opening = manager.openTerminal(POD_INPUT);
+  const rejectedOpening = assert.rejects(opening, /closed before it could open/i);
+  await new Promise((resolve) => setImmediate(resolve));
+  await manager.disposePageScoped();
+
+  await rejectedOpening;
+  assert.equal(closed, 1);
+  t.mock.timers.tick(1_000);
+  callbacks.onData('late output');
+  callbacks.onClose();
+  callbacks.onError(new Error('late error'));
+  await Promise.resolve();
+  assert.deepEqual(states, []);
+  assert.deepEqual(output, []);
+  assert.equal(closed, 1);
 });
 
 test('PodInteractionManager propagates a synchronous exec rejection without shell fallback', async () => {

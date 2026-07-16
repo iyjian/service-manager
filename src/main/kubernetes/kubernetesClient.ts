@@ -18,6 +18,7 @@ import {
   resolvePodContainerEnvironment,
   safePodEnvironmentReadError,
 } from './podEnvironment';
+import { buildPodExecCommand, createUtf8ChunkDecoder } from './podExecTransport';
 import { mapKubernetesResourceSummary } from './resourceSummary';
 import type {
   KubernetesResourcePage,
@@ -1201,15 +1202,38 @@ class KubernetesClientAdapter implements KubernetesClient {
     }
 
     const stdin = new PassThrough();
-    const createOutput = (): Writable & { columns: number; rows: number } => {
+    type ExecOutput = Writable & {
+      columns: number;
+      rows: number;
+      flushDecoder(): void;
+    };
+    const createOutput = (): ExecOutput => {
+      const decoder = createUtf8ChunkDecoder();
+      const emitDecoded = (text: string) => {
+        if (text) {
+          callbacks.onData(text);
+        }
+      };
+      const flushDecoder = () => {
+        emitDecoded(decoder.end());
+      };
       const output = new Writable({
         write: (chunk, _encoding, callback) => {
-          callbacks.onData(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+          emitDecoded(decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))));
           callback();
         },
-      }) as Writable & { columns: number; rows: number };
+        final: (callback) => {
+          flushDecoder();
+          callback();
+        },
+        destroy: (error, callback) => {
+          flushDecoder();
+          callback(error);
+        },
+      }) as ExecOutput;
       output.columns = 80;
       output.rows = 24;
+      output.flushDecoder = flushDecoder;
       return output;
     };
     const stdout = createOutput();
@@ -1218,6 +1242,11 @@ class KubernetesClientAdapter implements KubernetesClient {
     const closeCallbacks = () => {
       if (!closed) {
         closed = true;
+        stdout.flushDecoder();
+        stderr.flushDecoder();
+        stdin.destroy();
+        stdout.destroy();
+        stderr.destroy();
         callbacks.onClose();
       }
     };
@@ -1228,7 +1257,7 @@ class KubernetesClientAdapter implements KubernetesClient {
         request.namespace,
         request.podName,
         request.container,
-        [request.shell],
+        buildPodExecCommand(request.shell),
         stdout,
         stderr,
         stdin,
@@ -1268,8 +1297,6 @@ class KubernetesClientAdapter implements KubernetesClient {
         if (!closed) {
           stdin.end();
           socket.close?.();
-          stdout.destroy();
-          stderr.destroy();
           closeCallbacks();
         }
       },

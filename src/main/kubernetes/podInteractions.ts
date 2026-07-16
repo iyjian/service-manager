@@ -19,6 +19,7 @@ const MAXIMUM_LOG_LINES = 2_000;
 const MAXIMUM_DEPLOYMENT_LOG_PODS = 50;
 const MAXIMUM_PORT_FORWARDS = 10;
 const MAXIMUM_TERMINAL_OUTPUT_CHUNK_LENGTH = 16_384;
+const DEFAULT_TERMINAL_READY_TIMEOUT_MS = 1_000;
 const SHELL_FALLBACKS = ['/bin/sh', 'ash', 'bash'] as const;
 const LOG_TIMESTAMP_PREFIX = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))(?:\s|$)/;
 
@@ -39,6 +40,8 @@ export interface KubernetesPortForwardInput {
 export interface PodInteractionManagerOptions {
   client: () => KubernetesClient;
   createId?: () => string;
+  /** Bounded fallback for interactive shells that intentionally emit no initial prompt. */
+  terminalReadyTimeoutMs?: number;
 }
 
 interface LogStream {
@@ -100,6 +103,11 @@ interface TerminalAttempt {
   statusFailure?: Error;
   retrying: boolean;
   normalClose: boolean;
+  openPublished: boolean;
+  readinessSettled: boolean;
+  readiness: Promise<void>;
+  resolveReadiness: () => void;
+  readinessTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface TerminalSession {
@@ -259,11 +267,17 @@ export class PodInteractionManager {
   private readonly logListeners = new Set<(state: KubernetesLogState) => void>();
   private readonly terminalListeners = new Set<(state: KubernetesTerminalState) => void>();
   private readonly terminalOutputListeners = new Set<(output: KubernetesTerminalOutput) => void>();
+  private readonly terminalReadyTimeoutMs: number;
   private pageGeneration = 0;
   private allGeneration = 0;
 
   public constructor(private readonly options: PodInteractionManagerOptions) {
     this.createId = options.createId ?? randomUUID;
+    const readyTimeout = options.terminalReadyTimeoutMs ?? DEFAULT_TERMINAL_READY_TIMEOUT_MS;
+    if (!Number.isFinite(readyTimeout) || readyTimeout < 0) {
+      throw new Error('Kubernetes terminal ready timeout must be a non-negative number.');
+    }
+    this.terminalReadyTimeoutMs = readyTimeout;
   }
 
   public onLogChanged(listener: (state: KubernetesLogState) => void): () => void {
@@ -602,14 +616,34 @@ export class PodInteractionManager {
     if (typeof data !== 'string') {
       throw new Error('Kubernetes terminal input must be text.');
     }
-    this.requireTerminal(id).handle?.write(data);
+    const session = this.requireTerminal(id);
+    const attempt = session.attempt;
+    if (session.state.state !== 'open'
+      || !session.handle
+      || !attempt
+      || !attempt.openPublished
+      || attempt.closeRequested
+      || attempt.statusFailure) {
+      throw new Error('Kubernetes terminal session is not ready for input.');
+    }
+    session.handle.write(data);
   }
 
   public resizeTerminal(id: string, cols: number, rows: number): void {
     if (!Number.isInteger(cols) || cols < 1 || !Number.isInteger(rows) || rows < 1) {
       throw new Error('Kubernetes terminal dimensions must be positive integers.');
     }
-    this.requireTerminal(id).handle?.resize(cols, rows);
+    const session = this.requireTerminal(id);
+    const attempt = session.attempt;
+    if (session.state.state !== 'open'
+      || !session.handle
+      || !attempt
+      || !attempt.openPublished
+      || attempt.closeRequested
+      || attempt.statusFailure) {
+      throw new Error('Kubernetes terminal session is not ready to resize.');
+    }
+    session.handle.resize(cols, rows);
   }
 
   public async closeTerminal(id: string): Promise<void> {
@@ -893,6 +927,10 @@ export class PodInteractionManager {
       throw closedBefore('terminal session');
     }
 
+    let resolveReadiness = (): void => undefined;
+    const readiness = new Promise<void>((resolve) => {
+      resolveReadiness = resolve;
+    });
     const attempt: TerminalAttempt = {
       generation: ++session.nextGeneration,
       shellIndex,
@@ -900,6 +938,10 @@ export class PodInteractionManager {
       closeRequested: false,
       retrying: false,
       normalClose: false,
+      openPublished: false,
+      readinessSettled: false,
+      readiness,
+      resolveReadiness,
     };
     session.attempt = attempt;
     session.handle = undefined;
@@ -909,7 +951,19 @@ export class PodInteractionManager {
     let handle: KubernetesPodExecHandle;
     try {
       handle = await this.options.client().openPodExec({ ...input, shell }, {
-        onData: (data) => this.emitTerminalOutput(session, data),
+        onData: (data) => {
+          if (!this.isTerminalSessionActive(session)
+            || session.attempt !== attempt
+            || attempt.closeRequested
+            || attempt.statusFailure
+            || attempt.normalClose) {
+            return;
+          }
+          this.emitTerminalOutput(session, data);
+          if (data.length > 0) {
+            this.markTerminalAttemptReady(attempt);
+          }
+        },
         onClose: () => this.onTerminalAttemptClosed(session, attempt),
         onError: (error) => this.onTerminalAttemptError(session, attempt, error),
         onStatusFailure: (error) => this.onTerminalStatusFailure(session, input, attempt, error),
@@ -945,6 +999,33 @@ export class PodInteractionManager {
       return;
     }
     session.handle = handle;
+    await this.waitForTerminalAttemptReady(attempt);
+    if (!this.isTerminalSessionActive(session)) {
+      if (
+        session.finalStateEmitted
+        && session.pageGeneration === this.pageGeneration
+        && session.allGeneration === this.allGeneration
+      ) {
+        return;
+      }
+      throw closedBefore('terminal session');
+    }
+    if (session.attempt !== attempt) {
+      return;
+    }
+    if (attempt.closeRequested) {
+      await this.closeTerminalAttempt(attempt);
+      throw closedBefore('terminal session');
+    }
+    if (attempt.statusFailure) {
+      await this.closeTerminalAttempt(attempt);
+      return this.openTerminalAttempt(session, input, shellIndex + 1, attempt.statusFailure);
+    }
+    if (attempt.normalClose) {
+      await this.finalizeTerminal(session, 'closed');
+      return;
+    }
+    attempt.openPublished = true;
     session.state.state = 'open';
     this.emitTerminal(session);
   }
@@ -959,8 +1040,12 @@ export class PodInteractionManager {
       return;
     }
     attempt.statusFailure = error;
-    if (attempt.handle && !attempt.retrying) {
+    this.markTerminalAttemptReady(attempt);
+    if (attempt.handle && attempt.openPublished && !attempt.retrying) {
       attempt.retrying = true;
+      session.state.state = 'connecting';
+      session.handle = undefined;
+      this.emitTerminal(session);
       void this.retryTerminalAfterStatusFailure(session, input, attempt);
     }
   }
@@ -992,6 +1077,7 @@ export class PodInteractionManager {
       return;
     }
     attempt.normalClose = true;
+    this.markTerminalAttemptReady(attempt);
     if (attempt.handle) {
       void this.finalizeTerminal(session, 'closed').catch(() => undefined);
     }
@@ -1001,6 +1087,7 @@ export class PodInteractionManager {
     if (!this.isTerminalSessionActive(session) || session.attempt !== attempt || attempt.statusFailure) {
       return;
     }
+    this.markTerminalAttemptReady(attempt);
     void this.finalizeTerminal(session, 'error', error.message).catch(() => undefined);
   }
 
@@ -1037,10 +1124,36 @@ export class PodInteractionManager {
       return;
     }
     attempt.closeRequested = true;
+    this.markTerminalAttemptReady(attempt);
     if (attempt.handle && !attempt.handleClosed) {
       attempt.handleClosed = true;
       await attempt.handle.close();
     }
+  }
+
+  private async waitForTerminalAttemptReady(attempt: TerminalAttempt): Promise<void> {
+    if (!attempt.readinessSettled) {
+      if (this.terminalReadyTimeoutMs === 0) {
+        this.markTerminalAttemptReady(attempt);
+      } else {
+        attempt.readinessTimer = setTimeout(() => {
+          this.markTerminalAttemptReady(attempt);
+        }, this.terminalReadyTimeoutMs);
+      }
+    }
+    await attempt.readiness;
+  }
+
+  private markTerminalAttemptReady(attempt: TerminalAttempt): void {
+    if (attempt.readinessSettled) {
+      return;
+    }
+    attempt.readinessSettled = true;
+    if (attempt.readinessTimer) {
+      clearTimeout(attempt.readinessTimer);
+      attempt.readinessTimer = undefined;
+    }
+    attempt.resolveReadiness();
   }
 
   private async closePortForwardSession(session: PortForwardSession): Promise<void> {

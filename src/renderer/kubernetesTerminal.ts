@@ -132,14 +132,20 @@ export function createKubernetesTerminalPane(options: {
     terminal.loadAddon(fit);
     terminal.open(terminalHost);
     const resize = (): void => {
-      if (activeId !== next.state.id || views.get(next.state.id) !== next || finalizedIds.has(next.state.id)) return;
+      if (next.state.state !== 'open'
+        || activeId !== next.state.id
+        || views.get(next.state.id) !== next
+        || finalizedIds.has(next.state.id)) return;
       fit.fit();
       if (terminal.cols > 0 && terminal.rows > 0) {
         void options.onResize(next.state.id, terminal.cols, terminal.rows).catch(() => undefined);
       }
     };
     terminal.onData((data) => {
-      if (activeId !== next.state.id || views.get(next.state.id) !== next || finalizedIds.has(next.state.id)) return;
+      if (next.state.state !== 'open'
+        || activeId !== next.state.id
+        || views.get(next.state.id) !== next
+        || finalizedIds.has(next.state.id)) return;
       void options.onInput(next.state.id, data).catch(() => undefined);
     });
     next.terminal = terminal;
@@ -183,7 +189,7 @@ export function createKubernetesTerminalPane(options: {
     resizeActive() {
       const id = activeId;
       const current = id ? views.get(id) : undefined;
-      if (!id || !current || finalizedIds.has(id)) return false;
+      if (!id || !current || current.state.state !== 'open' || finalizedIds.has(id)) return false;
       current.resize();
       return true;
     },
@@ -191,10 +197,14 @@ export function createKubernetesTerminalPane(options: {
     focus() {
       const id = activeId;
       const current = id ? views.get(id) : undefined;
-      if (!id || !current || finalizedIds.has(id)) return false;
+      if (!id || !current || current.state.state !== 'open' || finalizedIds.has(id)) return false;
       const generation = ++focusGeneration;
       window.requestAnimationFrame(() => {
-        if (generation !== focusGeneration || activeId !== id || views.get(id) !== current || finalizedIds.has(id)) return;
+        if (generation !== focusGeneration
+          || current.state.state !== 'open'
+          || activeId !== id
+          || views.get(id) !== current
+          || finalizedIds.has(id)) return;
         current.resize();
         current.host.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         current.terminal?.focus();

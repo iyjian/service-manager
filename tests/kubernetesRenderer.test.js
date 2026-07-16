@@ -2209,6 +2209,8 @@ test('Kubernetes workspace terminal pane finalizes exact IDs and never owns a fl
   assert.match(terminal, /createKubernetesTerminalPane/);
   assert.match(terminal, /finalizedIds\.add\(state\.id\)/);
   assert.match(terminal, /current\.state\.id !== output\.id/);
+  assert.match(terminal, /next\.state\.state !== 'open'/);
+  assert.match(terminal, /current\.state\.state !== 'open'/);
   assert.doesNotMatch(terminal, /createKubernetesTerminalDrawer|kubernetes-terminal-drawer/);
   assert.match(page, /this\.workspace\?\.onTerminalChanged\(state\)/);
   assert.match(page, /this\.workspace\?\.onTerminalOutput\(output\)/);
