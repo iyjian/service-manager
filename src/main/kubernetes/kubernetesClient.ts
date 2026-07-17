@@ -20,6 +20,7 @@ import {
 } from './podEnvironment';
 import { buildPodExecCommand, createUtf8ChunkDecoder } from './podExecTransport';
 import {
+  createEphemeralVncPassword,
   isMatchingKubeVirtVmi,
   openKubeVirtVncBridge,
   parseKubeVirtVncTargetFromPod,
@@ -120,6 +121,8 @@ export interface KubernetesVncHandle {
   podUid: string;
   vmiName: string;
   localPort: number;
+  /** Returns and clears the main-process-only launch credential, when needed. */
+  takeViewerPassword(): string | undefined;
   completed: Promise<void>;
   close(): Promise<void>;
 }
@@ -1386,12 +1389,16 @@ class KubernetesClientAdapter implements KubernetesClient {
       this.activeVncKeys.add(key);
       this.pendingVncControllers.add(controller);
       try {
+        let viewerPassword = process.platform === 'darwin'
+          ? createEphemeralVncPassword()
+          : undefined;
         const bridge = await openKubeVirtVncBridge({
           kubeConfig: this.runtimeKubeConfig,
           namespace: target.namespace,
           vmiName: target.vmiName,
           preserveSession: true,
           signal: controller.signal,
+          viewerPassword,
         });
         if (this.closed || controller.signal.aborted) {
           await bridge.close();
@@ -1403,6 +1410,7 @@ class KubernetesClientAdapter implements KubernetesClient {
         const finalize = (): void => {
           if (finalized) return;
           finalized = true;
+          viewerPassword = undefined;
           this.activeVncKeys.delete(key);
           this.activeVncHandles.delete(handle);
         };
@@ -1412,6 +1420,11 @@ class KubernetesClientAdapter implements KubernetesClient {
           podUid: target.podUid,
           vmiName: target.vmiName,
           localPort: bridge.localPort,
+          takeViewerPassword: () => {
+            const password = viewerPassword;
+            viewerPassword = undefined;
+            return password;
+          },
           completed: bridge.completed,
           close: async () => {
             await bridge.close();

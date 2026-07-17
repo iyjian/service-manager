@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const {
   buildKubeVirtVncWebSocketPath,
+  createEphemeralVncPassword,
+  createVncAuthResponse,
   isMatchingKubeVirtVmi,
   loadKubernetesPackageWebSocket,
   openKubeVirtVncBridge,
@@ -51,11 +53,71 @@ function connect(port) {
   });
 }
 
-function nextData(socket) {
-  return new Promise((resolve, reject) => {
-    socket.once('data', resolve);
-    socket.once('error', reject);
-  });
+class SocketReader {
+  constructor(socket) {
+    this.socket = socket;
+    this.buffer = Buffer.alloc(0);
+    this.pending = [];
+    this.closed = false;
+    this.error = undefined;
+    this.onData = (data) => {
+      this.buffer = Buffer.concat([this.buffer, data]);
+      this.pump();
+    };
+    this.onError = (error) => {
+      this.error = error;
+      this.rejectPending(error);
+    };
+    this.onClose = () => {
+      this.closed = true;
+      this.rejectPending(this.error ?? new Error('Socket closed before enough data arrived.'));
+    };
+    socket.on('data', this.onData);
+    socket.on('error', this.onError);
+    socket.on('close', this.onClose);
+  }
+
+  read(length) {
+    assert.ok(Number.isInteger(length) && length >= 0);
+    if (length === 0) return Promise.resolve(Buffer.alloc(0));
+    if (this.buffer.length >= length) {
+      const value = Buffer.from(this.buffer.subarray(0, length));
+      this.buffer = this.buffer.subarray(length);
+      return Promise.resolve(value);
+    }
+    if (this.closed) {
+      return Promise.reject(this.error ?? new Error('Socket is closed.'));
+    }
+    return new Promise((resolve, reject) => {
+      this.pending.push({ length, resolve, reject });
+      this.pump();
+    });
+  }
+
+  pump() {
+    while (this.pending.length > 0 && this.buffer.length >= this.pending[0].length) {
+      const pending = this.pending.shift();
+      const value = Buffer.from(this.buffer.subarray(0, pending.length));
+      this.buffer = this.buffer.subarray(pending.length);
+      pending.resolve(value);
+    }
+  }
+
+  rejectPending(error) {
+    for (const pending of this.pending.splice(0)) pending.reject(error);
+  }
+
+  dispose() {
+    this.socket.off('data', this.onData);
+    this.socket.off('error', this.onError);
+    this.socket.off('close', this.onClose);
+    this.rejectPending(new Error('Socket reader disposed.'));
+  }
+}
+
+function waitForSocketClose(socket) {
+  if (socket.destroyed) return Promise.resolve();
+  return new Promise((resolve) => socket.once('close', resolve));
 }
 
 function waitFor(predicate, timeoutMs = 1_000) {
@@ -97,6 +159,67 @@ class FakeWebSocket extends EventEmitter {
   terminate() {
     this.terminateCount += 1;
     this.readyState = 3;
+  }
+}
+
+class RfbNoneWebSocket extends FakeWebSocket {
+  constructor(minor = 8) {
+    super();
+    this.minor = minor;
+    this.handshakeState = 'version';
+    this.protocolErrors = [];
+    this.applicationData = [];
+    queueMicrotask(() => {
+      if (this.readyState === 3) return;
+      this.readyState = 1;
+      this.emit('open');
+      this.emitBinary(Buffer.from(`RFB 003.${String(minor).padStart(3, '0')}\n`, 'ascii'));
+    });
+  }
+
+  emitBinary(data) {
+    queueMicrotask(() => {
+      if (this.readyState === 1) this.emit('message', Buffer.from(data), true);
+    });
+  }
+
+  send(data, options, callback) {
+    const buffer = Buffer.from(data);
+    super.send(buffer, options, callback);
+    if (this.handshakeState === 'version') {
+      const expected = Buffer.from(`RFB 003.${String(this.minor).padStart(3, '0')}\n`, 'ascii');
+      if (!buffer.equals(expected)) {
+        this.protocolErrors.push(`unexpected version ${buffer.toString('hex')}`);
+        return;
+      }
+      if (this.minor === 3) {
+        const securityType = Buffer.alloc(4);
+        securityType.writeUInt32BE(1);
+        this.handshakeState = 'application';
+        this.emitBinary(securityType);
+      } else {
+        this.handshakeState = 'security-selection';
+        // Include an unsupported alternative to prove the bridge explicitly
+        // selects SecurityType None instead of relying on list position.
+        this.emitBinary(Buffer.from([2, 2, 1]));
+      }
+      return;
+    }
+    if (this.handshakeState === 'security-selection') {
+      if (!buffer.equals(Buffer.from([1]))) {
+        this.protocolErrors.push(`unexpected security selection ${buffer.toString('hex')}`);
+        return;
+      }
+      this.handshakeState = 'application';
+      if (this.minor === 8) this.emitBinary(Buffer.alloc(4));
+      return;
+    }
+    this.applicationData.push(buffer);
+  }
+
+  pushServerData(data) {
+    assert.equal(this.handshakeState, 'application');
+    this.emitBinary(data);
   }
 }
 
@@ -190,24 +313,43 @@ test('loadKubernetesPackageWebSocket resolves ws from the client-node package sc
   assert.equal(typeof loadKubernetesPackageWebSocket(), 'function');
 });
 
-test('openKubeVirtVncBridge transparently bridges one loopback viewer and cleans every handle', async (t) => {
+test('createVncAuthResponse matches the classic bit-reversed DES challenge vector', () => {
+  const challenge = Buffer.from('a489c9790fb7c3ce2e56868c788641fc', 'hex');
+  assert.equal(
+    createVncAuthResponse(challenge, 'AAAAAAAA').toString('hex'),
+    'd33bad35b07ef500a82329749cee9192'
+  );
+  assert.throws(
+    () => createVncAuthResponse(Buffer.alloc(15), 'password'),
+    /exactly 16 bytes/
+  );
+  assert.throws(
+    () => createVncAuthResponse(Buffer.alloc(16), 'password9'),
+    /1 to 8 printable ASCII/
+  );
+});
+
+test('createEphemeralVncPassword returns eight URL-safe VNCAuth characters', () => {
+  for (let index = 0; index < 16; index += 1) {
+    assert.match(createEphemeralVncPassword(), /^[A-Za-z0-9_-]{8}$/);
+  }
+});
+
+test('openKubeVirtVncBridge authenticates a macOS-style RFB 3.3 viewer and cleans every handle', async (t) => {
   let fakeWebSocket;
   let request;
   const errors = [];
+  const viewerPassword = 'MacVNC_1';
   const bridge = await openKubeVirtVncBridge({
     kubeConfig: kubeConfig(),
     namespace: TARGET.namespace,
     vmiName: TARGET.vmiName,
     startupTimeoutMs: 1_000,
+    viewerPassword,
     onError: (error) => errors.push(error.message),
     createWebSocket: (url, protocol, options) => {
       request = { url, protocol, options };
-      fakeWebSocket = new FakeWebSocket();
-      queueMicrotask(() => {
-        fakeWebSocket.readyState = 1;
-        fakeWebSocket.emit('open');
-        fakeWebSocket.emit('message', Buffer.from('RFB EARLY\n'), true);
-      });
+      fakeWebSocket = new RfbNoneWebSocket(8);
       return fakeWebSocket;
     },
   });
@@ -215,6 +357,8 @@ test('openKubeVirtVncBridge transparently bridges one loopback viewer and cleans
 
   const viewer = await connect(bridge.localPort);
   t.after(() => viewer.destroy());
+  const reader = new SocketReader(viewer);
+  t.after(() => reader.dispose());
   await bridge.connected;
   assert.equal(
     request.url,
@@ -225,17 +369,27 @@ test('openKubeVirtVncBridge transparently bridges one loopback viewer and cleans
   assert.equal(request.options.rejectUnauthorized, false);
   assert.equal(request.options.followRedirects, false);
 
-  assert.deepEqual(await nextData(viewer), Buffer.from('RFB EARLY\n'));
+  assert.deepEqual(await reader.read(12), Buffer.from('RFB 003.008\n'));
+  viewer.write(Buffer.from('RFB 003.003\n'));
+  const securityType = await reader.read(4);
+  assert.equal(securityType.readUInt32BE(0), 2);
+  const challenge = await reader.read(16);
+  viewer.write(createVncAuthResponse(challenge, viewerPassword));
+  assert.deepEqual(await reader.read(4), Buffer.alloc(4));
 
-  const viewerBytes = Buffer.from([0x00, 0xff, 0x41, 0x80]);
+  const viewerBytes = Buffer.from([0x01, 0x00, 0xff, 0x41, 0x80]);
   viewer.write(viewerBytes);
-  await waitFor(() => fakeWebSocket.sent.length === 1);
-  assert.deepEqual(fakeWebSocket.sent[0], { data: viewerBytes, options: { binary: true } });
+  await waitFor(() => fakeWebSocket.applicationData.length === 1);
+  assert.deepEqual(fakeWebSocket.applicationData[0], viewerBytes);
+  assert.deepEqual(
+    fakeWebSocket.sent.slice(0, 2).map((entry) => entry.data),
+    [Buffer.from('RFB 003.008\n'), Buffer.from([1])]
+  );
+  assert.deepEqual(fakeWebSocket.protocolErrors, []);
 
   const remoteBytes = Buffer.from([0x52, 0x46, 0x42, 0x20, 0x00, 0xff]);
-  const received = nextData(viewer);
-  fakeWebSocket.emit('message', remoteBytes, true);
-  assert.deepEqual(await received, remoteBytes);
+  fakeWebSocket.pushServerData(remoteBytes);
+  assert.deepEqual(await reader.read(remoteBytes.length), remoteBytes);
 
   await bridge.close();
   await bridge.completed;
@@ -244,6 +398,161 @@ test('openKubeVirtVncBridge transparently bridges one loopback viewer and cleans
   assert.equal(fakeWebSocket.closeCount, 1);
   assert.equal(fakeWebSocket.terminateCount, 1);
   assert.deepEqual(errors, []);
+});
+
+test('openKubeVirtVncBridge keeps the no-password RFB 3.8 viewer path', async (t) => {
+  let fakeWebSocket;
+  const bridge = await openKubeVirtVncBridge({
+    kubeConfig: kubeConfig(),
+    namespace: TARGET.namespace,
+    vmiName: TARGET.vmiName,
+    startupTimeoutMs: 1_000,
+    createWebSocket: () => {
+      fakeWebSocket = new RfbNoneWebSocket(8);
+      return fakeWebSocket;
+    },
+  });
+  t.after(() => bridge.close());
+
+  const viewer = await connect(bridge.localPort);
+  t.after(() => viewer.destroy());
+  const reader = new SocketReader(viewer);
+  t.after(() => reader.dispose());
+  assert.deepEqual(await reader.read(12), Buffer.from('RFB 003.008\n'));
+  viewer.write(Buffer.from('RFB 003.008\n'));
+  assert.deepEqual(await reader.read(2), Buffer.from([1, 1]));
+  viewer.write(Buffer.from([1]));
+  assert.deepEqual(await reader.read(4), Buffer.alloc(4));
+
+  const viewerBytes = Buffer.from([0x01, 0x05, 0x04, 0x03, 0x02]);
+  viewer.write(viewerBytes);
+  await waitFor(() => fakeWebSocket.applicationData.length === 1);
+  assert.deepEqual(fakeWebSocket.applicationData[0], viewerBytes);
+  assert.deepEqual(fakeWebSocket.protocolErrors, []);
+});
+
+test('openKubeVirtVncBridge supports the RFB 3.7 None and VNCAuth key paths', async (t) => {
+  let fakeWebSocket;
+  const viewerPassword = 'RFB37_pw';
+  const bridge = await openKubeVirtVncBridge({
+    kubeConfig: kubeConfig(),
+    namespace: TARGET.namespace,
+    vmiName: TARGET.vmiName,
+    viewerPassword,
+    startupTimeoutMs: 1_000,
+    createWebSocket: () => {
+      fakeWebSocket = new RfbNoneWebSocket(7);
+      return fakeWebSocket;
+    },
+  });
+  t.after(() => bridge.close());
+
+  const viewer = await connect(bridge.localPort);
+  t.after(() => viewer.destroy());
+  const reader = new SocketReader(viewer);
+  t.after(() => reader.dispose());
+  assert.deepEqual(await reader.read(12), Buffer.from('RFB 003.008\n'));
+  viewer.write(Buffer.from('RFB 003.007\n'));
+  assert.deepEqual(await reader.read(2), Buffer.from([1, 2]));
+  viewer.write(Buffer.from([2]));
+  const challenge = await reader.read(16);
+  const viewerBytes = Buffer.from([0x01, 0x07, 0x07]);
+  viewer.write(Buffer.concat([
+    createVncAuthResponse(challenge, viewerPassword),
+    viewerBytes,
+  ]));
+  assert.deepEqual(await reader.read(4), Buffer.alloc(4));
+
+  await waitFor(() => fakeWebSocket.applicationData.length === 1);
+  assert.deepEqual(fakeWebSocket.applicationData[0], viewerBytes);
+  assert.deepEqual(
+    fakeWebSocket.sent.slice(0, 2).map((entry) => entry.data),
+    [Buffer.from('RFB 003.007\n'), Buffer.from([1])]
+  );
+  assert.deepEqual(fakeWebSocket.protocolErrors, []);
+});
+
+test('openKubeVirtVncBridge rejects a wrong viewer password and releases all transports', async () => {
+  let fakeWebSocket;
+  const errors = [];
+  const bridge = await openKubeVirtVncBridge({
+    kubeConfig: kubeConfig(),
+    namespace: TARGET.namespace,
+    vmiName: TARGET.vmiName,
+    viewerPassword: 'correct1',
+    startupTimeoutMs: 1_000,
+    onError: (error) => errors.push(error.message),
+    createWebSocket: () => {
+      fakeWebSocket = new RfbNoneWebSocket(8);
+      return fakeWebSocket;
+    },
+  });
+
+  const viewer = await connect(bridge.localPort);
+  const reader = new SocketReader(viewer);
+  const closed = waitForSocketClose(viewer);
+  assert.deepEqual(await reader.read(12), Buffer.from('RFB 003.008\n'));
+  viewer.write(Buffer.from('RFB 003.008\n'));
+  assert.deepEqual(await reader.read(2), Buffer.from([1, 2]));
+  viewer.write(Buffer.from([2]));
+  await reader.read(16);
+  viewer.write(Buffer.alloc(16));
+
+  await bridge.completed;
+  await closed;
+  reader.dispose();
+  assert.deepEqual(errors, ['The system VNC viewer authentication failed.']);
+  assert.equal(fakeWebSocket.closeCount, 1);
+  assert.equal(fakeWebSocket.terminateCount, 1);
+  assert.equal(viewer.destroyed, true);
+});
+
+test('an early authenticated viewer cannot clear the independent upstream RFB timeout', async () => {
+  const viewerPassword = 'early_v1';
+  let server;
+  let viewer;
+  let reader;
+  let fakeWebSocket;
+  const opening = openKubeVirtVncBridge({
+    kubeConfig: kubeConfig(),
+    namespace: TARGET.namespace,
+    vmiName: TARGET.vmiName,
+    viewerPassword,
+    startupTimeoutMs: 40,
+    createServer: (listener) => {
+      server = net.createServer(listener);
+      server.once('listening', () => {
+        void (async () => {
+          viewer = await connect(server.address().port);
+          reader = new SocketReader(viewer);
+          assert.deepEqual(await reader.read(12), Buffer.from('RFB 003.008\n'));
+          viewer.write(Buffer.from('RFB 003.003\n'));
+          const securityType = await reader.read(4);
+          assert.equal(securityType.readUInt32BE(0), 2);
+          const challenge = await reader.read(16);
+          viewer.write(createVncAuthResponse(challenge, viewerPassword));
+          assert.deepEqual(await reader.read(4), Buffer.alloc(4));
+        })();
+      });
+      return server;
+    },
+    createWebSocket: () => {
+      fakeWebSocket = new FakeWebSocket();
+      queueMicrotask(() => {
+        fakeWebSocket.readyState = 1;
+        fakeWebSocket.emit('open');
+        // Deliberately never send the upstream RFB banner.
+      });
+      return fakeWebSocket;
+    },
+  });
+
+  await assert.rejects(opening, /Timed out opening the KubeVirt VNC stream/);
+  reader?.dispose();
+  await waitFor(() => !!viewer?.destroyed);
+  assert.equal(server.listening, false);
+  assert.equal(fakeWebSocket.closeCount, 1);
+  assert.equal(fakeWebSocket.terminateCount, 1);
 });
 
 test('openKubeVirtVncBridge times out an unclaimed listener and reports a safe error', async () => {
@@ -256,17 +565,15 @@ test('openKubeVirtVncBridge times out an unclaimed listener and reports a safe e
     startupTimeoutMs: 20,
     onError: (error) => errors.push(error.message),
     createWebSocket: () => {
-      fakeWebSocket = new FakeWebSocket();
-      queueMicrotask(() => {
-        fakeWebSocket.readyState = 1;
-        fakeWebSocket.emit('open');
-      });
+      fakeWebSocket = new RfbNoneWebSocket(8);
       return fakeWebSocket;
     },
   });
 
   await bridge.completed;
   assert.deepEqual(errors, ['Timed out waiting for the system VNC viewer.']);
+  assert.equal(fakeWebSocket.closeCount, 1);
+  assert.equal(fakeWebSocket.terminateCount, 1);
 });
 
 test('openKubeVirtVncBridge rejects an upstream denial before a viewer can be launched', async () => {
@@ -327,22 +634,20 @@ test('openKubeVirtVncBridge redacts credential file errors before they cross IPC
 
 test('openKubeVirtVncBridge bounds upstream bytes buffered before the viewer connects', async () => {
   const errors = [];
-  await assert.rejects(openKubeVirtVncBridge({
+  let fakeWebSocket;
+  const bridge = await openKubeVirtVncBridge({
     kubeConfig: kubeConfig(),
     namespace: TARGET.namespace,
     vmiName: TARGET.vmiName,
     startupTimeoutMs: 1_000,
     onError: (error) => errors.push(error.message),
     createWebSocket: () => {
-      const webSocket = new FakeWebSocket();
-      queueMicrotask(() => {
-        webSocket.readyState = 1;
-        webSocket.emit('open');
-        webSocket.emit('message', Buffer.alloc((1024 * 1024) + 1), true);
-      });
-      return webSocket;
+      fakeWebSocket = new RfbNoneWebSocket(8);
+      return fakeWebSocket;
     },
-  }), /sent too much data before the viewer connected/);
+  });
+  fakeWebSocket.pushServerData(Buffer.alloc((1024 * 1024) + 1));
+  await bridge.completed;
   assert.deepEqual(errors, ['KubeVirt VNC sent too much data before the viewer connected.']);
 });
 

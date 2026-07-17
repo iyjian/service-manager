@@ -51,9 +51,13 @@ test('compiled KubeVirt VNC bridge derives its loopback URL only in main and clo
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   const handler = main.slice(handlerStart, handlerEnd);
   assert.match(handler, /openVnc\(validateKubernetesVncTarget\(input\)\)/);
-  assert.match(handler, /shell\.openExternal\(`vnc:\/\/127\.0\.0\.1:\$\{handle\.localPort\}`\)/);
+  assert.match(handler, /viewerPassword = handle\.takeViewerPassword\(\)/);
+  assert.match(handler, /`vnc:\$\{encodeURIComponent\(viewerPassword\)\}@127\.0\.0\.1`/);
+  assert.match(handler, /shell\.openExternal\(`vnc:\/\/\$\{authority\}:\$\{handle\.localPort\}`\)/);
   assert.match(handler, /catch\s*\{[\s\S]*?handle\.close\(\)/);
   assert.doesNotMatch(handler, /input\.(?:url|vmiName|localPort)/);
+  assert.doesNotMatch(preload, /viewerPassword|takeViewerPassword/);
+  assert.doesNotMatch(handler.slice(handler.indexOf('return {')), /viewerPassword|authority/);
 });
 
 test('compiled Proxy traffic contract keeps Mihomo controller data in the main process', async () => {

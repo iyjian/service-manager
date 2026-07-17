@@ -459,16 +459,24 @@ test('KubernetesRuntime page deactivation closes active VNC and rejects a delaye
   const delayed = deferred();
   const completed = deferred();
   let closeCalls = 0;
-  const makeHandle = () => ({
-    ...VNC_TARGET,
-    vmiName: 'demo',
-    localPort: 41001,
-    completed: completed.promise,
-    async close() {
-      closeCalls += 1;
-      completed.resolve();
-    },
-  });
+  const makeHandle = () => {
+    let viewerPassword = 'temporary';
+    return {
+      ...VNC_TARGET,
+      vmiName: 'demo',
+      localPort: 41001,
+      takeViewerPassword() {
+        const password = viewerPassword;
+        viewerPassword = undefined;
+        return password;
+      },
+      completed: completed.promise,
+      async close() {
+        closeCalls += 1;
+        completed.resolve();
+      },
+    };
+  };
   let openingCount = 0;
   const { runtime } = createRuntime({
     client: {
@@ -479,7 +487,9 @@ test('KubernetesRuntime page deactivation closes active VNC and rejects a delaye
     },
   });
 
-  await runtime.openVnc(VNC_TARGET);
+  const active = await runtime.openVnc(VNC_TARGET);
+  assert.equal(active.takeViewerPassword(), 'temporary');
+  assert.equal(active.takeViewerPassword(), undefined, 'the launch credential is consumed once');
   await runtime.deactivatePage();
   assert.equal(closeCalls, 1, 'page leave closes the active loopback VNC bridge');
 

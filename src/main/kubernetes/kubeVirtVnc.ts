@@ -1,3 +1,4 @@
+import { createCipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 
@@ -7,6 +8,12 @@ const DEFAULT_STARTUP_TIMEOUT_MS = 60_000;
 const MAX_STARTUP_TIMEOUT_MS = 120_000;
 const MAX_WEBSOCKET_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_EARLY_VNC_BYTES = 1024 * 1024;
+const MAX_HANDSHAKE_BYTES = 4 * 1024;
+const RFB_VERSION_3_8 = Buffer.from('RFB 003.008\n', 'ascii');
+const RFB_SECURITY_NONE = 1;
+const RFB_SECURITY_VNC_AUTH = 2;
+const VNC_AUTH_PASSWORD_BYTES = 8;
+const VNC_AUTH_CHALLENGE_BYTES = 16;
 
 interface UnknownRecord {
   [key: string]: unknown;
@@ -60,6 +67,11 @@ export interface KubeVirtVncBridgeOptions {
   signal?: AbortSignal;
   /** Avoids displacing an already connected VNC viewer by default. */
   preserveSession?: boolean;
+  /**
+   * Main-process-only, single-use password presented by a system viewer to the
+   * loopback bridge. KubeVirt upstream authentication remains SecurityType None.
+   */
+  viewerPassword?: string;
   onError?: (error: Error) => void;
   /** Main-process-only test seam. */
   createServer?: (listener: (socket: net.Socket) => void) => net.Server;
@@ -78,6 +90,52 @@ export interface KubeVirtVncBridgeHandle {
   /** Resolves after every local listener/socket and WebSocket handle is released. */
   completed: Promise<void>;
   close(): Promise<void>;
+}
+
+/** Generates the eight ASCII characters supported by classic VNCAuth. */
+export function createEphemeralVncPassword(): string {
+  return randomBytes(6).toString('base64url');
+}
+
+function reverseByteBits(value: number): number {
+  let reversed = 0;
+  for (let bit = 0; bit < 8; bit += 1) {
+    reversed = (reversed << 1) | ((value >>> bit) & 1);
+  }
+  return reversed;
+}
+
+function createVncAuthKey(password: string): Buffer {
+  if (!/^[\x21-\x7e]{1,8}$/.test(password)) {
+    throw new Error('The local VNC password must contain 1 to 8 printable ASCII characters.');
+  }
+  const source = Buffer.alloc(VNC_AUTH_PASSWORD_BYTES);
+  source.write(password, 0, VNC_AUTH_PASSWORD_BYTES, 'ascii');
+  const key = Buffer.alloc(VNC_AUTH_PASSWORD_BYTES);
+  for (let index = 0; index < source.length; index += 1) {
+    key[index] = reverseByteBits(source[index]);
+  }
+  source.fill(0);
+  return key;
+}
+
+/** Computes the classic VNCAuth DES response without adding a DES dependency. */
+export function createVncAuthResponse(challenge: Buffer, password: string): Buffer {
+  if (challenge.length !== VNC_AUTH_CHALLENGE_BYTES) {
+    throw new Error('A VNC authentication challenge must contain exactly 16 bytes.');
+  }
+  const key = createVncAuthKey(password);
+  const tripleKey = Buffer.concat([key, key, key]);
+  try {
+    // EDE with K1=K2=K3 is equivalent to single DES, which OpenSSL 3 no
+    // longer exposes directly on every supported platform.
+    const cipher = createCipheriv('des-ede3', tripleKey, null);
+    cipher.setAutoPadding(false);
+    return Buffer.concat([cipher.update(challenge), cipher.final()]);
+  } finally {
+    key.fill(0);
+    tripleKey.fill(0);
+  }
 }
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -258,10 +316,30 @@ function transportError(value: unknown): Error {
   });
 }
 
+type RfbMinorVersion = 3 | 7 | 8;
+
+function parseRfbVersion(value: Buffer): RfbMinorVersion | undefined {
+  if (value.length !== RFB_VERSION_3_8.length) return undefined;
+  const match = /^RFB 003\.(003|007|008)\n$/.exec(value.toString('ascii'));
+  if (!match) return undefined;
+  return Number(match[1]) as RfbMinorVersion;
+}
+
+function rfbVersion(minor: RfbMinorVersion): Buffer {
+  return Buffer.from(`RFB 003.${String(minor).padStart(3, '0')}\n`, 'ascii');
+}
+
+function securityResult(code: number): Buffer {
+  const value = Buffer.alloc(4);
+  value.writeUInt32BE(code >>> 0);
+  return value;
+}
+
 /**
- * Opens one loopback-only TCP listener and transparently bridges its first
- * client to an authenticated KubeVirt VNC WebSocket. The returned handle owns
- * every listener/socket/WebSocket and is safe to close repeatedly.
+ * Opens one loopback-only TCP listener, terminates both bounded RFB security
+ * handshakes, and then transparently bridges the first viewer to an
+ * authenticated KubeVirt VNC WebSocket. The returned handle owns every
+ * listener/socket/WebSocket and is safe to close repeatedly.
  */
 export async function openKubeVirtVncBridge(
   options: KubeVirtVncBridgeOptions
@@ -304,10 +382,20 @@ export async function openKubeVirtVncBridge(
       new WebSocketConstructor!(url, protocol, wsOptions)
     ));
   const createServer = options.createServer ?? ((listener) => net.createServer(listener));
+  let viewerPassword = options.viewerPassword;
+  const viewerChallenge = viewerPassword ? randomBytes(VNC_AUTH_CHALLENGE_BYTES) : undefined;
+  const expectedViewerResponse = viewerPassword && viewerChallenge
+    ? createVncAuthResponse(viewerChallenge, viewerPassword)
+    : undefined;
+  // The transport retains options in its event closures. Remove the plaintext
+  // credential immediately after deriving the bounded challenge response.
+  options.viewerPassword = undefined;
+  viewerPassword = undefined;
 
   let viewer: net.Socket | undefined;
   let webSocket: KubeVirtWebSocket | undefined;
-  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let upstreamTimer: ReturnType<typeof setTimeout> | undefined;
+  let viewerTimer: ReturnType<typeof setTimeout> | undefined;
   let listenerStopPromise: Promise<void> | undefined;
   let listenStarted = false;
   let listenSettled = false;
@@ -317,6 +405,14 @@ export async function openKubeVirtVncBridge(
   });
   const earlyFrames: Buffer[] = [];
   let earlyFrameBytes = 0;
+  const earlyViewerFrames: Buffer[] = [];
+  let earlyViewerBytes = 0;
+  let upstreamBuffer = Buffer.alloc(0);
+  let upstreamStage: 'version' | 'security-types' | 'security-result' | 'ready' = 'version';
+  let upstreamMinor: RfbMinorVersion | undefined;
+  let viewerBuffer = Buffer.alloc(0);
+  let viewerStage: 'version' | 'security-selection' | 'auth-response' | 'ready' = 'version';
+  let viewerMinor: RfbMinorVersion | undefined;
   let closed = false;
   let connectedSettled = false;
   let failure: Error | undefined;
@@ -335,51 +431,306 @@ export async function openKubeVirtVncBridge(
     resolveCompleted = resolve;
   });
 
-  const server = createServer((socket) => {
+  const server = createServer((socket) => acceptViewer(socket));
+
+  function clearUpstreamTimer(): void {
+    if (!upstreamTimer) return;
+    clearTimeout(upstreamTimer);
+    upstreamTimer = undefined;
+  }
+
+  function clearViewerTimer(): void {
+    if (!viewerTimer) return;
+    clearTimeout(viewerTimer);
+    viewerTimer = undefined;
+  }
+
+  function isUpstreamReady(): boolean {
+    return upstreamStage === 'ready';
+  }
+
+  function isViewerReady(): boolean {
+    return viewerStage === 'ready';
+  }
+
+  function sendUpstream(data: Buffer, resumeViewer = false): void {
+    if (closed || !webSocket) return;
+    try {
+      webSocket.send(data, { binary: true }, (error) => {
+        if (error) {
+          fail(transportError(error), true);
+        } else if (resumeViewer && !closed) {
+          viewer?.resume();
+        }
+      });
+    } catch (error) {
+      fail(transportError(error), true);
+    }
+  }
+
+  function bufferEarlyViewerFrame(data: Buffer): void {
+    if (earlyViewerBytes + data.length > MAX_EARLY_VNC_BYTES) {
+      fail(new Error('The system VNC viewer sent too much data while opening.'), true);
+      return;
+    }
+    earlyViewerFrames.push(Buffer.from(data));
+    earlyViewerBytes += data.length;
+  }
+
+  function forwardViewerData(data: Buffer): void {
+    if (closed || data.length === 0) return;
+    if (!isUpstreamReady()) {
+      bufferEarlyViewerFrame(data);
+      return;
+    }
+    viewer?.pause();
+    sendUpstream(data, true);
+  }
+
+  function bufferEarlyUpstreamFrame(data: Buffer): void {
+    if (earlyFrameBytes + data.length > MAX_EARLY_VNC_BYTES) {
+      fail(new Error('KubeVirt VNC sent too much data before the viewer connected.'), true);
+      return;
+    }
+    earlyFrames.push(Buffer.from(data));
+    earlyFrameBytes += data.length;
+  }
+
+  function forwardUpstreamData(data: Buffer): void {
+    if (closed || data.length === 0) return;
+    if (!viewer || viewer.destroyed || !isViewerReady()) {
+      bufferEarlyUpstreamFrame(data);
+      return;
+    }
+    if (!viewer.write(data)) {
+      webSocket?.pause?.();
+      viewer.once('drain', () => webSocket?.resume?.());
+    }
+  }
+
+  function markUpstreamReady(): void {
+    if (closed || upstreamStage === 'ready') return;
+    upstreamStage = 'ready';
+    clearUpstreamTimer();
+    if (!connectedSettled) {
+      connectedSettled = true;
+      resolveConnected();
+    }
+    for (const frame of earlyViewerFrames.splice(0)) {
+      sendUpstream(frame);
+    }
+    earlyViewerBytes = 0;
+    if (upstreamBuffer.length > 0) {
+      const remaining = upstreamBuffer;
+      upstreamBuffer = Buffer.alloc(0);
+      forwardUpstreamData(remaining);
+    }
+  }
+
+  function handleUpstreamData(data: Buffer): void {
+    if (isUpstreamReady()) {
+      forwardUpstreamData(data);
+      return;
+    }
+    if (upstreamBuffer.length + data.length > MAX_HANDSHAKE_BYTES) {
+      fail(new Error('KubeVirt VNC returned an invalid RFB handshake.'), true);
+      return;
+    }
+    upstreamBuffer = Buffer.concat([upstreamBuffer, data]);
+    while (!closed && !isUpstreamReady()) {
+      if (upstreamStage === 'version') {
+        if (upstreamBuffer.length < RFB_VERSION_3_8.length) return;
+        const version = upstreamBuffer.subarray(0, RFB_VERSION_3_8.length);
+        upstreamBuffer = upstreamBuffer.subarray(RFB_VERSION_3_8.length);
+        upstreamMinor = parseRfbVersion(version);
+        if (!upstreamMinor) {
+          fail(new Error('KubeVirt VNC returned an unsupported RFB version.'), true);
+          return;
+        }
+        upstreamStage = 'security-types';
+        sendUpstream(rfbVersion(upstreamMinor));
+        continue;
+      }
+
+      if (upstreamStage === 'security-types') {
+        if (!upstreamMinor) return;
+        if (upstreamMinor === 3) {
+          if (upstreamBuffer.length < 4) return;
+          const securityType = upstreamBuffer.readUInt32BE(0);
+          upstreamBuffer = upstreamBuffer.subarray(4);
+          if (securityType !== RFB_SECURITY_NONE) {
+            fail(new Error('KubeVirt VNC does not offer the expected no-password security type.'), true);
+            return;
+          }
+          markUpstreamReady();
+          continue;
+        }
+
+        if (upstreamBuffer.length < 1) return;
+        const count = upstreamBuffer[0];
+        if (count === 0) {
+          fail(new Error('KubeVirt VNC rejected its RFB handshake.'), true);
+          return;
+        }
+        if (upstreamBuffer.length < count + 1) return;
+        const securityTypes = upstreamBuffer.subarray(1, count + 1);
+        upstreamBuffer = upstreamBuffer.subarray(count + 1);
+        if (!securityTypes.includes(RFB_SECURITY_NONE)) {
+          fail(new Error('KubeVirt VNC does not offer the expected no-password security type.'), true);
+          return;
+        }
+        sendUpstream(Buffer.from([RFB_SECURITY_NONE]));
+        if (upstreamMinor === 8) {
+          upstreamStage = 'security-result';
+        } else {
+          markUpstreamReady();
+        }
+        continue;
+      }
+
+      if (upstreamStage === 'security-result') {
+        if (upstreamBuffer.length < 4) return;
+        const result = upstreamBuffer.readUInt32BE(0);
+        upstreamBuffer = upstreamBuffer.subarray(4);
+        if (result !== 0) {
+          fail(new Error('KubeVirt VNC rejected its no-password RFB handshake.'), true);
+          return;
+        }
+        markUpstreamReady();
+      }
+    }
+  }
+
+  function sendViewerSecurityFailure(): void {
+    if (!viewer || viewer.destroyed) return;
+    const result = securityResult(1);
+    if (viewerMinor === 8) {
+      const reason = Buffer.from('Authentication failed.', 'utf8');
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(reason.length);
+      viewer.write(Buffer.concat([result, length, reason]));
+    } else {
+      viewer.write(result);
+    }
+  }
+
+  function markViewerReady(): void {
+    if (closed || viewerStage === 'ready') return;
+    viewerStage = 'ready';
+    clearViewerTimer();
+    viewerChallenge?.fill(0);
+    expectedViewerResponse?.fill(0);
+    for (const frame of earlyFrames.splice(0)) {
+      forwardUpstreamData(frame);
+    }
+    earlyFrameBytes = 0;
+    if (viewerBuffer.length > 0) {
+      const remaining = viewerBuffer;
+      viewerBuffer = Buffer.alloc(0);
+      forwardViewerData(remaining);
+    }
+  }
+
+  function handleViewerData(data: Buffer): void {
+    const socket = viewer;
+    if (!socket || socket.destroyed) {
+      fail(new Error('The system VNC viewer connection failed.'), true);
+      return;
+    }
+    if (isViewerReady()) {
+      forwardViewerData(data);
+      return;
+    }
+    if (viewerBuffer.length + data.length > MAX_HANDSHAKE_BYTES) {
+      fail(new Error('The system VNC viewer returned an invalid RFB handshake.'), true);
+      return;
+    }
+    viewerBuffer = Buffer.concat([viewerBuffer, data]);
+    while (!closed && !isViewerReady()) {
+      if (viewerStage === 'version') {
+        if (viewerBuffer.length < RFB_VERSION_3_8.length) return;
+        const version = viewerBuffer.subarray(0, RFB_VERSION_3_8.length);
+        viewerBuffer = viewerBuffer.subarray(RFB_VERSION_3_8.length);
+        viewerMinor = parseRfbVersion(version);
+        if (!viewerMinor) {
+          fail(new Error('The system VNC viewer uses an unsupported RFB version.'), true);
+          return;
+        }
+        if (viewerMinor === 3) {
+          socket.write(securityResult(expectedViewerResponse
+            ? RFB_SECURITY_VNC_AUTH
+            : RFB_SECURITY_NONE));
+          if (expectedViewerResponse && viewerChallenge) {
+            socket.write(viewerChallenge);
+            viewerStage = 'auth-response';
+          } else {
+            markViewerReady();
+          }
+        } else {
+          socket.write(Buffer.from([1, expectedViewerResponse
+            ? RFB_SECURITY_VNC_AUTH
+            : RFB_SECURITY_NONE]));
+          viewerStage = 'security-selection';
+        }
+        continue;
+      }
+
+      if (viewerStage === 'security-selection') {
+        if (viewerBuffer.length < 1) return;
+        const selected = viewerBuffer[0];
+        viewerBuffer = viewerBuffer.subarray(1);
+        const expected = expectedViewerResponse ? RFB_SECURITY_VNC_AUTH : RFB_SECURITY_NONE;
+        if (selected !== expected) {
+          sendViewerSecurityFailure();
+          fail(new Error('The system VNC viewer selected an unsupported security type.'), true);
+          return;
+        }
+        if (expectedViewerResponse && viewerChallenge) {
+          socket.write(viewerChallenge);
+          viewerStage = 'auth-response';
+        } else {
+          if (viewerMinor === 8) socket.write(securityResult(0));
+          markViewerReady();
+        }
+        continue;
+      }
+
+      if (viewerStage === 'auth-response') {
+        if (viewerBuffer.length < VNC_AUTH_CHALLENGE_BYTES) return;
+        const response = viewerBuffer.subarray(0, VNC_AUTH_CHALLENGE_BYTES);
+        viewerBuffer = viewerBuffer.subarray(VNC_AUTH_CHALLENGE_BYTES);
+        const matches = !!expectedViewerResponse
+          && timingSafeEqual(response, expectedViewerResponse);
+        response.fill(0);
+        if (!matches) {
+          sendViewerSecurityFailure();
+          expectedViewerResponse?.fill(0);
+          viewerChallenge?.fill(0);
+          fail(new Error('The system VNC viewer authentication failed.'), true);
+          return;
+        }
+        socket.write(securityResult(0));
+        markViewerReady();
+      }
+    }
+  }
+
+  function acceptViewer(socket: net.Socket): void {
     if (closed || viewer) {
       socket.destroy();
       return;
     }
     viewer = socket;
-    socket.pause();
-    if (startupTimer) {
-      clearTimeout(startupTimer);
-      startupTimer = undefined;
-    }
+    socket.setNoDelay(true);
     socket.on('error', () => fail(new Error('The system VNC viewer connection failed.'), true));
     socket.once('close', () => {
-      if (!closed) {
-        void close();
-      }
+      if (!closed) void close();
     });
     // Stop accepting immediately; this is a deliberately single-viewer proxy.
     listenerStopPromise ??= stopServerWhenReady();
-
-    socket.on('data', (data) => {
-      if (closed || !webSocket) return;
-      socket.pause();
-      try {
-        webSocket.send(data, { binary: true }, (error) => {
-          if (error) {
-            fail(transportError(error), true);
-          } else if (!closed) {
-            socket.resume();
-          }
-        });
-      } catch (error) {
-        fail(transportError(error), true);
-      }
-    });
-
-    for (const frame of earlyFrames.splice(0)) {
-      if (!socket.write(frame)) {
-        webSocket?.pause?.();
-        socket.once('drain', () => webSocket?.resume?.());
-      }
-    }
-    earlyFrameBytes = 0;
-    socket.resume();
-  });
+    socket.on('data', handleViewerData);
+    socket.write(RFB_VERSION_3_8);
+  }
 
   function settleListen(): void {
     if (listenSettled) return;
@@ -397,10 +748,8 @@ export async function openKubeVirtVncBridge(
   async function close(): Promise<void> {
     if (closePromise) return closePromise;
     closed = true;
-    if (startupTimer) {
-      clearTimeout(startupTimer);
-      startupTimer = undefined;
-    }
+    clearUpstreamTimer();
+    clearViewerTimer();
     options.signal?.removeEventListener('abort', onAbort);
     if (!connectedSettled) {
       connectedSettled = true;
@@ -410,6 +759,14 @@ export async function openKubeVirtVncBridge(
     viewer?.destroy();
     earlyFrames.length = 0;
     earlyFrameBytes = 0;
+    earlyViewerFrames.length = 0;
+    earlyViewerBytes = 0;
+    upstreamBuffer.fill(0);
+    upstreamBuffer = Buffer.alloc(0);
+    viewerBuffer.fill(0);
+    viewerBuffer = Buffer.alloc(0);
+    viewerChallenge?.fill(0);
+    expectedViewerResponse?.fill(0);
     if (webSocket) {
       try {
         webSocket.close();
@@ -493,10 +850,10 @@ export async function openKubeVirtVncBridge(
     throw new Error('KubeVirt VNC did not allocate a local TCP port.');
   }
 
-  startupTimer = setTimeout(() => {
+  upstreamTimer = setTimeout(() => {
     fail(new Error('Timed out opening the KubeVirt VNC stream.'), true);
   }, startupTimeoutMs);
-  startupTimer.unref?.();
+  upstreamTimer.unref?.();
 
   try {
     webSocket = createWebSocket(webSocketUrl, KUBEVIRT_VNC_PROTOCOL, webSocketOptions);
@@ -520,19 +877,7 @@ export async function openKubeVirtVncBridge(
       fail(new Error('KubeVirt VNC returned an invalid data frame.'), true);
       return;
     }
-    if (!viewer || viewer.destroyed) {
-      if (earlyFrameBytes + buffer.length > MAX_EARLY_VNC_BYTES) {
-        fail(new Error('KubeVirt VNC sent too much data before the viewer connected.'), true);
-        return;
-      }
-      earlyFrames.push(Buffer.from(buffer));
-      earlyFrameBytes += buffer.length;
-      return;
-    }
-    if (!viewer.write(buffer)) {
-      webSocket?.pause?.();
-      viewer.once('drain', () => webSocket?.resume?.());
-    }
+    handleUpstreamData(buffer);
   });
   webSocket?.on('open', () => {
     if (closed || !webSocket) {
@@ -543,12 +888,8 @@ export async function openKubeVirtVncBridge(
       fail(new Error('KubeVirt VNC negotiated an unsupported protocol.'), true);
       return;
     }
-    if (startupTimer) {
-      clearTimeout(startupTimer);
-      startupTimer = undefined;
-    }
-    connectedSettled = true;
-    resolveConnected();
+    // `connected` is resolved only after the inner RFB SecurityType None
+    // handshake, not merely after the authenticated WebSocket opens.
   });
 
   try {
@@ -564,10 +905,12 @@ export async function openKubeVirtVncBridge(
 
   // Once the authenticated upstream is ready, bound how long its initial RFB
   // bytes may remain buffered while the system viewer is being launched.
-  startupTimer = setTimeout(() => {
-    fail(new Error('Timed out waiting for the system VNC viewer.'), true);
-  }, startupTimeoutMs);
-  startupTimer.unref?.();
+  if (!isViewerReady()) {
+    viewerTimer = setTimeout(() => {
+      fail(new Error('Timed out waiting for the system VNC viewer.'), true);
+    }, startupTimeoutMs);
+    viewerTimer.unref?.();
+  }
 
   return {
     localPort: address.port,

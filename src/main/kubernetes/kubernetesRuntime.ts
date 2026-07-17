@@ -909,6 +909,7 @@ export class KubernetesRuntime {
         podUid: base.podUid,
         vmiName: base.vmiName,
         localPort: base.localPort,
+        takeViewerPassword: () => base.takeViewerPassword(),
         completed: base.completed,
         close: async () => {
           await base.close();

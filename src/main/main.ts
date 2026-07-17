@@ -1245,8 +1245,12 @@ function registerIpcHandlers(): void {
     IPC_CHANNELS.kubernetesOpenVnc,
     async (_event, input: unknown): Promise<KubernetesVncLaunchResult> => {
       const handle = await getKubernetesRuntime().openVnc(validateKubernetesVncTarget(input));
+      const viewerPassword = handle.takeViewerPassword();
+      const authority = viewerPassword
+        ? `vnc:${encodeURIComponent(viewerPassword)}@127.0.0.1`
+        : '127.0.0.1';
       try {
-        await shell.openExternal(`vnc://127.0.0.1:${handle.localPort}`);
+        await shell.openExternal(`vnc://${authority}:${handle.localPort}`);
       } catch {
         await handle.close().catch(() => undefined);
         throw new Error('Unable to open the system VNC client. Install or configure a VNC client that handles vnc:// links.');
