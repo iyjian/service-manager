@@ -52,6 +52,7 @@ export interface KubernetesWorkspaceOptions {
   pane: HTMLElement;
   openLogs(target: KubernetesPodTarget): Promise<KubernetesLogState>;
   setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
+  setLogStartTime(id: string, startTime: string): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): Promise<KubernetesLogState>;
   closeLogs(id: string): Promise<void>;
@@ -72,6 +73,11 @@ interface KubernetesWorkspaceScopeIntent {
   revision: number;
 }
 
+interface KubernetesWorkspaceStartTimeIntent {
+  startTime?: string;
+  revision: number;
+}
+
 type KubernetesWorkspaceScrollIntent = 'none' | 'follow';
 
 const MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS = 64 * 1024;
@@ -79,6 +85,7 @@ const MAX_PENDING_TERMINAL_OUTPUT_CHUNKS = 256;
 const KUBERNETES_WORKSPACE_MIN_HEIGHT = 120;
 const KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO = 0.8;
 const KUBERNETES_WORKSPACE_KEYBOARD_STEP = 20;
+const KUBERNETES_SHELL_DEFAULT_HEIGHT_RATIO = 0.5;
 
 export function clampKubernetesWorkspaceHeight(requestedHeight: number, pageHeight: number): number {
   const safePageHeight = Number.isFinite(pageHeight) ? Math.max(0, pageHeight) : 0;
@@ -90,6 +97,26 @@ export function clampKubernetesWorkspaceHeight(requestedHeight: number, pageHeig
 
 export function kubernetesWorkspaceTabKey(type: KubernetesWorkspaceTabType, target: KubernetesPodTarget): string {
   return [type, target.namespace, target.podName, target.container].join('\u0000');
+}
+
+function padLogDatePart(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/** Formats an RFC3339 value for a local, second-precision datetime input. */
+export function kubernetesLogStartTimeInputValue(startTime?: string): string {
+  if (!startTime) return '';
+  const date = new Date(startTime);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${padLogDatePart(date.getMonth() + 1)}-${padLogDatePart(date.getDate())}`
+    + `T${padLogDatePart(date.getHours())}:${padLogDatePart(date.getMinutes())}:${padLogDatePart(date.getSeconds())}`;
+}
+
+/** Converts a datetime-local value to the only timestamp shape sent over IPC. */
+export function kubernetesLogStartTimeIso(value: string): string | undefined {
+  if (!value.trim()) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function copyTarget(target: KubernetesPodTarget): KubernetesPodTarget {
@@ -321,6 +348,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const followIntents = new Map<string, KubernetesWorkspaceFollowIntent>();
   const scopeRequests = new Map<string, symbol>();
   const scopeIntents = new Map<string, KubernetesWorkspaceScopeIntent>();
+  const startTimeRequests = new Map<string, symbol>();
+  const startTimeIntents = new Map<string, KubernetesWorkspaceStartTimeIntent>();
   const logScrollTops = new Map<string, number>();
   const renderedLogOutputs = new Map<string, HTMLPreElement>();
   const remotelyClosedLogIds = new Set<string>();
@@ -693,6 +722,17 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       if (!state.setLogSearch(tab.id, search.value)) return;
       renderPane('none');
     });
+    const startTimeField = document.createElement('label');
+    startTimeField.className = 'kubernetes-log-start-time';
+    const startTimeLabel = document.createElement('span');
+    startTimeLabel.textContent = 'Since';
+    const startTime = document.createElement('input');
+    startTime.type = 'datetime-local';
+    startTime.step = '1';
+    startTime.className = 'input kubernetes-log-start-time-input';
+    startTime.setAttribute('aria-label', `Log start time for ${tabLabel(tab)}`);
+    startTime.title = 'Load logs beginning at this local date and time';
+    startTimeField.append(startTimeLabel, startTime);
     const follow = document.createElement('button');
     follow.type = 'button';
     follow.className = 'icon-btn';
@@ -712,6 +752,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     let restoreScrollTop: number | undefined;
     let scrollToBottom = false;
     if (!log) {
+      startTime.disabled = true;
       follow.disabled = true;
       clear.disabled = true;
       follow.setAttribute('aria-label', 'Pause log follow');
@@ -722,6 +763,18 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       cancelAutoScroll();
       cancelPreserveScroll();
     } else {
+      startTime.value = kubernetesLogStartTimeInputValue(log.startTime);
+      startTime.disabled = startTimeRequests.has(log.sessionId)
+        || followRequests.has(log.sessionId)
+        || scopeRequests.has(log.sessionId);
+      startTime.addEventListener('change', () => {
+        const timestamp = kubernetesLogStartTimeIso(startTime.value);
+        if (!timestamp) {
+          renderPane('none');
+          return;
+        }
+        setLogStartTime(tab.id, timestamp);
+      });
       if (log.deployment) {
         scopeSwitch = document.createElement('button');
         scopeSwitch.type = 'button';
@@ -733,10 +786,11 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
           ? `Showing all ${log.deployment.name} Deployment Pods; click for this Pod only`
           : `Showing this Pod only; click for all ${log.deployment.name} Deployment Pods`;
         scopeSwitch.textContent = `Deployment pods (${log.deployment.podCount})`;
-        scopeSwitch.disabled = scopeRequests.has(log.sessionId);
+        scopeSwitch.disabled = scopeRequests.has(log.sessionId) || startTimeRequests.has(log.sessionId);
         scopeSwitch.addEventListener('click', () => toggleLogScope(tab.id));
       }
       const following = log.following;
+      follow.disabled = startTimeRequests.has(log.sessionId) || followRequests.has(log.sessionId);
       follow.setAttribute('aria-label', following ? 'Pause log follow' : 'Resume log follow');
       follow.setAttribute('title', following ? 'Pause log follow' : 'Resume log follow');
       follow.textContent = following ? 'Ⅱ' : '▶';
@@ -746,6 +800,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       clear.addEventListener('click', () => {
         clearLog(tab.id);
       });
+      clear.disabled = startTimeRequests.has(log.sessionId);
       const searchValue = tab.logSearch.trim().toLocaleLowerCase();
       const lines = searchValue ? log.lines.filter((line) => line.toLocaleLowerCase().includes(searchValue)) : log.lines;
       renderAnsiLines(output, lines);
@@ -767,7 +822,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     }
     status.append(stateLabel, count);
     if (scopeSwitch) toolbar.appendChild(scopeSwitch);
-    toolbar.append(search, follow, clear);
+    toolbar.append(search, startTimeField, follow, clear);
     panel.append(toolbar, output, status);
     options.pane.appendChild(panel);
     if (scrollToBottom && log) {
@@ -856,6 +911,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       followIntents.delete(tab.log.sessionId);
       scopeRequests.delete(tab.log.sessionId);
       scopeIntents.delete(tab.log.sessionId);
+      startTimeRequests.delete(tab.log.sessionId);
+      startTimeIntents.delete(tab.log.sessionId);
     }
     if (tab.terminalId) {
       terminalFinalIds.add(tab.terminalId);
@@ -886,6 +943,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (!tabId || !before?.log) return { followed: false };
     const intent = followIntents.get(next.sessionId);
     const scopeIntent = scopeIntents.get(next.sessionId);
+    const startTimeIntent = startTimeIntents.get(next.sessionId);
     if (next.revision < before.log.revision) return { followed: false };
     if (intent && (next.revision < intent.revision
       || (next.revision === intent.revision && next.following !== intent.following))) {
@@ -895,9 +953,14 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       || (next.revision === scopeIntent.revision && next.scope !== scopeIntent.scope))) {
       return { followed: false };
     }
+    if (startTimeIntent && (next.revision < startTimeIntent.revision
+      || (next.revision === startTimeIntent.revision && next.startTime !== startTimeIntent.startTime))) {
+      return { followed: false };
+    }
     if (!state.applyLog(next)) return { followed: false };
     if (intent && next.revision > intent.revision) followIntents.delete(next.sessionId);
     if (scopeIntent && next.revision > scopeIntent.revision) scopeIntents.delete(next.sessionId);
+    if (startTimeIntent && next.revision > startTimeIntent.revision) startTimeIntents.delete(next.sessionId);
     const tab = isCurrentLogTab(tabId, next.sessionId);
     return { tab, followed: Boolean(tab && next.following && next.revision > before.log.revision) };
   };
@@ -914,7 +977,14 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const token = Symbol(previous.sessionId);
     followRequests.set(previous.sessionId, token);
     followIntents.set(previous.sessionId, { following: desired, revision: previous.revision });
-    state.bindLog(tab.id, { ...previous, following: desired });
+    if (desired) {
+      startTimeIntents.set(previous.sessionId, { startTime: undefined, revision: previous.revision });
+    }
+    state.bindLog(tab.id, {
+      ...previous,
+      following: desired,
+      ...(desired ? { startTime: undefined } : {}),
+    });
     if (selectedTabId === tab.id) renderPane(desired ? 'follow' : 'none');
     void options.setLogFollowing(previous.sessionId, desired).then((next) => {
       if (followRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
@@ -933,6 +1003,42 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       options.reportError(error);
     }).finally(() => {
       if (followRequests.get(previous.sessionId) === token) followRequests.delete(previous.sessionId);
+    });
+  };
+
+  const setLogStartTime = (tabId: string, startTime: string): void => {
+    const tab = isCurrentLogTab(tabId);
+    const previous = tab?.log;
+    if (!tab || !previous || startTimeRequests.has(previous.sessionId)) return;
+    captureRenderedLogScroll(tab.id);
+    cancelAutoScroll();
+    logScrollTops.set(tab.id, 0);
+    const token = Symbol(previous.sessionId);
+    startTimeRequests.set(previous.sessionId, token);
+    startTimeIntents.set(previous.sessionId, { startTime, revision: previous.revision });
+    followIntents.set(previous.sessionId, { following: false, revision: previous.revision });
+    state.bindLog(tab.id, {
+      ...previous,
+      lines: [],
+      following: false,
+      startTime,
+      hasOlder: false,
+    });
+    if (selectedTabId === tab.id) renderPane('none');
+    void options.setLogStartTime(previous.sessionId, startTime).then((next) => {
+      if (startTimeRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
+      startTimeIntents.set(previous.sessionId, { startTime: next.startTime, revision: next.revision });
+      followIntents.set(previous.sessionId, { following: next.following, revision: next.revision });
+      const applied = applyIncomingLog(next);
+      if (applied.tab?.id === selectedTabId) renderPane('none');
+    }).catch((error) => {
+      if (startTimeRequests.get(previous.sessionId) === token && isCurrentLogTab(tab.id, previous.sessionId)) {
+        options.reportError(error);
+      }
+    }).finally(() => {
+      if (startTimeRequests.get(previous.sessionId) !== token) return;
+      startTimeRequests.delete(previous.sessionId);
+      if (selectedTabId === tab.id && isCurrentLogTab(tab.id, previous.sessionId)) renderPane('none');
     });
   };
 
@@ -1009,6 +1115,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (disposed) return;
     const opened = state.open('shell', target);
     selectedTabId = opened.tab.id;
+    if (opened.created && options.root.style.height === '') {
+      applyWorkspaceHeight(workspacePageHeight() * KUBERNETES_SHELL_DEFAULT_HEIGHT_RATIO);
+    }
     render();
     if (!opened.created) return;
     openingTerminalTabIds.add(opened.tab.id);
@@ -1111,6 +1220,8 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       followIntents.clear();
       scopeRequests.clear();
       scopeIntents.clear();
+      startTimeRequests.clear();
+      startTimeIntents.clear();
       unbindWorkspaceResize();
       if (workspaceResizeFrame !== undefined) window.cancelAnimationFrame(workspaceResizeFrame);
       workspaceResizeFrame = undefined;

@@ -35,7 +35,6 @@ import {
   buildKubernetesOverviewFields,
   buildKubernetesPortForwardDialogModel,
   detectKubernetesForwardPorts,
-  formatKubernetesDeclaredPortLabel,
   hasActiveKubernetesPortForward,
 } from './kubernetesDetailModel.js';
 import { buildKubernetesCustomResourceDetailModel } from './kubernetesCustomResourceModel.js';
@@ -1158,17 +1157,20 @@ class KubernetesPage implements KubernetesPageController {
   private readonly workspaceResizeHandle = requireElement<HTMLElement>('#kubernetes-workspace-resize-handle');
   private readonly workspaceTabs = requireElement<HTMLElement>('#kubernetes-workspace-tabs');
   private readonly workspacePane = requireElement<HTMLElement>('#kubernetes-workspace-pane');
-  private readonly portForwardPanel = requireElement<HTMLElement>('#kubernetes-port-forwards');
+  private readonly portForwardsToggle = requireElement<HTMLButtonElement>('#kubernetes-port-forwards-toggle');
+  private readonly portForwardsCount = requireElement<HTMLElement>('#kubernetes-port-forwards-count');
+  private readonly portForwardsDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forwards-dialog');
+  private readonly portForwardsCloseAll = requireElement<HTMLButtonElement>('#kubernetes-port-forwards-close-all');
+  private readonly portForwardsClose = requireElement<HTMLButtonElement>('#kubernetes-port-forwards-close');
   private readonly portForwardList = requireElement<HTMLElement>('#kubernetes-port-forward-list');
   private readonly portForwardDialog = requireElement<HTMLDialogElement>('#kubernetes-port-forward-dialog');
   private readonly portForwardForm = requireElement<HTMLFormElement>('#kubernetes-port-forward-form');
   private readonly portForwardTitle = requireElement<HTMLElement>('#kubernetes-port-forward-title');
-  private readonly portForwardTarget = requireElement<HTMLElement>('#kubernetes-port-forward-target');
   private readonly portForwardDeclaredField = requireElement<HTMLElement>('#kubernetes-port-forward-declared-field');
   private readonly portForwardDeclaredPort = requireElement<HTMLSelectElement>('#kubernetes-port-forward-declared-port');
-  private readonly portForwardHint = requireElement<HTMLElement>('#kubernetes-port-forward-hint');
   private readonly portForwardRemotePort = requireElement<HTMLInputElement>('#kubernetes-port-forward-remote-port');
   private readonly portForwardLocalPort = requireElement<HTMLInputElement>('#kubernetes-port-forward-local-port');
+  private readonly portForwardOpenBrowser = requireElement<HTMLInputElement>('#kubernetes-port-forward-open-browser');
   private readonly portForwardError = requireElement<HTMLElement>('#kubernetes-port-forward-error');
   private readonly portForwardCancel = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel');
   private readonly portForwardCancelSecondary = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel-secondary');
@@ -1230,6 +1232,7 @@ class KubernetesPage implements KubernetesPageController {
   private portForwards = new Map<string, KubernetesPortForwardState>();
   private portForwardRevision = 0;
   private portForwardDraft: PortForwardDraft | undefined;
+  private closingAllPortForwards = false;
 
   public show(): void {
     if (this.visible) return;
@@ -1276,6 +1279,7 @@ class KubernetesPage implements KubernetesPageController {
     this.unsubscribeTerminalOutput = undefined;
     this.unsubscribePortForward?.();
     this.unsubscribePortForward = undefined;
+    this.closePortForwardsDialog();
     this.closePortForwardDialog();
     this.closeDetail();
     this.table?.dispose();
@@ -1301,6 +1305,7 @@ class KubernetesPage implements KubernetesPageController {
       pane: this.workspacePane,
       openLogs: (target) => window.kubernetesApi.openLogs(target),
       setLogScope: (id, scope) => window.kubernetesApi.setLogScope(id, scope),
+      setLogStartTime: (id, startTime) => window.kubernetesApi.setLogStartTime(id, startTime),
       setLogFollowing: (id, following) => window.kubernetesApi.setLogFollowing(id, following),
       clearLogs: (id) => window.kubernetesApi.clearLogs(id),
       closeLogs: (id) => window.kubernetesApi.closeLogs(id),
@@ -1511,6 +1516,9 @@ class KubernetesPage implements KubernetesPageController {
     this.detailVncButton.addEventListener('click', () => { void this.openVnc(); });
     this.detailPortForwardButton.addEventListener('click', () => this.openPortForwardDialog());
     this.detailYamlToggle.addEventListener('click', () => this.toggleDrawerYaml());
+    this.portForwardsToggle.addEventListener('click', () => this.openPortForwardsDialog());
+    this.portForwardsClose.addEventListener('click', () => this.closePortForwardsDialog());
+    this.portForwardsCloseAll.addEventListener('click', () => { void this.stopAllListedPortForwards(); });
     this.portForwardDeclaredPort.addEventListener('change', () => {
       this.portForwardRemotePort.value = this.portForwardDeclaredPort.value;
     });
@@ -2529,6 +2537,8 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private closeDetail(): void {
+    // Port forwards are Context-scoped main-process resources. Closing this
+    // renderer-only drawer must never stop them or remove them from the count.
     this.clearDrawerEnvironment();
     this.resetDrawerVncAction();
     this.detailGeneration += 1;
@@ -3472,7 +3482,6 @@ class KubernetesPage implements KubernetesPageController {
       targetName: active.summary.name,
     };
     this.portForwardTitle.textContent = `Port Forward ${targetKind === 'pod' ? 'Pod' : 'Service'}`;
-    this.portForwardTarget.textContent = `${active.summary.namespace}/${active.summary.name}`;
     this.portForwardDeclaredPort.replaceChildren();
     if (dialogModel.selectorVisible) {
       const placeholder = document.createElement('option');
@@ -3485,16 +3494,14 @@ class KubernetesPage implements KubernetesPageController {
     for (const port of declaredPorts) {
       const option = document.createElement('option');
       option.value = String(port.remotePort);
-      option.textContent = formatKubernetesDeclaredPortLabel(port);
+      option.textContent = String(port.remotePort);
       this.portForwardDeclaredPort.appendChild(option);
     }
     this.portForwardDeclaredPort.value = '';
     this.portForwardDeclaredField.classList.toggle('hidden', !dialogModel.selectorVisible);
-    this.portForwardHint.textContent = declaredPorts.length === 1
-      ? `${formatKubernetesDeclaredPortLabel(declaredPorts[0])}. ${dialogModel.hint}`
-      : dialogModel.hint;
     this.portForwardRemotePort.value = dialogModel.remotePort;
     this.portForwardLocalPort.value = '';
+    this.portForwardOpenBrowser.checked = true;
     this.setPortForwardError('');
     if (!this.portForwardDialog.open) this.portForwardDialog.showModal();
   }
@@ -3504,7 +3511,6 @@ class KubernetesPage implements KubernetesPageController {
     this.portForwardDraft = undefined;
     this.portForwardDeclaredField.classList.add('hidden');
     this.portForwardDeclaredPort.replaceChildren();
-    this.portForwardHint.textContent = '';
     this.setPortForwardError('');
   }
 
@@ -3513,24 +3519,29 @@ class KubernetesPage implements KubernetesPageController {
     if (!draft) return;
     const remotePort = this.parsePort(this.portForwardRemotePort.value, 'Remote port', false);
     const localPort = this.parsePort(this.portForwardLocalPort.value, 'Local port', true);
+    const openInBrowser = this.portForwardOpenBrowser.checked;
     if (remotePort === undefined || remotePort === null || localPort === null) return;
     const input: KubernetesPortForwardInput = {
       ...draft,
       remotePort,
       ...(localPort === undefined ? {} : { localPort }),
     };
+    let state: KubernetesPortForwardState;
     try {
-      const state = await window.kubernetesApi.startPortForward(input);
-      this.portForwardRevision += 1;
-      this.portForwards.set(state.id, state);
-      this.renderPortForwards();
-      this.closePortForwardDialog();
-      setMessage('Port forward started.', 'success');
+      state = await window.kubernetesApi.startPortForward(input);
     } catch (error) {
       const message = toErrorMessage(error);
       this.setPortForwardError(message);
       setMessage(message, 'error');
+      return;
     }
+    this.portForwardLocalPort.value = String(state.localPort);
+    this.portForwardRevision += 1;
+    this.portForwards.set(state.id, state);
+    this.renderPortForwards();
+    this.closePortForwardDialog();
+    setMessage(`Port forward started at 127.0.0.1:${state.localPort}.`, 'success');
+    if (openInBrowser) await this.openPortForwardEndpoint(state.localPort, true);
   }
 
   private parsePort(value: string, label: string, optional: boolean): number | undefined | null {
@@ -3573,20 +3584,76 @@ class KubernetesPage implements KubernetesPageController {
     this.renderPortForwards();
   }
 
+  private openPortForwardsDialog(): void {
+    if (!this.portForwardsDialog.open) this.portForwardsDialog.showModal();
+  }
+
+  private closePortForwardsDialog(): void {
+    if (this.portForwardsDialog.open) this.portForwardsDialog.close();
+  }
+
+  private async stopAllListedPortForwards(): Promise<void> {
+    if (this.closingAllPortForwards) return;
+    const listedIds = [...this.portForwards.keys()];
+    if (listedIds.length === 0) return;
+    this.closingAllPortForwards = true;
+    this.renderPortForwards();
+    try {
+      await window.kubernetesApi.stopAllPortForwards();
+      for (const id of listedIds) this.portForwards.delete(id);
+      setMessage('All port forwards closed.', 'success');
+    } catch (error) {
+      setMessage(toErrorMessage(error), 'error');
+      void this.loadPortForwards();
+    } finally {
+      this.closingAllPortForwards = false;
+      this.renderPortForwards();
+    }
+  }
+
+  private async openPortForwardEndpoint(localPort: number, justStarted = false): Promise<void> {
+    try {
+      await window.serviceApi.openExternal(`http://127.0.0.1:${localPort}`);
+    } catch (error) {
+      setMessage(
+        `${justStarted ? 'Port forward started, but the browser could not be opened' : 'Unable to open the forwarded port'}: ${toErrorMessage(error)}`,
+        'error',
+      );
+    }
+  }
+
   private renderPortForwards(): void {
     this.portForwardList.replaceChildren();
     const forwards = [...this.portForwards.values()];
-    this.portForwardPanel.classList.toggle('hidden', forwards.length === 0);
+    this.portForwardsCount.textContent = String(forwards.length);
+    this.portForwardsToggle.setAttribute('aria-label', `Forwarded Ports (${forwards.length})`);
+    this.portForwardsCloseAll.disabled = this.closingAllPortForwards || forwards.length === 0;
     const active = this.activeDetail;
     if (active && this.isCurrentActiveDrawer(active)) this.renderDrawerPortForward(active);
-    if (forwards.length === 0) return;
+    if (forwards.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'kubernetes-port-forward-empty';
+      empty.textContent = 'No active port forwards.';
+      this.portForwardList.appendChild(empty);
+      return;
+    }
     for (const forward of forwards) {
       const row = document.createElement('div');
       row.className = 'kubernetes-port-forward-row';
       const target = document.createElement('span');
       target.textContent = `${forward.namespace}/${forward.targetName}`;
-      const mapping = document.createElement('span');
-      mapping.textContent = `127.0.0.1:${forward.localPort} → ${forward.remotePort}`;
+      const mapping = document.createElement('div');
+      mapping.className = 'kubernetes-port-forward-mapping';
+      const endpoint = document.createElement('button');
+      endpoint.type = 'button';
+      endpoint.className = 'kubernetes-port-forward-endpoint';
+      endpoint.textContent = forward.localPort > 0 ? `127.0.0.1:${forward.localPort}` : 'Allocating local port…';
+      endpoint.disabled = forward.state !== 'running' || forward.localPort < 1;
+      endpoint.setAttribute('aria-label', `Open 127.0.0.1:${forward.localPort} in the default browser`);
+      endpoint.addEventListener('click', () => { void this.openPortForwardEndpoint(forward.localPort); });
+      const remote = document.createElement('span');
+      remote.textContent = `→ ${forward.remotePort}`;
+      mapping.append(endpoint, remote);
       const state = document.createElement('span');
       state.textContent = forward.error ? `${forward.state}: ${forward.error}` : forward.state;
       const stop = document.createElement('button');

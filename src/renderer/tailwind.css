@@ -390,6 +390,14 @@
     @apply flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto border-0 p-0;
   }
 
+  .kubernetes-port-forwards-toggle {
+    @apply ml-auto h-7 shrink-0 gap-1.5 px-2 text-[12px];
+  }
+
+  .kubernetes-port-forwards-count {
+    @apply inline-flex min-w-4 items-center justify-center rounded-full bg-zinc-200 px-1 font-mono text-[10px] leading-4 text-zinc-700;
+  }
+
   .kubernetes-resource-tabs {
     @apply flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto border-0 p-0;
   }
@@ -820,7 +828,16 @@
   }
 
   .kubernetes-log-toolbar .kubernetes-log-search-field {
-    @apply h-6 min-w-[120px] flex-1 px-2 font-mono text-[11px];
+    width: clamp(140px, 18vw, 220px);
+    @apply h-6 min-w-[140px] flex-none px-2 font-mono text-[11px];
+  }
+
+  .kubernetes-log-start-time {
+    @apply inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-zinc-200 bg-white pl-1.5 text-[10.5px] font-medium text-zinc-500;
+  }
+
+  .kubernetes-log-toolbar .kubernetes-log-start-time-input {
+    @apply h-[22px] w-[184px] rounded-l-none border-0 border-l border-zinc-200 px-1.5 font-mono text-[10.5px] shadow-none focus:ring-1 focus:ring-inset focus:ring-zinc-300;
   }
 
   .kubernetes-log-scope-switch {
@@ -875,17 +892,24 @@
     @apply bg-emerald-500;
   }
 
-  .kubernetes-port-forwards {
-    @apply absolute bottom-3 right-3 z-30 grid w-[min(760px,calc(100%_-_24px))] gap-2 overflow-auto rounded-lg border border-zinc-200 bg-white p-3 shadow-2xl;
-    max-height: min(12rem, calc(100% - 24px));
+  .kubernetes-port-forwards-dialog {
+    width: min(760px, calc(100vw - 32px)) !important;
+  }
+
+  .kubernetes-port-forward-dialog {
+    width: min(420px, calc(100vw - 32px)) !important;
+  }
+
+  .kubernetes-port-forwards-panel {
+    @apply overflow-hidden;
   }
 
   .kubernetes-port-forward-list {
-    @apply grid gap-1.5;
+    @apply grid max-h-[min(60vh,480px)] gap-1.5 overflow-y-auto;
   }
 
-  .kubernetes-port-forward-list > p {
-    @apply m-0 font-mono text-[12px] text-zinc-500;
+  .kubernetes-port-forward-empty {
+    @apply m-0 rounded-md border border-dashed border-zinc-200 bg-zinc-50 px-3 py-5 text-center text-[12px] text-zinc-500;
   }
 
   .kubernetes-port-forward-row {
@@ -893,8 +917,21 @@
     grid-template-columns: minmax(120px, 1fr) minmax(150px, 1fr) minmax(100px, 1fr) auto;
   }
 
-  .kubernetes-port-forward-row > span {
+  .kubernetes-port-forward-row > span,
+  .kubernetes-port-forward-row > div {
     @apply min-w-0 truncate;
+  }
+
+  .kubernetes-port-forward-mapping {
+    @apply flex items-center gap-1.5 whitespace-nowrap;
+  }
+
+  .kubernetes-port-forward-endpoint {
+    @apply min-w-0 cursor-pointer truncate border-0 bg-transparent p-0 font-mono text-[12px] text-blue-600 underline decoration-blue-200 underline-offset-2 outline-none hover:decoration-blue-600 focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-default disabled:text-zinc-400 disabled:no-underline;
+  }
+
+  .kubernetes-port-forward-open-browser {
+    @apply inline-flex h-7 items-center gap-2 text-[12px] font-medium text-zinc-700;
   }
 
   .kubernetes-terminal-host {

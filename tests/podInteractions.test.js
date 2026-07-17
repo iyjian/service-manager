@@ -3,6 +3,7 @@ const test = require('node:test');
 
 const {
   appendBoundedLogLines,
+  normalizeKubernetesLogStartTime,
   PodInteractionManager,
   shellFallbacks,
 } = require('../dist/main/kubernetes/podInteractions');
@@ -116,6 +117,15 @@ test('appendBoundedLogLines retains only the newest 2,000 complete lines', () =>
   assert.equal(next.length, 2_000);
   assert.equal(next[0], 'old-1');
   assert.equal(next.at(-1), 'new-2');
+});
+
+test('normalizeKubernetesLogStartTime requires RFC3339 and normalizes offsets', () => {
+  assert.equal(
+    normalizeKubernetesLogStartTime('2026-07-17T16:30:45+08:00'),
+    '2026-07-17T08:30:45.000Z',
+  );
+  assert.throws(() => normalizeKubernetesLogStartTime('2026-07-17 16:30:45'), /RFC3339/i);
+  assert.throws(() => normalizeKubernetesLogStartTime('not-a-date'), /RFC3339/i);
 });
 
 test('PodInteractionManager opens following logs with the 500-line initial tail', async () => {
@@ -875,6 +885,30 @@ test('PodInteractionManager closes an older log handle that resolves after page 
   assert.equal(olderClosed, 1);
 });
 
+test('PodInteractionManager closes a delayed start-time snapshot handle after page disposal', async () => {
+  const openingSnapshot = deferred();
+  let calls = 0;
+  let closed = 0;
+  const manager = createManager({
+    async openPodLog() {
+      calls += 1;
+      if (calls === 1) return createHandle();
+      return openingSnapshot.promise;
+    },
+  });
+  const logs = await manager.openLogs(POD_INPUT);
+  const filtering = manager.setLogStartTime(logs.sessionId, '2026-07-17T08:30:45.000Z');
+  await new Promise((resolve) => setImmediate(resolve));
+  await manager.disposePageScoped();
+  openingSnapshot.resolve({
+    completed: Promise.resolve(),
+    async close() { closed += 1; },
+  });
+
+  await assert.rejects(filtering, /closed before it could open|closed before/i);
+  assert.equal(closed, 1);
+});
+
 test('PodInteractionManager closes a terminal handle that resolves after page disposal', async () => {
   const opening = deferred();
   let closed = 0;
@@ -979,6 +1013,95 @@ test('PodInteractionManager Resume retrieves a bounded timestamped backlog inste
     sinceTime: '2026-07-15T08:00:00.000Z',
   });
   assert.deepEqual(resumed.lines, [anchor, missedFirst, missedSecond]);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager replaces live Pod logs with a paused start-time API snapshot', async () => {
+  const streams = [];
+  let closed = 0;
+  const startTime = '2026-07-17T08:30:45.000Z';
+  const manager = createManager({
+    async openPodLog(input, callbacks) {
+      streams.push({ input, callbacks });
+      if (!input.follow) {
+        callbacks.onLine('2026-07-17T08:30:46.000Z snapshot first');
+        callbacks.onLine('2026-07-17T08:30:47.000Z snapshot second');
+      }
+      return createHandle(() => { closed += 1; });
+    },
+  });
+  const opened = await manager.openLogs(POD_INPUT);
+  streams[0].callbacks.onLine('2026-07-17T08:00:00.000Z live before filter');
+
+  const filtered = await manager.setLogStartTime(opened.sessionId, startTime);
+  streams[0].callbacks.onLine('2026-07-17T08:30:48.000Z ignored old stream');
+
+  assert.equal(filtered.following, false);
+  assert.equal(filtered.startTime, startTime);
+  assert.equal(filtered.hasOlder, false);
+  assert.deepEqual(filtered.lines, [
+    '2026-07-17T08:30:46.000Z snapshot first',
+    '2026-07-17T08:30:47.000Z snapshot second',
+  ]);
+  assert.deepEqual(streams[1].input, {
+    ...POD_INPUT,
+    tailLines: 2_000,
+    follow: false,
+    sinceTime: startTime,
+  });
+  assert.equal(closed, 2, 'the former follow stream and completed snapshot are both released');
+
+  const resumed = await manager.setLogFollowing(opened.sessionId, true);
+  assert.equal(resumed.startTime, undefined);
+  assert.deepEqual(streams[2].input, {
+    ...POD_INPUT,
+    tailLines: 500,
+    follow: true,
+    sinceTime: '2026-07-17T08:30:47.000Z',
+  });
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager reloads bounded Deployment snapshots from one start time', async () => {
+  const streams = [];
+  let resolutions = 0;
+  const startTime = '2026-07-17T08:30:45.000Z';
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      resolutions += 1;
+      return {
+        name: 'api',
+        pods: [
+          { uid: 'pod-a', podName: 'api-a' },
+          { uid: 'pod-b', podName: 'api-b' },
+        ],
+      };
+    },
+    async openPodLog(input, callbacks) {
+      streams.push({ input, callbacks });
+      if (!input.follow) {
+        callbacks.onLine(input.podName === 'api-a'
+          ? '2026-07-17T08:30:47.000Z later'
+          : '2026-07-17T08:30:46.000Z earlier');
+      }
+      return createHandle();
+    },
+  });
+  const opened = await manager.openLogs(POD_INPUT);
+  const filtered = await manager.setLogStartTime(opened.sessionId, startTime);
+
+  assert.equal(resolutions, 2, 'Deployment membership is refreshed for the snapshot');
+  assert.deepEqual(streams.slice(2).map(({ input }) => input), [
+    { namespace: 'apps', podName: 'api-a', container: 'api', tailLines: 1_000, follow: false, sinceTime: startTime },
+    { namespace: 'apps', podName: 'api-b', container: 'api', tailLines: 1_000, follow: false, sinceTime: startTime },
+  ]);
+  assert.deepEqual(filtered.lines, [
+    '2026-07-17T08:30:46.000Z [api-b] earlier',
+    '2026-07-17T08:30:47.000Z [api-a] later',
+  ]);
+  assert.equal(filtered.following, false);
+  assert.equal(filtered.scope, 'deployment');
+  assert.equal(filtered.startTime, startTime);
   await manager.closeLogs(opened.sessionId);
 });
 

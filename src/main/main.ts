@@ -115,6 +115,7 @@ const IPC_CHANNELS = {
   kubernetesOpenLogs: 'kubernetes:open-logs',
   kubernetesLoadOlderLogs: 'kubernetes:load-older-logs',
   kubernetesSetLogScope: 'kubernetes:set-log-scope',
+  kubernetesSetLogStartTime: 'kubernetes:set-log-start-time',
   kubernetesSetLogFollowing: 'kubernetes:set-log-following',
   kubernetesClearLogs: 'kubernetes:clear-logs',
   kubernetesCloseLogs: 'kubernetes:close-logs',
@@ -125,6 +126,7 @@ const IPC_CHANNELS = {
   kubernetesOpenVnc: 'kubernetes:open-vnc',
   kubernetesStartPortForward: 'kubernetes:start-port-forward',
   kubernetesStopPortForward: 'kubernetes:stop-port-forward',
+  kubernetesStopAllPortForwards: 'kubernetes:stop-all-port-forwards',
   kubernetesListPortForwards: 'kubernetes:list-port-forwards',
   kubernetesDeactivatePage: 'kubernetes:deactivate-page',
   kubernetesStateChanged: 'kubernetes:state',
@@ -1205,6 +1207,20 @@ function registerIpcHandlers(): void {
       return getKubernetesRuntime().setLogFollowing(validateKubernetesText(payload.id, 'log session ID'), payload.following);
     }
   );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesSetLogStartTime,
+    async (_event, payload: unknown) => {
+      if (!isRecord(payload) || (payload.startTime !== undefined && typeof payload.startTime !== 'string')) {
+        throw new Error('Kubernetes log start time request is invalid.');
+      }
+      return getKubernetesRuntime().setLogStartTime(
+        validateKubernetesText(payload.id, 'log session ID'),
+        payload.startTime === undefined
+          ? undefined
+          : validateKubernetesText(payload.startTime, 'log start time', 64)
+      );
+    }
+  );
   ipcMain.handle(IPC_CHANNELS.kubernetesClearLogs, async (_event, id: unknown) =>
     getKubernetesRuntime().clearLogs(validateKubernetesText(id, 'log session ID'))
   );
@@ -1268,6 +1284,9 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesStopPortForward, async (_event, id: unknown) =>
     getKubernetesRuntime().stopPortForward(validateKubernetesText(id, 'port forward ID'))
+  );
+  ipcMain.handle(IPC_CHANNELS.kubernetesStopAllPortForwards, async () =>
+    getKubernetesRuntime().stopAllPortForwards()
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesListPortForwards, async () => getKubernetesRuntime().listPortForwards());
   ipcMain.handle(IPC_CHANNELS.kubernetesDeactivatePage, async () => getKubernetesRuntime().deactivatePage());

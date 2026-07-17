@@ -22,6 +22,7 @@ const MAXIMUM_TERMINAL_OUTPUT_CHUNK_LENGTH = 16_384;
 const DEFAULT_TERMINAL_READY_TIMEOUT_MS = 1_000;
 const SHELL_FALLBACKS = ['/bin/sh', 'ash', 'bash', '/bin/sh'] as const;
 const LOG_TIMESTAMP_PREFIX = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))(?:\s|$)/;
+const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export interface KubernetesPodInteractionTarget {
   namespace: string;
@@ -62,6 +63,21 @@ interface OlderLogLoad {
   handleClosed: boolean;
 }
 
+interface TimeLogLoad {
+  generation: number;
+  scopeGeneration: number;
+  podName: string;
+  startTime: string;
+  handle?: KubernetesPodLogHandle;
+  closeRequested: boolean;
+  handleClosed: boolean;
+}
+
+interface TimeLogSnapshot {
+  podName: string;
+  lines: string[];
+}
+
 interface LogSession {
   state: KubernetesLogState;
   input: KubernetesPodInteractionTarget;
@@ -77,6 +93,7 @@ interface LogSession {
   deploymentTargets?: KubernetesPodDeploymentLogTargets;
   olderLoads: Set<OlderLogLoad>;
   olderLoad?: Promise<KubernetesLogState>;
+  timeLoads: Set<TimeLogLoad>;
 }
 
 interface AggregateLogLine {
@@ -234,6 +251,18 @@ export function appendBoundedLogLines(
   return maximum === 0 ? [] : appended.slice(-maximum);
 }
 
+/** Normalizes the renderer-provided lower bound before it reaches Kubernetes. */
+export function normalizeKubernetesLogStartTime(value: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64 || !RFC3339_TIMESTAMP.test(value)) {
+    throw new Error('Kubernetes log start time must be an RFC3339 timestamp.');
+  }
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    throw new Error('Kubernetes log start time must be an RFC3339 timestamp.');
+  }
+  return timestamp.toISOString();
+}
+
 export function shellFallbacks(): readonly ['/bin/sh', 'ash', 'bash', '/bin/sh'] {
   return SHELL_FALLBACKS;
 }
@@ -322,6 +351,7 @@ export class PodInteractionManager {
       aggregateLines: [],
       aggregateSequence: 0,
       olderLoads: new Set(),
+      timeLoads: new Set(),
     };
     this.logs.set(sessionId, session);
     try {
@@ -425,6 +455,84 @@ export class PodInteractionManager {
     }
   }
 
+  /**
+   * Replaces the viewer with one bounded server-side snapshot beginning at an
+   * RFC3339 timestamp. Snapshot reads never remain attached as follow streams.
+   */
+  public async setLogStartTime(sessionId: string, value?: string): Promise<KubernetesLogState> {
+    const session = this.requireLog(sessionId);
+    const startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
+    if (session.state.startTime === startTime && !session.state.following && session.timeLoads.size === 0) {
+      return copyLogState(session.state);
+    }
+
+    const previous: LogScopeSnapshot = {
+      state: copyLogState(session.state),
+      lastRawLines: new Map(session.lastRawLines),
+      aggregateLines: session.aggregateLines.map((line) => ({ ...line })),
+      aggregateSequence: session.aggregateSequence,
+      deploymentTargets: copyDeploymentTargets(session.deploymentTargets),
+    };
+    const scopeGeneration = ++session.scopeGeneration;
+    const streams = this.detachLogStreams(session);
+    const timeLoads = this.detachTimeLogLoads(session);
+    session.state.following = false;
+    session.state.startTime = startTime;
+    session.state.lines = [];
+    session.state.hasOlder = false;
+    session.lastRawLines.clear();
+    session.aggregateLines = [];
+    session.aggregateSequence = 0;
+    this.emitLog(session);
+
+    try {
+      await Promise.all([
+        this.closeLogStreams(streams).catch(() => undefined),
+        this.closeTimeLogLoads(timeLoads).catch(() => undefined),
+      ]);
+      if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
+        return copyLogState(session.state);
+      }
+      if (startTime === undefined) {
+        return copyLogState(session.state);
+      }
+      if (session.state.scope === 'deployment') {
+        const pendingDeployment = this.resolveDeploymentTargets(session);
+        const deployment = pendingDeployment ? await pendingDeployment : undefined;
+        if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
+          return copyLogState(session.state);
+        }
+        if (!deployment) {
+          session.deploymentTargets = undefined;
+          session.state.deployment = undefined;
+          session.state.scope = 'pod';
+        } else {
+          session.deploymentTargets = deployment;
+          session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
+        }
+      }
+      await this.loadTimeLogSnapshot(session, startTime, scopeGeneration);
+      if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
+        return copyLogState(session.state);
+      }
+      this.emitLog(session);
+      return copyLogState(session.state);
+    } catch (error) {
+      if (this.isLogTransitionCurrent(session, scopeGeneration)) {
+        const failedLoads = this.detachTimeLogLoads(session);
+        const revision = Math.max(previous.state.revision, session.state.revision);
+        session.state = { ...copyLogState(previous.state), following: false, revision };
+        session.lastRawLines = new Map(previous.lastRawLines);
+        session.aggregateLines = previous.aggregateLines.map((line) => ({ ...line }));
+        session.aggregateSequence = previous.aggregateSequence;
+        session.deploymentTargets = copyDeploymentTargets(previous.deploymentTargets);
+        this.emitLog(session);
+        await this.closeTimeLogLoads(failedLoads).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
   public async setLogFollowing(sessionId: string, following: boolean): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
     if (!following) {
@@ -442,8 +550,12 @@ export class PodInteractionManager {
       return copyLogState(session.state);
     }
 
+    const previousStartTime = session.state.startTime;
     const scopeGeneration = ++session.scopeGeneration;
+    const timeLoads = this.detachTimeLogLoads(session);
+    await this.closeTimeLogLoads(timeLoads).catch(() => undefined);
     session.state.following = true;
+    session.state.startTime = undefined;
     try {
       if (session.state.scope === 'deployment') {
         const pendingDeployment = this.resolveDeploymentTargets(session);
@@ -470,6 +582,7 @@ export class PodInteractionManager {
     } catch (error) {
       if (this.isLogTransitionCurrent(session, scopeGeneration)) {
         session.state.following = false;
+        session.state.startTime = previousStartTime;
         this.emitLog(session);
       }
       throw error;
@@ -498,6 +611,7 @@ export class PodInteractionManager {
     const wasFollowing = session.state.following;
     const scopeGeneration = ++session.scopeGeneration;
     const streams = this.detachLogStreams(session);
+    const timeLoads = this.detachTimeLogLoads(session);
     session.state.scope = scope;
     session.state.lines = [];
     session.state.hasOlder = scope === 'pod';
@@ -505,7 +619,10 @@ export class PodInteractionManager {
     session.aggregateLines = [];
     session.aggregateSequence = 0;
     try {
-      await this.closeLogStreams(streams).catch(() => undefined);
+      await Promise.all([
+        this.closeLogStreams(streams).catch(() => undefined),
+        this.closeTimeLogLoads(timeLoads).catch(() => undefined),
+      ]);
       if (!this.isLogTransitionCurrent(session, scopeGeneration)) {
         return copyLogState(session.state);
       }
@@ -528,6 +645,11 @@ export class PodInteractionManager {
         if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
           return copyLogState(session.state);
         }
+      } else if (session.state.startTime) {
+        await this.loadTimeLogSnapshot(session, session.state.startTime, scopeGeneration);
+        if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, session.state.startTime)) {
+          return copyLogState(session.state);
+        }
       }
       this.emitLog(session);
       return copyLogState(session.state);
@@ -539,6 +661,7 @@ export class PodInteractionManager {
         // prior streams were already detached, and retrying an unknown failure
         // here could silently create a second stream or repeat the failure.
         const failedStreams = this.detachLogStreams(session);
+        const failedTimeLoads = this.detachTimeLogLoads(session);
         const revision = Math.max(previous.state.revision, session.state.revision);
         session.state = { ...copyLogState(previous.state), following: false, revision };
         session.lastRawLines = new Map(previous.lastRawLines);
@@ -546,7 +669,10 @@ export class PodInteractionManager {
         session.aggregateSequence = previous.aggregateSequence;
         session.deploymentTargets = copyDeploymentTargets(previous.deploymentTargets);
         this.emitLog(session);
-        await this.closeLogStreams(failedStreams).catch(() => undefined);
+        await Promise.all([
+          this.closeLogStreams(failedStreams).catch(() => undefined),
+          this.closeTimeLogLoads(failedTimeLoads).catch(() => undefined),
+        ]);
       }
       throw error;
     }
@@ -572,6 +698,7 @@ export class PodInteractionManager {
     const results = await Promise.allSettled([
       ...this.detachLogStreams(session).map((stream) => this.closeLogStream(stream)),
       ...[...session.olderLoads].map((pending) => this.closeOlderLoad(pending)),
+      ...this.detachTimeLogLoads(session).map((pending) => this.closeTimeLogLoad(pending)),
     ]);
     const failures = results
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -764,6 +891,105 @@ export class PodInteractionManager {
     });
   }
 
+  private async loadTimeLogSnapshot(
+    session: LogSession,
+    startTime: string,
+    scopeGeneration: number
+  ): Promise<void> {
+    if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
+      throw closedBefore('log snapshot');
+    }
+    const targets = session.state.scope === 'deployment'
+      ? session.deploymentTargets?.pods ?? []
+      : [{ uid: session.input.podName, podName: session.input.podName }];
+    if (targets.length === 0) {
+      throw new Error('No Deployment Pods currently expose this container.');
+    }
+    const tailLines = session.state.scope === 'deployment'
+      ? Math.max(1, Math.ceil(MAXIMUM_LOG_LINES / targets.length))
+      : MAXIMUM_LOG_LINES;
+    const snapshots = await Promise.all(targets.map((target) => (
+      this.readTimeLogSnapshot(session, target.podName, startTime, tailLines, scopeGeneration)
+    )));
+    if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
+      throw closedBefore('log snapshot');
+    }
+
+    session.state.lines = [];
+    session.state.hasOlder = false;
+    session.lastRawLines.clear();
+    session.aggregateLines = [];
+    session.aggregateSequence = 0;
+    for (const snapshot of snapshots) {
+      const lastLine = snapshot.lines.at(-1);
+      if (lastLine) session.lastRawLines.set(snapshot.podName, lastLine);
+      if (session.state.scope === 'deployment') {
+        for (const rawLine of snapshot.lines) {
+          session.aggregateLines.push({
+            display: aggregateDisplayLine(snapshot.podName, rawLine),
+            podName: snapshot.podName,
+            timestamp: aggregateTimestamp(rawLine),
+            sequence: ++session.aggregateSequence,
+          });
+        }
+      } else {
+        session.state.lines = appendBoundedLogLines(session.state.lines, snapshot.lines);
+      }
+    }
+    if (session.state.scope === 'deployment') {
+      session.aggregateLines.sort(compareAggregateLogLines);
+      session.aggregateLines = session.aggregateLines.slice(-MAXIMUM_LOG_LINES);
+      session.state.lines = session.aggregateLines.map((line) => line.display);
+    }
+  }
+
+  private async readTimeLogSnapshot(
+    session: LogSession,
+    podName: string,
+    startTime: string,
+    tailLines: number,
+    scopeGeneration: number
+  ): Promise<TimeLogSnapshot> {
+    const pending: TimeLogLoad = {
+      generation: ++session.nextGeneration,
+      scopeGeneration,
+      podName,
+      startTime,
+      closeRequested: false,
+      handleClosed: false,
+    };
+    session.timeLoads.add(pending);
+    let lines: string[] = [];
+    try {
+      const handle = await this.options.client().openPodLog({
+        namespace: session.input.namespace,
+        podName,
+        container: session.input.container,
+        tailLines,
+        follow: false,
+        sinceTime: startTime,
+      }, {
+        onLine: (line) => {
+          if (this.isCurrentTimeLogLoad(session, pending)) {
+            lines = appendBoundedLogLines(lines, [line], tailLines);
+          }
+        },
+      });
+      pending.handle = handle;
+      if (!this.isCurrentTimeLogLoad(session, pending)) {
+        throw closedBefore('log snapshot');
+      }
+      await handle.completed;
+      if (!this.isCurrentTimeLogLoad(session, pending)) {
+        throw closedBefore('log snapshot');
+      }
+      return { podName, lines };
+    } finally {
+      session.timeLoads.delete(pending);
+      await this.closeTimeLogLoad(pending).catch(() => undefined);
+    }
+  }
+
   private async openCurrentLogStreams(
     session: LogSession,
     initial: boolean,
@@ -887,6 +1113,13 @@ export class PodInteractionManager {
     return streams;
   }
 
+  private detachTimeLogLoads(session: LogSession): TimeLogLoad[] {
+    const loads = [...session.timeLoads];
+    session.timeLoads.clear();
+    for (const load of loads) load.closeRequested = true;
+    return loads;
+  }
+
   private async closeLogStreams(streams: LogStream[]): Promise<void> {
     const results = await Promise.allSettled(streams.map((stream) => this.closeLogStream(stream)));
     const failures = results
@@ -904,6 +1137,22 @@ export class PodInteractionManager {
   }
 
   private async closeOlderLoad(pending: OlderLogLoad): Promise<void> {
+    pending.closeRequested = true;
+    if (pending.handle && !pending.handleClosed) {
+      pending.handleClosed = true;
+      await pending.handle.close();
+    }
+  }
+
+  private async closeTimeLogLoads(loads: TimeLogLoad[]): Promise<void> {
+    const results = await Promise.allSettled(loads.map((load) => this.closeTimeLogLoad(load)));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) throw errorFromFailures(failures, 'Kubernetes log snapshot cleanup failed.');
+  }
+
+  private async closeTimeLogLoad(pending: TimeLogLoad): Promise<void> {
     pending.closeRequested = true;
     if (pending.handle && !pending.handleClosed) {
       pending.handleClosed = true;
@@ -1222,11 +1471,26 @@ export class PodInteractionManager {
       && (following === undefined || session.state.following === following);
   }
 
+  private isLogTimeTransitionCurrent(
+    session: LogSession,
+    scopeGeneration: number,
+    startTime: string | undefined
+  ): boolean {
+    return this.isLogTransitionCurrent(session, scopeGeneration, false)
+      && session.state.startTime === startTime;
+  }
+
   private isCurrentOlderLoad(session: LogSession, pending: OlderLogLoad): boolean {
     return this.isLogSessionActive(session)
       && session.state.scope === 'pod'
       && session.scopeGeneration === pending.scopeGeneration
       && session.olderLoads.has(pending)
+      && !pending.closeRequested;
+  }
+
+  private isCurrentTimeLogLoad(session: LogSession, pending: TimeLogLoad): boolean {
+    return this.isLogTimeTransitionCurrent(session, pending.scopeGeneration, pending.startTime)
+      && session.timeLoads.has(pending)
       && !pending.closeRequested;
   }
 

@@ -154,26 +154,22 @@ export function buildKubernetesPortForwardDialogModel(
 ): {
   remotePort: string;
   selectorVisible: boolean;
-  hint: string;
 } {
   if (ports.length === 0) {
     return {
       remotePort: '',
       selectorVisible: false,
-      hint: 'No TCP port is declared. Enter a Remote Port manually.',
     };
   }
   if (ports.length === 1) {
     return {
       remotePort: String(ports[0].remotePort),
       selectorVisible: false,
-      hint: 'The declared port is prefilled. You can edit the Remote Port.',
     };
   }
   return {
     remotePort: '',
     selectorVisible: true,
-    hint: 'Select a declared port or enter a Remote Port manually.',
   };
 }
 

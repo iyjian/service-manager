@@ -182,6 +182,13 @@ function createRuntime(options = {}) {
         scope, deployment: { name: 'api', podCount: 2 }, revision: 2,
       };
     },
+    async setLogStartTime(_id, startTime) {
+      calls.push(`log-start-time:${startTime ?? 'none'}`);
+      return {
+        sessionId: 'log-1', ...POD_TARGET, lines: ['snapshot'], following: false,
+        startTime, hasOlder: false, scope: 'pod', revision: 3,
+      };
+    },
     async setLogFollowing() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, scope: 'pod', revision: 3 }; },
     clearLogs() { return { sessionId: 'log-1', ...POD_TARGET, lines: [], following: false, hasOlder: false, scope: 'pod', revision: 4 }; },
     async closeLogs() { calls.push('close-logs'); },
@@ -193,7 +200,7 @@ function createRuntime(options = {}) {
     resizeTerminal() { calls.push('resize-terminal'); },
     async closeTerminal() { calls.push('close-terminal'); },
     async startPortForward(input) {
-      const forward = { id: 'forward-1', ...input, localPort: 41000, state: 'running' };
+      const forward = { id: `forward-${forwards.length + 1}`, ...input, localPort: 41000 + forwards.length, state: 'running' };
       forwards = [...forwards, forward];
       calls.push('start-forward');
       return forward;
@@ -542,6 +549,25 @@ test('KubernetesRuntime page deactivation stops watches/logs/terminals but retai
   assert.equal(fakeCoordinator.disposePageScopedCalls, 1);
   assert.equal(fakeInteractions.disposePageScopedCalls, 1);
   assert.equal((await runtime.listPortForwards()).length, 1);
+});
+
+test('KubernetesRuntime Close All stops one main-process snapshot and publishes every stopped forward', async () => {
+  const { runtime, calls } = createRuntime();
+  const changed = [];
+  runtime.onPortForwardChanged((state) => changed.push(state));
+  const first = await runtime.startPortForward(FORWARD);
+  const second = await runtime.startPortForward({ ...FORWARD, targetName: 'worker', remotePort: 9090 });
+  calls.length = 0;
+  changed.length = 0;
+
+  await runtime.stopAllPortForwards();
+
+  assert.deepEqual(calls, ['stop-forward', 'stop-forward']);
+  assert.deepEqual(await runtime.listPortForwards(), []);
+  assert.deepEqual(
+    changed.map(({ id, state }) => [id, state]),
+    [[first.id, 'stopped'], [second.id, 'stopped']]
+  );
 });
 
 test('KubernetesRuntime page deactivation closes active VNC and rejects a delayed stale opening', async () => {
@@ -1056,6 +1082,21 @@ test('KubernetesRuntime forwards only validated log scopes and copies Deployment
   state.deployment.podCount = 99;
   await assert.rejects(runtime.setLogScope('log-1', 'all'), /scope must be pod or deployment/i);
   assert.equal(calls.filter((call) => call.startsWith('log-scope:')).length, 1);
+});
+
+test('KubernetesRuntime normalizes and forwards only RFC3339 log start times', async () => {
+  const { runtime, calls } = createRuntime();
+  const state = await runtime.setLogStartTime('log-1', '2026-07-17T16:30:45+08:00');
+
+  assert.equal(state.startTime, '2026-07-17T08:30:45.000Z');
+  assert.equal(state.following, false);
+  assert.ok(calls.includes('log-start-time:2026-07-17T08:30:45.000Z'));
+  await assert.rejects(runtime.setLogStartTime('log-1', '2026-07-17 16:30'), /RFC3339/i);
+  assert.equal(calls.filter((call) => call.startsWith('log-start-time:')).length, 1);
+
+  const cleared = await runtime.setLogStartTime('log-1');
+  assert.equal(cleared.startTime, undefined);
+  assert.ok(calls.includes('log-start-time:none'));
 });
 
 test('KubernetesRuntime routes transient log scope failures through Context cleanup and reconnect', async () => {

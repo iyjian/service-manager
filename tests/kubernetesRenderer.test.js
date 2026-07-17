@@ -828,11 +828,19 @@ test('Kubernetes Task 5 keeps port forwards while moving Logs and Shell into the
 
   assert.match(html, /id="kubernetes-detail-port-forward"/);
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
-  assert.match(html, /id="kubernetes-port-forwards"/);
+  assert.match(html, /id="kubernetes-port-forwards-toggle"/);
+  assert.match(html, /id="kubernetes-port-forwards-count"[^>]*>0</);
+  assert.match(html, /id="kubernetes-port-forwards-dialog"/);
+  assert.match(html, /id="kubernetes-port-forwards-close-all"[^>]*disabled>Close All</);
   assert.match(html, /id="kubernetes-workspace"/);
+  assert.ok(html.indexOf('id="kubernetes-category-tabs"') < html.indexOf('id="kubernetes-port-forwards-toggle"'));
   assert.doesNotMatch(html, /id="kubernetes-log-panel"|id="kubernetes-terminal-drawer"/);
   assert.match(page, /startPortForward/);
   assert.match(page, /stopPortForward/);
+  assert.match(page, /stopAllListedPortForwards/);
+  assert.match(page, /kubernetesApi\.stopAllPortForwards\(\)/);
+  assert.match(page, /endpoint\.addEventListener\('click',[\s\S]*?openPortForwardEndpoint\(forward\.localPort\)/);
+  assert.match(page, /serviceApi\.openExternal\(`http:\/\/127\.0\.0\.1:\$\{localPort\}`\)/);
   assert.match(page, /createKubernetesWorkspace/);
   assert.match(page, /onLogChanged\(\(state\) => this\.workspace\?\.onLogChanged\(state\)\)/);
   assert.match(page, /onTerminalChanged\(\(state\) => this\.workspace\?\.onTerminalChanged\(state\)\)/);
@@ -1875,7 +1883,9 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.match(html, /id="kubernetes-detail-drawer"/);
   assert.match(html, /id="kubernetes-workspace"/);
   assert.match(page, /description\.title = field\.value/);
-  assert.match(page, /portForwardPanel\.classList\.toggle\('hidden', forwards\.length === 0\)/);
+  assert.match(page, /portForwardsCount\.textContent = String\(forwards\.length\)/);
+  assert.match(page, /portForwardsToggle\.setAttribute\('aria-label', `Forwarded Ports \(\$\{forwards\.length\}\)`\)/);
+  assert.doesNotMatch(page, /portForwardPanel\.classList\.toggle\('hidden'/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?@apply[^;]*mx-0[^;]*max-w-none/);
   assert.match(styles, /\.app-shell\[data-page='kubernetes'\][\s\S]*?height:\s*100dvh/);
   const listRule = styles.match(/\.kubernetes-list-page\s*\{([^}]*)\}/);
@@ -1918,7 +1928,9 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.doesNotMatch(styles, /kubernetes-tls-warning|kubernetes-detail-port-summary/);
   assert.doesNotMatch(styles, /\.kubernetes-detail-page\s*\{/);
   assert.doesNotMatch(styles, /\.kubernetes-detail-copy\s*\{/);
-  assert.match(styles, /\.kubernetes-port-forwards\s*\{[\s\S]*?absolute/);
+  assert.match(styles, /\.kubernetes-port-forwards-dialog\s*\{[\s\S]*?width:\s*min\(760px,\s*calc\(100vw\s*-\s*32px\)\)\s*!important/);
+  assert.match(styles, /\.kubernetes-port-forward-dialog\s*\{[\s\S]*?width:\s*min\(420px,\s*calc\(100vw\s*-\s*32px\)\)\s*!important/);
+  assert.doesNotMatch(styles, /\.kubernetes-port-forwards\s*\{[\s\S]*?absolute/);
   assert.match(styles, /\.kubernetes-related-list\s*\{/);
   assert.match(styles, /\.kubernetes-related-row\s*\{/);
   assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
@@ -1942,7 +1954,7 @@ test('Kubernetes drawer narrows while Namespace menus remain unclipped and other
 
 test('Kubernetes workspace owns a bounded Shell pane while port forwards stay independent', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
-  const forwardRule = styles.match(/\.kubernetes-port-forwards\s*\{([^}]*)\}/);
+  const forwardRule = styles.match(/\.kubernetes-port-forwards-dialog\s*\{([^}]*)\}/);
   const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
   const logPanelRule = styles.match(/\.kubernetes-log-panel\s*\{([^}]*)\}/);
   const logOutputRule = styles.match(/\.kubernetes-log-output\s*\{([^}]*)\}/);
@@ -1967,7 +1979,8 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   assert.match(logOutputRule[1], /min-h-0[^;]*overflow-y-auto/);
   assert.doesNotMatch(shellRule[1], /grid-rows-\[auto_minmax\(0,1fr\)\]/);
   assert.match(shellHostRule[1], /h-full/);
-  assert.match(forwardRule[1], /absolute/);
+  assert.match(forwardRule[1], /width:\s*min\(760px,\s*calc\(100vw\s*-\s*32px\)\)\s*!important/);
+  assert.doesNotMatch(forwardRule[1], /absolute/);
   assert.doesNotMatch(styles, /\.kubernetes-terminal-drawer\s*\{/);
   assert.doesNotMatch(styles, /kubernetes-terminal-drawer:not/);
 });

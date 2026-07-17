@@ -151,17 +151,14 @@ test('buildKubernetesPortForwardDialogModel leaves zero blank, prefills one, and
   assert.deepEqual(buildKubernetesPortForwardDialogModel([]), {
     remotePort: '',
     selectorVisible: false,
-    hint: 'No TCP port is declared. Enter a Remote Port manually.',
   });
   assert.deepEqual(buildKubernetesPortForwardDialogModel([declared]), {
     remotePort: '3000',
     selectorVisible: false,
-    hint: 'The declared port is prefilled. You can edit the Remote Port.',
   });
   assert.deepEqual(buildKubernetesPortForwardDialogModel([declared, another]), {
     remotePort: '',
     selectorVisible: true,
-    hint: 'Select a declared port or enter a Remote Port manually.',
   });
 });
 
@@ -333,7 +330,7 @@ test('Custom Resource detail model mirrors Lens Properties and condition fallbac
 test('Kubernetes resource detail uses an overlay drawer header with Port Forward and YAML controls', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const detailStart = html.indexOf('id="kubernetes-detail-drawer"');
-  const detailEnd = html.indexOf('id="kubernetes-port-forwards"', detailStart);
+  const detailEnd = html.indexOf('</aside>', detailStart);
   const detail = html.slice(detailStart, detailEnd);
 
   assert.ok(detailStart >= 0);
@@ -502,7 +499,7 @@ test('Kubernetes drawer close invalidates only the active detail and preserves r
   assert.match(closeDetail, /this\.decodedSecretDetail = undefined/);
   assert.match(closeDetail, /this\.detailDrawer\.classList\.add\('hidden'\)/);
   assert.match(closeDetail, /this\.closePortForwardDialog\(\)/);
-  assert.doesNotMatch(closeDetail, /closeLogs|closeTerminal|stopPortForward|deactivatePage/);
+  assert.doesNotMatch(closeDetail, /closeLogs|closeTerminal|stop(?:All)?PortForwards?|deactivatePage/);
   assert.doesNotMatch(closeDetail, /await /);
 });
 
@@ -560,7 +557,7 @@ test('Kubernetes Pod drawer starts Labels collapsed and Containers expanded', as
   assert.match(section, /content\.classList\.toggle\('hidden', !expanded\)/);
 });
 
-test('Kubernetes Port Forward dialog declares a hidden safe candidate selector before manual ports', async () => {
+test('Kubernetes Port Forward dialog keeps only port controls and defaults browser opening on', async () => {
   const html = await readFile(path.join(rendererPath, 'index.html'), 'utf8');
   const dialogStart = html.indexOf('id="kubernetes-port-forward-dialog"');
   const dialogEnd = html.indexOf('</dialog>', dialogStart);
@@ -569,11 +566,13 @@ test('Kubernetes Port Forward dialog declares a hidden safe candidate selector b
   assert.ok(dialogStart >= 0);
   assert.match(dialog, /id="kubernetes-port-forward-declared-field"[^>]*class="[^"]*hidden/);
   assert.match(dialog, /<select id="kubernetes-port-forward-declared-port"/);
-  assert.match(dialog, /id="kubernetes-port-forward-hint"/);
+  assert.match(dialog, /id="kubernetes-port-forward-open-browser"[^>]*type="checkbox"[^>]*checked/);
+  assert.match(dialog, /Open in default browser/);
+  assert.doesNotMatch(dialog, /id="kubernetes-port-forward-target"|id="kubernetes-port-forward-hint"/);
   assert.ok(dialog.indexOf('id="kubernetes-port-forward-declared-port"')
     < dialog.indexOf('id="kubernetes-port-forward-remote-port"'));
-  assert.ok(dialog.indexOf('id="kubernetes-port-forward-hint"')
-    < dialog.indexOf('id="kubernetes-port-forward-remote-port"'));
+  assert.ok(dialog.indexOf('id="kubernetes-port-forward-local-port"')
+    < dialog.indexOf('id="kubernetes-port-forward-open-browser"'));
 });
 
 test('Kubernetes detail controller safely integrates Overview and declared Port Forward models', async () => {
@@ -584,6 +583,12 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
   const dialogStart = page.indexOf('    openPortForwardDialog() {');
   const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
   const dialog = page.slice(dialogStart, dialogEnd);
+  const submitStart = page.indexOf('    async submitPortForward() {', dialogEnd);
+  const submitEnd = page.indexOf('    parsePort(', submitStart);
+  const submit = page.slice(submitStart, submitEnd);
+  const browserStart = page.indexOf('    async openPortForwardEndpoint(', submitEnd);
+  const browserEnd = page.indexOf('    renderPortForwards() {', browserStart);
+  const browser = page.slice(browserStart, browserEnd);
   const detailRuntimeStart = page.indexOf('    renderDrawerPortForward(active) {');
   const detailRuntimeEnd = page.indexOf('    renderPodDrawer(detail, active) {', detailRuntimeStart);
   const detailRuntime = page.slice(detailRuntimeStart, detailRuntimeEnd);
@@ -594,7 +599,6 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
   assert.match(page, /buildKubernetesOverviewFields/);
   assert.match(page, /buildKubernetesPortForwardDialogModel/);
   assert.match(page, /detectKubernetesForwardPorts/);
-  assert.match(page, /formatKubernetesDeclaredPortLabel/);
   assert.match(overview, /buildKubernetesOverviewFields\(detail,/);
   assert.match(overview, /term\.textContent = field\.label/);
   assert.match(overview, /description\.textContent = field\.value/);
@@ -623,11 +627,19 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
   assert.match(dialog, /this\.portForwards\.size >= 10/);
   assert.match(dialog, /buildKubernetesPortForwardDialogModel\(declaredPorts\)/);
   assert.match(dialog, /document\.createElement\('option'\)/);
-  assert.match(dialog, /option\.textContent = formatKubernetesDeclaredPortLabel\(port\)/);
-  assert.match(dialog, /portForwardHint\.textContent/);
+  assert.match(dialog, /option\.textContent = String\(port\.remotePort\)/);
+  assert.doesNotMatch(dialog, /formatKubernetesDeclaredPortLabel|declarations|http \(/);
+  assert.match(dialog, /portForwardOpenBrowser\.checked = true/);
+  assert.doesNotMatch(dialog, /portForwardHint|portForwardTarget/);
   assert.doesNotMatch(dialog, /innerHTML/);
   assert.match(page, /portForwardDeclaredPort\.addEventListener\('change'/);
   assert.match(page, /portForwardRemotePort\.addEventListener\('input'[\s\S]*?portForwardDeclaredPort\.value = ''/);
+  assert.match(submit, /const openInBrowser = this\.portForwardOpenBrowser\.checked/);
+  assert.match(submit, /state = await window\.kubernetesApi\.startPortForward\(input\)/);
+  assert.match(submit, /catch \(error\)[\s\S]*?return;[\s\S]*?this\.portForwardLocalPort\.value = String\(state\.localPort\)/);
+  assert.match(submit, /if \(openInBrowser\)[\s\S]*?await this\.openPortForwardEndpoint\(state\.localPort, true\)/);
+  assert.match(browser, /window\.serviceApi\.openExternal\(`http:\/\/127\.0\.0\.1:\$\{localPort\}`\)/);
+  assert.match(browser, /catch \(error\)[\s\S]*?Port forward started, but the browser could not be opened/);
 });
 
 test('Kubernetes detail loading synchronously fences stale actions for direct and related Pod navigation', async () => {

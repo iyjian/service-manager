@@ -252,6 +252,8 @@ export interface KubernetesLogState {
   container: string;
   lines: string[];
   following: boolean;
+  /** RFC3339 lower bound for a paused API snapshot. Omitted for ordinary live logs. */
+  startTime?: string;
   hasOlder: boolean;
   /** Current source selection. Deployment scope is resolved only in main. */
   scope: KubernetesLogScope;
@@ -267,6 +269,7 @@ export interface KubernetesLogState {
 /** Renderer-safe contract for one bounded Pod log viewer. */
 export interface KubernetesLogApi {
   setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
+  setLogStartTime(id: string, startTime?: string): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): Promise<KubernetesLogState>;
   closeLogs(id: string): Promise<void>;
@@ -489,6 +492,7 @@ export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
   openVnc(input: KubernetesVncTarget): Promise<KubernetesVncLaunchResult>;
   startPortForward(input: KubernetesPortForwardInput): Promise<KubernetesPortForwardState>;
   stopPortForward(id: string): Promise<void>;
+  stopAllPortForwards(): Promise<void>;
   listPortForwards(): Promise<KubernetesPortForwardState[]>;
   onListChanged(listener: (snapshot: KubernetesListSnapshot) => void): () => void;
   onLogChanged(listener: (state: KubernetesLogState) => void): () => void;

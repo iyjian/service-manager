@@ -723,6 +723,65 @@ test('workspace height clamps between a compact minimum and eighty percent of it
   assert.equal(clampKubernetesWorkspaceHeight(200, 100), 80, 'small pages keep the maximum authoritative');
 });
 
+test('a newly created Shell uses half the page height without changing the Logs default or an explicit height', async () => {
+  await withWorkspaceDom(async ({ flushAnimationFrames }) => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const page = new FakeElement('div');
+    page.clientHeight = 800;
+    const root = new FakeElement('section');
+    root.rectHeight = 240;
+    const resizeHandle = new FakeElement('div');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    page.append(root);
+    const logsTarget = { namespace: 'apps', podName: 'api', container: 'web' };
+    const shellTarget = { namespace: 'apps', podName: 'worker', container: 'worker' };
+    const secondShellTarget = { namespace: 'apps', podName: 'jobs', container: 'runner' };
+    let terminalNumber = 0;
+    const workspace = createKubernetesWorkspace({
+      root,
+      resizeHandle,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api',
+        ...logsTarget,
+        lines: ['ready'],
+        following: true,
+        hasOlder: false,
+        revision: 1,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async (target) => ({
+        id: `terminal-${++terminalNumber}`,
+        ...target,
+        shell: '/bin/sh',
+        state: 'open',
+      }),
+      writeTerminal: async () => {},
+      resizeTerminal: async () => {},
+      closeTerminal: async () => {},
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(logsTarget);
+    assert.equal(root.style.height, '', 'Logs continues to use the compact CSS default');
+
+    await workspace.openShell(shellTarget);
+    assert.equal(root.style.height, '400px', 'the first Shell occupies half of the Kubernetes page');
+
+    root.style.height = '310px';
+    await workspace.openShell(secondShellTarget);
+    assert.equal(root.style.height, '310px', 'a user-selected inline height remains authoritative');
+
+    flushAnimationFrames();
+    await workspace.dispose();
+  }, { deferAnimationFrames: true });
+});
+
 test('workspace resize handle clamps pointer, keyboard, and window resize height, refits Shell, and cleans up listeners', async () => {
   await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
@@ -829,7 +888,7 @@ test('workspace panes omit duplicate target titles while tab accessible names re
     assert.equal(pane.getAttribute('aria-label'), 'Logs apps/api · web');
     const toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
     assert.ok(toolbar);
-    assert.equal(toolbar.children.length, 3, 'toolbar contains only search, follow, and clear');
+    assert.equal(toolbar.children.length, 4, 'toolbar contains search, start time, follow, and clear');
 
     await workspace.openShell(target);
     assert.equal(pane.getAttribute('aria-label'), 'Shell apps/api · web');
@@ -838,6 +897,90 @@ test('workspace panes omit duplicate target titles while tab accessible names re
     assert.ok(shellPanel);
     assert.equal(shellPanel.children.length, 1, 'Shell pane gives all remaining space to xterm');
 
+    await workspace.dispose();
+  });
+});
+
+test('log start time reloads a paused second-precision snapshot and Resume clears the filter', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const snapshot = deferred();
+    const startTimeCalls = [];
+    const followingCalls = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api',
+        ...target,
+        lines: ['live'],
+        following: true,
+        hasOlder: true,
+        scope: 'pod',
+        revision: 1,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: (id, startTime) => {
+        startTimeCalls.push([id, startTime]);
+        return snapshot.promise;
+      },
+      setLogFollowing: async (id, following) => {
+        followingCalls.push([id, following]);
+        return {
+          sessionId: id,
+          ...target,
+          lines: ['snapshot', 'caught up'],
+          following,
+          hasOlder: false,
+          scope: 'pod',
+          revision: 3,
+        };
+      },
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const localValue = '2026-07-17T12:34:56';
+    const startTime = findByAriaLabel(pane, 'Log start time for Logs apps/api · web');
+    startTime.value = localValue;
+    startTime.listeners.get('change')();
+    const expectedIso = new Date(localValue).toISOString();
+    assert.deepEqual(startTimeCalls, [['log-api', expectedIso]]);
+    assert.ok(findByAriaLabel(pane, 'Resume log follow'));
+    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').disabled, true);
+
+    snapshot.resolve({
+      sessionId: 'log-api',
+      ...target,
+      lines: ['snapshot'],
+      following: false,
+      startTime: expectedIso,
+      hasOlder: false,
+      scope: 'pod',
+      revision: 2,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, localValue);
+
+    findByAriaLabel(pane, 'Resume log follow').listeners.get('click')();
+    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, '');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(followingCalls, [['log-api', true]]);
+    assert.ok(findByAriaLabel(pane, 'Pause log follow'));
     await workspace.dispose();
   });
 });
@@ -889,7 +1032,7 @@ test('Deployment log tabs expose a default-on scope switch before search and ret
 
     await workspace.openLogs(target);
     let toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
-    assert.equal(toolbar.children.length, 4);
+    assert.equal(toolbar.children.length, 5);
     const scopeSwitch = toolbar.children[0];
     assert.equal(scopeSwitch.getAttribute('role'), 'switch');
     assert.equal(scopeSwitch.getAttribute('aria-checked'), 'true');

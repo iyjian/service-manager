@@ -226,6 +226,10 @@
               </div>
             </div>
             <div id="kubernetes-category-tabs" class="kubernetes-category-tabs" role="tablist" aria-label="Resource categories"></div>
+            <button id="kubernetes-port-forwards-toggle" class="btn btn-secondary btn-sm kubernetes-port-forwards-toggle" type="button" aria-haspopup="dialog" aria-controls="kubernetes-port-forwards-dialog" aria-label="Forwarded Ports (0)">
+              <span>Forwarded Ports</span>
+              <span id="kubernetes-port-forwards-count" class="kubernetes-port-forwards-count" aria-hidden="true">0</span>
+            </button>
           </div>
 
           <div class="kubernetes-secondary-row">
@@ -290,12 +294,6 @@
             <pre id="kubernetes-detail-yaml" class="kubernetes-detail-code hidden"></pre>
           </section>
         </aside>
-        <section id="kubernetes-port-forwards" class="kubernetes-port-forwards hidden" aria-label="Port Forwards">
-          <header class="subcard-head">
-            <h3 class="subcard-title">Port Forwards</h3>
-          </header>
-          <div id="kubernetes-port-forward-list" class="kubernetes-port-forward-list" data-empty="No active port forwards."></div>
-        </section>
       </section>
     </main>
       </div>
@@ -378,18 +376,29 @@
       </div>
     </dialog>
 
+    <dialog id="kubernetes-port-forwards-dialog" class="host-dialog kubernetes-port-forwards-dialog">
+      <div class="dialog-panel kubernetes-port-forwards-panel">
+        <div class="dialog-head">
+          <h2 class="section-title">Forwarded Ports</h2>
+          <div class="dialog-head-actions">
+            <button id="kubernetes-port-forwards-close-all" type="button" class="btn btn-secondary btn-sm" disabled>Close All</button>
+            <button id="kubernetes-port-forwards-close" type="button" class="icon-btn" aria-label="Close Forwarded Ports">×</button>
+          </div>
+        </div>
+        <div id="kubernetes-port-forward-list" class="kubernetes-port-forward-list" aria-live="polite"></div>
+      </div>
+    </dialog>
+
     <dialog id="kubernetes-port-forward-dialog" class="host-dialog kubernetes-port-forward-dialog">
       <form id="kubernetes-port-forward-form" class="dialog-panel form-stack" method="dialog">
         <div class="dialog-head">
           <h2 id="kubernetes-port-forward-title" class="section-title">Port Forward</h2>
           <button id="kubernetes-port-forward-cancel" type="button" class="icon-btn" aria-label="Close">×</button>
         </div>
-        <p id="kubernetes-port-forward-target" class="kubernetes-detail-subtitle"></p>
         <label id="kubernetes-port-forward-declared-field" class="field field-xs hidden">
           Declared Port
           <select id="kubernetes-port-forward-declared-port" class="input"></select>
         </label>
-        <p id="kubernetes-port-forward-hint" class="kubernetes-detail-subtitle"></p>
         <label class="field field-xs">
           Remote Port
           <input id="kubernetes-port-forward-remote-port" class="input" type="number" min="1" max="65535" required />
@@ -397,6 +406,10 @@
         <label class="field field-xs">
           Local Port (optional)
           <input id="kubernetes-port-forward-local-port" class="input" type="number" min="1" max="65535" placeholder="Auto allocate" />
+        </label>
+        <label class="kubernetes-port-forward-open-browser">
+          <input id="kubernetes-port-forward-open-browser" type="checkbox" class="checkbox" checked />
+          Open in default browser
         </label>
         <p id="kubernetes-port-forward-error" class="kubernetes-port-forward-error hidden" aria-live="polite"></p>
         <div class="form-actions">

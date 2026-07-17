@@ -39,7 +39,12 @@ import {
   type KubernetesVncHandle,
   type KubernetesWatchEvent,
 } from './kubernetesClient';
-import { PodInteractionManager, type KubernetesPortForwardInput as RuntimePortForwardInput, type KubernetesPodInteractionTarget } from './podInteractions';
+import {
+  normalizeKubernetesLogStartTime,
+  PodInteractionManager,
+  type KubernetesPortForwardInput as RuntimePortForwardInput,
+  type KubernetesPodInteractionTarget,
+} from './podInteractions';
 import { ResourceCache } from './resourceCache';
 import { ResourceCoordinator, type KubernetesListSnapshot, type ResourceCoordinatorOptions } from './resourceCoordinator';
 import { projectLoadedResourceItems, resourceQueryKey, type KubernetesResourceQuery } from './resourceQuery';
@@ -91,6 +96,7 @@ export interface KubernetesInteractions {
   openLogs(input: KubernetesPodInteractionTarget): Promise<KubernetesLogState>;
   loadOlderLogs(id: string): Promise<KubernetesLogState>;
   setLogScope(id: string, scope: KubernetesLogScope): Promise<KubernetesLogState>;
+  setLogStartTime(id: string, startTime?: string): Promise<KubernetesLogState>;
   setLogFollowing(id: string, following: boolean): Promise<KubernetesLogState>;
   clearLogs(id: string): KubernetesLogState;
   closeLogs(id: string): Promise<void>;
@@ -907,6 +913,19 @@ export class KubernetesRuntime {
     return copyLogState(state);
   }
 
+  public async setLogStartTime(id: string, value?: string): Promise<KubernetesLogState> {
+    const sessionId = assertText(id, 'log session ID');
+    const startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
+    try {
+      const state = await this.ensureInteractions().setLogStartTime(sessionId, startTime);
+      this.emitLog(state);
+      return copyLogState(state);
+    } catch (error) {
+      this.onOperationFailure(error);
+      throw error;
+    }
+  }
+
   public async clearLogs(id: string): Promise<KubernetesLogState> {
     const sessionId = assertText(id, 'log session ID');
     const state = this.ensureInteractions().clearLogs(sessionId);
@@ -1025,6 +1044,22 @@ export class KubernetesRuntime {
     if (existing) {
       this.emitPortForward({ ...existing, state: 'stopped' });
     }
+  }
+
+  /** Stops the exact main-process snapshot, including starts not yet returned to the renderer. */
+  public async stopAllPortForwards(): Promise<void> {
+    const interactions = this.ensureInteractions();
+    const forwards = interactions.listPortForwards();
+    const results = await Promise.allSettled(
+      forwards.map((forward) => interactions.stopPortForward(forward.id))
+    );
+    for (const forward of forwards) {
+      this.emitPortForward({ ...forward, state: 'stopped' });
+    }
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    throwCleanupFailures(failures, 'Kubernetes port-forward cleanup failed.');
   }
 
   public async listPortForwards(): Promise<KubernetesPortForwardState[]> {
