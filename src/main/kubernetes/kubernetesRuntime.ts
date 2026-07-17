@@ -20,6 +20,7 @@ import type {
   KubernetesState,
   KubernetesTerminalState,
   KubernetesTerminalOutput,
+  KubernetesVncTarget,
 } from '../../shared/types';
 import { ClusterSession, classifyKubernetesConnectionError } from './clusterSession';
 import { type KubernetesContextPreference } from './contextPreference';
@@ -32,7 +33,12 @@ import {
   type KubeconfigCatalog,
   type KubeconfigContextSource,
 } from './kubeconfigCatalog';
-import { createKubernetesClient, type KubernetesClient, type KubernetesWatchEvent } from './kubernetesClient';
+import {
+  createKubernetesClient,
+  type KubernetesClient,
+  type KubernetesVncHandle,
+  type KubernetesWatchEvent,
+} from './kubernetesClient';
 import { PodInteractionManager, type KubernetesPortForwardInput as RuntimePortForwardInput, type KubernetesPodInteractionTarget } from './podInteractions';
 import { ResourceCache } from './resourceCache';
 import { ResourceCoordinator, type KubernetesListSnapshot, type ResourceCoordinatorOptions } from './resourceCoordinator';
@@ -312,6 +318,8 @@ export class KubernetesRuntime {
   private readonly session: KubernetesRuntimeSession;
   private coordinator?: KubernetesCoordinator;
   private interactions?: KubernetesInteractions;
+  private readonly activeVncHandles = new Set<KubernetesVncHandle>();
+  private readonly pendingVncControllers = new Set<AbortController>();
   private currentQuery?: KubernetesResourceQuery;
   private currentSnapshot?: KubernetesListSnapshot;
   private pendingListActivation?: PendingListActivation;
@@ -870,6 +878,54 @@ export class KubernetesRuntime {
     await this.ensureInteractions().closeTerminal(assertText(id, 'terminal ID'));
   }
 
+  public async openVnc(input: KubernetesVncTarget): Promise<KubernetesVncHandle> {
+    const target = this.validateVncTarget(input);
+    this.assertConnected();
+    const context = this.session.getState().selectedContext;
+    const controller = new AbortController();
+    this.pendingVncControllers.add(controller);
+    try {
+      const base = await this.observedClient().openVnc({ ...target, signal: controller.signal });
+      const state = this.session.getState();
+      if (controller.signal.aborted
+        || this.disposed
+        || this.contextTransitionGeneration !== undefined
+        || state.connection !== 'connected'
+        || state.selectedContext !== context) {
+        await base.close();
+        throw new Error('The Kubernetes Context changed before VNC could open.');
+      }
+
+      let finalized = false;
+      let handle!: KubernetesVncHandle;
+      const finalize = (): void => {
+        if (finalized) return;
+        finalized = true;
+        this.activeVncHandles.delete(handle);
+      };
+      handle = {
+        namespace: base.namespace,
+        podName: base.podName,
+        podUid: base.podUid,
+        vmiName: base.vmiName,
+        localPort: base.localPort,
+        completed: base.completed,
+        close: async () => {
+          await base.close();
+          finalize();
+        },
+      };
+      this.activeVncHandles.add(handle);
+      void base.completed.then(finalize, finalize);
+      return handle;
+    } catch (error) {
+      this.onOperationFailure(error);
+      throw error;
+    } finally {
+      this.pendingVncControllers.delete(controller);
+    }
+  }
+
   public async startPortForward(input: KubernetesPortForwardInput): Promise<KubernetesPortForwardState> {
     const validated = this.validatePortForward(input);
     this.assertConnected();
@@ -909,6 +965,7 @@ export class KubernetesRuntime {
         await Promise.all([
           transition.coordinator?.deactivate(),
           this.interactions?.disposePageScoped(),
+          this.disposeVncSessions(),
         ]);
       } finally {
         this.finishContextTransition(transition.generation);
@@ -1161,6 +1218,7 @@ export class KubernetesRuntime {
       },
       openPodLog: (input, callbacks) => client.openPodLog(input, callbacks),
       openPodExec: (input, callbacks) => client.openPodExec(input, callbacks),
+      openVnc: (input) => client.openVnc(input),
       openPortForward: (input) => client.openPortForward(input),
       close: () => client.close(),
     };
@@ -1176,6 +1234,7 @@ export class KubernetesRuntime {
     this.customResourceDefinitionsCache.clear();
     const forwards = interactions?.listPortForwards() ?? [];
     const results = await Promise.allSettled([
+      this.disposeVncSessions(),
       interactions?.disposeAll(),
       coordinator?.dispose(),
     ]);
@@ -1186,6 +1245,19 @@ export class KubernetesRuntime {
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => result.reason);
     throwCleanupFailures(failures, 'Kubernetes Context resource cleanup failed.');
+  }
+
+  private async disposeVncSessions(): Promise<void> {
+    for (const controller of this.pendingVncControllers) {
+      controller.abort();
+    }
+    const handles = [...this.activeVncHandles];
+    this.activeVncHandles.clear();
+    const results = await Promise.allSettled(handles.map((handle) => handle.close()));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    throwCleanupFailures(failures, 'Kubernetes VNC cleanup failed.');
   }
 
   /** Coalesce a Watch burst into one bounded renderer projection/IPC update. */
@@ -1475,6 +1547,17 @@ export class KubernetesRuntime {
       namespace: assertText(value.namespace, 'Namespace'),
       podName: assertText(value.podName, 'Pod name'),
       container: assertText(value.container, 'container'),
+    };
+  }
+
+  private validateVncTarget(value: KubernetesVncTarget): KubernetesVncTarget {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('A Kubernetes VNC target is required.');
+    }
+    return {
+      namespace: assertText(value.namespace, 'Namespace'),
+      podName: assertText(value.podName, 'Pod name'),
+      podUid: assertText(value.podUid, 'Pod UID'),
     };
   }
 

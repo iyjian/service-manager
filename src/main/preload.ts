@@ -8,6 +8,7 @@ import type {
   KubernetesNamespaceScope,
   KubernetesPodTarget,
   KubernetesPortForwardInput,
+  KubernetesVncTarget,
   KubernetesPortForwardState,
   KubernetesRelatedResourceRequest,
   KubernetesResourceQuery,
@@ -147,6 +148,7 @@ const kubernetesApi: KubernetesApi = {
   resizeTerminal: (id: string, cols: number, rows: number) =>
     ipcRenderer.invoke('kubernetes:resize-terminal', { id, cols, rows }),
   closeTerminal: (id: string) => ipcRenderer.invoke('kubernetes:close-terminal', id),
+  openVnc: (input: KubernetesVncTarget) => ipcRenderer.invoke('kubernetes:open-vnc', input),
   startPortForward: (input: KubernetesPortForwardInput) => ipcRenderer.invoke('kubernetes:start-port-forward', input),
   stopPortForward: (id: string) => ipcRenderer.invoke('kubernetes:stop-port-forward', id),
   listPortForwards: () => ipcRenderer.invoke('kubernetes:list-port-forwards'),

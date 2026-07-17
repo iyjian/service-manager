@@ -24,6 +24,14 @@ export interface KubernetesPodDrawerModel {
   containers: KubernetesDrawerContainer[];
 }
 
+/** Display-only KubeVirt identity. Main re-reads and validates the Pod before opening VNC. */
+export interface KubernetesVncLauncherTarget {
+  namespace: string;
+  podName: string;
+  podUid: string;
+  vmiName: string;
+}
+
 const ENVIRONMENT_UNAVAILABLE_LABELS: Record<KubernetesPodEnvironmentUnavailable, string> = {
   missing: 'Referenced value is missing',
   'no-permission': 'Value unavailable',
@@ -85,6 +93,46 @@ function strings(value: unknown): string[] {
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Identifies a KubeVirt-owned virt-launcher Pod without trusting its generated
+ * name alone. The renderer uses this only to decide whether to show the VNC
+ * action; the main process remains authoritative for opening the connection.
+ */
+export function detectKubeVirtVncTarget(detail: Record<string, unknown>): KubernetesVncLauncherTarget | undefined {
+  const metadata = record(detail.metadata);
+  const status = record(detail.status);
+  const labels = record(metadata?.labels);
+  const annotations = record(metadata?.annotations);
+  const deleting = metadata?.deletionTimestamp !== undefined && metadata.deletionTimestamp !== null;
+  if (text(status?.phase) !== 'Running'
+    || deleting
+    || text(labels?.['kubevirt.io']) !== 'virt-launcher') return undefined;
+
+  const controllerOwners = array(metadata?.ownerReferences).filter((candidate) => candidate.controller === true);
+  if (controllerOwners.length !== 1) return undefined;
+  const owner = controllerOwners[0];
+  if (text(owner.apiVersion) !== 'kubevirt.io/v1'
+    || text(owner.kind) !== 'VirtualMachineInstance') return undefined;
+  const vmiName = text(owner.name);
+  const vmiUid = text(owner.uid);
+  if (!vmiName || !vmiUid) return undefined;
+
+  const createdBy = text(labels?.['kubevirt.io/created-by']);
+  if (createdBy !== vmiUid) return undefined;
+
+  const declaredNames = [
+    text(labels?.['vm.kubevirt.io/name']),
+    text(annotations?.['kubevirt.io/domain']),
+  ].filter((value): value is string => Boolean(value));
+  if (declaredNames.length === 0 || declaredNames.some((name) => name !== vmiName)) return undefined;
+
+  const namespace = text(metadata?.namespace);
+  const podName = text(metadata?.name);
+  const podUid = text(metadata?.uid);
+  if (!namespace || !podName || !podUid) return undefined;
+  return { namespace, podName, podUid, vmiName };
 }
 
 function statusByName(value: unknown): Map<string, Record<string, unknown>> {

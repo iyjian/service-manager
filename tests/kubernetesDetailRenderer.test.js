@@ -252,6 +252,8 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
   assert.match(detail, /id="kubernetes-detail-drawer-scrim"/);
   assert.match(detail, /id="kubernetes-detail-close"/);
   assert.match(detail, /id="kubernetes-detail-yaml-toggle"/);
+  assert.match(detail, /id="kubernetes-detail-vnc"[^>]*class="[^"]*hidden[^"]*"[^>]*disabled/);
+  assert.match(detail, /id="kubernetes-detail-vnc-label">VNC</);
   assert.match(detail, /id="kubernetes-detail-port-forward"/);
   assert.match(detail, /id="kubernetes-detail-port-summary"/);
   assert.match(detail, /id="kubernetes-detail-overview"/);
@@ -260,6 +262,35 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
   assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
   assert.doesNotMatch(html, /id="kubernetes-terminal-drawer"/);
   assert.doesNotMatch(html, /id="kubernetes-log-panel"/);
+});
+
+test('Kubernetes Pod drawer exposes a fenced direct system VNC action only for detected KubeVirt launchers', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const renderStart = page.indexOf('    renderDrawerVnc(detail, active) {');
+  const openStart = page.indexOf('    async openVnc() {', renderStart);
+  const podStart = page.indexOf('    renderPodDrawer(detail, active) {', openStart);
+  const render = page.slice(renderStart, openStart);
+  const open = page.slice(openStart, podStart);
+  const replacementStart = page.indexOf('    beginDrawerReplacement() {');
+  const replacementEnd = page.indexOf('    createDrawerRequest(', replacementStart);
+  const closeStart = page.indexOf('    closeDetail() {');
+  const closeEnd = page.indexOf('    displayDetail() {', closeStart);
+
+  for (const index of [renderStart, openStart, podStart, replacementStart, replacementEnd, closeStart, closeEnd]) {
+    assert.ok(index >= 0);
+  }
+  assert.match(render, /active\.query\.kind === 'pods' \? detectKubeVirtVncTarget\(detail\) : undefined/);
+  assert.match(render, /detailVncButton\.classList\.toggle\('hidden', !target\)/);
+  assert.match(render, /detailVncButton\.disabled = !target \|\| busy/);
+  assert.match(render, /detailVncLabel\.textContent = busy \? 'Opening…' : 'VNC'/);
+  assert.doesNotMatch(render, /innerHTML/);
+  assert.match(open, /if \(!active \|\| !this\.isCurrentActiveDrawer\(active\) \|\| this\.vncOpening\)\s*return/);
+  assert.match(open, /window\.kubernetesApi\.openVnc\(\{[\s\S]*?namespace: target\.namespace,[\s\S]*?podName: target\.podName,[\s\S]*?podUid: target\.podUid/);
+  assert.doesNotMatch(open, /vmiName:|url:|vnc:\/\//);
+  assert.match(open, /setMessage\('VNC client opened\.', 'success'\)/);
+  assert.match(open, /setMessage\(toErrorMessage\(error\), 'error'\)/);
+  assert.match(page.slice(replacementStart, replacementEnd), /this\.resetDrawerVncAction\(\)/);
+  assert.match(page.slice(closeStart, closeEnd), /this\.resetDrawerVncAction\(\)/);
 });
 
 test('Kubernetes reserves a hidden workspace shell for the later Logs and Shell integration', async () => {

@@ -19,6 +19,11 @@ import {
   safePodEnvironmentReadError,
 } from './podEnvironment';
 import { buildPodExecCommand, createUtf8ChunkDecoder } from './podExecTransport';
+import {
+  isMatchingKubeVirtVmi,
+  openKubeVirtVncBridge,
+  parseKubeVirtVncTargetFromPod,
+} from './kubeVirtVnc';
 import { mapKubernetesResourceSummary } from './resourceSummary';
 import type {
   KubernetesResourcePage,
@@ -100,6 +105,25 @@ export interface KubernetesPortForwardHandle {
   close(): Promise<void>;
 }
 
+export interface KubernetesVncRequest {
+  namespace: string;
+  podName: string;
+  podUid: string;
+  /** Main-process-only lifecycle cancellation; it never crosses IPC. */
+  signal?: AbortSignal;
+}
+
+/** Main-process-only local bridge to one KubeVirt VMI VNC subresource. */
+export interface KubernetesVncHandle {
+  namespace: string;
+  podName: string;
+  podUid: string;
+  vmiName: string;
+  localPort: number;
+  completed: Promise<void>;
+  close(): Promise<void>;
+}
+
 /**
  * Main-process-only Kubernetes capability. No kubeconfig, credential, or
  * transport types are shared with the renderer.
@@ -130,6 +154,7 @@ export interface KubernetesClient {
     request: KubernetesPodExecRequest,
     callbacks: KubernetesPodExecCallbacks
   ): Promise<KubernetesPodExecHandle>;
+  openVnc(request: KubernetesVncRequest): Promise<KubernetesVncHandle>;
   openPortForward(request: KubernetesPortForwardRequest): Promise<KubernetesPortForwardHandle>;
   close(): Promise<void>;
 }
@@ -175,6 +200,7 @@ type KubeConfigLike = {
 };
 
 const PAGE_SIZE = 200;
+const MAX_ACTIVE_VNC_SESSIONS = 3;
 const MULTI_NAMESPACE_CONTINUE_PREFIX = 'service-manager-kubernetes-v1:';
 
 interface MultiNamespaceContinuation {
@@ -725,6 +751,9 @@ class KubernetesClientAdapter implements KubernetesClient {
   private readonly execApi: KubernetesNode.Exec;
   private readonly portForwardApi: KubernetesNode.PortForward;
   private readonly activeWatches = new Set<AbortController>();
+  private readonly activeVncHandles = new Set<KubernetesVncHandle>();
+  private readonly activeVncKeys = new Set<string>();
+  private readonly pendingVncControllers = new Set<AbortController>();
   private closed = false;
 
   public constructor(kubernetes: KubernetesNodeModule, kubeConfig: KubeConfigLike) {
@@ -1307,6 +1336,110 @@ class KubernetesClientAdapter implements KubernetesClient {
     };
   }
 
+  public async openVnc(request: KubernetesVncRequest): Promise<KubernetesVncHandle> {
+    this.assertOpen();
+    if (!isNonEmptyString(request.namespace)
+      || !isNonEmptyString(request.podName)
+      || !isNonEmptyString(request.podUid)) {
+      throw new Error('Kubernetes VNC Pod namespace, name, and UID are required.');
+    }
+
+    let pod: Record<string, unknown>;
+    let vmi: Record<string, unknown>;
+    try {
+      pod = asRecord(await this.call(this.core, 'readNamespacedPod', {
+        namespace: request.namespace,
+        name: request.podName,
+      }));
+      const target = parseKubeVirtVncTargetFromPod(pod);
+      if (!target
+        || target.namespace !== request.namespace
+        || target.podName !== request.podName
+        || target.podUid !== request.podUid) {
+        throw new Error('This Pod is not an active KubeVirt virtual machine with a VNC display.');
+      }
+      vmi = asRecord(await this.call(this.custom, 'getNamespacedCustomObject', {
+        group: 'kubevirt.io',
+        version: 'v1',
+        plural: 'virtualmachineinstances',
+        namespace: target.namespace,
+        name: target.vmiName,
+      }));
+      if (!isMatchingKubeVirtVmi(target, vmi)) {
+        throw new Error('The KubeVirt virtual machine is no longer running with a VNC display.');
+      }
+
+      const key = `${target.namespace}\0${target.vmiUid}`;
+      if (this.activeVncKeys.has(key)) {
+        throw new Error('A VNC session is already open for this virtual machine.');
+      }
+      if (this.activeVncKeys.size >= MAX_ACTIVE_VNC_SESSIONS) {
+        throw new Error(`At most ${MAX_ACTIVE_VNC_SESSIONS} Kubernetes VNC sessions can be active.`);
+      }
+
+      const controller = new AbortController();
+      const cancelFromOwner = (): void => controller.abort();
+      if (request.signal?.aborted) {
+        throw new Error('The Kubernetes VNC request was cancelled.');
+      }
+      request.signal?.addEventListener('abort', cancelFromOwner, { once: true });
+      this.activeVncKeys.add(key);
+      this.pendingVncControllers.add(controller);
+      try {
+        const bridge = await openKubeVirtVncBridge({
+          kubeConfig: this.runtimeKubeConfig,
+          namespace: target.namespace,
+          vmiName: target.vmiName,
+          preserveSession: true,
+          signal: controller.signal,
+        });
+        if (this.closed || controller.signal.aborted) {
+          await bridge.close();
+          throw new Error('The Kubernetes Context changed before VNC could open.');
+        }
+
+        let finalized = false;
+        let handle!: KubernetesVncHandle;
+        const finalize = (): void => {
+          if (finalized) return;
+          finalized = true;
+          this.activeVncKeys.delete(key);
+          this.activeVncHandles.delete(handle);
+        };
+        handle = {
+          namespace: target.namespace,
+          podName: target.podName,
+          podUid: target.podUid,
+          vmiName: target.vmiName,
+          localPort: bridge.localPort,
+          completed: bridge.completed,
+          close: async () => {
+            await bridge.close();
+            finalize();
+          },
+        };
+        this.activeVncHandles.add(handle);
+        void bridge.completed.then(finalize, finalize);
+        return handle;
+      } catch (error) {
+        this.activeVncKeys.delete(key);
+        throw error;
+      } finally {
+        this.pendingVncControllers.delete(controller);
+        request.signal?.removeEventListener('abort', cancelFromOwner);
+      }
+    } catch (error) {
+      const statusCode = statusCodeFrom(error);
+      if (statusCode === 401 || statusCode === 403) {
+        throw Object.assign(new Error('No permission to open this KubeVirt VNC console.'), { statusCode });
+      }
+      if (statusCode === 404) {
+        throw Object.assign(new Error('The KubeVirt VNC target is no longer available.'), { statusCode });
+      }
+      throw error;
+    }
+  }
+
   public async openPortForward(
     request: KubernetesPortForwardRequest
   ): Promise<KubernetesPortForwardHandle> {
@@ -1441,6 +1574,13 @@ class KubernetesClientAdapter implements KubernetesClient {
       return;
     }
     this.closed = true;
+    for (const controller of this.pendingVncControllers) {
+      controller.abort();
+    }
+    this.pendingVncControllers.clear();
+    await Promise.allSettled([...this.activeVncHandles].map((handle) => handle.close()));
+    this.activeVncHandles.clear();
+    this.activeVncKeys.clear();
     for (const watch of [...this.activeWatches]) {
       watch.abort();
     }

@@ -25,6 +25,8 @@ import type {
   KubernetesTerminalOutput,
   KubernetesListSnapshot,
   KubernetesPortForwardState,
+  KubernetesVncLaunchResult,
+  KubernetesVncTarget,
 } from '../shared/types';
 import { ServiceStore } from './store';
 import { checkServiceStatus, getServiceLogs, setServiceRuntimeDiagnostics, startService, stopService } from './serviceRuntime';
@@ -120,6 +122,7 @@ const IPC_CHANNELS = {
   kubernetesWriteTerminal: 'kubernetes:write-terminal',
   kubernetesResizeTerminal: 'kubernetes:resize-terminal',
   kubernetesCloseTerminal: 'kubernetes:close-terminal',
+  kubernetesOpenVnc: 'kubernetes:open-vnc',
   kubernetesStartPortForward: 'kubernetes:start-port-forward',
   kubernetesStopPortForward: 'kubernetes:stop-port-forward',
   kubernetesListPortForwards: 'kubernetes:list-port-forwards',
@@ -290,6 +293,17 @@ function validateKubernetesPodTarget(value: unknown): KubernetesPodTarget {
     namespace: validateKubernetesText(value.namespace, 'Namespace'),
     podName: validateKubernetesText(value.podName, 'Pod name'),
     container: validateKubernetesText(value.container, 'container'),
+  };
+}
+
+function validateKubernetesVncTarget(value: unknown): KubernetesVncTarget {
+  if (!isRecord(value)) {
+    throw new Error('Kubernetes VNC target is invalid.');
+  }
+  return {
+    namespace: validateKubernetesText(value.namespace, 'Namespace', 253),
+    podName: validateKubernetesText(value.podName, 'Pod name', 253),
+    podUid: validateKubernetesText(value.podUid, 'Pod UID', 253),
   };
 }
 
@@ -1226,6 +1240,24 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesCloseTerminal, async (_event, id: unknown) =>
     getKubernetesRuntime().closeTerminal(validateKubernetesText(id, 'terminal ID'))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.kubernetesOpenVnc,
+    async (_event, input: unknown): Promise<KubernetesVncLaunchResult> => {
+      const handle = await getKubernetesRuntime().openVnc(validateKubernetesVncTarget(input));
+      try {
+        await shell.openExternal(`vnc://127.0.0.1:${handle.localPort}`);
+      } catch {
+        await handle.close().catch(() => undefined);
+        throw new Error('Unable to open the system VNC client. Install or configure a VNC client that handles vnc:// links.');
+      }
+      return {
+        namespace: handle.namespace,
+        podName: handle.podName,
+        vmiName: handle.vmiName,
+        localPort: handle.localPort,
+      };
+    }
   );
   ipcMain.handle(IPC_CHANNELS.kubernetesStartPortForward, async (_event, input: unknown) =>
     getKubernetesRuntime().startPortForward(validateKubernetesPortForward(input))

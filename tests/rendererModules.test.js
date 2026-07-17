@@ -40,6 +40,22 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
   assert.doesNotMatch(preload, /client-certificate-data|exec\.command|token/);
 });
 
+test('compiled KubeVirt VNC bridge derives its loopback URL only in main and closes on launcher failure', async () => {
+  const dist = path.join(__dirname, '..', 'dist');
+  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+
+  assert.match(preload, /openVnc:\s*\(input\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('kubernetes:open-vnc', input\)/);
+  const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesOpenVnc');
+  const handlerEnd = main.indexOf('IPC_CHANNELS.kubernetesStartPortForward', handlerStart);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  const handler = main.slice(handlerStart, handlerEnd);
+  assert.match(handler, /openVnc\(validateKubernetesVncTarget\(input\)\)/);
+  assert.match(handler, /shell\.openExternal\(`vnc:\/\/127\.0\.0\.1:\$\{handle\.localPort\}`\)/);
+  assert.match(handler, /catch\s*\{[\s\S]*?handle\.close\(\)/);
+  assert.doesNotMatch(handler, /input\.(?:url|vmiName|localPort)/);
+});
+
 test('compiled Proxy traffic contract keeps Mihomo controller data in the main process', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');

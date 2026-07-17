@@ -20,6 +20,7 @@ import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
 import {
   buildKubernetesDrawerModel,
+  detectKubeVirtVncTarget,
   environmentUnavailableLabel,
   filterKubernetesEnvironmentEntries,
   shouldRenderKubernetesEnvironment,
@@ -1041,6 +1042,8 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailCloseButton = requireElement<HTMLButtonElement>('#kubernetes-detail-close');
   private readonly detailTitle = requireElement<HTMLElement>('#kubernetes-detail-title');
   private readonly detailSubtitle = requireElement<HTMLElement>('#kubernetes-detail-subtitle');
+  private readonly detailVncButton = requireElement<HTMLButtonElement>('#kubernetes-detail-vnc');
+  private readonly detailVncLabel = requireElement<HTMLElement>('#kubernetes-detail-vnc-label');
   private readonly detailPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-detail-port-forward');
   private readonly detailPortSummary = requireElement<HTMLElement>('#kubernetes-detail-port-summary');
   private readonly detailYamlToggle = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-toggle');
@@ -1099,6 +1102,7 @@ class KubernetesPage implements KubernetesPageController {
   private deactivation: Promise<void> = Promise.resolve();
   private activeDetail: ActiveDetail | undefined;
   private detailGeneration = 0;
+  private vncOpening: { drawerGeneration: number } | undefined;
   private drawerRequest: KubernetesDrawerRequest = {
     visible: false,
     pageGeneration: 0,
@@ -1330,6 +1334,7 @@ class KubernetesPage implements KubernetesPageController {
     this.customResourceSelect.addEventListener('change', () => this.selectCustomResourceDefinition());
     this.detailCloseButton.addEventListener('click', () => this.closeDetail());
     this.detailDrawerScrim.addEventListener('click', () => this.closeDetail());
+    this.detailVncButton.addEventListener('click', () => { void this.openVnc(); });
     this.detailPortForwardButton.addEventListener('click', () => this.openPortForwardDialog());
     this.detailYamlToggle.addEventListener('click', () => this.toggleDrawerYaml());
     this.portForwardDeclaredPort.addEventListener('change', () => {
@@ -2126,6 +2131,7 @@ class KubernetesPage implements KubernetesPageController {
    */
   private beginDrawerReplacement(): number {
     this.clearDrawerEnvironment();
+    this.resetDrawerVncAction();
     const generation = ++this.detailGeneration;
     this.invalidateRelatedDetail();
     this.activeDetail = undefined;
@@ -2201,6 +2207,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private closeDetail(): void {
     this.clearDrawerEnvironment();
+    this.resetDrawerVncAction();
     this.detailGeneration += 1;
     this.invalidateRelatedDetail();
     this.activeDetail = undefined;
@@ -2238,6 +2245,7 @@ class KubernetesPage implements KubernetesPageController {
     this.detailOverview.replaceChildren();
     if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
     else this.renderOverview(detail, active);
+    this.renderDrawerVnc(detail, active);
     this.renderDrawerPortForward(detail, active);
     const related = this.renderRelatedDetail(detail, active);
     if (related) this.detailOverview.appendChild(related);
@@ -2369,6 +2377,62 @@ class KubernetesPage implements KubernetesPageController {
       : declaredPorts.length === 1
         ? `1 declared · ${declaredPorts[0].remotePort}`
         : `${declaredPorts.length} declared`;
+  }
+
+  private resetDrawerVncAction(): void {
+    this.vncOpening = undefined;
+    this.detailVncButton.classList.add('hidden');
+    this.detailVncButton.disabled = true;
+    this.detailVncButton.removeAttribute('aria-busy');
+    this.detailVncButton.setAttribute('aria-label', 'Open VNC with system client');
+    this.detailVncButton.removeAttribute('title');
+    this.detailVncLabel.textContent = 'VNC';
+  }
+
+  private renderDrawerVnc(detail: Record<string, unknown>, active: ActiveDetail): void {
+    const target = active.query.kind === 'pods' ? detectKubeVirtVncTarget(detail) : undefined;
+    const busy = Boolean(target && this.vncOpening?.drawerGeneration === active.request.drawerGeneration);
+    this.detailVncButton.classList.toggle('hidden', !target);
+    this.detailVncButton.disabled = !target || busy;
+    this.detailVncButton.toggleAttribute('aria-busy', busy);
+    this.detailVncLabel.textContent = busy ? 'Opening…' : 'VNC';
+    if (target) {
+      const description = `Open VNC for ${target.vmiName} with system client`;
+      this.detailVncButton.setAttribute('aria-label', description);
+      this.detailVncButton.title = description;
+    } else {
+      this.detailVncButton.setAttribute('aria-label', 'Open VNC with system client');
+      this.detailVncButton.removeAttribute('title');
+    }
+  }
+
+  private async openVnc(): Promise<void> {
+    const active = this.activeDetail;
+    if (!active || !this.isCurrentActiveDrawer(active) || this.vncOpening) return;
+    const target = active.query.kind === 'pods' ? detectKubeVirtVncTarget(active.detail) : undefined;
+    if (!target) return;
+
+    const opening = { drawerGeneration: active.request.drawerGeneration };
+    this.vncOpening = opening;
+    this.renderDrawerVnc(active.detail, active);
+    try {
+      await window.kubernetesApi.openVnc({
+        namespace: target.namespace,
+        podName: target.podName,
+        podUid: target.podUid,
+      });
+      if (this.vncOpening === opening && this.isCurrentActiveDrawer(active)) {
+        setMessage('VNC client opened.', 'success');
+      }
+    } catch (error) {
+      if (this.vncOpening === opening && this.isCurrentActiveDrawer(active)) {
+        setMessage(toErrorMessage(error), 'error');
+      }
+    } finally {
+      if (this.vncOpening !== opening) return;
+      this.vncOpening = undefined;
+      if (this.isCurrentActiveDrawer(active)) this.renderDrawerVnc(active.detail, active);
+    }
   }
 
   private renderPodDrawer(detail: Record<string, unknown>, active: ActiveDetail): void {

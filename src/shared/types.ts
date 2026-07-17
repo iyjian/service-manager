@@ -397,6 +397,25 @@ export interface KubernetesPortForwardInput {
   localPort?: number;
 }
 
+/**
+ * Renderer-safe identity for opening a KubeVirt console from an active Pod
+ * detail. The main process re-reads the Pod and verifies this UID before it
+ * derives the owning VirtualMachineInstance.
+ */
+export interface KubernetesVncTarget {
+  namespace: string;
+  podName: string;
+  podUid: string;
+}
+
+/** Display-only result after the main process launches the system VNC client. */
+export interface KubernetesVncLaunchResult {
+  namespace: string;
+  podName: string;
+  vmiName: string;
+  localPort: number;
+}
+
 /** Display-safe terminal session metadata. */
 export interface KubernetesTerminalState {
   id: string;
@@ -449,6 +468,7 @@ export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
   writeTerminal(id: string, data: string): Promise<void>;
   resizeTerminal(id: string, cols: number, rows: number): Promise<void>;
   closeTerminal(id: string): Promise<void>;
+  openVnc(input: KubernetesVncTarget): Promise<KubernetesVncLaunchResult>;
   startPortForward(input: KubernetesPortForwardInput): Promise<KubernetesPortForwardState>;
   stopPortForward(id: string): Promise<void>;
   listPortForwards(): Promise<KubernetesPortForwardState[]>;

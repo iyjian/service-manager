@@ -40,6 +40,107 @@ test('buildKubernetesDrawerModel exposes compact Pod header and container values
   assert.doesNotMatch(JSON.stringify(model), /db|password|PASSWORD/);
 });
 
+test('detectKubeVirtVncTarget requires a running launcher with matching VMI identity and controller owner', async () => {
+  const { detectKubeVirtVncTarget } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const detail = {
+    metadata: {
+      name: 'virt-launcher-kb-kmzyssjmw-mpvwz',
+      namespace: 'kvm-builder-dev',
+      uid: 'pod-uid',
+      labels: {
+        'kubevirt.io': 'virt-launcher',
+        'kubevirt.io/created-by': 'vmi-uid',
+        'kubevirt.io/domain': 'kb-kmzyssjmw',
+        'vm.kubevirt.io/name': 'kb-kmzyssjmw',
+      },
+      annotations: { 'kubevirt.io/domain': 'kb-kmzyssjmw' },
+      ownerReferences: [{
+        apiVersion: 'kubevirt.io/v1',
+        kind: 'VirtualMachineInstance',
+        name: 'kb-kmzyssjmw',
+        uid: 'vmi-uid',
+        controller: true,
+      }],
+    },
+    spec: { containers: [{ name: 'compute', image: 'virt-launcher:test' }] },
+    status: { phase: 'Running' },
+  };
+
+  assert.deepEqual(detectKubeVirtVncTarget(detail), {
+    namespace: 'kvm-builder-dev',
+    podName: 'virt-launcher-kb-kmzyssjmw-mpvwz',
+    podUid: 'pod-uid',
+    vmiName: 'kb-kmzyssjmw',
+  });
+  assert.deepEqual(detectKubeVirtVncTarget({
+    ...detail,
+    metadata: {
+      ...detail.metadata,
+      labels: {
+        'kubevirt.io': 'virt-launcher',
+        'kubevirt.io/created-by': 'vmi-uid',
+      },
+    },
+  }), detectKubeVirtVncTarget(detail), 'the matching domain annotation is sufficient');
+  assert.deepEqual(detectKubeVirtVncTarget({
+    ...detail,
+    metadata: { ...detail.metadata, annotations: {} },
+  }), detectKubeVirtVncTarget(detail), 'the matching VMI name label is sufficient');
+});
+
+test('detectKubeVirtVncTarget rejects names and incomplete or conflicting KubeVirt metadata', async () => {
+  const { detectKubeVirtVncTarget } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const metadata = {
+    name: 'virt-launcher-demo-abcde',
+    namespace: 'vms',
+    uid: 'pod-uid',
+    labels: {
+      'kubevirt.io': 'virt-launcher',
+      'kubevirt.io/created-by': 'vmi-uid',
+      'kubevirt.io/domain': 'demo',
+      'vm.kubevirt.io/name': 'demo',
+    },
+    annotations: { 'kubevirt.io/domain': 'demo' },
+    ownerReferences: [{
+      apiVersion: 'kubevirt.io/v1',
+      kind: 'VirtualMachineInstance',
+      name: 'demo',
+      uid: 'vmi-uid',
+      controller: true,
+    }],
+  };
+  const variants = [
+    { name: metadata.name, namespace: metadata.namespace, uid: metadata.uid },
+    { ...metadata, labels: { ...metadata.labels, 'kubevirt.io': 'other' } },
+    { ...metadata, labels: { ...metadata.labels, 'kubevirt.io/created-by': undefined } },
+    {
+      ...metadata,
+      labels: {
+        'kubevirt.io': 'virt-launcher',
+        'kubevirt.io/created-by': 'vmi-uid',
+        'kubevirt.io/domain': 'demo',
+      },
+      annotations: {},
+    },
+    { ...metadata, ownerReferences: [] },
+    { ...metadata, ownerReferences: [...metadata.ownerReferences, { ...metadata.ownerReferences[0], uid: 'other-vmi-uid' }] },
+    { ...metadata, ownerReferences: [{ ...metadata.ownerReferences[0], controller: false }] },
+    { ...metadata, ownerReferences: [{ ...metadata.ownerReferences[0], apiVersion: 'example.io/v1' }] },
+    { ...metadata, ownerReferences: [{ ...metadata.ownerReferences[0], apiVersion: 'kubevirt.io' }] },
+    { ...metadata, ownerReferences: [{ ...metadata.ownerReferences[0], name: 'another-vmi' }] },
+    { ...metadata, labels: { ...metadata.labels, 'kubevirt.io/created-by': 'another-vmi-uid' } },
+    { ...metadata, labels: { ...metadata.labels, 'vm.kubevirt.io/name': 'another-vmi' } },
+    { ...metadata, annotations: { 'kubevirt.io/domain': 'another-vmi' } },
+    { ...metadata, deletionTimestamp: '2026-07-17T00:00:00Z' },
+    { ...metadata, uid: '' },
+  ];
+
+  for (const candidate of variants) {
+    assert.equal(detectKubeVirtVncTarget({ metadata: candidate, status: { phase: 'Running' } }), undefined);
+  }
+  assert.equal(detectKubeVirtVncTarget({ metadata, status: { phase: 'Pending' } }), undefined);
+});
+
 test('buildKubernetesDrawerModel keeps normal containers before init containers and uses display defaults', async () => {
   const { buildKubernetesDrawerModel } = await import('../dist/renderer/kubernetesDrawerModel.js');
   const model = buildKubernetesDrawerModel({

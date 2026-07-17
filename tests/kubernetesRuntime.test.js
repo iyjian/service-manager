@@ -27,6 +27,12 @@ const FORWARD = {
   remotePort: 8080,
 };
 
+const VNC_TARGET = {
+  namespace: 'apps',
+  podName: 'virt-launcher-demo-abcde',
+  podUid: 'pod-vnc-uid',
+};
+
 function currentState(overrides = {}) {
   return {
     contexts: [{
@@ -78,6 +84,7 @@ function emptyClient(onClose = () => undefined) {
     async watch() { return new AbortController(); },
     async openPodLog() { throw new Error('not used'); },
     async openPodExec() { throw new Error('not used'); },
+    async openVnc() { throw new Error('not used'); },
     async openPortForward() { throw new Error('not used'); },
     async close() { onClose(); },
   };
@@ -446,6 +453,42 @@ test('KubernetesRuntime page deactivation stops watches/logs/terminals but retai
   assert.equal(fakeCoordinator.disposePageScopedCalls, 1);
   assert.equal(fakeInteractions.disposePageScopedCalls, 1);
   assert.equal((await runtime.listPortForwards()).length, 1);
+});
+
+test('KubernetesRuntime page deactivation closes active VNC and rejects a delayed stale opening', async () => {
+  const delayed = deferred();
+  const completed = deferred();
+  let closeCalls = 0;
+  const makeHandle = () => ({
+    ...VNC_TARGET,
+    vmiName: 'demo',
+    localPort: 41001,
+    completed: completed.promise,
+    async close() {
+      closeCalls += 1;
+      completed.resolve();
+    },
+  });
+  let openingCount = 0;
+  const { runtime } = createRuntime({
+    client: {
+      openVnc() {
+        openingCount += 1;
+        return openingCount === 1 ? Promise.resolve(makeHandle()) : delayed.promise;
+      },
+    },
+  });
+
+  await runtime.openVnc(VNC_TARGET);
+  await runtime.deactivatePage();
+  assert.equal(closeCalls, 1, 'page leave closes the active loopback VNC bridge');
+
+  const stale = runtime.openVnc(VNC_TARGET);
+  const deactivating = runtime.deactivatePage();
+  delayed.resolve(makeHandle());
+  await assert.rejects(stale, /changed|cancelled|closed/i);
+  await deactivating;
+  assert.equal(closeCalls, 2, 'a VNC handle resolving across page leave is closed before launch');
 });
 
 test('KubernetesRuntime emits display-safe state and list snapshots through typed listeners', async () => {
