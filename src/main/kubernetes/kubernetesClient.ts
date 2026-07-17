@@ -12,6 +12,7 @@ import type {
   KubernetesRelatedResources,
   KubernetesResourceKind,
 } from '../../shared/types';
+import { normalizeKubernetesPrinterColumns } from './customResourcePrinterColumns';
 import { preflightKubeconfigContext } from './kubeconfigStore';
 import {
   noPermissionPodEnvironment,
@@ -512,8 +513,8 @@ function closeServer(server: net.Server): Promise<void> {
 
 /**
  * Reduces CRDs to only the information needed to construct a subsequent
- * read-only CustomObjects query. Metadata, schemas, conversion webhooks, and
- * annotations are deliberately omitted from the discovery result.
+ * read-only CustomObjects query and Lens-compatible display columns. Metadata,
+ * schemas, conversion webhooks, and annotations are deliberately omitted.
  */
 export function mapCustomResourceDefinitions(values: unknown[]): KubernetesCustomResourceDefinition[] {
   if (!Array.isArray(values)) {
@@ -545,7 +546,14 @@ export function mapCustomResourceDefinitions(values: unknown[]): KubernetesCusto
       const versionRecord = entry as Record<string, unknown>;
       const version = stringValue(versionRecord.name);
       if (versionRecord.served === true && version && CUSTOM_RESOURCE_VERSION.test(version)) {
-        definitions.push({ group, version, kind, plural, scope });
+        definitions.push({
+          group,
+          version,
+          kind,
+          plural,
+          scope,
+          printerColumns: normalizeKubernetesPrinterColumns(versionRecord.additionalPrinterColumns),
+        });
       }
     }
   }
@@ -794,7 +802,7 @@ class KubernetesClientAdapter implements KubernetesClient {
     const definition = resourceDefinition(query);
     if (definition.scope === 'cluster' || query.namespaceScope.mode === 'all') {
       const response = await this.listOne(query, undefined, continueToken);
-      return this.toPage(query.kind, response);
+      return this.toPage(query, response);
     }
 
     const namespaces = [...new Set(query.namespaceScope.namespaces.map((namespace) => namespace.trim()).filter(Boolean))].sort();
@@ -815,7 +823,7 @@ class KubernetesClientAdapter implements KubernetesClient {
         : undefined;
 
     return {
-      items: this.summaryItems(query.kind, response.items),
+      items: this.summaryItems(query.kind, response.items, query.customResourcePrinterColumns),
       ...(nextContinuation ? { continueToken: nextContinuation } : {}),
       resourceVersion: stringValue(response.metadata?.resourceVersion) ?? '',
     };
@@ -1114,7 +1122,14 @@ class KubernetesClientAdapter implements KubernetesClient {
               return;
             }
             try {
-              onEvent({ type, object: mapKubernetesResourceSummary(query.kind, asRecord(object)) });
+              onEvent({
+                type,
+                object: mapKubernetesResourceSummary(
+                  query.kind,
+                  asRecord(object),
+                  query.customResourcePrinterColumns,
+                ),
+              });
             } catch {
               reportTerminalWatchEvent({ type: 'ERROR' });
             }
@@ -1638,23 +1653,27 @@ class KubernetesClientAdapter implements KubernetesClient {
     })) as KubernetesListObject;
   }
 
-  private toPage(kind: KubernetesResourceKind, value: KubernetesListObject): KubernetesResourcePage {
+  private toPage(query: KubernetesResourceQuery, value: KubernetesListObject): KubernetesResourcePage {
     const continueToken = stringValue(value.metadata?.continue);
     return {
-      items: this.summaryItems(kind, value.items),
+      items: this.summaryItems(query.kind, value.items, query.customResourcePrinterColumns),
       ...(continueToken ? { continueToken } : {}),
       resourceVersion: stringValue(value.metadata?.resourceVersion) ?? '',
     };
   }
 
-  private summaryItems(kind: KubernetesResourceKind | 'events', items: unknown[] | undefined): KubernetesResourceSummary[] {
+  private summaryItems(
+    kind: KubernetesResourceKind | 'events',
+    items: unknown[] | undefined,
+    customResourcePrinterColumns?: KubernetesCustomResourceDefinition['printerColumns'],
+  ): KubernetesResourceSummary[] {
     if (!items) {
       return [];
     }
     if (!Array.isArray(items)) {
       throw new Error('Kubernetes API returned an invalid resource list.');
     }
-    return items.map((item) => mapKubernetesResourceSummary(kind, asRecord(item)));
+    return items.map((item) => mapKubernetesResourceSummary(kind, asRecord(item), customResourcePrinterColumns));
   }
 
   private apiFor(definition: ResourceDefinition): ReadOnlyApi {

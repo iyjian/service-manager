@@ -1,4 +1,9 @@
-import type { KubernetesResourceKind } from '../../shared/types';
+import type { KubernetesCustomResourcePrinterColumn, KubernetesResourceKind } from '../../shared/types';
+import {
+  customResourcePrinterColumnKey,
+  formatKubernetesPrinterColumnValue,
+  readKubernetesPrinterColumnValue,
+} from './customResourcePrinterColumns';
 import { POD_SUMMARY_EMPTY, summarizePodListColumns } from './podSummary';
 import { sanitizeSecretForCache } from './resourceQuery';
 import type { KubernetesResourceSummary } from './resourceQuery';
@@ -237,7 +242,10 @@ function persistentVolumeClaimColumns(value: Record<string, unknown>): Record<st
   };
 }
 
-function customResourceColumns(value: Record<string, unknown>): Record<string, string> {
+function customResourceColumns(
+  value: Record<string, unknown>,
+  printerColumns: KubernetesCustomResourcePrinterColumn[] = [],
+): Record<string, string> {
   const metadata = objectValue(value, 'metadata');
   const status = objectValue(value, 'status');
   const statusValues = uniqueTexts([
@@ -246,13 +254,24 @@ function customResourceColumns(value: Record<string, unknown>): Record<string, s
     objectValue(status, 'health').status,
     objectValue(status, 'sync').status,
   ]);
-  return {
+  const columns: Record<string, string> = {
     kind: text(value.kind) ?? POD_SUMMARY_EMPTY,
     apiVersion: text(value.apiVersion) ?? POD_SUMMARY_EMPTY,
     status: joined(statusValues, ' · '),
     generation: numberValue(metadata.generation)?.toString() ?? POD_SUMMARY_EMPTY,
     labels: labelCount(metadata),
   };
+  printerColumns.forEach((column, index) => {
+    const formatted = formatKubernetesPrinterColumnValue(
+      readKubernetesPrinterColumnValue(value, column.jsonPath),
+      { type: column.type },
+    );
+    columns[customResourcePrinterColumnKey(column.sourceIndex ?? index)] = formatted;
+    if (column.name.toLocaleLowerCase() === 'status' && formatted !== POD_SUMMARY_EMPTY) {
+      columns.status = formatted;
+    }
+  });
+  return columns;
 }
 
 function nodeStatus(value: Record<string, unknown>): string | undefined {
@@ -289,6 +308,7 @@ function columnsFor(
   value: Record<string, unknown>,
   createdAt: string | undefined,
   secretDataCount: string | undefined,
+  customResourcePrinterColumns: KubernetesCustomResourcePrinterColumn[] | undefined,
 ): Record<string, string> {
   switch (kind) {
     case 'pods': return { ...summarizePodListColumns(value) };
@@ -299,7 +319,7 @@ function columnsFor(
     case 'configmaps': return configurationColumns(value);
     case 'secrets': return secretColumns(value, secretDataCount ?? '0');
     case 'persistentvolumeclaims': return persistentVolumeClaimColumns(value);
-    case 'custom-resources': return customResourceColumns(value);
+    case 'custom-resources': return customResourceColumns(value, customResourcePrinterColumns);
     case 'events': {
       const observed = timestamp(value.eventTime)
         ?? timestamp(objectValue(value, 'series').lastObservedTime)
@@ -326,6 +346,7 @@ function columnsFor(
 export function mapKubernetesResourceSummary(
   kind: KubernetesResourceKind | 'events',
   value: Record<string, unknown>,
+  customResourcePrinterColumns?: KubernetesCustomResourcePrinterColumn[],
 ): KubernetesResourceSummary {
   const createdAt = timestamp(objectValue(value, 'metadata').creationTimestamp);
   const secretDataCount = kind === 'secrets' ? countEntries(value.data) : undefined;
@@ -338,7 +359,7 @@ export function mapKubernetesResourceSummary(
     throw new Error('Kubernetes resource response is missing required metadata.');
   }
 
-  const columns = columnsFor(kind, source, createdAt, secretDataCount);
+  const columns = columnsFor(kind, source, createdAt, secretDataCount, customResourcePrinterColumns);
   const status = statusFor(kind, source, columns);
   if (kind === 'pods' && status) columns.status = status;
   if ((kind === 'nodes' || kind === 'namespaces') && status) {

@@ -626,7 +626,7 @@ test('mapKubernetesResourceSummary omits invalid creation timestamps', () => {
   }
 });
 
-test('mapCustomResourceDefinitions exposes only served Group Version Kind plural and scope', () => {
+test('mapCustomResourceDefinitions exposes served identities and bounded printer columns only', () => {
   const definitions = mapCustomResourceDefinitions([
     {
       metadata: { name: 'widgets.example.test', annotations: { secret: 'must-not-cross' } },
@@ -635,8 +635,13 @@ test('mapCustomResourceDefinitions exposes only served Group Version Kind plural
         scope: 'Namespaced',
         names: { kind: 'Widget', plural: 'widgets', shortNames: ['wdg'] },
         versions: [
-          { name: 'v1alpha1', served: false },
-          { name: 'v1', served: true },
+          { name: 'v1alpha1', served: false, additionalPrinterColumns: [{ name: 'Ignored', type: 'string', jsonPath: '.spec.ignored' }] },
+          { name: 'v1', served: true, additionalPrinterColumns: [
+            { name: 'Sync Status', type: 'string', jsonPath: '.status.sync.status' },
+            { name: 'Details', type: 'string', jsonPath: '.spec.details', priority: 1, description: 'must-not-cross' },
+            { name: 'Age', type: 'date', jsonPath: '.metadata.creationTimestamp' },
+            { name: 'Unsafe', type: 'string', jsonPath: '$..status' },
+          ] },
         ],
       },
     },
@@ -652,10 +657,19 @@ test('mapCustomResourceDefinitions exposes only served Group Version Kind plural
   ]);
 
   assert.deepEqual(definitions, [
-    { group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced' },
-    { group: 'infra.example.test', version: 'v1beta1', kind: 'ClusterWidget', plural: 'clusterwidgets', scope: 'cluster' },
+    {
+      group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced',
+      printerColumns: [
+        { name: 'Sync Status', type: 'string', jsonPath: '.status.sync.status', priority: 0 },
+        { name: 'Details', type: 'string', jsonPath: '.spec.details', priority: 1 },
+      ],
+    },
+    {
+      group: 'infra.example.test', version: 'v1beta1', kind: 'ClusterWidget', plural: 'clusterwidgets', scope: 'cluster',
+      printerColumns: [],
+    },
   ]);
-  assert.doesNotMatch(JSON.stringify(definitions), /secret|annotations|shortNames/i);
+  assert.doesNotMatch(JSON.stringify(definitions), /secret|annotations|shortNames|description|must-not-cross|Ignored|Age|Unsafe/i);
 });
 
 test('KubernetesClient probes the read-only Version endpoint and preserves reachable RBAC failures', async (t) => {
@@ -735,7 +749,9 @@ test('KubernetesClient discovers CRDs through ApiextensionsV1Api without opening
             calls.push(params);
             return { items: [{ spec: {
               group: 'example.test', scope: 'Namespaced', names: { kind: 'Widget', plural: 'widgets' },
-              versions: [{ name: 'v1', served: true }],
+              versions: [{ name: 'v1', served: true, additionalPrinterColumns: [
+                { name: 'Ready', type: 'string', jsonPath: '.status.conditions[?(@.type=="Ready")].status' },
+              ] }],
             } }] };
           },
         };
@@ -753,7 +769,12 @@ test('KubernetesClient discovers CRDs through ApiextensionsV1Api without opening
   });
 
   assert.deepEqual(await client.listCustomResourceDefinitions(), [
-    { group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced' },
+    {
+      group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced',
+      printerColumns: [
+        { name: 'Ready', type: 'string', jsonPath: '.status.conditions[?(@.type=="Ready")].status', priority: 0 },
+      ],
+    },
   ]);
   assert.deepEqual(calls, [{}]);
   await client.close();

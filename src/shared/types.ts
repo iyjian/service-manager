@@ -299,6 +299,23 @@ export interface KubernetesResourceSummary {
   columns: Record<string, string>;
 }
 
+export type KubernetesCustomResourcePrinterColumnType =
+  | 'integer'
+  | 'number'
+  | 'string'
+  | 'boolean'
+  | 'date';
+
+/** Bounded CRD table metadata; schema, webhooks, and annotations never cross IPC. */
+export interface KubernetesCustomResourcePrinterColumn {
+  name: string;
+  type: KubernetesCustomResourcePrinterColumnType;
+  jsonPath: string;
+  priority: number;
+  /** Main-process-only original CRD index retained by bounded list projections. */
+  sourceIndex?: number;
+}
+
 /** Safe CRD metadata used only to construct a read-only CustomObjects query. */
 export interface KubernetesCustomResourceDefinition {
   group: string;
@@ -306,6 +323,7 @@ export interface KubernetesCustomResourceDefinition {
   kind: string;
   plural: string;
   scope: 'namespaced' | 'cluster';
+  printerColumns: KubernetesCustomResourcePrinterColumn[];
 }
 
 /** A renderer request for one bounded virtual-table range. */

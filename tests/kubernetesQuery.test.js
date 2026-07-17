@@ -123,6 +123,27 @@ test('resource-specific count and readiness columns sort numerically', () => {
   );
 });
 
+test('Custom Resource printer columns sort using their CRD type', () => {
+  const items = [
+    { ...summary('minus-two', '1'), columns: { printer3: '-2.5' } },
+    { ...summary('minus-ten', '1'), columns: { printer3: '-10.25' } },
+    { ...summary('positive', '1'), columns: { printer3: '4' } },
+  ];
+  const query = {
+    ...POD_QUERY,
+    kind: 'custom-resources',
+    apiVersion: 'example.test/v1',
+    plural: 'widgets',
+    customResourcePrinterColumns: [{
+      name: 'Weight', type: 'number', jsonPath: '.status.weight', priority: 0, sourceIndex: 3,
+    }],
+    sort: { column: 'printer3', direction: 'asc' },
+  };
+  assert.deepEqual(projectLoadedResourceItems(items, query).map((item) => item.name), [
+    'minus-ten', 'minus-two', 'positive',
+  ]);
+});
+
 test('projectVirtualWindow renders only a bounded slice of 10,000 rows', () => {
   const rows = Array.from({ length: 10_000 }, (_, index) => index);
   const window = projectVirtualWindow(rows, 8_000, 32, 640, 8);

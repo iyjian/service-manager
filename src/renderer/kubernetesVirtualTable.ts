@@ -136,6 +136,17 @@ export function createKubernetesVirtualTable(options: KubernetesVirtualTableOpti
       windowEnd = Math.min(Math.max(windowStart, Math.floor(nextWindow.end)), total);
       items = nextWindow.items.slice(0, Math.max(0, windowEnd - windowStart));
       nearEndSignature = undefined;
+      if (total === 0) {
+        if (frame !== undefined) {
+          window.cancelAnimationFrame(frame);
+          frame = undefined;
+        }
+        requestedWindowSignature = undefined;
+        spacer.style.height = '0px';
+        rows.style.transform = 'translateY(0px)';
+        rows.replaceChildren();
+        return;
+      }
       scheduleRender();
     },
     dispose(): void {

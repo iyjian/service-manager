@@ -408,7 +408,28 @@
   }
 
   .kubernetes-custom-resource-control {
-    @apply min-w-[240px] max-w-full shrink-0;
+    width: 310px;
+    @apply max-w-full shrink-0;
+  }
+
+  .kubernetes-custom-resource-menu {
+    width: max(340px, 100%);
+    max-height: 292px;
+    grid-template-rows: auto minmax(0, 1fr);
+    position: fixed;
+    margin-top: 0;
+  }
+
+  .kubernetes-custom-resource-options {
+    @apply min-h-0 overflow-y-auto pt-0.5;
+  }
+
+  .kubernetes-custom-resource-option-meta {
+    @apply ml-auto shrink-0 pl-2 font-mono text-[10px] uppercase tracking-[0.06em] text-zinc-400;
+  }
+
+  .kubernetes-custom-resource-status {
+    @apply px-1.5 py-1 text-[11.5px] text-zinc-500;
   }
 
   .kubernetes-tab-active {
@@ -473,8 +494,8 @@
 
   .kubernetes-table-shell[data-resource-kind='custom-resources'] {
     --kubernetes-table-columns:
-      minmax(128px, 1.05fr) minmax(220px, 1.7fr) 120px 150px minmax(140px, 1.1fr) 88px 76px 68px;
-    --kubernetes-table-min-width: 1000px;
+      minmax(128px, 1.05fr) minmax(210px, 1.55fr) repeat(5, minmax(112px, 1fr)) 68px;
+    --kubernetes-table-min-width: 1040px;
   }
 
   .kubernetes-table-header,
@@ -1079,6 +1100,72 @@
 
   .kubernetes-drawer-section-content {
     @apply grid gap-2 p-2.5;
+  }
+
+  .kubernetes-custom-resource-properties,
+  .kubernetes-custom-resource-conditions {
+    @apply overflow-hidden rounded-lg border border-sky-200 bg-white;
+  }
+
+  .kubernetes-custom-resource-properties > h3,
+  .kubernetes-custom-resource-conditions > h3 {
+    @apply m-0 bg-sky-100 px-2.5 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-sky-800;
+  }
+
+  .kubernetes-custom-resource-property-list {
+    @apply m-0 grid gap-0.5 border-t border-sky-200 p-1.5;
+  }
+
+  .kubernetes-custom-resource-property-list > div {
+    @apply grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-1;
+  }
+
+  .kubernetes-custom-resource-property-list dt {
+    @apply min-w-0 truncate font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
+  }
+
+  .kubernetes-custom-resource-property-list dd {
+    @apply m-0 min-w-0 break-all text-right font-mono text-[11.5px] text-zinc-800;
+  }
+
+  .kubernetes-custom-resource-property-list pre {
+    @apply m-0 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded bg-white px-1.5 py-1 text-left font-mono text-[11px] leading-4 text-zinc-700;
+  }
+
+  .kubernetes-custom-resource-condition-list {
+    @apply grid gap-1.5 border-t border-sky-200 p-1.5;
+  }
+
+  .kubernetes-custom-resource-condition {
+    @apply grid gap-1 rounded border border-zinc-200 bg-zinc-50 px-2 py-1.5 font-mono text-[11px] text-zinc-700;
+  }
+
+  .kubernetes-custom-resource-condition > div {
+    @apply flex min-w-0 items-center justify-between gap-2;
+  }
+
+  .kubernetes-custom-resource-condition strong {
+    @apply min-w-0 truncate text-[11.5px] text-zinc-900;
+  }
+
+  .kubernetes-custom-resource-condition p {
+    @apply m-0 whitespace-pre-wrap break-words;
+  }
+
+  .kubernetes-custom-resource-condition-meta {
+    @apply text-zinc-500;
+  }
+
+  .kubernetes-custom-resource-condition-badge {
+    @apply shrink-0 rounded-full border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-zinc-600;
+  }
+
+  .kubernetes-custom-resource-condition-badge[data-status='true'] {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-700;
+  }
+
+  .kubernetes-custom-resource-condition-badge[data-status='false'] {
+    @apply border-zinc-300 bg-zinc-100 text-zinc-500;
   }
 
   .kubernetes-drawer-containers-content {

@@ -43,6 +43,7 @@ import { PodInteractionManager, type KubernetesPortForwardInput as RuntimePortFo
 import { ResourceCache } from './resourceCache';
 import { ResourceCoordinator, type KubernetesListSnapshot, type ResourceCoordinatorOptions } from './resourceCoordinator';
 import { projectLoadedResourceItems, resourceQueryKey, type KubernetesResourceQuery } from './resourceQuery';
+import { selectKubernetesPrinterColumnsForList } from './customResourcePrinterColumns';
 
 const RESOURCE_KINDS = new Set<KubernetesResourceKind>([
   'pods',
@@ -171,6 +172,27 @@ function copyQuery(query: KubernetesResourceQuery): KubernetesResourceQuery {
     ...query,
     namespaceScope: copyScope(query.namespaceScope),
     ...(query.sort ? { sort: { ...query.sort } } : {}),
+    ...(query.customResourcePrinterColumns
+      ? { customResourcePrinterColumns: query.customResourcePrinterColumns.map((column) => ({ ...column })) }
+      : {}),
+  };
+}
+
+function copyRendererQuery(query: KubernetesResourceQuery): RendererKubernetesResourceQuery {
+  const { customResourcePrinterColumns: _printerColumns, ...rendererQuery } = query;
+  return {
+    ...rendererQuery,
+    namespaceScope: copyScope(rendererQuery.namespaceScope),
+    ...(rendererQuery.sort ? { sort: { ...rendererQuery.sort } } : {}),
+  };
+}
+
+function copyCustomResourceDefinition(
+  definition: KubernetesCustomResourceDefinition,
+): KubernetesCustomResourceDefinition {
+  return {
+    ...definition,
+    printerColumns: (definition.printerColumns ?? []).map((column) => ({ ...column })),
   };
 }
 
@@ -194,7 +216,7 @@ function projectSnapshotWindow(
   const start = Math.min(normalized.start, projected.length);
   const end = Math.min(Math.max(start, normalized.end), projected.length);
   return {
-    query: copyQuery(viewQuery),
+    query: copyRendererQuery(viewQuery),
     start,
     end,
     total: projected.length,
@@ -255,6 +277,42 @@ function assertPort(value: unknown, label: 'remote' | 'local', allowZero = false
 
 function errorFromUnknown(value: unknown, fallback: string): Error {
   return value instanceof Error ? value : new Error(fallback);
+}
+
+function kubernetesStatusCode(value: unknown, depth = 0): number | undefined {
+  if (!value || typeof value !== 'object' || depth > 4) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ['statusCode', 'status', 'code'] as const) {
+    const candidate = record[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+    if (typeof candidate === 'string' && /^\d+$/.test(candidate)) {
+      return Number(candidate);
+    }
+  }
+  for (const key of ['response', 'cause', 'body'] as const) {
+    const status = kubernetesStatusCode(record[key], depth + 1);
+    if (status !== undefined) {
+      return status;
+    }
+  }
+  return undefined;
+}
+
+function isKubernetesAuthorizationError(value: unknown): boolean {
+  const status = kubernetesStatusCode(value);
+  return status === 401 || status === 403;
+}
+
+function customResourceDiscoveryPermissionError(value: unknown): Error {
+  const statusCode = kubernetesStatusCode(value);
+  return Object.assign(
+    new Error('No permission to list Custom Resource Definitions.'),
+    statusCode === undefined ? {} : { statusCode },
+  );
 }
 
 /**
@@ -349,6 +407,8 @@ export class KubernetesRuntime {
   /** Detail-only results share in-flight work briefly, but never a Watch or list snapshot. */
   private readonly relatedResourcesCache = new ResourceCache<KubernetesRelatedResources>(32, 30_000);
   private readonly customResourceDefinitionsCache = new ResourceCache<KubernetesCustomResourceDefinition[]>(4, 120_000);
+  private readonly customResourceDefinitionsByContext = new Map<string, KubernetesCustomResourceDefinition[]>();
+  private customResourceDefinitionsGeneration = 0;
 
   public constructor(options: KubernetesRuntimeOptions = {}) {
     const defaultDirectory = kubeconfigDirectoryForHome(homedir());
@@ -471,6 +531,9 @@ export class KubernetesRuntime {
         await this.deactivateInvalidatedQuery(transition.query, transition.coordinator);
         const catalog = await this.readKubeconfigCatalog();
         this.activeCatalog = catalog;
+        this.customResourceDefinitionsGeneration += 1;
+        this.customResourceDefinitionsCache.clear();
+        this.customResourceDefinitionsByContext.clear();
         await this.session.setContexts(catalog.contexts, { reconnectActiveContext: true });
         if (this.contextMutationGeneration !== mutationGeneration) {
           return this.getState();
@@ -720,14 +783,29 @@ export class KubernetesRuntime {
     if (!context) {
       throw new Error('No active Kubernetes Context is connected.');
     }
+    const generation = this.customResourceDefinitionsGeneration;
     try {
       const definitions = await this.customResourceDefinitionsCache.getOrCreate(
         `crd:${context}`,
         () => this.observedClient().listCustomResourceDefinitions()
       );
-      return definitions.map((definition) => ({ ...definition }));
+      if (this.disposed || generation !== this.customResourceDefinitionsGeneration
+        || this.session.getState().selectedContext !== context) {
+        throw new Error('Custom Resource discovery was invalidated by a Context reload.');
+      }
+      this.customResourceDefinitionsByContext.delete(context);
+      this.customResourceDefinitionsByContext.set(context, definitions.map(copyCustomResourceDefinition));
+      while (this.customResourceDefinitionsByContext.size > 4) {
+        const oldest = this.customResourceDefinitionsByContext.keys().next().value as string | undefined;
+        if (!oldest) break;
+        this.customResourceDefinitionsByContext.delete(oldest);
+      }
+      return definitions.map(copyCustomResourceDefinition);
     } catch (error) {
       this.onOperationFailure(error);
+      if (isKubernetesAuthorizationError(error)) {
+        throw customResourceDiscoveryPermissionError(error);
+      }
       throw error;
     }
   }
@@ -1232,7 +1310,6 @@ export class KubernetesRuntime {
     this.coordinator = undefined;
     this.interactions = undefined;
     this.relatedResourcesCache.clear();
-    this.customResourceDefinitionsCache.clear();
     const forwards = interactions?.listPortForwards() ?? [];
     const results = await Promise.allSettled([
       this.disposeVncSessions(),
@@ -1281,10 +1358,37 @@ export class KubernetesRuntime {
   }
 
   private async restoreCurrentListQuery(): Promise<void> {
-    const query = this.restoreQuery;
+    let query = this.restoreQuery;
     const selectedContext = this.session.getState().selectedContext;
     if (!query || this.session.getState().connection !== 'connected' || selectedContext !== query.context) {
       return;
+    }
+    if (query.kind === 'custom-resources' && !this.customResourceDefinitionsByContext.has(query.context)) {
+      try {
+        await this.listCustomResourceDefinitions();
+      } catch (error) {
+        if (isKubernetesAuthorizationError(error)) {
+          this.restoreQuery = undefined;
+          return;
+        }
+        throw error;
+      }
+      const definition = this.customResourceDefinitionsByContext.get(query.context)?.find((candidate) => (
+        `${candidate.group}/${candidate.version}` === query?.apiVersion
+        && candidate.plural === query?.plural
+        && candidate.scope === (query?.scope ?? 'namespaced')
+      ));
+      if (!definition) {
+        this.restoreQuery = undefined;
+        return;
+      }
+      query = {
+        ...query,
+        customResourcePrinterColumns: selectKubernetesPrinterColumnsForList(
+          definition.printerColumns,
+          definition.scope,
+        ),
+      };
     }
     const generation = this.queryGeneration;
     const coordinator = this.ensureCoordinator();
@@ -1536,6 +1640,17 @@ export class KubernetesRuntime {
       }
       result.apiVersion = apiVersion;
       result.plural = plural;
+      const definition = this.customResourceDefinitionsByContext.get(context)?.find((candidate) => (
+        `${candidate.group}/${candidate.version}` === apiVersion
+        && candidate.plural === plural
+        && candidate.scope === (query.scope ?? 'namespaced')
+      ));
+      if (definition) {
+        result.customResourcePrinterColumns = selectKubernetesPrinterColumnsForList(
+          definition.printerColumns,
+          definition.scope,
+        );
+      }
     }
     return result;
   }

@@ -1,4 +1,8 @@
-import type { KubernetesNamespaceScope, KubernetesResourceKind } from '../../shared/types';
+import type {
+  KubernetesCustomResourcePrinterColumn,
+  KubernetesNamespaceScope,
+  KubernetesResourceKind,
+} from '../../shared/types';
 import { normalizeNamespaceScope } from './kubeconfigStore';
 
 export interface KubernetesResourceQuery {
@@ -6,6 +10,8 @@ export interface KubernetesResourceQuery {
   kind: KubernetesResourceKind;
   apiVersion?: string;
   plural?: string;
+  /** Main-process CRD metadata bound to the validated G/V/plural identity. */
+  customResourcePrinterColumns?: KubernetesCustomResourcePrinterColumn[];
   /**
    * Built-in cluster-scoped kinds are recognized automatically. Dynamic
    * custom resources must mark their scope so LIST and Watch keys cannot
@@ -98,6 +104,9 @@ export function resourceQueryKey(query: KubernetesResourceQuery): string {
     query.kind,
     query.apiVersion ?? null,
     query.plural ?? null,
+    query.customResourcePrinterColumns?.map(({ name, type, jsonPath, priority, sourceIndex }) => (
+      [name, type, jsonPath, priority, sourceIndex ?? null]
+    )) ?? null,
     scope,
     namespaceScope.mode,
     namespaceScope.namespaces,
@@ -161,13 +170,50 @@ function integerSortValue(value: string): number | undefined {
   return /^\d+$/.test(value) ? Number(value) : undefined;
 }
 
+function finiteSortValue(value: string): number | undefined {
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function printerColumnType(
+  query: KubernetesResourceQuery,
+  column: string,
+): KubernetesCustomResourcePrinterColumn['type'] | undefined {
+  const match = /^printer(\d+)$/.exec(column);
+  if (!match) return undefined;
+  const sourceIndex = Number(match[1]);
+  return query.customResourcePrinterColumns?.find((candidate, index) => (
+    (candidate.sourceIndex ?? index) === sourceIndex
+  ))?.type;
+}
+
 function readySortValue(value: string): [number, number] | undefined {
   const match = /^(\d+)\/(\d+)$/.exec(value);
   return match ? [Number(match[1]), Number(match[2])] : undefined;
 }
 
 /** Numeric operational columns sort numerically while all other fields keep natural text order. */
-export function compareKubernetesSortValues(column: string, left: string, right: string): number {
+export function compareKubernetesSortValues(
+  column: string,
+  left: string,
+  right: string,
+  printerType?: KubernetesCustomResourcePrinterColumn['type'],
+): number {
+  if (printerType === 'integer' || printerType === 'number') {
+    const leftNumber = finiteSortValue(left);
+    const rightNumber = finiteSortValue(right);
+    if (leftNumber !== undefined && rightNumber !== undefined) return leftNumber - rightNumber;
+  }
+  if (printerType === 'boolean' && left !== right) {
+    if (left === 'false' && right === 'true') return -1;
+    if (left === 'true' && right === 'false') return 1;
+  }
+  if (printerType === 'date') {
+    const leftDate = Date.parse(left);
+    const rightDate = Date.parse(right);
+    if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) return leftDate - rightDate;
+  }
   if (column === 'ready') {
     const leftReady = readySortValue(left);
     const rightReady = readySortValue(right);
@@ -207,11 +253,13 @@ export function projectLoadedResourceItems(
   }
 
   const { column, direction } = query.sort;
+  const customPrinterType = printerColumnType(query, column);
   return projected.sort((left, right) => {
     const lexical = compareKubernetesSortValues(
       column,
       valueForSort(left, column),
       valueForSort(right, column),
+      customPrinterType,
     );
     // A newer creation timestamp represents a smaller visible Age. Reverse
     // timestamp chronology so the arrow describes the displayed duration.

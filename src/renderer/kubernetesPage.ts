@@ -1,6 +1,7 @@
 import type {
   KubernetesContextInfo,
   KubernetesCustomResourceDefinition,
+  KubernetesCustomResourcePrinterColumn,
   KubernetesListSnapshot,
   KubernetesLogState,
   KubernetesNamespaceScope,
@@ -16,6 +17,9 @@ import type {
   KubernetesState,
   KubernetesTerminalState,
 } from '../shared/types';
+import {
+  customResourcePrinterColumnKey,
+} from './kubernetesCustomResourcePrinterColumns.js';
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from './kubernetesVirtualTable.js';
 import {
@@ -34,6 +38,7 @@ import {
   formatKubernetesDeclaredPortLabel,
   hasActiveKubernetesPortForward,
 } from './kubernetesDetailModel.js';
+import { buildKubernetesCustomResourceDetailModel } from './kubernetesCustomResourceModel.js';
 
 type ToastLevel = 'default' | 'success' | 'error';
 
@@ -221,8 +226,55 @@ const KUBERNETES_LIST_COLUMNS: Record<KubernetesResourceKind, readonly Kubernete
   ],
 };
 
-export function getKubernetesListColumns(kind: KubernetesResourceKind): readonly KubernetesListColumn[] {
-  return KUBERNETES_LIST_COLUMNS[kind];
+const CUSTOM_RESOURCE_FALLBACK_COLUMNS: readonly KubernetesListColumn[] = [
+  { key: 'kind', label: 'Kind' },
+  { key: 'apiVersion', label: 'API Version' },
+  { key: 'status', label: 'Status' },
+  { key: 'generation', label: 'Generation' },
+  { key: 'labels', label: 'Labels' },
+  { key: 'resourceVersion', label: 'Version' },
+];
+
+function visibleCustomResourcePrinterColumns(
+  definition: KubernetesCustomResourceDefinition,
+): Array<{ column: KubernetesCustomResourcePrinterColumn; index: number }> {
+  return (definition.printerColumns ?? [])
+    .map((column, index) => ({ column, index }))
+    .filter(({ column }) => !['age', 'name', 'namespace'].includes(column.name.toLocaleLowerCase()))
+    .sort((left, right) => left.column.priority - right.column.priority || left.index - right.index);
+}
+
+export function getKubernetesCustomResourceListColumns(
+  definition: KubernetesCustomResourceDefinition,
+): readonly KubernetesListColumn[] {
+  const base = definition.scope === 'namespaced'
+    ? [{ key: 'namespace', label: 'Namespace' }, { key: 'name', label: 'Name' }]
+    : [{ key: 'name', label: 'Name' }];
+  const available = 8 - base.length - 1;
+  const middle: KubernetesListColumn[] = [];
+  const labels = new Set(base.map(({ label }) => label.toLocaleLowerCase()));
+  for (const { column, index } of visibleCustomResourcePrinterColumns(definition)) {
+    const normalized = column.name.toLocaleLowerCase();
+    if (labels.has(normalized) || middle.length >= available) continue;
+    labels.add(normalized);
+    middle.push({ key: customResourcePrinterColumnKey(index), label: column.name });
+  }
+  for (const fallback of CUSTOM_RESOURCE_FALLBACK_COLUMNS) {
+    const normalized = fallback.label.toLocaleLowerCase();
+    if (labels.has(normalized) || middle.length >= available) continue;
+    labels.add(normalized);
+    middle.push(fallback);
+  }
+  return [...base, ...middle, { key: 'age', label: 'Age' }];
+}
+
+export function getKubernetesListColumns(
+  kind: KubernetesResourceKind,
+  customDefinition?: KubernetesCustomResourceDefinition,
+): readonly KubernetesListColumn[] {
+  return kind === 'custom-resources' && customDefinition
+    ? getKubernetesCustomResourceListColumns(customDefinition)
+    : KUBERNETES_LIST_COLUMNS[kind];
 }
 
 interface KubernetesSortState {
@@ -254,6 +306,7 @@ interface ActiveDetail {
   eventsLoading?: boolean;
   events?: KubernetesResourceSummary[];
   eventsError?: string;
+  customExpandedSections?: Set<string>;
 }
 
 interface RelatedDetailState {
@@ -311,8 +364,8 @@ function isClusterScoped(kind: KubernetesResourceKind): boolean {
   return kind === 'nodes' || kind === 'namespaces';
 }
 
-function isPermissionError(error: unknown): boolean {
-  return /\b(?:403|forbidden|permission denied)\b/i.test(toErrorMessage(error));
+export function isPermissionError(error: unknown): boolean {
+  return /\b(?:401|403|forbidden|unauthorized|no permission|permission denied)\b/i.test(toErrorMessage(error));
 }
 
 function formatAge(value: string | undefined): string {
@@ -338,8 +391,9 @@ function kubernetesListValue(column: KubernetesListColumn, item: KubernetesResou
 export function getKubernetesResourceRowValues(
   kind: KubernetesResourceKind,
   item: KubernetesResourceSummary,
+  customDefinition?: KubernetesCustomResourceDefinition,
 ): string[] {
-  return getKubernetesListColumns(kind).map((column) => kubernetesListValue(column, item));
+  return getKubernetesListColumns(kind, customDefinition).map((column) => kubernetesListValue(column, item));
 }
 
 function sameScope(left: KubernetesNamespaceScope, right: KubernetesNamespaceScope): boolean {
@@ -368,6 +422,52 @@ export function filterKubernetesNamespaces(namespaces: Iterable<string>, query: 
   return [...new Set([...namespaces].map((name) => name.trim()).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right))
     .filter((name) => !normalizedQuery || name.toLocaleLowerCase().includes(normalizedQuery));
+}
+
+export function filterKubernetesCustomResourceDefinitions(
+  definitions: Iterable<KubernetesCustomResourceDefinition>,
+  query: string,
+): KubernetesCustomResourceDefinition[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return [...definitions]
+    .sort((left, right) => (
+      left.group.localeCompare(right.group)
+      || left.kind.localeCompare(right.kind)
+      || left.version.localeCompare(right.version)
+    ))
+    .filter((definition) => !normalizedQuery || [
+      definition.kind,
+      definition.plural,
+      definition.group,
+      definition.version,
+      definition.scope,
+      `${definition.group}/${definition.version}`,
+    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
+}
+
+export function kubernetesCustomResourceDefinitionKey(
+  definition: KubernetesCustomResourceDefinition,
+): string {
+  return `${definition.group}/${definition.version}:${definition.plural}:${definition.scope}`;
+}
+
+export function rebindKubernetesCustomResourceDefinition(
+  definitions: Iterable<KubernetesCustomResourceDefinition>,
+  selected: KubernetesCustomResourceDefinition | undefined,
+): KubernetesCustomResourceDefinition | undefined {
+  if (!selected) return undefined;
+  const selectedKey = kubernetesCustomResourceDefinitionKey(selected);
+  return [...definitions].find((definition) => (
+    kubernetesCustomResourceDefinitionKey(definition) === selectedKey
+  ));
+}
+
+export function hasCurrentKubernetesCustomResourceDefinitions(
+  selectedContext: string,
+  definitionsContext: string | undefined,
+  reloadContext: string | undefined,
+): boolean {
+  return definitionsContext === selectedContext && reloadContext !== selectedContext;
 }
 
 export interface KubernetesContextActivationIntent {
@@ -811,8 +911,9 @@ export function categoryUsesResourceTabs(category: KubernetesCategory): boolean 
 function kubernetesSortColumn(
   value: string | undefined,
   kind: KubernetesResourceKind,
+  customDefinition?: KubernetesCustomResourceDefinition,
 ): KubernetesSortColumn | undefined {
-  return value && getKubernetesListColumns(kind).some((column) => column.key === value)
+  return value && getKubernetesListColumns(kind, customDefinition).some((column) => column.key === value)
     ? value
     : undefined;
 }
@@ -1027,8 +1128,13 @@ class KubernetesPage implements KubernetesPageController {
   private readonly namespaceOptions = requireElement<HTMLDivElement>('#kubernetes-namespace-options');
   private readonly categoryTabs = requireElement<HTMLDivElement>('#kubernetes-category-tabs');
   private readonly resourceTabs = requireElement<HTMLDivElement>('#kubernetes-resource-tabs');
+  private readonly secondaryRow = requireElement<HTMLElement>('.kubernetes-secondary-row');
   private readonly customResourceControl = requireElement<HTMLElement>('#kubernetes-custom-resource-control');
-  private readonly customResourceSelect = requireElement<HTMLSelectElement>('#kubernetes-custom-resource-select');
+  private readonly customResourceToggle = requireElement<HTMLButtonElement>('#kubernetes-custom-resource-toggle');
+  private readonly customResourceValue = requireElement<HTMLElement>('#kubernetes-custom-resource-value');
+  private readonly customResourceMenu = requireElement<HTMLDivElement>('#kubernetes-custom-resource-menu');
+  private readonly customResourceSearch = requireElement<HTMLInputElement>('#kubernetes-custom-resource-search');
+  private readonly customResourceOptions = requireElement<HTMLDivElement>('#kubernetes-custom-resource-options');
   private readonly searchInput = requireElement<HTMLInputElement>('#kubernetes-resource-search');
   private readonly tableShell = requireElement<HTMLElement>('#kubernetes-table-shell');
   private readonly tableHeader = requireElement<HTMLElement>('#kubernetes-table-header');
@@ -1072,6 +1178,12 @@ class KubernetesPage implements KubernetesPageController {
   private customDefinitions: KubernetesCustomResourceDefinition[] = [];
   private customDefinitionsContext: string | undefined;
   private selectedCustomDefinition: KubernetesCustomResourceDefinition | undefined;
+  private customDefinitionFilter = '';
+  private customDefinitionsLoadingContext: string | undefined;
+  private customDefinitionsLoad: { context: string; promise: Promise<boolean> } | undefined;
+  private customDefinitionsRequestGeneration = 0;
+  private customDefinitionsReloadContext: string | undefined;
+  private reloadingKubeconfig = false;
   private state: KubernetesState | undefined;
   private snapshot: KubernetesListSnapshot | undefined;
   private table: KubernetesVirtualTable | undefined;
@@ -1228,9 +1340,29 @@ class KubernetesPage implements KubernetesPageController {
     this.namespaceToggle.setAttribute('aria-expanded', String(visible));
   }
 
+  private setCustomResourceMenuOpen(open: boolean): void {
+    const visible = open && !this.customResourceToggle.disabled && this.resourceKind === 'custom-resources';
+    if (visible) this.positionCustomResourceMenu();
+    this.customResourceMenu.classList.toggle('hidden', !visible);
+    this.customResourceToggle.setAttribute('aria-expanded', String(visible));
+  }
+
+  private positionCustomResourceMenu(): void {
+    const rect = this.customResourceToggle.getBoundingClientRect();
+    const viewportPadding = 8;
+    const width = Math.min(Math.max(340, rect.width), Math.max(0, window.innerWidth - viewportPadding * 2));
+    const left = Math.max(viewportPadding, Math.min(rect.left, window.innerWidth - width - viewportPadding));
+    const top = rect.bottom + 4;
+    this.customResourceMenu.style.left = `${left}px`;
+    this.customResourceMenu.style.top = `${top}px`;
+    this.customResourceMenu.style.width = `${width}px`;
+    this.customResourceMenu.style.maxHeight = `${Math.max(120, Math.min(292, window.innerHeight - top - viewportPadding))}px`;
+  }
+
   private closeSelectorMenus(): void {
     this.setContextMenuOpen(false);
     this.setNamespaceMenuOpen(false);
+    this.setCustomResourceMenuOpen(false);
   }
 
   private ensureBound(): void {
@@ -1240,6 +1372,7 @@ class KubernetesPage implements KubernetesPageController {
     this.contextToggle.addEventListener('click', () => {
       const opening = this.contextMenu.classList.contains('hidden');
       this.setNamespaceMenuOpen(false);
+      this.setCustomResourceMenuOpen(false);
       this.setContextMenuOpen(opening);
       if (opening) {
         window.requestAnimationFrame(() => {
@@ -1273,6 +1406,7 @@ class KubernetesPage implements KubernetesPageController {
     this.namespaceToggle.addEventListener('click', () => {
       const opening = this.namespaceMenu.classList.contains('hidden');
       this.setContextMenuOpen(false);
+      this.setCustomResourceMenuOpen(false);
       if (opening) {
         this.namespaceFilter = '';
         this.namespaceSearch.value = '';
@@ -1289,6 +1423,32 @@ class KubernetesPage implements KubernetesPageController {
       this.namespaceFilter = this.namespaceSearch.value;
       this.renderNamespaceOptions();
     });
+    this.customResourceToggle.addEventListener('click', () => {
+      const opening = this.customResourceMenu.classList.contains('hidden');
+      this.setContextMenuOpen(false);
+      this.setNamespaceMenuOpen(false);
+      if (opening) {
+        this.customDefinitionFilter = '';
+        this.customResourceSearch.value = '';
+        this.renderCustomResourceOptions();
+      }
+      this.setCustomResourceMenuOpen(opening);
+      if (opening) {
+        window.requestAnimationFrame(() => {
+          if (!this.customResourceMenu.classList.contains('hidden')) this.customResourceSearch.focus();
+        });
+      }
+    });
+    this.customResourceSearch.addEventListener('input', () => {
+      this.customDefinitionFilter = this.customResourceSearch.value;
+      this.renderCustomResourceOptions();
+    });
+    this.secondaryRow.addEventListener('scroll', () => {
+      if (!this.customResourceMenu.classList.contains('hidden')) this.positionCustomResourceMenu();
+    });
+    window.addEventListener('resize', () => {
+      if (!this.customResourceMenu.classList.contains('hidden')) this.positionCustomResourceMenu();
+    });
     document.addEventListener('pointerdown', (event) => {
       const target = event.target instanceof Node ? event.target : null;
       if (!this.contextMenu.classList.contains('hidden')
@@ -1299,15 +1459,21 @@ class KubernetesPage implements KubernetesPageController {
         && shouldCloseNamespaceMenu(this.namespaceControl, target)) {
         this.setNamespaceMenuOpen(false);
       }
+      if (!this.customResourceMenu.classList.contains('hidden')
+        && shouldCloseNamespaceMenu(this.customResourceControl, target)) {
+        this.setCustomResourceMenuOpen(false);
+      }
     });
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
       const contextOpen = !this.contextMenu.classList.contains('hidden');
       const namespaceOpen = !this.namespaceMenu.classList.contains('hidden');
-      if (!contextOpen && !namespaceOpen) return;
+      const customResourceOpen = !this.customResourceMenu.classList.contains('hidden');
+      if (!contextOpen && !namespaceOpen && !customResourceOpen) return;
       this.closeSelectorMenus();
       if (contextOpen) this.contextToggle.focus();
-      else this.namespaceToggle.focus();
+      else if (namespaceOpen) this.namespaceToggle.focus();
+      else this.customResourceToggle.focus();
     });
     this.contextControl.addEventListener('focusout', () => {
       window.requestAnimationFrame(() => {
@@ -1319,19 +1485,27 @@ class KubernetesPage implements KubernetesPageController {
         if (!this.namespaceControl.contains(document.activeElement)) this.setNamespaceMenuOpen(false);
       });
     });
+    this.customResourceControl.addEventListener('focusout', () => {
+      window.requestAnimationFrame(() => {
+        if (!this.customResourceControl.contains(document.activeElement)) this.setCustomResourceMenuOpen(false);
+      });
+    });
     this.searchInput.addEventListener('input', () => this.debounceSearch());
     this.tableHeader.addEventListener('click', (event) => {
       const button = event.target instanceof Element
         ? event.target.closest<HTMLButtonElement>('[data-kubernetes-sort]')
         : null;
-      const column = kubernetesSortColumn(button?.dataset.kubernetesSort, this.resourceKind);
+      const column = kubernetesSortColumn(
+        button?.dataset.kubernetesSort,
+        this.resourceKind,
+        this.selectedCustomDefinition,
+      );
       if (!column) return;
       this.closeDetail();
       this.sort = nextKubernetesSort(this.sort, column);
       this.renderSortHeaders();
       void this.activateCurrentList();
     });
-    this.customResourceSelect.addEventListener('change', () => this.selectCustomResourceDefinition());
     this.detailCloseButton.addEventListener('click', () => this.closeDetail());
     this.detailDrawerScrim.addEventListener('click', () => this.closeDetail());
     this.detailVncButton.addEventListener('click', () => { void this.openVnc(); });
@@ -1411,10 +1585,22 @@ class KubernetesPage implements KubernetesPageController {
       this.clearDrawerEnvironment();
       this.disposeWorkspaceForLifecycle();
     }
+    const preserveReloadCustomDefinition = !contextChanged
+      && this.customDefinitionsReloadContext !== undefined
+      && this.customDefinitionsReloadContext === state.selectedContext;
     if (this.customDefinitionsContext !== state.selectedContext) {
+      this.customDefinitionsRequestGeneration += 1;
       this.customDefinitions = [];
       this.customDefinitionsContext = undefined;
-      this.selectedCustomDefinition = undefined;
+      if (!preserveReloadCustomDefinition) {
+        this.selectedCustomDefinition = undefined;
+        this.customDefinitionsReloadContext = undefined;
+        this.customDefinitionsLoadingContext = undefined;
+        this.customDefinitionsLoad = undefined;
+      }
+      this.customDefinitionFilter = '';
+      this.customResourceSearch.value = '';
+      this.setCustomResourceMenuOpen(false);
     }
     this.state = state;
     if (this.visible && state.connection === 'connected' && !contextChanged && !disconnected) this.ensureWorkspace();
@@ -1430,11 +1616,14 @@ class KubernetesPage implements KubernetesPageController {
       void this.loadNamespaces(state.selectedContext);
     }
     if (this.visible && this.resourceKind === 'custom-resources' && state.connection === 'connected'
-      && this.customDefinitionsContext !== state.selectedContext) {
+      && this.customDefinitionsContext !== state.selectedContext && !this.reloadingKubeconfig) {
       void this.loadCustomResourceDefinitions();
     }
     this.settleContextActivation(state);
-    if (this.visible && state.connection === 'connected' && connectionChanged && !hadContextActivationIntent) {
+    const customDefinitionReloadPending = this.resourceKind === 'custom-resources'
+      && this.customDefinitionsReloadContext === state.selectedContext;
+    if (this.visible && state.connection === 'connected' && connectionChanged && !hadContextActivationIntent
+      && !customDefinitionReloadPending) {
       void this.activateCurrentList();
     }
   }
@@ -1517,6 +1706,8 @@ class KubernetesPage implements KubernetesPageController {
     this.reconnectButton.disabled = !canReconnect || this.reconnecting;
     this.reconnectButton.textContent = this.reconnecting ? 'Reconnecting…' : 'Reconnect';
     this.reloadButton.classList.toggle('hidden', !state?.kubeconfigReloadAvailable);
+    this.reloadButton.disabled = this.reloadingKubeconfig;
+    this.reloadButton.textContent = this.reloadingKubeconfig ? 'Reloading…' : 'Reload kubeconfig';
     this.namespaceToggle.disabled = state?.connection !== 'connected' || !state?.selectedContext;
     this.namespaceSearch.disabled = this.namespaceToggle.disabled;
     if (this.namespaceToggle.disabled) this.setNamespaceMenuOpen(false);
@@ -1711,7 +1902,7 @@ class KubernetesPage implements KubernetesPageController {
   private renderTableHeader(): void {
     this.tableShell.dataset.resourceKind = this.resourceKind;
     this.tableHeader.replaceChildren();
-    for (const column of getKubernetesListColumns(this.resourceKind)) {
+    for (const column of getKubernetesListColumns(this.resourceKind, this.selectedCustomDefinition)) {
       const header = document.createElement('span');
       header.setAttribute('role', 'columnheader');
       header.setAttribute('aria-sort', 'none');
@@ -1732,7 +1923,11 @@ class KubernetesPage implements KubernetesPageController {
   private renderSortHeaders(): void {
     const buttons = Array.from(this.tableHeader.querySelectorAll<HTMLButtonElement>('[data-kubernetes-sort]'));
     for (const button of buttons) {
-      const column = kubernetesSortColumn(button.dataset.kubernetesSort, this.resourceKind);
+      const column = kubernetesSortColumn(
+        button.dataset.kubernetesSort,
+        this.resourceKind,
+        this.selectedCustomDefinition,
+      );
       if (!column) continue;
       const active = column === this.sort.column;
       const direction = active ? this.sort.direction : undefined;
@@ -1752,23 +1947,71 @@ class KubernetesPage implements KubernetesPageController {
   private renderCustomResourceControl(): void {
     const isCustomResource = this.resourceKind === 'custom-resources';
     this.customResourceControl.classList.toggle('hidden', !isCustomResource);
-    if (!isCustomResource) return;
-    this.customResourceSelect.replaceChildren();
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = this.customDefinitions.length > 0
-      ? 'Select a discovered Custom Resource'
-      : 'Discovering Custom Resources…';
-    this.customResourceSelect.appendChild(placeholder);
-    for (const definition of this.customDefinitions) {
-      const option = document.createElement('option');
-      option.value = this.customDefinitionKey(definition);
-      option.textContent = `${definition.group}/${definition.version} · ${definition.kind}`;
-      option.selected = this.selectedCustomDefinition !== undefined
-        && this.customDefinitionKey(this.selectedCustomDefinition) === option.value;
-      this.customResourceSelect.appendChild(option);
+    if (!isCustomResource) {
+      this.setCustomResourceMenuOpen(false);
+      return;
     }
-    this.customResourceSelect.disabled = !this.state?.selectedContext || this.customDefinitions.length === 0;
+    const context = this.state?.selectedContext;
+    const loading = Boolean(context && this.customDefinitionsLoadingContext === context);
+    const selected = this.selectedCustomDefinition;
+    const label = selected
+      ? `${selected.kind} · ${selected.group}/${selected.version}`
+      : loading
+        ? 'Discovering Custom Resources…'
+        : this.customDefinitionsContext === context && this.customDefinitions.length === 0
+          ? 'No Custom Resources'
+          : 'Select Custom Resource';
+    this.customResourceValue.textContent = label;
+    this.customResourceValue.title = label;
+    this.customResourceToggle.disabled = !context || this.state?.connection !== 'connected'
+      || loading || this.customDefinitions.length === 0;
+    if (this.customResourceToggle.disabled) this.setCustomResourceMenuOpen(false);
+    this.renderCustomResourceOptions();
+  }
+
+  private renderCustomResourceOptions(): void {
+    this.customResourceOptions.replaceChildren();
+    const definitions = filterKubernetesCustomResourceDefinitions(
+      this.customDefinitions,
+      this.customDefinitionFilter,
+    );
+    if (this.customDefinitionsLoadingContext === this.state?.selectedContext) {
+      const status = document.createElement('p');
+      status.className = 'kubernetes-custom-resource-status';
+      status.textContent = 'Discovering Custom Resources…';
+      this.customResourceOptions.appendChild(status);
+      return;
+    }
+    if (definitions.length === 0) {
+      const status = document.createElement('p');
+      status.className = 'kubernetes-custom-resource-status';
+      status.textContent = this.customDefinitions.length > 0
+        ? 'No matching Custom Resources'
+        : 'No Custom Resources available';
+      this.customResourceOptions.appendChild(status);
+      return;
+    }
+    for (const definition of definitions) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'kubernetes-selector-option';
+      option.dataset.customResource = this.customDefinitionKey(definition);
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(
+        this.selectedCustomDefinition !== undefined
+        && this.customDefinitionKey(this.selectedCustomDefinition) === this.customDefinitionKey(definition),
+      ));
+      const text = document.createElement('span');
+      const label = `${definition.kind} · ${definition.group}/${definition.version}`;
+      text.textContent = label;
+      text.title = label;
+      const scope = document.createElement('span');
+      scope.className = 'kubernetes-custom-resource-option-meta';
+      scope.textContent = definition.scope;
+      option.append(text, scope);
+      option.addEventListener('click', () => this.selectCustomResourceDefinition(definition));
+      this.customResourceOptions.appendChild(option);
+    }
   }
 
   private selectCategory(category: KubernetesCategory): void {
@@ -1805,39 +2048,100 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private customDefinitionKey(definition: KubernetesCustomResourceDefinition): string {
-    return `${definition.group}/${definition.version}:${definition.plural}:${definition.scope}`;
+    return kubernetesCustomResourceDefinitionKey(definition);
   }
 
-  private async loadCustomResourceDefinitions(): Promise<void> {
+  private loadCustomResourceDefinitions(): Promise<boolean> {
     const context = this.state?.selectedContext;
     if (!this.visible || this.resourceKind !== 'custom-resources' || !context || this.state?.connection !== 'connected') {
-      return;
+      return Promise.resolve(false);
     }
+    const existing = this.customDefinitionsLoad;
+    if (existing?.context === context) return existing.promise;
+    const promise = this.performCustomResourceDefinitionLoad(context);
+    this.customDefinitionsLoad = { context, promise };
+    void promise.then(
+      () => {
+        if (this.customDefinitionsLoad?.promise === promise) this.customDefinitionsLoad = undefined;
+      },
+      () => {
+        if (this.customDefinitionsLoad?.promise === promise) this.customDefinitionsLoad = undefined;
+      },
+    );
+    return promise;
+  }
+
+  private async performCustomResourceDefinitionLoad(context: string): Promise<boolean> {
+    const requestGeneration = ++this.customDefinitionsRequestGeneration;
+    this.customDefinitionsLoadingContext = context;
     this.renderCustomResourceControl();
     try {
       const definitions = await window.kubernetesApi.listCustomResourceDefinitions();
-      if (!this.visible || this.resourceKind !== 'custom-resources' || this.state?.selectedContext !== context) return;
+      if (!this.visible || requestGeneration !== this.customDefinitionsRequestGeneration
+        || this.resourceKind !== 'custom-resources' || this.state?.selectedContext !== context) return false;
+      const previousDefinition = this.selectedCustomDefinition;
+      const matchingDefinition = rebindKubernetesCustomResourceDefinition(definitions, previousDefinition);
+      const definitionChanged = previousDefinition !== undefined && matchingDefinition !== undefined
+        && JSON.stringify(previousDefinition) !== JSON.stringify(matchingDefinition);
+      const reloadDiscovery = this.customDefinitionsReloadContext === context;
       this.customDefinitions = definitions;
       this.customDefinitionsContext = context;
-      if (this.selectedCustomDefinition && !definitions.some((definition) => (
-        this.customDefinitionKey(definition) === this.customDefinitionKey(this.selectedCustomDefinition as KubernetesCustomResourceDefinition)
-      ))) {
-        this.selectedCustomDefinition = undefined;
+      this.customDefinitionsReloadContext = undefined;
+      if (previousDefinition) {
+        this.selectedCustomDefinition = matchingDefinition;
+      }
+      let reactivate = reloadDiscovery && previousDefinition !== undefined && matchingDefinition !== undefined;
+      if (previousDefinition && !matchingDefinition) {
+        this.closeDetail();
+        this.clearResourceTable();
+        this.sort = { column: 'name', direction: 'asc' };
+        this.renderTableHeader();
+        reactivate = true;
+      } else if (definitionChanged && matchingDefinition) {
+        this.closeDetail();
+        this.clearResourceTable();
+        const columns = getKubernetesCustomResourceListColumns(matchingDefinition);
+        if (!columns.some((column) => column.key === this.sort.column)) {
+          this.sort = { column: 'name', direction: 'asc' };
+        }
+        this.renderTableHeader();
+        reactivate = true;
       }
       this.renderCustomResourceControl();
+      if (reactivate && !this.reloadingKubeconfig) {
+        void this.activateCurrentList();
+      }
+      return true;
     } catch (error) {
-      if (!this.visible || this.resourceKind !== 'custom-resources') return;
+      if (!this.visible || requestGeneration !== this.customDefinitionsRequestGeneration
+        || this.resourceKind !== 'custom-resources') return false;
       if (isPermissionError(error)) this.showNoPermission(toErrorMessage(error));
       else this.showError(toErrorMessage(error));
+      return false;
+    } finally {
+      if (requestGeneration === this.customDefinitionsRequestGeneration
+        && this.customDefinitionsLoadingContext === context) {
+        this.customDefinitionsLoadingContext = undefined;
+        if (this.visible && this.resourceKind === 'custom-resources' && this.state?.selectedContext === context) {
+          this.renderCustomResourceControl();
+        }
+      }
     }
   }
 
-  private selectCustomResourceDefinition(): void {
+  private selectCustomResourceDefinition(definition: KubernetesCustomResourceDefinition): void {
+    const selectedKey = this.selectedCustomDefinition
+      ? this.customDefinitionKey(this.selectedCustomDefinition)
+      : undefined;
+    const nextKey = this.customDefinitionKey(definition);
+    this.setCustomResourceMenuOpen(false);
+    this.customResourceToggle.focus();
+    if (selectedKey === nextKey) return;
     this.closeDetail();
-    const selected = this.customResourceSelect.value;
-    this.selectedCustomDefinition = this.customDefinitions.find((definition) => this.customDefinitionKey(definition) === selected);
+    this.selectedCustomDefinition = definition;
     this.sort = { column: 'name', direction: 'asc' };
     this.clearResourceTable();
+    this.renderCustomResourceControl();
     this.renderTableHeader();
     void this.activateCurrentList();
   }
@@ -1847,6 +2151,11 @@ class KubernetesPage implements KubernetesPageController {
     const context = this.state?.selectedContext;
     if (!context) return undefined;
     if (this.resourceKind === 'custom-resources') {
+      if (!hasCurrentKubernetesCustomResourceDefinitions(
+        context,
+        this.customDefinitionsContext,
+        this.customDefinitionsReloadContext,
+      )) return undefined;
       const definition = this.selectedCustomDefinition;
       if (!definition) return undefined;
       return {
@@ -1891,17 +2200,36 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async reloadKubeconfig(): Promise<void> {
+    if (this.reloadingKubeconfig) return;
+    this.reloadingKubeconfig = true;
+    this.renderState();
     this.closeSelectorMenus();
     this.closeDetail();
     this.clearResourceTable();
+    this.customDefinitionsRequestGeneration += 1;
+    this.customDefinitionsLoadingContext = undefined;
+    this.customDefinitionsLoad = undefined;
+    this.customDefinitions = [];
+    this.customDefinitionsContext = undefined;
+    this.customDefinitionsReloadContext = this.state?.selectedContext;
+    this.renderCustomResourceControl();
     try {
       const state = await window.kubernetesApi.reloadKubeconfig();
       if (!this.visible) return;
       this.invalidateNamespaceOptions();
       this.onStateChanged(state);
-      await this.activateCurrentList();
+      let customResourcesReady = true;
+      if (this.resourceKind === 'custom-resources' && state.connection === 'connected') {
+        customResourcesReady = await this.loadCustomResourceDefinitions();
+      }
+      if (customResourcesReady) {
+        await this.activateCurrentList();
+      }
     } catch (error) {
       this.showError(toErrorMessage(error));
+    } finally {
+      this.reloadingKubeconfig = false;
+      this.renderState();
     }
   }
 
@@ -2237,11 +2565,17 @@ class KubernetesPage implements KubernetesPageController {
     const detail = this.displayDetail();
     if (!active || !detail) return;
     this.detailTitle.textContent = detailName(active);
-    this.detailSubtitle.textContent = resourceLabel(active.query.kind);
+    this.detailSubtitle.textContent = active.query.kind === 'custom-resources' && this.selectedCustomDefinition
+      ? `${String(detail.kind ?? this.selectedCustomDefinition.kind)} · ${String(
+        detail.apiVersion ?? `${this.selectedCustomDefinition.group}/${this.selectedCustomDefinition.version}`,
+      )}`
+      : resourceLabel(active.query.kind);
     this.drawerEnvironmentElement = undefined;
     this.detailOverview.replaceChildren();
     if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
-    else this.renderOverview(detail, active);
+    else if (active.query.kind === 'custom-resources' && this.selectedCustomDefinition) {
+      this.renderCustomResourceDrawer(detail, active, this.selectedCustomDefinition);
+    } else this.renderOverview(detail, active);
     this.renderDrawerVnc(detail, active);
     this.renderDrawerPortForward(active);
     const related = this.renderRelatedDetail(detail, active);
@@ -2276,6 +2610,135 @@ class KubernetesPage implements KubernetesPageController {
       list.appendChild(item);
     }
     this.detailOverview.appendChild(list);
+  }
+
+  private renderCustomResourceDrawer(
+    detail: Record<string, unknown>,
+    active: ActiveDetail,
+    definition: KubernetesCustomResourceDefinition,
+  ): void {
+    const model = buildKubernetesCustomResourceDetailModel(detail, definition);
+    const properties = document.createElement('section');
+    properties.className = 'kubernetes-custom-resource-properties';
+    const heading = document.createElement('h3');
+    heading.textContent = 'Properties';
+    const list = document.createElement('dl');
+    list.className = 'kubernetes-custom-resource-property-list';
+    for (const item of model.properties) {
+      const row = document.createElement('div');
+      const term = document.createElement('dt');
+      term.textContent = item.name;
+      const description = document.createElement('dd');
+      if (item.multiline) {
+        const value = document.createElement('pre');
+        value.textContent = item.value;
+        description.appendChild(value);
+      } else {
+        description.textContent = item.value;
+        description.title = item.value;
+      }
+      row.append(term, description);
+      list.appendChild(row);
+    }
+    properties.append(heading, list);
+    this.detailOverview.appendChild(properties);
+
+    if (model.labels.length > 0) {
+      this.detailOverview.appendChild(this.createCustomResourceSection(active, 'labels', 'Labels', (content) => {
+        this.renderCustomResourceMetadataRows(content, model.labels);
+      }));
+    }
+    if (model.annotations.length > 0) {
+      this.detailOverview.appendChild(this.createCustomResourceSection(active, 'annotations', 'Annotations', (content) => {
+        this.renderCustomResourceMetadataRows(content, model.annotations);
+      }));
+    }
+    if (model.conditions.length > 0) {
+      const conditions = document.createElement('section');
+      conditions.className = 'kubernetes-custom-resource-conditions';
+      const conditionsHeading = document.createElement('h3');
+      conditionsHeading.textContent = 'Status';
+      const conditionList = document.createElement('div');
+      conditionList.className = 'kubernetes-custom-resource-condition-list';
+      for (const condition of model.conditions) {
+        const row = document.createElement('article');
+        row.className = 'kubernetes-custom-resource-condition';
+        const head = document.createElement('div');
+        const type = document.createElement('strong');
+        type.textContent = condition.type;
+        const badge = document.createElement('span');
+        badge.className = 'kubernetes-custom-resource-condition-badge';
+        badge.dataset.status = condition.status.toLocaleLowerCase();
+        badge.textContent = condition.status;
+        head.append(type, badge);
+        row.appendChild(head);
+        if (condition.reason || condition.lastTransitionTime) {
+          const meta = document.createElement('p');
+          meta.className = 'kubernetes-custom-resource-condition-meta';
+          meta.textContent = [condition.reason, condition.lastTransitionTime].filter(Boolean).join(' · ');
+          row.appendChild(meta);
+        }
+        if (condition.message) {
+          const message = document.createElement('p');
+          message.textContent = condition.message;
+          row.appendChild(message);
+        }
+        conditionList.appendChild(row);
+      }
+      conditions.append(conditionsHeading, conditionList);
+      this.detailOverview.appendChild(conditions);
+    }
+  }
+
+  private renderCustomResourceMetadataRows(content: HTMLElement, entries: Array<[string, string]>): void {
+    for (const [key, value] of entries) {
+      const row = document.createElement('div');
+      row.className = 'kubernetes-drawer-label-row';
+      const label = document.createElement('span');
+      label.textContent = key;
+      label.title = key;
+      const text = document.createElement('span');
+      text.textContent = value;
+      text.title = value;
+      row.append(label, text);
+      content.appendChild(row);
+    }
+  }
+
+  private createCustomResourceSection(
+    active: ActiveDetail,
+    key: string,
+    title: string,
+    renderContent: (content: HTMLElement) => void,
+  ): HTMLElement {
+    active.customExpandedSections ??= new Set<string>();
+    const section = document.createElement('section');
+    section.className = 'kubernetes-drawer-section';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'kubernetes-drawer-section-toggle';
+    const label = document.createElement('span');
+    label.textContent = title;
+    const indicator = document.createElement('span');
+    const content = document.createElement('div');
+    content.className = 'kubernetes-drawer-section-content';
+    renderContent(content);
+    const update = (): void => {
+      const expanded = active.customExpandedSections?.has(key) ?? false;
+      toggle.setAttribute('aria-expanded', String(expanded));
+      indicator.textContent = expanded ? '▾' : '▸';
+      content.classList.toggle('hidden', !expanded);
+    };
+    toggle.addEventListener('click', () => {
+      if (!this.isCurrentActiveDrawer(active)) return;
+      if (active.customExpandedSections?.has(key)) active.customExpandedSections.delete(key);
+      else active.customExpandedSections?.add(key);
+      update();
+    });
+    toggle.append(label, indicator);
+    update();
+    section.append(toggle, content);
+    return section;
   }
 
   private toggleDrawerYaml(): void {
@@ -3144,7 +3607,7 @@ class KubernetesPage implements KubernetesPageController {
     row.className = 'kubernetes-table-row';
     row.setAttribute('role', 'row');
     row.tabIndex = 0;
-    const fields = getKubernetesResourceRowValues(this.resourceKind, item);
+    const fields = getKubernetesResourceRowValues(this.resourceKind, item, this.selectedCustomDefinition);
     for (const value of fields) {
       const cell = document.createElement('span');
       cell.className = 'kubernetes-table-cell';

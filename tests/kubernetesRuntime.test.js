@@ -146,6 +146,7 @@ function createRuntime(options = {}) {
   const fakeCoordinator = {
     disposePageScopedCalls: 0,
     async activate(query) {
+      options.onActivate?.(query);
       calls.push(`activate:${query.kind}`);
       return {
         query,
@@ -334,11 +335,16 @@ test('KubernetesRuntime keeps Pod environment authorization errors local but for
 
 test('KubernetesRuntime discovers Custom Resources on demand and shares the active Context result', async () => {
   let calls = 0;
+  let activatedQuery;
   const { runtime } = createRuntime({
+    onActivate: (query) => { activatedQuery = query; },
     client: {
       async listCustomResourceDefinitions() {
         calls += 1;
-        return [{ group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced' }];
+        return [{
+          group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced',
+          printerColumns: [{ name: 'Ready', type: 'string', jsonPath: '.status.ready', priority: 0 }],
+        }];
       },
     },
   });
@@ -350,7 +356,90 @@ test('KubernetesRuntime discovers Custom Resources on demand and shares the acti
 
   assert.equal(calls, 1);
   assert.deepEqual(first, second);
-  assert.deepEqual(first, [{ group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced' }]);
+  assert.notEqual(first[0].printerColumns, second[0].printerColumns);
+  assert.deepEqual(first, [{
+    group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced',
+    printerColumns: [{ name: 'Ready', type: 'string', jsonPath: '.status.ready', priority: 0 }],
+  }]);
+  const snapshot = await runtime.activateResources({
+    context: 'development', kind: 'custom-resources', apiVersion: 'example.test/v1', plural: 'widgets',
+    scope: 'namespaced', namespaceScope: { mode: 'all', namespaces: [] },
+    customResourcePrinterColumns: [{ name: 'Injected', type: 'string', jsonPath: '.spec.secret', priority: 0 }],
+    sort: { column: 'name', direction: 'asc' },
+  });
+  assert.deepEqual(activatedQuery.customResourcePrinterColumns, [
+    { name: 'Ready', type: 'string', jsonPath: '.status.ready', priority: 0, sourceIndex: 0 },
+  ]);
+  assert.equal(Object.hasOwn(snapshot.query, 'customResourcePrinterColumns'), false);
+  await runtime.handleConnectionLoss(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }));
+  assert.deepEqual(activatedQuery.customResourcePrinterColumns, [
+    { name: 'Ready', type: 'string', jsonPath: '.status.ready', priority: 0, sourceIndex: 0 },
+  ]);
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime fences stale Custom Resource discovery across a confirmed kubeconfig reload', async () => {
+  const firstDiscovery = deferred();
+  let attempts = 0;
+  const oldDefinition = {
+    group: 'old.example.test', version: 'v1', kind: 'OldWidget', plural: 'oldwidgets', scope: 'namespaced',
+    printerColumns: [],
+  };
+  const newDefinition = {
+    group: 'new.example.test', version: 'v1', kind: 'NewWidget', plural: 'newwidgets', scope: 'namespaced',
+    printerColumns: [],
+  };
+  const { runtime } = createRuntime({
+    client: {
+      async listCustomResourceDefinitions() {
+        attempts += 1;
+        return attempts === 1 ? firstDiscovery.promise : [newDefinition];
+      },
+    },
+  });
+
+  const staleRequest = runtime.listCustomResourceDefinitions();
+  await waitFor(() => attempts === 1);
+  await runtime.reloadKubeconfig();
+  firstDiscovery.resolve([oldDefinition]);
+
+  await assert.rejects(staleRequest, /invalidated by a Context reload/i);
+  assert.deepEqual(await runtime.listCustomResourceDefinitions(), [newDefinition]);
+  assert.equal(attempts, 2);
+  await runtime.shutdown();
+});
+
+test('KubernetesRuntime keeps CRD discovery permission denial local while restoring after reload', async () => {
+  const definition = {
+    group: 'example.test', version: 'v1', kind: 'Widget', plural: 'widgets', scope: 'namespaced',
+    printerColumns: [{ name: 'Ready', type: 'string', jsonPath: '.status.ready', priority: 0 }],
+  };
+  let discoveries = 0;
+  const { runtime, calls } = createRuntime({
+    client: {
+      async listCustomResourceDefinitions() {
+        discoveries += 1;
+        if (discoveries === 1) return [definition];
+        throw Object.assign(new Error('API endpoint details must stay in the main process'), { statusCode: 403 });
+      },
+    },
+  });
+  await runtime.listCustomResourceDefinitions();
+  await runtime.activateResources({
+    context: 'development', kind: 'custom-resources', apiVersion: 'example.test/v1', plural: 'widgets',
+    scope: 'namespaced', namespaceScope: { mode: 'all', namespaces: [] },
+  });
+  calls.length = 0;
+
+  const state = await runtime.reloadKubeconfig();
+
+  assert.equal(state.connection, 'connected');
+  assert.equal(discoveries, 2);
+  assert.equal(calls.includes('activate:custom-resources'), false);
+  await assert.rejects(
+    runtime.listCustomResourceDefinitions(),
+    /No permission to list Custom Resource Definitions/i,
+  );
   await runtime.shutdown();
 });
 

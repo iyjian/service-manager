@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const rendererPath = path.join(__dirname, '..', 'dist', 'renderer');
 const modelPath = path.join(rendererPath, 'kubernetesDetailModel.js');
+const customResourceModelPath = path.join(rendererPath, 'kubernetesCustomResourceModel.js');
 
 test('Kubernetes drawer-workspace documentation preserves the secret boundary and architecture map', async () => {
   const root = path.join(__dirname, '..');
@@ -270,6 +271,63 @@ test('buildKubernetesOverviewFields returns only Kind Namespace Status Name and 
     { label: 'Status', value: 'Fallback Status' },
     { label: 'Name', value: 'fallback-name' },
   ]);
+});
+
+test('Custom Resource detail model mirrors Lens Properties and condition fallback from CRD printer columns', async () => {
+  const { buildKubernetesCustomResourceDetailModel } = await import(customResourceModelPath);
+  const definition = {
+    group: 'argoproj.io', version: 'v1alpha1', kind: 'Application', plural: 'applications', scope: 'namespaced',
+    printerColumns: [
+      { name: 'Sync Status', type: 'string', jsonPath: '.status.sync.status', priority: 0 },
+      { name: 'Health Status', type: 'string', jsonPath: '.status.health.status', priority: 0 },
+      { name: 'Revision', type: 'string', jsonPath: '.status.sync.revision', priority: 1 },
+      { name: 'Project', type: 'string', jsonPath: '.spec.project', priority: 1 },
+    ],
+  };
+  const model = buildKubernetesCustomResourceDetailModel({
+    apiVersion: 'argoproj.io/v1alpha1',
+    kind: 'Application',
+    metadata: {
+      name: 'ai-dev', namespace: 'argocd', creationTimestamp: '2026-07-16T01:00:00Z',
+      labels: { team: 'platform', app: 'ai' }, annotations: { owner: 'ops' },
+    },
+    spec: { project: 'default' },
+    status: {
+      sync: { status: 'Synced', revision: 'main@sha1:abc' },
+      health: { status: 'Healthy' },
+      conditions: [{ type: 'Reconciled', status: 'True', reason: 'Success', message: '<safe-text>' }],
+    },
+  }, definition);
+
+  assert.deepEqual(model.properties.map(({ name, value }) => [name, value]), [
+    ['Created', '2026-07-16T01:00:00Z'], ['Name', 'ai-dev'], ['Namespace', 'argocd'],
+    ['Sync Status', 'Synced'], ['Health Status', 'Healthy'], ['Revision', 'main@sha1:abc'], ['Project', 'default'],
+  ]);
+  assert.deepEqual(model.labels, [['app', 'ai'], ['team', 'platform']]);
+  assert.deepEqual(model.annotations, [['owner', 'ops']]);
+  assert.deepEqual(model.conditions, [{
+    type: 'Reconciled', status: 'True', reason: 'Success', message: '<safe-text>',
+  }]);
+
+  const statusDefinition = {
+    ...definition,
+    printerColumns: [{ name: 'Status', type: 'string', jsonPath: '.status.phase', priority: 0 }],
+  };
+  assert.deepEqual(buildKubernetesCustomResourceDetailModel({
+    metadata: { name: 'one' }, status: { phase: 'Ready', conditions: [{ type: 'Ready', status: 'True' }] },
+  }, statusDefinition).conditions, []);
+
+  const boundedMetadata = buildKubernetesCustomResourceDetailModel({
+    metadata: {
+      name: 'bounded',
+      annotations: Object.fromEntries(Array.from({ length: 140 }, (_, index) => [
+        `annotation-${String(index).padStart(3, '0')}`,
+        index === 0 ? 'x'.repeat(10_000) : 'value',
+      ])),
+    },
+  }, { ...definition, printerColumns: [] });
+  assert.ok(boundedMetadata.annotations[0][1].length <= 4_096);
+  assert.deepEqual(boundedMetadata.annotations.at(-1), ['…', '12 more entries not shown']);
 });
 
 test('Kubernetes resource detail uses an overlay drawer header with Port Forward and YAML controls', async () => {

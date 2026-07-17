@@ -144,7 +144,11 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(html, /All Namespaces/);
   assert.match(html, /id="kubernetes-category-tabs"/);
   assert.match(html, /id="kubernetes-resource-tabs"/);
-  assert.match(html, /id="kubernetes-custom-resource-select"/);
+  assert.match(html, /id="kubernetes-custom-resource-toggle"[^>]+aria-haspopup="dialog"/);
+  assert.match(html, /id="kubernetes-custom-resource-menu"[^>]+role="dialog"/);
+  assert.match(html, /id="kubernetes-custom-resource-search"[^>]+type="search"/);
+  assert.match(html, /id="kubernetes-custom-resource-options"[^>]+role="listbox"/);
+  assert.doesNotMatch(html, /<select[^>]+kubernetes-custom-resource/);
   assert.match(html, /id="kubernetes-loaded-count"/);
   assert.match(html, /id="kubernetes-table-viewport"/);
   assert.match(html, /id="kubernetes-table-spacer"/);
@@ -219,6 +223,65 @@ test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves
   assert.deepEqual(filterKubernetesNamespaces(['ai-dev'], 'missing'), []);
 });
 
+test('Kubernetes Custom Resource selector filters GVK locally and list columns follow CRD printer priority', async () => {
+  const {
+    filterKubernetesCustomResourceDefinitions,
+    getKubernetesCustomResourceListColumns,
+    getKubernetesResourceRowValues,
+    hasCurrentKubernetesCustomResourceDefinitions,
+    isPermissionError,
+    rebindKubernetesCustomResourceDefinition,
+  } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const application = {
+    group: 'argoproj.io', version: 'v1alpha1', kind: 'Application', plural: 'applications', scope: 'namespaced',
+    printerColumns: [
+      { name: 'Sync Status', type: 'string', jsonPath: '.status.sync.status', priority: 0 },
+      { name: 'Revision', type: 'string', jsonPath: '.status.sync.revision', priority: 1 },
+      { name: 'Health Status', type: 'string', jsonPath: '.status.health.status', priority: 0 },
+    ],
+  };
+  const clusterPolicy = {
+    group: 'policy.networking.k8s.io', version: 'v1alpha1', kind: 'AdminNetworkPolicy',
+    plural: 'adminnetworkpolicies', scope: 'cluster', printerColumns: [],
+  };
+
+  assert.deepEqual(filterKubernetesCustomResourceDefinitions([clusterPolicy, application], ' ARGO '), [application]);
+  assert.deepEqual(filterKubernetesCustomResourceDefinitions([clusterPolicy, application], 'adminnetwork'), [clusterPolicy]);
+  assert.deepEqual(getKubernetesCustomResourceListColumns(application).map(({ key, label }) => [key, label]), [
+    ['namespace', 'Namespace'], ['name', 'Name'], ['printer0', 'Sync Status'], ['printer2', 'Health Status'],
+    ['printer1', 'Revision'], ['kind', 'Kind'], ['apiVersion', 'API Version'], ['age', 'Age'],
+  ]);
+  assert.deepEqual(getKubernetesResourceRowValues('custom-resources', {
+    uid: 'application-1', name: 'ai-dev', namespace: 'argocd', resourceVersion: '3',
+    status: 'Synced', createdAt: 'invalid-age',
+    columns: {
+      printer0: 'Synced', printer1: 'main@sha1:abc', printer2: 'Healthy',
+      kind: 'Application', apiVersion: 'argoproj.io/v1alpha1', status: 'Synced',
+    },
+  }, application), [
+    'argocd', 'ai-dev', 'Synced', 'Healthy', 'main@sha1:abc', 'Application', 'argoproj.io/v1alpha1', 'invalid-age',
+  ]);
+  assert.equal(getKubernetesCustomResourceListColumns(clusterPolicy).length, 8);
+  assert.equal(getKubernetesCustomResourceListColumns(clusterPolicy)[0].label, 'Name');
+
+  const refreshedApplication = {
+    ...application,
+    printerColumns: [{ name: 'Health', type: 'string', jsonPath: '.status.health.status', priority: 0 }],
+  };
+  assert.equal(rebindKubernetesCustomResourceDefinition(
+    [refreshedApplication],
+    application,
+  ), refreshedApplication);
+  assert.equal(rebindKubernetesCustomResourceDefinition([clusterPolicy], application), undefined);
+  assert.equal(hasCurrentKubernetesCustomResourceDefinitions('development', 'development', undefined), true);
+  assert.equal(hasCurrentKubernetesCustomResourceDefinitions('development', undefined, 'development'), false);
+  assert.equal(hasCurrentKubernetesCustomResourceDefinitions('development', 'development', 'development'), false);
+  assert.equal(hasCurrentKubernetesCustomResourceDefinitions('development', 'production', undefined), false);
+  assert.equal(isPermissionError(new Error('No permission to list Custom Resource Definitions.')), true);
+  assert.equal(isPermissionError(new Error('401 Unauthorized')), true);
+  assert.equal(isPermissionError(new Error('request timed out')), false);
+});
+
 test('Kubernetes Context activation waits for the matching delayed connection exactly until it is usable', async () => {
   const { decideKubernetesContextActivation } = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const intent = { id: 7, context: 'tunneled', pageGeneration: 3 };
@@ -261,6 +324,50 @@ test('Kubernetes renderer never sends a resource LIST while a Context is reconne
   assert.ok(activate.indexOf('return;', activate.indexOf('if (!query)')) < activate.indexOf('window.kubernetesApi.listResources(query)'));
 });
 
+test('Kubernetes renderer rediscovers Custom Resource metadata after direct or delayed reload', async () => {
+  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const stateStart = page.indexOf('    onStateChanged(state) {');
+  const stateEnd = page.indexOf('    armContextActivation(context) {', stateStart);
+  const discoveryStart = page.indexOf('    loadCustomResourceDefinitions() {');
+  const discoveryEnd = page.indexOf('    selectCustomResourceDefinition(definition) {', discoveryStart);
+  const reloadStart = page.indexOf('    async reloadKubeconfig() {');
+  const reloadEnd = page.indexOf('    async reconnect() {', reloadStart);
+
+  assert.ok(stateStart >= 0 && stateEnd > stateStart);
+  assert.ok(discoveryStart >= 0 && discoveryEnd > discoveryStart);
+  assert.ok(reloadStart >= 0 && reloadEnd > reloadStart);
+  const state = page.slice(stateStart, stateEnd);
+  const discovery = page.slice(discoveryStart, discoveryEnd);
+  const reload = page.slice(reloadStart, reloadEnd);
+
+  assert.match(reload, /if \(this\.reloadingKubeconfig\)\s+return/);
+  assert.ok(reload.indexOf('if (this.reloadingKubeconfig)') < reload.indexOf('window.kubernetesApi.reloadKubeconfig()'));
+  assert.match(reload, /this\.customDefinitionsContext = undefined/);
+  assert.match(reload, /this\.customDefinitionsReloadContext = this\.state\?\.selectedContext/);
+  assert.match(reload, /customResourcesReady = await this\.loadCustomResourceDefinitions\(\)/);
+  assert.match(reload, /if \(customResourcesReady\)\s*\{\s*await this\.activateCurrentList\(\)/);
+  assert.match(state, /preserveReloadCustomDefinition/);
+  assert.match(state, /this\.customDefinitionsContext !== state\.selectedContext && !this\.reloadingKubeconfig/);
+  assert.match(state, /!customDefinitionReloadPending/);
+  assert.match(discovery, /const reloadDiscovery = this\.customDefinitionsReloadContext === context/);
+  assert.match(discovery, /existing\?\.context === context/);
+  assert.match(discovery, /return existing\.promise/);
+  assert.match(discovery, /this\.customDefinitionsLoad = \{ context, promise \}/);
+  assert.match(discovery, /this\.customDefinitionsReloadContext = undefined/);
+  assert.match(discovery, /reactivate && !this\.reloadingKubeconfig/);
+  const currentQueryStart = page.indexOf('    currentQuery() {');
+  const currentQueryEnd = page.indexOf('    async reloadKubeconfig() {', currentQueryStart);
+  assert.ok(currentQueryStart >= 0 && currentQueryEnd > currentQueryStart);
+  assert.match(
+    page.slice(currentQueryStart, currentQueryEnd),
+    /hasCurrentKubernetesCustomResourceDefinitions\([\s\S]*?this\.customDefinitionsContext[\s\S]*?this\.customDefinitionsReloadContext/,
+  );
+  const renderStateStart = page.indexOf('    renderState() {');
+  const renderStateEnd = page.indexOf('    renderCategoryTabs() {', renderStateStart);
+  assert.ok(renderStateStart >= 0 && renderStateEnd > renderStateStart);
+  assert.match(page.slice(renderStateStart, renderStateEnd), /this\.reloadButton\.disabled = this\.reloadingKubeconfig/);
+});
+
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {
   const { calculateVirtualWindow } = await import(path.join(distRenderer, 'kubernetesVirtualTable.js'));
   const window = calculateVirtualWindow({
@@ -298,7 +405,7 @@ test('Kubernetes renderer keeps dynamic resource names text-safe and debounces l
       selector: 'app=api',
     },
   }), ['apps', '<unsafe-service>', 'ClusterIP', '10.96.0.1', '—', '80→8080/TCP', 'app=api', '—']);
-  assert.match(page, /getKubernetesResourceRowValues\(this\.resourceKind, item\)/);
+  assert.match(page, /getKubernetesResourceRowValues\(this\.resourceKind, item, this\.selectedCustomDefinition\)/);
   assert.match(page, /cell\.textContent = value/);
   assert.doesNotMatch(page, /innerHTML\s*=\s*[^;]*(?:item|summary)\.(?:name|namespace)/);
   assert.doesNotMatch(page, /snapshot\.items\.filter\(/);
@@ -375,22 +482,26 @@ test('Kubernetes query transitions synchronously clear stale virtual rows and fe
     assert.match(method(name, after), /this\.clearResourceTable\(\);/, `${name} must clear stale rows`);
   }
   const clear = method('clearResourceTable', 'waitForPriorDeactivation');
+  const virtualTable = await readFile(path.join(distRenderer, 'kubernetesVirtualTable.js'), 'utf8');
   assert.match(clear, /this\.requestGeneration \+= 1/);
   assert.match(clear, /this\.table\?\.setWindow\(\{ start: 0, end: 0, total: 0, items: \[\] \}\)/);
   assert.match(clear, /this\.tableViewport\.scrollTop = 0/);
+  assert.match(virtualTable, /if \(total === 0\)[\s\S]*?cancelAnimationFrame[\s\S]*?rows\.replaceChildren\(\)[\s\S]*?return;/);
   assert.match(page, /if \(this\.contextMenu\.classList\.contains\('hidden'\)\)\s*return;/);
   assert.match(page, /if \(!this\.namespaceMenu\.classList\.contains\('hidden'\)\)\s*this\.namespaceSearch\.focus\(\)/);
   assert.match(page, /this\.contextControl\.addEventListener\('focusout'/);
   assert.match(page, /this\.namespaceControl\.addEventListener\('focusout'/);
 });
 
-test('Custom Resources opens its discovery select without a redundant resource tab', async () => {
+test('Custom Resources opens a searchable custom selector without a redundant resource tab', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
 
   assert.equal(page.categoryUsesResourceTabs('Workloads'), true);
   assert.equal(page.categoryUsesResourceTabs('Custom Resources'), false);
-  assert.match(html, /id="kubernetes-custom-resource-select"/);
+  assert.match(html, /id="kubernetes-custom-resource-toggle"/);
+  assert.match(html, /id="kubernetes-custom-resource-search"/);
+  assert.match(html, /placeholder="Filter Custom Resources"/);
 });
 
 test('Kubernetes virtual table renders a bounded main-process window for ten thousand loaded rows', async () => {
@@ -1824,6 +1935,7 @@ test('Kubernetes drawer narrows while Namespace menus remain unclipped and other
   assert.match(controlRowRule[1], /overflow-visible/);
   assert.doesNotMatch(controlRowRule[1], /overflow-[xy]-auto/);
   assert.match(styles, /\.kubernetes-secondary-row\s*\{[\s\S]*?overflow-x-auto/);
+  assert.match(styles, /\.kubernetes-custom-resource-menu\s*\{[\s\S]*?position:\s*fixed/);
   assert.match(styles, /\.kubernetes-category-tabs\s*\{[\s\S]*?flex-nowrap[^;]*overflow-x-auto/);
   assert.match(styles, /\.kubernetes-resource-tabs\s*\{[\s\S]*?flex-nowrap[^;]*overflow-x-auto/);
 });
