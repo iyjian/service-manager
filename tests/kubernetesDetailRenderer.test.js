@@ -164,6 +164,37 @@ test('buildKubernetesPortForwardDialogModel leaves zero blank, prefills one, and
   });
 });
 
+test('hasActiveKubernetesPortForward matches only a live forward for the exact drawer target', async () => {
+  const { hasActiveKubernetesPortForward } = await import(modelPath);
+  const target = { targetKind: 'pod', namespace: 'ai-dev', targetName: 'api-abc' };
+  const forward = (overrides = {}) => ({
+    id: 'forward-1',
+    targetKind: 'pod',
+    namespace: 'ai-dev',
+    targetName: 'api-abc',
+    remotePort: 3000,
+    localPort: 53000,
+    state: 'running',
+    ...overrides,
+  });
+
+  assert.equal(hasActiveKubernetesPortForward([forward()], target), true);
+  assert.equal(hasActiveKubernetesPortForward([forward({ state: 'starting' })], target), true);
+  assert.equal(hasActiveKubernetesPortForward([forward({ state: 'error' })], target), false);
+  assert.equal(hasActiveKubernetesPortForward([forward({ state: 'stopped' })], target), false);
+  assert.equal(hasActiveKubernetesPortForward([forward({ targetKind: 'service' })], target), false);
+  assert.equal(hasActiveKubernetesPortForward([forward({ namespace: 'other' })], target), false);
+  assert.equal(hasActiveKubernetesPortForward([forward({ targetName: 'api-def' })], target), false);
+  assert.equal(hasActiveKubernetesPortForward([
+    forward({ id: 'stopped', state: 'stopped' }),
+    forward({ id: 'other', namespace: 'other' }),
+  ], target), false);
+  assert.equal(hasActiveKubernetesPortForward([
+    forward({ id: 'other', namespace: 'other' }),
+    forward({ id: 'matching' }),
+  ], target), true);
+});
+
 test('formatKubernetesDeclaredPortLabel returns plain display text', async () => {
   const { formatKubernetesDeclaredPortLabel } = await import(modelPath);
 
@@ -254,8 +285,8 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
   assert.match(detail, /id="kubernetes-detail-yaml-toggle"/);
   assert.match(detail, /id="kubernetes-detail-vnc"[^>]*class="[^"]*hidden[^"]*"[^>]*disabled/);
   assert.match(detail, /id="kubernetes-detail-vnc-label">VNC</);
-  assert.match(detail, /id="kubernetes-detail-port-forward"/);
-  assert.match(detail, /id="kubernetes-detail-port-summary"/);
+  assert.match(detail, /id="kubernetes-detail-port-forward"[^>]*aria-label="Port Forward"[^>]*>Port Forward<\/button>/);
+  assert.doesNotMatch(detail, /kubernetes-detail-port-summary|declared TCP ports/);
   assert.match(detail, /id="kubernetes-detail-overview"/);
   assert.match(detail, /id="kubernetes-detail-yaml"/);
   assert.doesNotMatch(detail, /id="kubernetes-detail-copy"/);
@@ -427,6 +458,8 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   assert.match(page, /buildKubernetesDrawerModel/);
   assert.match(drawer, /this\.createDrawerSection\('Labels'/);
   assert.match(drawer, /this\.createDrawerSection\('Containers'/);
+  assert.match(drawer, /header\.className = 'kubernetes-drawer-header-grid'/);
+  assert.match(drawer, /description\.title = value/);
   for (const label of ['Status', 'Image', 'Pull policy', 'Mounts', 'Command']) {
     assert.match(drawer, new RegExp(`\\['${label}'`));
   }
@@ -493,9 +526,12 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
   const dialogStart = page.indexOf('    openPortForwardDialog() {');
   const dialogEnd = page.indexOf('    closePortForwardDialog() {', dialogStart);
   const dialog = page.slice(dialogStart, dialogEnd);
-  const detailRuntimeStart = page.indexOf('    renderDrawerPortForward(detail, active) {');
+  const detailRuntimeStart = page.indexOf('    renderDrawerPortForward(active) {');
   const detailRuntimeEnd = page.indexOf('    renderPodDrawer(detail, active) {', detailRuntimeStart);
   const detailRuntime = page.slice(detailRuntimeStart, detailRuntimeEnd);
+  const forwardListStart = page.indexOf('    renderPortForwards() {');
+  const forwardListEnd = page.indexOf('    renderRow(item) {', forwardListStart);
+  const forwardList = page.slice(forwardListStart, forwardListEnd);
 
   assert.match(page, /buildKubernetesOverviewFields/);
   assert.match(page, /buildKubernetesPortForwardDialogModel/);
@@ -508,11 +544,23 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
 
   assert.match(detailRuntime, /active\.query\.kind === 'pods' \? 'pod'/);
   assert.match(detailRuntime, /active\.query\.kind === 'services' \? 'service'/);
-  assert.match(detailRuntime, /detectKubernetesForwardPorts\(detail, targetKind\)/);
+  assert.match(detailRuntime, /hasActiveKubernetesPortForward\(/);
+  assert.match(detailRuntime, /targetKind, namespace, targetName: active\.summary\.name/);
   assert.match(detailRuntime, /detailPortForwardButton\.classList\.toggle\('hidden', !targetKind\)/);
+  assert.match(detailRuntime, /detailPortForwardButton\.classList\.toggle\('kubernetes-detail-port-forward-active', activeForward\)/);
+  assert.match(detailRuntime, /setAttribute\('aria-label', activeForward \? 'Port Forward \(active\)' : 'Port Forward'\)/);
   assert.doesNotMatch(detailRuntime, /detailPortForwardButton\.disabled[\s\S]{0,120}selectedContainer/);
-  assert.match(detailRuntime, /No declared TCP ports/);
-  assert.match(detailRuntime, /1 declared ·/);
+  assert.doesNotMatch(detailRuntime, /declaredPorts|No declared TCP ports|declared ·/);
+  assert.ok(forwardList.indexOf('this.renderDrawerPortForward(active)')
+    < forwardList.indexOf('if (forwards.length === 0)'));
+
+  const loadStart = page.indexOf('    async loadPortForwards() {');
+  const loadEnd = page.indexOf('    onPortForwardChanged(state) {', loadStart);
+  const load = page.slice(loadStart, loadEnd);
+  assert.match(load, /const pageGeneration = this\.pageGeneration/);
+  assert.match(load, /const revision = this\.portForwardRevision/);
+  assert.match(load, /!this\.visible \|\| pageGeneration !== this\.pageGeneration \|\| revision !== this\.portForwardRevision/);
+  assert.match(page, /onPortForwardChanged\(state\) \{[\s\S]{0,120}this\.portForwardRevision \+= 1/);
 
   assert.match(dialog, /this\.portForwards\.size >= 10/);
   assert.match(dialog, /buildKubernetesPortForwardDialogModel\(declaredPorts\)/);
@@ -564,8 +612,8 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
   assert.match(reset, /this\.invalidateRelatedDetail\(\)/);
   assert.match(reset, /this\.activeDetail = undefined/);
   assert.match(reset, /this\.detailPortForwardButton\.classList\.add\('hidden'\)/);
+  assert.match(reset, /this\.detailPortForwardButton\.classList\.remove\('kubernetes-detail-port-forward-active'\)/);
   assert.match(reset, /this\.detailPortForwardButton\.disabled = true/);
-  assert.match(reset, /this\.detailPortSummary\.textContent = ''/);
   assert.match(reset, /this\.closePortForwardDialog\(\)/);
   assert.match(closeDialog, /this\.portForwardDraft = undefined/);
   assert.match(reset, /this\.detailOverview\.replaceChildren\(\)/);
@@ -599,7 +647,7 @@ test('Kubernetes related-Pod drawer navigation guards stale results and leaves t
   assert.match(related, /isCurrent:\s*\(\)\s*=> this\.isCurrentDrawerRequest\(request, originQuery\)/);
   assert.match(related, /const next = \{ originQuery, query, summary, detail, request \}/);
   assert.match(related, /this\.renderDetail\(\)[\s\S]*?this\.requestDrawerEvents\(next\)/);
-  assert.match(renderDetail, /this\.renderDrawerPortForward\(detail, active\)/);
+  assert.match(renderDetail, /this\.renderDrawerPortForward\(active\)/);
   assert.doesNotMatch(openDetail, /listPage\.classList\.add\('hidden'\)/);
   assert.doesNotMatch(related, /listPage\.classList\.add\('hidden'\)/);
 });
@@ -624,7 +672,7 @@ test('Kubernetes drawer replacement synchronously clears stale Service actions b
   assert.match(replacement, /this\.activeDetail = undefined/);
   assert.match(replacement, /this\.detailPortForwardButton\.disabled = true/);
   assert.match(replacement, /this\.detailPortForwardButton\.classList\.add\('hidden'\)/);
-  assert.match(replacement, /this\.detailPortSummary\.textContent = ''/);
+  assert.match(replacement, /this\.detailPortForwardButton\.classList\.remove\('kubernetes-detail-port-forward-active'\)/);
   assert.match(replacement, /this\.detailOverview\.replaceChildren\(\)/);
   assert.match(replacement, /this\.detailYaml\.textContent = ''/);
   assert.match(replacement, /this\.detailDrawer\.classList\.remove\('hidden'\)/);

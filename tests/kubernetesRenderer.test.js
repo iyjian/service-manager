@@ -149,7 +149,8 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(html, /id="kubernetes-table-viewport"/);
   assert.match(html, /id="kubernetes-table-spacer"/);
   assert.match(html, /id="kubernetes-no-permission"/);
-  assert.match(page, /tlsVerificationDisabled/);
+  assert.doesNotMatch(html, /id="kubernetes-tls-warning"|TLS verification disabled/);
+  assert.doesNotMatch(page, /renderTlsWarning|tlsBadge|TLS verification disabled/);
   assert.match(page, /registerPage\(\{[\s\S]*?id: 'kubernetes'/);
   assert.match(page, /onShow:/);
   assert.match(page, /onHide:/);
@@ -755,7 +756,7 @@ test('Kubernetes drawer Events render dynamic values through textContent', async
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const events = page.slice(
     page.indexOf('    renderDrawerEvents(active) {'),
-    page.indexOf('    renderDrawerPortForward(detail, active) {'),
+    page.indexOf('    renderDrawerPortForward(active) {'),
   );
 
   assert.match(events, /reason\.textContent = /);
@@ -1773,6 +1774,10 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   const tableRule = styles.match(/\.kubernetes-table-shell\s*\{([^}]*)\}/);
   const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
   const overviewRule = styles.match(/\.kubernetes-detail-overview-grid\s*\{([^}]*)\}/);
+  const podHeaderRule = styles.match(/\.kubernetes-drawer-header-grid\s*\{([^}]*)\}/);
+  const podHeaderRowRule = styles.match(/\.kubernetes-drawer-header-grid\s*>\s*div\s*\{([^}]*)\}/);
+  const podHeaderTermRule = styles.match(/\.kubernetes-drawer-header-grid\s+dt\s*\{([^}]*)\}/);
+  const podHeaderValueRule = styles.match(/\.kubernetes-drawer-header-grid\s+dd\s*\{([^}]*)\}/);
 
   assert.ok(listRule);
   assert.ok(drawerRule);
@@ -1781,6 +1786,10 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.ok(tableRule);
   assert.ok(workspaceRule);
   assert.ok(overviewRule);
+  assert.ok(podHeaderRule);
+  assert.ok(podHeaderRowRule);
+  assert.ok(podHeaderTermRule);
+  assert.ok(podHeaderValueRule);
   assert.match(listRule[1], /grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;/);
   assert.match(drawerRule[1], /@apply[^;]*absolute[^;]*inset-0/);
   assert.match(panelRule[1], /width:\s*clamp\(560px,\s*38vw,\s*720px\)/);
@@ -1789,6 +1798,13 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.match(drawerBodyRule[1], /grid-auto-rows:\s*max-content/);
   assert.match(tableRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\)/);
   assert.match(workspaceRule[1], /grid-template-rows:\s*6px auto minmax\(0,\s*1fr\)/);
+  assert.match(podHeaderRule[1], /grid-cols-1/);
+  assert.match(podHeaderRowRule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*1fr\)/);
+  assert.match(podHeaderTermRule[1], /text-left/);
+  assert.match(podHeaderValueRule[1], /text-right/);
+  assert.match(styles, /#kubernetes-detail-port-forward\.kubernetes-detail-port-forward-active\s*\{[\s\S]*?emerald/);
+  assert.match(styles, /#kubernetes-detail-port-forward\s*\{[\s\S]*?bg-zinc-100/);
+  assert.doesNotMatch(styles, /kubernetes-tls-warning|kubernetes-detail-port-summary/);
   assert.doesNotMatch(styles, /\.kubernetes-detail-page\s*\{/);
   assert.doesNotMatch(styles, /\.kubernetes-detail-copy\s*\{/);
   assert.match(styles, /\.kubernetes-port-forwards\s*\{[\s\S]*?absolute/);
@@ -1805,7 +1821,6 @@ test('Kubernetes drawer narrows while Namespace menus remain unclipped and other
   const controlRowRule = styles.match(/\.kubernetes-control-row\s*\{([^}]*)\}/);
   assert.ok(controlRowRule);
   assert.match(responsiveStyles, /\.kubernetes-detail-drawer-panel\s*\{\s*width:\s*min\(100%,\s*560px\)/);
-  assert.match(responsiveStyles, /\.kubernetes-drawer-header-grid\s*\{[\s\S]*?grid-cols-1/);
   assert.match(controlRowRule[1], /overflow-visible/);
   assert.doesNotMatch(controlRowRule[1], /overflow-[xy]-auto/);
   assert.match(styles, /\.kubernetes-secondary-row\s*\{[\s\S]*?overflow-x-auto/);

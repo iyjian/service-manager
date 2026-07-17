@@ -32,6 +32,7 @@ import {
   buildKubernetesPortForwardDialogModel,
   detectKubernetesForwardPorts,
   formatKubernetesDeclaredPortLabel,
+  hasActiveKubernetesPortForward,
 } from './kubernetesDetailModel.js';
 
 type ToastLevel = 'default' | 'success' | 'error';
@@ -1015,7 +1016,6 @@ class KubernetesPage implements KubernetesPageController {
   private readonly contextControl = requireElement<HTMLElement>('#kubernetes-context-control');
   private readonly contextMenu = requireElement<HTMLDivElement>('#kubernetes-context-menu');
   private readonly connectionBadge = requireElement<HTMLElement>('#kubernetes-connection');
-  private readonly tlsBadge = requireElement<HTMLElement>('#kubernetes-tls-warning');
   private readonly reconnectButton = requireElement<HTMLButtonElement>('#kubernetes-reconnect');
   private readonly reloadButton = requireElement<HTMLButtonElement>('#kubernetes-reload-kubeconfig');
   private readonly namespaceToggle = requireElement<HTMLButtonElement>('#kubernetes-namespace-toggle');
@@ -1045,7 +1045,6 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailVncButton = requireElement<HTMLButtonElement>('#kubernetes-detail-vnc');
   private readonly detailVncLabel = requireElement<HTMLElement>('#kubernetes-detail-vnc-label');
   private readonly detailPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-detail-port-forward');
-  private readonly detailPortSummary = requireElement<HTMLElement>('#kubernetes-detail-port-summary');
   private readonly detailYamlToggle = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-toggle');
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
@@ -1117,6 +1116,7 @@ class KubernetesPage implements KubernetesPageController {
   private drawerEnvironmentElement: HTMLElement | undefined;
   private workspace: KubernetesWorkspace | undefined;
   private portForwards = new Map<string, KubernetesPortForwardState>();
+  private portForwardRevision = 0;
   private portForwardDraft: PortForwardDraft | undefined;
 
   public show(): void {
@@ -1512,7 +1512,6 @@ class KubernetesPage implements KubernetesPageController {
     this.connectionBadge.textContent = state?.connection ?? 'idle';
     this.connectionBadge.className = `kubernetes-connection kubernetes-connection-${state?.connection ?? 'idle'}`;
     const selected = state?.contexts.find((context) => context.name === state.selectedContext);
-    this.renderTlsWarning(selected);
     const canReconnect = state?.connection === 'disconnected' && Boolean(selected?.supported);
     this.reconnectButton.classList.toggle('hidden', !canReconnect);
     this.reconnectButton.disabled = !canReconnect || this.reconnecting;
@@ -1582,12 +1581,6 @@ class KubernetesPage implements KubernetesPageController {
           ?.focus();
       });
     }
-  }
-
-  private renderTlsWarning(context: KubernetesContextInfo | undefined): void {
-    const tlsVerificationDisabled = Boolean(context?.tlsVerificationDisabled);
-    this.tlsBadge.classList.toggle('hidden', !tlsVerificationDisabled);
-    this.tlsBadge.textContent = tlsVerificationDisabled ? 'TLS verification disabled' : '';
   }
 
   private restoreNamespaceChoiceFocus(namespace: string | null): void {
@@ -2143,8 +2136,10 @@ class KubernetesPage implements KubernetesPageController {
       uid: '',
     };
     this.detailPortForwardButton.classList.add('hidden');
+    this.detailPortForwardButton.classList.remove('kubernetes-detail-port-forward-active');
     this.detailPortForwardButton.disabled = true;
-    this.detailPortSummary.textContent = '';
+    this.detailPortForwardButton.setAttribute('aria-label', 'Port Forward');
+    this.detailPortForwardButton.removeAttribute('title');
     this.closePortForwardDialog();
     this.detailOverview.replaceChildren();
     this.detailYaml.textContent = '';
@@ -2220,8 +2215,10 @@ class KubernetesPage implements KubernetesPageController {
     };
     this.closePortForwardDialog();
     this.detailPortForwardButton.classList.add('hidden');
+    this.detailPortForwardButton.classList.remove('kubernetes-detail-port-forward-active');
     this.detailPortForwardButton.disabled = true;
-    this.detailPortSummary.textContent = '';
+    this.detailPortForwardButton.setAttribute('aria-label', 'Port Forward');
+    this.detailPortForwardButton.removeAttribute('title');
     this.detailOverview.replaceChildren();
     this.detailYaml.textContent = '';
     this.detailYaml.classList.add('hidden');
@@ -2246,7 +2243,7 @@ class KubernetesPage implements KubernetesPageController {
     if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
     else this.renderOverview(detail, active);
     this.renderDrawerVnc(detail, active);
-    this.renderDrawerPortForward(detail, active);
+    this.renderDrawerPortForward(active);
     const related = this.renderRelatedDetail(detail, active);
     if (related) this.detailOverview.appendChild(related);
     this.detailOverview.appendChild(this.renderDrawerEvents(active));
@@ -2365,18 +2362,20 @@ class KubernetesPage implements KubernetesPageController {
     return section;
   }
 
-  private renderDrawerPortForward(detail: Record<string, unknown>, active: ActiveDetail): void {
+  private renderDrawerPortForward(active: ActiveDetail): void {
     const targetKind = active.query.kind === 'pods' ? 'pod'
       : active.query.kind === 'services' ? 'service'
         : undefined;
-    const declaredPorts = targetKind ? detectKubernetesForwardPorts(detail, targetKind) : [];
+    const namespace = active.summary.namespace;
+    const activeForward = Boolean(targetKind && namespace && hasActiveKubernetesPortForward(
+      [...this.portForwards.values()],
+      { targetKind, namespace, targetName: active.summary.name },
+    ));
     this.detailPortForwardButton.classList.toggle('hidden', !targetKind);
-    this.detailPortForwardButton.disabled = !targetKind || !active.summary.namespace;
-    this.detailPortSummary.textContent = declaredPorts.length === 0
-      ? 'No declared TCP ports'
-      : declaredPorts.length === 1
-        ? `1 declared · ${declaredPorts[0].remotePort}`
-        : `${declaredPorts.length} declared`;
+    this.detailPortForwardButton.classList.toggle('kubernetes-detail-port-forward-active', activeForward);
+    this.detailPortForwardButton.disabled = !targetKind || !namespace;
+    this.detailPortForwardButton.setAttribute('aria-label', activeForward ? 'Port Forward (active)' : 'Port Forward');
+    this.detailPortForwardButton.title = activeForward ? 'Port Forward active' : 'Port Forward';
   }
 
   private resetDrawerVncAction(): void {
@@ -3059,6 +3058,7 @@ class KubernetesPage implements KubernetesPageController {
     };
     try {
       const state = await window.kubernetesApi.startPortForward(input);
+      this.portForwardRevision += 1;
       this.portForwards.set(state.id, state);
       this.renderPortForwards();
       this.closePortForwardDialog();
@@ -3091,8 +3091,11 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private async loadPortForwards(): Promise<void> {
+    const pageGeneration = this.pageGeneration;
+    const revision = this.portForwardRevision;
     try {
       const forwards = await window.kubernetesApi.listPortForwards();
+      if (!this.visible || pageGeneration !== this.pageGeneration || revision !== this.portForwardRevision) return;
       this.portForwards = new Map(forwards.map((forward) => [forward.id, forward]));
       this.renderPortForwards();
     } catch (error) {
@@ -3101,6 +3104,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private onPortForwardChanged(state: KubernetesPortForwardState): void {
+    this.portForwardRevision += 1;
     if (state.state === 'stopped') this.portForwards.delete(state.id);
     else this.portForwards.set(state.id, state);
     this.renderPortForwards();
@@ -3110,6 +3114,8 @@ class KubernetesPage implements KubernetesPageController {
     this.portForwardList.replaceChildren();
     const forwards = [...this.portForwards.values()];
     this.portForwardPanel.classList.toggle('hidden', forwards.length === 0);
+    const active = this.activeDetail;
+    if (active && this.isCurrentActiveDrawer(active)) this.renderDrawerPortForward(active);
     if (forwards.length === 0) return;
     for (const forward of forwards) {
       const row = document.createElement('div');

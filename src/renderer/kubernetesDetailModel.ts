@@ -1,3 +1,5 @@
+import type { KubernetesPortForwardState } from '../shared/types';
+
 export interface KubernetesDeclaredPortSource {
   owner?: string;
   name?: string;
@@ -11,6 +13,25 @@ export interface KubernetesDeclaredPort {
 
 type UnknownRecord = Record<string, unknown>;
 type KubernetesOverviewLabel = 'Kind' | 'Namespace' | 'Status' | 'Name' | 'Pod IP';
+
+export interface KubernetesPortForwardTarget {
+  targetKind: 'pod' | 'service';
+  namespace: string;
+  targetName: string;
+}
+
+/** Matches only live forwards owned by the exact drawer resource. */
+export function hasActiveKubernetesPortForward(
+  forwards: readonly KubernetesPortForwardState[],
+  target: KubernetesPortForwardTarget,
+): boolean {
+  return forwards.some((forward) => (
+    (forward.state === 'starting' || forward.state === 'running')
+    && forward.targetKind === target.targetKind
+    && forward.namespace === target.namespace
+    && forward.targetName === target.targetName
+  ));
+}
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)

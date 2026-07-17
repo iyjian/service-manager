@@ -587,8 +587,7 @@
     @apply border-red-200 bg-red-50 text-red-700;
   }
 
-  .kubernetes-connection,
-  .kubernetes-tls-warning {
+  .kubernetes-connection {
     @apply inline-flex h-6 items-center rounded-full border px-2 font-mono text-[12px] shadow-sm;
   }
 
@@ -605,10 +604,6 @@
 
   .kubernetes-connection-connected {
     @apply border-emerald-200 bg-emerald-50 text-emerald-700;
-  }
-
-  .kubernetes-tls-warning {
-    @apply border-amber-300 bg-amber-50 text-amber-800;
   }
 
   .kubernetes-table-row {
@@ -1008,11 +1003,11 @@
   }
 
   #kubernetes-detail-port-forward {
-    @apply h-8 max-w-[240px] min-w-0 gap-1.5 px-2.5 text-[12px];
+    @apply h-8 min-w-0 border-zinc-200 bg-zinc-100 px-2.5 text-[12px] text-zinc-600 hover:border-zinc-300 hover:bg-zinc-200 hover:text-zinc-800;
   }
 
-  #kubernetes-detail-port-summary {
-    @apply min-w-0 truncate font-mono text-[11px] text-zinc-500;
+  #kubernetes-detail-port-forward.kubernetes-detail-port-forward-active {
+    @apply !border-emerald-300 !bg-emerald-100 !text-emerald-800 hover:!border-emerald-400 hover:!bg-emerald-200 hover:!text-emerald-900;
   }
 
   .kubernetes-detail-drawer-body {
@@ -1029,14 +1024,17 @@
   }
 
   .kubernetes-drawer-header-grid {
-    @apply m-0 grid min-w-0 gap-1.5;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    @apply m-0 grid min-w-0 grid-cols-1 gap-1.5;
   }
 
   .kubernetes-drawer-header-grid > div,
   .kubernetes-drawer-facts > div,
   .kubernetes-drawer-label-row {
     @apply grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5;
+  }
+
+  .kubernetes-drawer-header-grid > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .kubernetes-drawer-header-grid dt,
@@ -1049,6 +1047,14 @@
   .kubernetes-drawer-facts dd,
   .kubernetes-drawer-label-row span:last-child {
     @apply m-0 min-w-0 truncate font-mono text-[12px] text-zinc-800;
+  }
+
+  .kubernetes-drawer-header-grid dt {
+    @apply min-w-0 justify-self-start truncate text-left;
+  }
+
+  .kubernetes-drawer-header-grid dd {
+    @apply min-w-0 justify-self-stretch truncate text-right;
   }
 
   .kubernetes-drawer-label-row {
@@ -1958,10 +1964,6 @@
 
     .kubernetes-detail-drawer-panel {
       width: min(100%, 560px);
-    }
-
-    .kubernetes-drawer-header-grid {
-      @apply grid-cols-1;
     }
   }
 
