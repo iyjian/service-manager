@@ -620,6 +620,18 @@
     @apply font-medium text-zinc-950;
   }
 
+  .kubernetes-table-cell.kubernetes-table-pod-namespace {
+    @apply font-semibold text-zinc-900;
+  }
+
+  .kubernetes-table-pod-name-primary {
+    @apply font-semibold text-zinc-950;
+  }
+
+  .kubernetes-table-pod-name-suffix {
+    @apply font-normal text-zinc-400;
+  }
+
   .kubernetes-empty-state,
   .kubernetes-state {
     @apply rounded-lg border border-dashed border-zinc-300 bg-zinc-50/70 px-3 py-2.5 text-[12.5px] text-zinc-500;

@@ -403,6 +403,13 @@ export function getKubernetesResourceRowValues(
   return getKubernetesListColumns(kind, customDefinition).map((column) => kubernetesListValue(column, item));
 }
 
+export function splitKubernetesDeploymentPodName(name: string): { primary: string; suffix: string } {
+  const match = /^(.+?)(-[a-z0-9]{8,10}-[a-z0-9]{4,5})$/.exec(name);
+  return match
+    ? { primary: match[1], suffix: match[2] }
+    : { primary: name, suffix: '' };
+}
+
 function sameScope(left: KubernetesNamespaceScope, right: KubernetesNamespaceScope): boolean {
   return left.mode === right.mode && left.namespaces.join('\u0000') === right.namespaces.join('\u0000');
 }
@@ -3980,12 +3987,31 @@ class KubernetesPage implements KubernetesPageController {
     row.className = 'kubernetes-table-row';
     row.setAttribute('role', 'row');
     row.tabIndex = 0;
+    const columns = getKubernetesListColumns(this.resourceKind, this.selectedCustomDefinition);
     const fields = getKubernetesResourceRowValues(this.resourceKind, item, this.selectedCustomDefinition);
-    for (const value of fields) {
+    for (const [index, value] of fields.entries()) {
+      const column = columns[index];
       const cell = document.createElement('span');
       cell.className = 'kubernetes-table-cell';
       cell.setAttribute('role', 'cell');
-      cell.textContent = value;
+      if (this.resourceKind === 'pods' && column?.key === 'namespace') {
+        cell.classList.add('kubernetes-table-pod-namespace');
+        cell.textContent = value;
+      } else if (this.resourceKind === 'pods' && column?.key === 'name') {
+        const parts = splitKubernetesDeploymentPodName(value);
+        const primary = document.createElement('span');
+        primary.className = 'kubernetes-table-pod-name-primary';
+        primary.textContent = parts.primary;
+        cell.appendChild(primary);
+        if (parts.suffix) {
+          const suffix = document.createElement('span');
+          suffix.className = 'kubernetes-table-pod-name-suffix';
+          suffix.textContent = parts.suffix;
+          cell.appendChild(suffix);
+        }
+      } else {
+        cell.textContent = value;
+      }
       row.appendChild(cell);
     }
     row.addEventListener('click', () => { void this.openDetail(item); });

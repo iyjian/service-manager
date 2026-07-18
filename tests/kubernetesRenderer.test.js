@@ -471,6 +471,46 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
   assert.doesNotMatch(html, /kubernetes-sort-column|kubernetes-sort-direction|kubernetes-sort-hint|Sorted loaded items only/);
 });
 
+test('Kubernetes Pod list emphasizes stable Deployment names and fades only generated suffixes', async () => {
+  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'kubernetesPage.ts'), 'utf8');
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+  const fullPodName = 'ai-aigc-lms-ui-6d7f4fbcc-p6rj';
+
+  assert.equal(page.getKubernetesResourceRowValues('pods', {
+    uid: 'pod-1',
+    name: fullPodName,
+    namespace: 'ai-dev',
+    resourceVersion: '1',
+    columns: {},
+  })[1], fullPodName);
+
+  assert.deepEqual(page.splitKubernetesDeploymentPodName(fullPodName), {
+    primary: 'ai-aigc-lms-ui',
+    suffix: '-6d7f4fbcc-p6rj',
+  });
+  assert.deepEqual(page.splitKubernetesDeploymentPodName('api-66b6c48dd5-8fthk'), {
+    primary: 'api',
+    suffix: '-66b6c48dd5-8fthk',
+  });
+  assert.deepEqual(page.splitKubernetesDeploymentPodName('worker-6d7f4fbc-p6rj'), {
+    primary: 'worker',
+    suffix: '-6d7f4fbc-p6rj',
+  });
+  for (const name of ['ai-canal-0', 'api-blue-green', '<img src=x onerror=alert(1)>']) {
+    assert.deepEqual(page.splitKubernetesDeploymentPodName(name), { primary: name, suffix: '' });
+  }
+
+  assert.match(pageSource, /this\.resourceKind === 'pods' && column\?\.key === 'namespace'/);
+  assert.match(pageSource, /this\.resourceKind === 'pods' && column\?\.key === 'name'/);
+  assert.match(pageSource, /primary\.textContent = parts\.primary/);
+  assert.match(pageSource, /suffix\.textContent = parts\.suffix/);
+  assert.doesNotMatch(pageSource, /(?:primary|suffix)\.innerHTML/);
+  assert.match(styles, /\.kubernetes-table-cell\.kubernetes-table-pod-namespace\s*\{[^}]*font-semibold[^}]*text-zinc-900/);
+  assert.match(styles, /\.kubernetes-table-pod-name-primary\s*\{[^}]*font-semibold[^}]*text-zinc-950/);
+  assert.match(styles, /\.kubernetes-table-pod-name-suffix\s*\{[^}]*font-normal[^}]*text-zinc-400/);
+});
+
 test('Kubernetes query transitions synchronously clear stale virtual rows and fence delayed menu focus', async () => {
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const method = (name, after) => {
