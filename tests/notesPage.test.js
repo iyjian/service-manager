@@ -106,6 +106,7 @@ test('Notes maps every language choice to the intended CodeMirror parser', async
     ['typescript', 'typescript'],
     ['json', 'json'],
     ['yaml', 'yaml'],
+    ['sql', 'sql'],
     ['text', null],
   ]);
 
@@ -163,6 +164,12 @@ test('Notes language parsers produce syntax highlight spans and Plain Text stays
       token: 'enabled',
       className: 'tok-propertyName',
     },
+    {
+      language: 'sql',
+      content: 'SELECT id, name FROM users WHERE enabled = TRUE;',
+      token: 'SELECT',
+      className: 'tok-keyword',
+    },
   ];
 
   for (const fixture of fixtures) {
@@ -198,6 +205,7 @@ test('Markdown fenced blocks reuse every supported code-language parser', async 
     ['typescript', 'interface User {}', 'User', 'tok-typeName'],
     ['json', '{"enabled": true}', 'enabled', 'tok-propertyName'],
     ['yaml', 'enabled: true', 'enabled', 'tok-propertyName'],
+    ['sql', 'SELECT id FROM users WHERE enabled = TRUE;', 'SELECT', 'tok-keyword'],
   ];
 
   for (const [fenceLanguage, content, token, className] of fences) {
@@ -234,6 +242,7 @@ test('Notes reconfigures one language compartment without replacing same-content
   for (const [noteLanguage, parserName, topNodeName] of [
     ['javascript', 'javascript', 'Script'],
     ['typescript', 'typescript', 'Script'],
+    ['sql', 'sql', 'Document'],
     ['text', null, ''],
   ]) {
     state = state.update({

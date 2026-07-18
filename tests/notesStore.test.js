@@ -130,6 +130,33 @@ test('NotesStore rejects unsupported drafts and bounded fields', async (t) => {
   await assert.rejects(store.update('missing', draft()), /Note not found/);
 });
 
+test('NotesStore accepts and durably reloads SQL notes while unsupported languages remain invalid', async (t) => {
+  const { filePath, store } = await createStore(t);
+  const note = await store.create();
+  const sql = 'SELECT id, name FROM users WHERE enabled = TRUE;';
+
+  const updated = await store.update(note.id, draft({
+    name: 'Active users',
+    content: sql,
+    language: 'sql',
+    tags: ['database'],
+  }));
+  await store.flush();
+
+  assert.equal(updated.language, 'sql');
+  assert.equal(updated.content, sql);
+  assert.equal(JSON.parse(await fs.readFile(filePath, 'utf8')).notes[0].language, 'sql');
+
+  const reloaded = new NotesStore(filePath);
+  await reloaded.load();
+  assert.equal(reloaded.list()[0].language, 'sql');
+  assert.equal(reloaded.list()[0].content, sql);
+  await assert.rejects(
+    reloaded.update(note.id, draft({ language: 'python' })),
+    /language is not supported/,
+  );
+});
+
 test('NotesStore serializes concurrent updates so the last invocation wins on disk', async (t) => {
   const { filePath, store } = await createStore(t);
   const note = await store.create();

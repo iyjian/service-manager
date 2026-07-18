@@ -25,6 +25,7 @@ const NOTE_LANGUAGES = new Set<NoteLanguage>([
   'bash',
   'javascript',
   'typescript',
+  'sql',
   'json',
   'yaml',
   'text',

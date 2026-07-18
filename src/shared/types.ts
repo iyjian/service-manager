@@ -623,7 +623,7 @@ export interface ProxyTraffic {
 
 export type ProxyDelayStatus = 'ready' | 'unavailable';
 
-export type NoteLanguage = 'markdown' | 'bash' | 'javascript' | 'typescript' | 'json' | 'yaml' | 'text';
+export type NoteLanguage = 'markdown' | 'bash' | 'javascript' | 'typescript' | 'sql' | 'json' | 'yaml' | 'text';
 
 export interface Note {
   id: string;

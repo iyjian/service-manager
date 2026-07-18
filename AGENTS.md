@@ -98,7 +98,7 @@ Hosts:
 
 Notes:
 
-- Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Markdown, Bash, JavaScript, TypeScript, JSON, and YAML use parser-backed dark-theme syntax highlighting, Markdown fenced blocks recognize Bash, JavaScript, TypeScript, JSON, and YAML, and Plain Text remains unstyled.
+- Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Markdown, Bash, JavaScript, TypeScript, SQL, JSON, and YAML use parser-backed dark-theme syntax highlighting, Markdown fenced blocks recognize Bash, JavaScript, TypeScript, SQL, JSON, and YAML, and Plain Text remains unstyled.
 - Keep Notes in a viewport-contained left-list/right-editor layout backed by CodeMirror 6. Search ranks Name exact/prefix/substring matches before lower-priority Tag, Language, and Content matches. The list must retain bounded internal scrolling for large collections.
 - Save edits after a short debounce and flush pending edits on note/page changes. Window/application close attempts a bounded renderer-to-main Notes flush handshake before the main-process store flush; a standalone macOS window stays open on failure, while application quit records a failed/timed-out handshake and retains the global bounded-shutdown behavior. Persist only the schema-versioned `<userData>/notes.json` through serialized atomic writes with private permissions where supported.
 - Dynamic note names/content/tags must use CodeMirror state, form values, or text nodes. New Note and Copy use icon-labelled buttons. Remove is an icon-only, accessible action on each list row, can target any note, and requires confirmation.

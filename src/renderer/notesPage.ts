@@ -13,12 +13,14 @@ import {
   type TagStyle,
 } from '@codemirror/language';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { standardSQL } from '@codemirror/legacy-modes/mode/sql';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { registerPage } from './nav.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
 
 const bashLanguage = StreamLanguage.define(shell);
+const sqlLanguage = StreamLanguage.define(standardSQL);
 
 const markdownFenceLanguages: Readonly<Record<string, Language>> = {
   bash: bashLanguage,
@@ -29,6 +31,7 @@ const markdownFenceLanguages: Readonly<Record<string, Language>> = {
   sh: bashLanguage,
   shell: bashLanguage,
   shellscript: bashLanguage,
+  sql: sqlLanguage,
   ts: typescriptLanguage,
   typescript: typescriptLanguage,
   yaml: yamlLanguage,
@@ -43,6 +46,7 @@ const noteLanguageExtensions: Readonly<Record<NoteLanguage, Extension>> = {
   bash: bashLanguage,
   javascript: javascript(),
   typescript: javascript({ typescript: true }),
+  sql: sqlLanguage,
   json: json(),
   yaml: yaml(),
   text: [],

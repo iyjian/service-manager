@@ -38,10 +38,16 @@ test('CodeMirror browser vendor graph has generated import-map coverage for ever
     '@codemirror/language',
     '@codemirror/state',
     '@codemirror/legacy-modes/mode/shell',
+    '@codemirror/legacy-modes/mode/sql',
   ];
   for (const specifier of requiredEntries) {
     assert.equal(typeof imports[specifier], 'string', `missing generated import-map entry for ${specifier}`);
   }
+  assert.equal(
+    imports['@codemirror/legacy-modes/mode/shell'],
+    './vendor/codemirror-legacy-modes-shell.js'
+  );
+  assert.equal(imports['@codemirror/legacy-modes/mode/sql'], './vendor/codemirror-legacy-modes-sql.js');
 
   const vendorRoot = path.join(rendererRoot, 'vendor');
   const vendorFiles = (await readdir(vendorRoot)).filter((name) => name.endsWith('.js')).sort();

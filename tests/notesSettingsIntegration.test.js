@@ -34,7 +34,7 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(html, /id="note-copy-btn"[\s\S]*?<svg[\s\S]*?id="note-copy-label">Copy<\/span>/);
   assert.doesNotMatch(html, /id="note-delete-btn"/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
-  for (const language of ['markdown', 'bash', 'javascript', 'typescript']) {
+  for (const language of ['markdown', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
     assert.match(html, new RegExp(`<option value="${language}"`));
   }
 

@@ -24,7 +24,10 @@ const codeMirrorSeedPackages = Object.freeze([
   '@codemirror/language',
   '@codemirror/state',
 ]);
-const legacyShellSpecifier = '@codemirror/legacy-modes/mode/shell';
+const legacyModeSpecifiers = Object.freeze([
+  '@codemirror/legacy-modes/mode/shell',
+  '@codemirror/legacy-modes/mode/sql',
+]);
 
 function readPackage(packageRoot) {
   return JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
@@ -107,7 +110,14 @@ function compareNames(left, right) {
 }
 
 function copyCodeMirrorVendor() {
-  const legacyRoot = findPackageRoot(legacyShellSpecifier.split('/mode/')[0], rootRequire.resolve(legacyShellSpecifier));
+  const legacyPackageName = '@codemirror/legacy-modes';
+  const legacyRoots = legacyModeSpecifiers.map((specifier) =>
+    findPackageRoot(legacyPackageName, rootRequire.resolve(specifier))
+  );
+  const legacyRoot = legacyRoots[0];
+  if (!legacyRoot || legacyRoots.some((candidate) => candidate !== legacyRoot)) {
+    throw new Error('CodeMirror legacy mode exports must resolve from one installed package');
+  }
   const initialRequests = codeMirrorSeedPackages.map((name) => ({ name, requesterRoot: root }));
   for (const dependency of Object.keys(readPackage(legacyRoot).dependencies ?? {}).sort()) {
     initialRequests.push({ name: dependency, requesterRoot: legacyRoot });
@@ -130,9 +140,17 @@ function copyCodeMirrorVendor() {
     imports.set(name, `./vendor/${outputName}`);
   }
 
-  const shellOutputName = 'codemirror-legacy-modes-shell.js';
-  copyFileSync(exportedWildcardEsmEntry(legacyRoot, './mode/*', 'shell'), join(vendorDir, shellOutputName));
-  imports.set(legacyShellSpecifier, `./vendor/${shellOutputName}`);
+  for (const specifier of legacyModeSpecifiers) {
+    const modeName = specifier.slice(specifier.lastIndexOf('/') + 1);
+    const outputName = `codemirror-legacy-modes-${modeName}.js`;
+    const outputOwner = outputOwners.get(outputName);
+    if (outputOwner) {
+      throw new Error(`CodeMirror vendor filename collision between ${outputOwner} and ${specifier}`);
+    }
+    outputOwners.set(outputName, specifier);
+    copyFileSync(exportedWildcardEsmEntry(legacyRoot, './mode/*', modeName), join(vendorDir, outputName));
+    imports.set(specifier, `./vendor/${outputName}`);
+  }
   return imports;
 }
 
