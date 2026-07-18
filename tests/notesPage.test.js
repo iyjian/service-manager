@@ -57,6 +57,20 @@ test('Notes empty search sorts by updated time descending and stays stable for t
   assert.deepEqual(notes.map(({ id }) => id), ['old', 'new-a', 'new-b']);
 });
 
+test('Notes ranking keeps one hundred list entries available for the scrolling sidebar', async () => {
+  const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
+  const notes = Array.from({ length: 100 }, (_, index) => note({
+    id: `note-${index}`,
+    name: `Snippet ${String(index).padStart(3, '0')}`,
+    updatedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+  }));
+
+  const ranked = rankNotes(notes, '');
+  assert.equal(ranked.length, 100);
+  assert.equal(ranked[0].id, 'note-99');
+  assert.equal(ranked[99].id, 'note-0');
+});
+
 test('Notes page wires CRUD, copy, confirmation, and debounced flushes without unsafe dynamic HTML', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
@@ -78,16 +92,25 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.notesApi\.onFlushRequested\(\(\) => page\?\.flush\(\) \?\? Promise\.resolve\(\)\)/);
   assert.match(source, /name\.textContent = note\.name \|\| 'Untitled'/);
   assert.match(source, /this\.saveStatus\.textContent = text/);
+  assert.match(source, /private async deleteNote\(id: string\)/);
+  assert.match(source, /remove\.setAttribute\('aria-label', `Remove \$\{note\.name \|\| 'Untitled'\}`\)/);
+  assert.match(source, /remove\.addEventListener\('click', \(\) => void this\.deleteNote\(note\.id\)\)/);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
 });
 
-test('Notes page keeps user content in form values and list nodes created through DOM APIs', async () => {
+test('Notes page keeps user content in form values and CodeMirror state created through DOM APIs', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
+  assert.match(source, /import \{ basicSetup, EditorView \} from 'codemirror'/);
+  assert.match(source, /new EditorView\(\{/);
+  assert.match(source, /EditorView\.updateListener\.of/);
+  assert.match(source, /EditorView\.contentAttributes\.of/);
   assert.match(source, /document\.createElement\('button'\)/);
   assert.match(source, /document\.createElement\('span'\)/);
+  assert.match(source, /document\.createElementNS\(namespace, 'svg'\)/);
   assert.match(source, /this\.nameInput\.value = note\.name/);
-  assert.match(source, /this\.contentInput\.value = note\.content/);
-  assert.match(source, /note\.content = this\.contentInput\.value/);
+  assert.match(source, /this\.replaceEditorDocument\(note\.content\)/);
+  assert.match(source, /note\.content = this\.codeEditor\.state\.doc\.toString\(\)/);
+  assert.match(source, /this\.codeEditor\.dispatch\(\{/);
   assert.match(source, /note\.tags = normalizeTags\(this\.tagsInput\.value\)/);
 });

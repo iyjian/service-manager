@@ -93,12 +93,29 @@
     @apply px-2 py-5 text-center text-[12px] text-zinc-400;
   }
 
-  .notes-list-item {
-    @apply mb-1 grid w-full cursor-pointer gap-1 rounded-md border border-transparent bg-transparent px-2 py-2 text-left outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  .notes-list-row {
+    @apply mb-1 grid min-w-0 grid-cols-[minmax(0,1fr)_28px] items-center rounded-md border border-transparent bg-transparent transition hover:bg-zinc-100;
   }
 
-  .notes-list-item[aria-current='true'] {
+  .notes-list-row[data-selected='true'] {
     @apply border-zinc-300 bg-white shadow-sm;
+  }
+
+  .notes-list-item {
+    @apply grid min-w-0 cursor-pointer gap-1 rounded-md border-0 bg-transparent px-2 py-2 text-left outline-none transition hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+  }
+
+  .notes-list-remove {
+    @apply mr-1 inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-zinc-400 opacity-50 outline-none transition hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:bg-red-50 focus-visible:text-red-600 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-200;
+  }
+
+  .notes-list-row:hover .notes-list-remove,
+  .notes-list-row[data-selected='true'] .notes-list-remove {
+    @apply opacity-100;
+  }
+
+  .notes-list-remove svg {
+    @apply h-3.5 w-3.5;
   }
 
   .notes-list-item-name {
@@ -147,6 +164,18 @@
     @apply w-32 shrink-0;
   }
 
+  .notes-action-btn {
+    @apply inline-flex items-center gap-1.5;
+  }
+
+  .notes-action-btn svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .notes-action-btn[data-copied='true'] {
+    @apply border-emerald-300 bg-emerald-50 text-emerald-700;
+  }
+
   .notes-tags-row {
     @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
   }
@@ -173,8 +202,51 @@
   }
 
   .notes-content {
-    @apply h-full min-h-0 w-full resize-none border-0 bg-zinc-950 p-4 font-mono text-[13px] leading-6 text-zinc-100 outline-none placeholder:text-zinc-600 focus:ring-2 focus:ring-inset focus:ring-zinc-500;
+    @apply relative h-full min-h-0 w-full overflow-hidden bg-zinc-950;
+  }
+
+  .notes-content[data-empty='true']::after {
+    content: 'Write Markdown or paste a code snippet\2026';
+    @apply pointer-events-none absolute left-[52px] top-[13px] z-10 text-[13px] text-zinc-600;
+  }
+
+  .notes-content .cm-editor {
+    @apply h-full min-h-0 bg-zinc-950 font-mono text-[13px] text-zinc-100 outline-none;
+  }
+
+  .notes-content .cm-editor.cm-focused {
+    @apply ring-2 ring-inset ring-zinc-500;
+  }
+
+  .notes-content .cm-scroller {
+    @apply min-h-0 overflow-auto font-mono leading-6;
+  }
+
+  .notes-content .cm-content {
+    @apply min-h-full py-3 caret-zinc-100;
     tab-size: 2;
+  }
+
+  .notes-content .cm-line {
+    @apply px-3;
+  }
+
+  .notes-content .cm-gutters {
+    @apply border-r border-zinc-800 bg-zinc-950 text-zinc-600;
+  }
+
+  .notes-content .cm-activeLine,
+  .notes-content .cm-activeLineGutter {
+    @apply bg-zinc-900;
+  }
+
+  .notes-content .cm-selectionBackground,
+  .notes-content .cm-content ::selection {
+    @apply bg-blue-500/30;
+  }
+
+  .notes-content .cm-cursor {
+    @apply border-l-zinc-100;
   }
 
   .host-dialog.settings-dialog {
@@ -192,6 +264,30 @@
 
   .settings-grid {
     @apply grid grid-cols-2 gap-3;
+  }
+
+  .settings-region-field {
+    width: calc(50% - 6px);
+  }
+
+  .settings-password-control {
+    @apply relative min-w-0;
+  }
+
+  .settings-password-control .input {
+    @apply pr-8;
+  }
+
+  .settings-password-toggle {
+    @apply absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-zinc-400 outline-none transition hover:bg-zinc-100 hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-default disabled:opacity-30;
+  }
+
+  .settings-password-toggle svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .settings-password-toggle[aria-pressed='true'] {
+    @apply bg-blue-50 text-blue-600;
   }
 
   .settings-hint,
@@ -2332,6 +2428,10 @@
 
     .settings-grid {
       @apply grid-cols-1;
+    }
+
+    .settings-region-field {
+      width: 100%;
     }
 
     .kubernetes-context-control {

@@ -109,6 +109,7 @@ const notesApi: NotesApi = {
 const settingsApi: SettingsApi = {
   getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
+  revealS3SyncCredentials: () => ipcRenderer.invoke('settings:s3:reveal-credentials'),
   syncAllDataToS3: () => ipcRenderer.invoke('settings:s3:sync'),
 };
 

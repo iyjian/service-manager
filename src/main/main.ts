@@ -92,6 +92,7 @@ const IPC_CHANNELS = {
   notesFlushResult: 'notes:flush-result',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
+  s3SettingsReveal: 'settings:s3:reveal-credentials',
   s3Sync: 'settings:s3:sync',
   proxyGetState: 'proxy:get-state',
   proxyDownloadCore: 'proxy:download-core',
@@ -777,6 +778,9 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
     getS3SyncRuntime().saveS3SyncSettings(draft)
+  );
+  ipcMain.handle(IPC_CHANNELS.s3SettingsReveal, async () =>
+    getS3SyncRuntime().revealS3SyncCredentials()
   );
   ipcMain.handle(IPC_CHANNELS.s3Sync, async () => getS3SyncRuntime().syncAllDataToS3());
 

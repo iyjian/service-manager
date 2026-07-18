@@ -653,7 +653,6 @@ export interface NotesApi {
 export interface S3SyncSettingsView {
   endpoint: string;
   region: string;
-  syncVersion: 1;
   hasCredentials: boolean;
   lastSyncedAt?: string;
   lastRevision?: string;
@@ -662,10 +661,14 @@ export interface S3SyncSettingsView {
 export interface S3SyncSettingsDraft {
   endpoint: string;
   region: string;
-  syncVersion: 1;
   accessKeyId?: string;
   secretAccessKey?: string;
   clearCredentials?: boolean;
+}
+
+export interface S3CredentialValues {
+  accessKeyId: string;
+  secretAccessKey: string;
 }
 
 export interface S3SyncResult {
@@ -678,6 +681,7 @@ export interface S3SyncResult {
 export interface SettingsApi {
   getS3SyncSettings: () => Promise<S3SyncSettingsView>;
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
+  revealS3SyncCredentials: () => Promise<S3CredentialValues>;
   syncAllDataToS3: () => Promise<S3SyncResult>;
 }
 

@@ -9,11 +9,17 @@ import {
 } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { S3SyncResult, S3SyncSettingsDraft, S3SyncSettingsView } from '../shared/types';
+import type {
+  S3CredentialValues,
+  S3SyncResult,
+  S3SyncSettingsDraft,
+  S3SyncSettingsView,
+} from '../shared/types';
 
-const SETTINGS_SCHEMA_VERSION = 1;
+const SETTINGS_SCHEMA_VERSION = 2;
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const SYNC_VERSION = 1 as const;
+const OBJECT_LAYOUT_VERSION = 1 as const;
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_ENDPOINT_LENGTH = 4_096;
@@ -41,15 +47,16 @@ export interface S3SyncRuntimeOptions {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   createRevision?: () => string;
+  createClientId?: () => string;
   createRandomBytes?: (size: number) => Buffer;
   timeoutMs?: number;
 }
 
 interface PersistedS3SyncSettings {
-  schemaVersion: 1;
-  endpoint: string;
+  schemaVersion: 2;
+  bucketUrl: string;
   region: string;
-  syncVersion: 1;
+  clientId: string;
   encryptedAccessKeyId?: string;
   encryptedSecretAccessKey?: string;
   lastSyncedAt?: string;
@@ -113,35 +120,72 @@ function isValidIsoTimestamp(value: unknown): value is string {
 
 function normalizedEndpoint(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > MAX_ENDPOINT_LENGTH) {
-    throw new Error('A full S3 object URL is required.');
+    throw new Error('A full S3 bucket URL is required.');
   }
 
   let url: URL;
   try {
     url = new URL(value.trim());
   } catch {
-    throw new Error('The S3 object URL is invalid.');
+    throw new Error('The S3 bucket URL is invalid.');
   }
 
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new Error('The S3 object URL must use HTTPS.');
+    throw new Error('The S3 bucket URL must use HTTPS.');
   }
   if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
-    throw new Error('The S3 object URL must use HTTPS unless it targets localhost.');
+    throw new Error('The S3 bucket URL must use HTTPS unless it targets localhost.');
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new Error('The S3 object URL cannot contain credentials, a query, or a fragment.');
+    throw new Error('The S3 bucket URL cannot contain credentials, a query, or a fragment.');
   }
   if (url.pathname === '/' || url.pathname.length === 0) {
-    throw new Error('The S3 object URL must include an object path.');
+    throw new Error('The S3 bucket URL must include a bucket path.');
   }
 
   try {
     canonicalizeS3Path(url.pathname);
   } catch {
-    throw new Error('The S3 object URL contains an invalid path encoding.');
+    throw new Error('The S3 bucket URL contains an invalid path encoding.');
   }
+  url.pathname = url.pathname.replace(/\/+$/, '');
   return url.toString();
+}
+
+function migrateLegacyObjectUrl(value: unknown): string {
+  const endpoint = normalizedEndpoint(value);
+  const url = new URL(endpoint);
+  const originalPath = url.pathname;
+  if (/\/service-manager\/snapshot\.json$/i.test(url.pathname)) {
+    url.pathname = url.pathname.replace(/\/service-manager\/snapshot\.json$/i, '');
+  } else if (/\/[^/]+\.json$/i.test(url.pathname)) {
+    url.pathname = url.pathname.replace(/\/[^/]+\.json$/i, '');
+  }
+  if (url.pathname && url.pathname !== '/' && url.pathname !== originalPath) {
+    return normalizedEndpoint(url.toString());
+  }
+  return endpoint;
+}
+
+function normalizedClientId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('The S3 client identity is invalid.');
+  }
+  return value;
+}
+
+function normalizedRevision(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(value)) {
+    throw new Error('The S3 snapshot revision is invalid.');
+  }
+  return value;
+}
+
+export function buildS3SnapshotObjectUrl(bucketUrl: string, clientId: string, revision: string): string {
+  const base = normalizedEndpoint(bucketUrl).replace(/\/+$/, '');
+  const client = normalizedClientId(clientId);
+  const snapshotRevision = normalizedRevision(revision);
+  return `${base}/service-manager/v${OBJECT_LAYOUT_VERSION}/clients/${client}/${snapshotRevision}.json`;
 }
 
 function normalizedRegion(value: unknown): string {
@@ -172,9 +216,6 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
   if (!isRecord(value)) {
     throw new Error('S3 sync settings are required.');
   }
-  if (value.syncVersion !== SYNC_VERSION) {
-    throw new Error('Only S3 sync version 1 is supported.');
-  }
 
   const accessKeyId = optionalCredential(value.accessKeyId, 'The S3 access key ID', MAX_ACCESS_KEY_LENGTH, true);
   const secretAccessKey = optionalCredential(value.secretAccessKey, 'The S3 secret access key', MAX_SECRET_KEY_LENGTH, false);
@@ -189,7 +230,6 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
   return {
     endpoint: normalizedEndpoint(value.endpoint),
     region: normalizedRegion(value.region),
-    syncVersion: SYNC_VERSION,
     ...(accessKeyId !== undefined ? { accessKeyId, secretAccessKey } : {}),
     ...(clearCredentials ? { clearCredentials: true } : {}),
   };
@@ -498,31 +538,39 @@ export function signS3PutRequest(input: S3SigningInput): S3SignedRequest {
   };
 }
 
-function defaultSettings(): PersistedS3SyncSettings {
+function defaultSettings(clientId: string): PersistedS3SyncSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    endpoint: '',
+    bucketUrl: '',
     region: DEFAULT_REGION,
-    syncVersion: SYNC_VERSION,
+    clientId: normalizedClientId(clientId),
   };
 }
 
 function settingsView(settings: PersistedS3SyncSettings): S3SyncSettingsView {
   return {
-    endpoint: settings.endpoint,
+    endpoint: settings.bucketUrl,
     region: settings.region,
-    syncVersion: SYNC_VERSION,
     hasCredentials: Boolean(settings.encryptedAccessKeyId && settings.encryptedSecretAccessKey),
     ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
     ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
   };
 }
 
-function parsePersistedSettings(value: unknown): PersistedS3SyncSettings {
-  if (!isRecord(value) || value.schemaVersion !== 1 || value.syncVersion !== 1) {
+function parsePersistedSettings(
+  value: unknown,
+  createClientId: () => string,
+): { settings: PersistedS3SyncSettings; migrated: boolean } {
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== SETTINGS_SCHEMA_VERSION)) {
     throw new Error('S3 sync settings are invalid.');
   }
-  const endpoint = normalizedEndpoint(value.endpoint);
+  const legacy = value.schemaVersion === 1;
+  if (legacy && value.syncVersion !== 1) {
+    throw new Error('S3 sync settings are invalid.');
+  }
+  const bucketUrl = legacy
+    ? migrateLegacyObjectUrl(value.endpoint)
+    : normalizedEndpoint(value.bucketUrl);
   const region = normalizedRegion(value.region);
   const encryptedAccessKeyId = typeof value.encryptedAccessKeyId === 'string' && value.encryptedAccessKeyId.length > 0
     ? value.encryptedAccessKeyId
@@ -539,17 +587,18 @@ function parsePersistedSettings(value: unknown): PersistedS3SyncSettings {
   if (encryptedSecretAccessKey && (!/^[A-Za-z0-9+/]+={0,2}$/.test(encryptedSecretAccessKey) || encryptedSecretAccessKey.length > 16_384)) {
     throw new Error('S3 sync settings are invalid.');
   }
-  return {
+  const settings: PersistedS3SyncSettings = {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    endpoint,
+    bucketUrl,
     region,
-    syncVersion: SYNC_VERSION,
+    clientId: legacy ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
     ...(encryptedAccessKeyId ? { encryptedAccessKeyId, encryptedSecretAccessKey } : {}),
     ...(isValidIsoTimestamp(value.lastSyncedAt) ? { lastSyncedAt: value.lastSyncedAt } : {}),
     ...(typeof value.lastRevision === 'string' && value.lastRevision.length > 0 && value.lastRevision.length <= 256
       ? { lastRevision: value.lastRevision }
       : {}),
   };
+  return { settings, migrated: legacy };
 }
 
 function safeHttpError(status: number, body: string): Error {
@@ -589,6 +638,7 @@ export class S3SyncRuntime {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly createRevision: () => string;
+  private readonly createClientId: () => string;
   private readonly createRandomBytes: (size: number) => Buffer;
   private readonly timeoutMs: number;
   private settings?: PersistedS3SyncSettings;
@@ -603,6 +653,7 @@ export class S3SyncRuntime {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.createRevision = options.createRevision ?? randomUUID;
+    this.createClientId = options.createClientId ?? randomUUID;
     this.createRandomBytes = options.createRandomBytes ?? randomBytes;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -613,6 +664,10 @@ export class S3SyncRuntime {
 
   public getS3SyncSettings(): Promise<S3SyncSettingsView> {
     return this.getSettings();
+  }
+
+  public revealS3SyncCredentials(): Promise<S3CredentialValues> {
+    return this.enqueue(async () => ({ ...this.credentials(await this.ensureSettings()) }));
   }
 
   public saveSettings(value: unknown): Promise<S3SyncSettingsView> {
@@ -640,16 +695,16 @@ export class S3SyncRuntime {
 
       const next: PersistedS3SyncSettings = {
         schemaVersion: SETTINGS_SCHEMA_VERSION,
-        endpoint: draft.endpoint,
+        bucketUrl: draft.endpoint,
         region: draft.region,
-        syncVersion: SYNC_VERSION,
+        clientId: current.clientId,
         ...(encryptedAccessKeyId && encryptedSecretAccessKey
           ? { encryptedAccessKeyId, encryptedSecretAccessKey }
           : {}),
-        ...(current.endpoint === draft.endpoint && current.region === draft.region && current.lastSyncedAt
+        ...(current.bucketUrl === draft.endpoint && current.region === draft.region && current.lastSyncedAt
           ? { lastSyncedAt: current.lastSyncedAt }
           : {}),
-        ...(current.endpoint === draft.endpoint && current.region === draft.region && current.lastRevision
+        ...(current.bucketUrl === draft.endpoint && current.region === draft.region && current.lastRevision
           ? { lastRevision: current.lastRevision }
           : {}),
       };
@@ -706,9 +761,14 @@ export class S3SyncRuntime {
 
   private async loadSettings(): Promise<PersistedS3SyncSettings> {
     try {
-      return parsePersistedSettings(JSON.parse(await fs.readFile(this.settingsPath, 'utf8')));
+      const parsed = parsePersistedSettings(
+        JSON.parse(await fs.readFile(this.settingsPath, 'utf8')),
+        this.createClientId,
+      );
+      if (parsed.migrated) await this.persist(parsed.settings);
+      return parsed.settings;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultSettings();
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultSettings(this.createClientId());
       if (error instanceof Error && error.message === 'S3 sync settings are invalid.') throw error;
       throw new Error('S3 sync settings could not be loaded.');
     }
@@ -756,7 +816,7 @@ export class S3SyncRuntime {
   private async performSync(): Promise<S3SyncResult> {
     if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
     const settings = { ...(await this.ensureSettings()) };
-    if (!settings.endpoint) throw new Error('S3 sync settings are incomplete.');
+    if (!settings.bucketUrl) throw new Error('S3 sync settings are incomplete.');
     const { accessKeyId, secretAccessKey } = this.credentials(settings);
 
     let data: Record<string, unknown>;
@@ -773,7 +833,7 @@ export class S3SyncRuntime {
     const encrypted = encryptS3Snapshot(snapshot, secretAccessKey, this.createRandomBytes);
     const body = JSON.stringify(encrypted);
     const signed = signS3PutRequest({
-      endpoint: settings.endpoint,
+      endpoint: buildS3SnapshotObjectUrl(settings.bucketUrl, settings.clientId, revision),
       region: settings.region,
       accessKeyId,
       secretAccessKey,

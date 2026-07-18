@@ -33,7 +33,7 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, categorized preflight checks, status checks, and journal log access.
 - `src/main/notesStore.ts`: versioned and bounded Notes CRUD with cloned values, serialized mutations, and atomic private JSON persistence.
 - `src/main/appDataSnapshot.ts`: explicit durable-data allowlist for S3 snapshots; runtime state, logs, caches, and S3 credentials are excluded.
-- `src/main/s3Sync.ts`: OS-protected S3 credentials, versioned AES-GCM snapshot encryption, SigV4 PUT signing, and single-flight timeout/shutdown ownership.
+- `src/main/s3Sync.ts`: `safeStorage`-protected MinIO/S3 credentials, stable-client immutable revision paths, versioned AES-GCM snapshot encryption, SigV4 PUT signing, narrow credential hydration/reveal, and single-flight timeout/shutdown ownership.
 - `src/main/runtimeLog.ts`: serialized, redacted local runtime diagnostic JSONL writer with 1 MiB current-file rotation.
 - `src/main/portForwardManager.ts`: service-owned local port forwarding with active-socket ownership, failed-listen cleanup, and cancellation-fenced in-flight starts for bounded shutdown.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
@@ -65,8 +65,8 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/kubernetes/podInteractions.ts`: 2,000-line bounded single-Pod/Deployment aggregate logs with multi-stream and start-time snapshot generation fencing, terminal shell fallback/session ownership and first-output readiness gating, and ten-forward lifecycle.
 - `src/main/kubernetes/kubernetesRuntime.ts`: display-safe facade composing kubeconfig, persisted Context preference, Context-scoped single-flight recovery, session, resources, and Pod interactions for IPC.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
-- `src/renderer/notesPage.ts`: viewport-contained two-column Notes UI with Name-priority search, tags, copy/delete, and debounced realtime save.
-- `src/renderer/settingsDialog.ts`: bottom-navigation Settings dialog for write-only credential updates and manual versioned S3 sync.
+- `src/renderer/notesPage.ts`: viewport-contained two-column Notes UI with a local CodeMirror 6 editor, Name-priority search, tags, icon actions, per-list-row delete, and debounced realtime save.
+- `src/renderer/settingsDialog.ts`: bottom-navigation Settings dialog for MinIO/S3 bucket configuration, masked credential hydration, password visibility controls, and manual versioned sync.
 - `src/renderer/kubernetesPage.ts`: full-width Context/Namespace controls with an unclipped Namespace popup, category lists, right-side overlay drawers with aligned Labels and fully expanded Env rows, text-safe browser-YAML rendering, Events, on-demand relations, bottom workspace, and count-backed Forwarded Ports dialog.
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers.
 - `src/renderer/kubernetesBuiltinResourceModel.ts`: pure bounded Lens-inspired detail models for Deployments, StatefulSets, Services, Ingresses, ConfigMaps, Secrets, and PVCs.
@@ -82,7 +82,7 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/renderer/status.ts`: renderer status formatting and action-state helpers.
 - `tailwind.config.cjs`: Tailwind content/theme configuration with preflight disabled to avoid global reset drift.
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper.
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm and `js-yaml` browser assets.
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, and the CodeMirror browser ESM dependency graph.
 - `src/shared/types.ts`: shared IPC/data contracts.
 - `tests/*.test.js`: Node built-in tests against compiled `dist` output.
 
@@ -99,16 +99,17 @@ Hosts:
 Notes:
 
 - Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text are supported metadata choices.
-- Keep Notes in a viewport-contained left-list/right-editor layout. Search ranks Name exact/prefix/substring matches before lower-priority Tag, Language, and Content matches.
+- Keep Notes in a viewport-contained left-list/right-editor layout backed by CodeMirror 6. Search ranks Name exact/prefix/substring matches before lower-priority Tag, Language, and Content matches. The list must retain bounded internal scrolling for large collections.
 - Save edits after a short debounce and flush pending edits on note/page changes. Window/application close attempts a bounded renderer-to-main Notes flush handshake before the main-process store flush; a standalone macOS window stays open on failure, while application quit records a failed/timed-out handshake and retains the global bounded-shutdown behavior. Persist only the schema-versioned `<userData>/notes.json` through serialized atomic writes with private permissions where supported.
-- Dynamic note names/content/tags must use form values or text nodes. Copy uses the existing clipboard bridge and delete requires confirmation.
+- Dynamic note names/content/tags must use CodeMirror state, form values, or text nodes. New Note and Copy use icon-labelled buttons. Remove is an icon-only, accessible action on each list row, can target any note, and requires confirmation.
 
 S3 backup:
 
-- Settings is a gear action fixed to the bottom of the navigation rail. It accepts one full S3 object URL, Region, AK, and SK, and exposes a manual upload action with explicit sync format version 1.
-- Newly entered S3 credentials may exist only in the renderer's password inputs and narrow save IPC. Persisted/read-back credentials remain main-process-only: protect them through Electron `safeStorage`, reject unavailable or Linux `basic_text` credential protection, never return credentials or ciphertext through IPC, and exclude the S3 settings file from its own snapshot.
-- Version 1 is a one-way overwrite upload to the exact configured object. Sign the PUT with AWS SigV4 and encrypt the complete snapshot with AES-256-GCM using an HKDF-derived key before network transfer. The secret access key therefore also controls snapshot decryption compatibility.
-- Snapshot only allowlisted durable data: Hosts, Notes, durable Proxy settings/source subscription, and the non-credential Kubernetes Context preference. Exclude logs, parsed/runtime caches, transient sessions/process state, and S3 settings/credentials.
+- Settings is a gear action fixed to the bottom of the navigation rail. It accepts one MinIO-compatible bucket URL such as `https://s3.example.com/bucket`, Region, AK, and SK; the user never supplies an object filename. Sync layout versioning is application-owned and must not appear as a `Sync format` control.
+- Give each local installation one stable, non-credential client ID. Append `service-manager/v1/clients/<clientId>/<revision>.json` to the configured bucket URL and upload each revision as a distinct object, so separate clients using the same bucket cannot overwrite one another. The `v1` path segment is the internal layout version, not a user setting.
+- Persist AK and SK only through Electron `safeStorage`; reject unavailable protection and Linux `basic_text`. Ordinary settings reads may disclose only credential presence. While Settings is open, its dedicated narrow credential IPC may hydrate the two password inputs so saved values remain present but masked; an eye action may expose only its selected field and must immediately re-mask the partner. Do not expose ciphertext or return credentials through any other IPC.
+- Sign each immutable object PUT with AWS SigV4 and encrypt the complete snapshot with AES-256-GCM using an HKDF-derived key before network transfer. The secret access key therefore also controls snapshot decryption compatibility.
+- Snapshot only allowlisted durable data: Hosts, Notes, durable Proxy settings/source subscription, and the non-credential Kubernetes Context preference. Exclude logs, parsed/runtime caches, transient sessions/process state, and S3 settings/credentials. Plaintext credentials, protected credential blobs, bucket authentication headers, and reveal results must never enter snapshots, runtime logs, diagnostics, or error messages.
 - Bound plaintext snapshots to 50 MiB, use a 30-second request timeout, coalesce concurrent uploads, and abort/wait for active upload work during application shutdown.
 
 Local proxy:
@@ -229,7 +230,7 @@ Logs:
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
 - Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
-- New S3 AK/SK values may enter renderer state only as user-supplied password fields until the narrow save IPC settles, after which successful settings rendering clears both fields. Persisted/read-back credentials and encrypted blobs stay in the main process and never enter renderer state, backup snapshots, runtime logs, diagnostics, or error messages. Durable app data may leave the machine only inside the authenticated, versioned encrypted S3 snapshot.
+- S3 AK/SK values may enter renderer state through their password inputs, the narrow save IPC, and the dedicated Settings-only hydration/reveal IPC. Persisted credentials remain protected by `safeStorage`, and ordinary settings reads expose only credential presence. Keep hydrated values password-masked except for the one field whose eye is active, re-mask both on Save, Sync, or dialog close, and clear them when credentials are cleared or the renderer is destroyed. Neither plaintext nor protected credential material may enter backup snapshots, runtime logs, diagnostics, or error messages. Durable app data may leave the machine only inside the authenticated, versioned encrypted S3 snapshot.
 - Kubeconfig bytes, absolute source paths, stable-ID source mappings, tokens, client certificates/keys, client transport/VNC handles, and terminal/port-forward/VNC credentials stay in the main process and never cross renderer IPC or persist to disk. Terminal output may be transiently relayed but must never be persisted to main-process state, disk, settings, or logs; retained xterm views and the bounded pre-bind bridge are renderer-memory-only.
 - Kubernetes Secret `data`/`stringData` must be absent from list/cache/diagnostic/settings data. Decode `secretKeyRef` and `envFrom.secretRef` only through a narrow request in the main process for the active drawer; keep its result bounded and locally searchable, clear it when that drawer closes or changes, and never cache, persist to settings, log, diagnose, or write it to disk.
 - Dialog open/close paths must be idempotent.

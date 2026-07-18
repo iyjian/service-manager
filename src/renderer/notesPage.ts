@@ -1,4 +1,5 @@
 import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
+import { basicSetup, EditorView } from 'codemirror';
 import { registerPage } from './nav.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
@@ -85,6 +86,23 @@ function normalizeTags(value: string): string[] {
   return tags;
 }
 
+function createRemoveIcon(): SVGSVGElement {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const icon = document.createElementNS(namespace, 'svg');
+  icon.setAttribute('viewBox', '0 0 16 16');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '1.5');
+  icon.setAttribute('stroke-linecap', 'round');
+  icon.setAttribute('stroke-linejoin', 'round');
+  icon.setAttribute('aria-hidden', 'true');
+
+  const lid = document.createElementNS(namespace, 'path');
+  lid.setAttribute('d', 'M3.25 4.5h9.5M6 2.75h4M5 4.5l.5 8.25h5l.5-8.25');
+  icon.appendChild(lid);
+  return icon;
+}
+
 class NotesPage {
   private readonly newButton = requireElement<HTMLButtonElement>('#notes-new-btn');
   private readonly searchInput = requireElement<HTMLInputElement>('#notes-search');
@@ -94,10 +112,11 @@ class NotesPage {
   private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
   private readonly languageSelect = requireElement<HTMLSelectElement>('#note-language');
   private readonly tagsInput = requireElement<HTMLInputElement>('#note-tags');
-  private readonly contentInput = requireElement<HTMLTextAreaElement>('#note-content');
+  private readonly contentHost = requireElement<HTMLElement>('#note-content');
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
-  private readonly deleteButton = requireElement<HTMLButtonElement>('#note-delete-btn');
+  private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
   private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
+  private readonly codeEditor: EditorView;
 
   private notes: Note[] = [];
   private selectedId: string | undefined;
@@ -111,8 +130,28 @@ class NotesPage {
   private readonly saveTimers = new Map<string, number>();
   private readonly saveQueues = new Map<string, Promise<void>>();
   private readonly deletedIds = new Set<string>();
+  private replacingEditorDocument = false;
 
   constructor() {
+    this.codeEditor = new EditorView({
+      doc: '',
+      extensions: [
+        basicSetup,
+        EditorView.lineWrapping,
+        EditorView.contentAttributes.of({
+          'aria-label': 'Note content',
+          'aria-multiline': 'true',
+          spellcheck: 'false',
+        }),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged || this.replacingEditorDocument) return;
+          this.updateSelectedFromEditor();
+          this.updateEditorEmptyState();
+        }),
+      ],
+      parent: this.contentHost,
+    });
+    this.updateEditorEmptyState();
     this.newButton.addEventListener('click', () => void this.createNote());
     this.searchInput.addEventListener('input', () => this.renderList());
     this.list.addEventListener('keydown', (event) => this.handleListKeydown(event));
@@ -120,9 +159,7 @@ class NotesPage {
     this.nameInput.addEventListener('input', () => this.updateSelectedFromEditor());
     this.languageSelect.addEventListener('change', () => this.updateSelectedFromEditor());
     this.tagsInput.addEventListener('input', () => this.updateSelectedFromEditor());
-    this.contentInput.addEventListener('input', () => this.updateSelectedFromEditor());
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
-    this.deleteButton.addEventListener('click', () => void this.deleteSelectedNote());
   }
 
   show(): void {
@@ -185,6 +222,11 @@ class NotesPage {
     this.list.replaceChildren();
 
     for (const note of visible) {
+      const row = document.createElement('div');
+      row.className = 'notes-list-row';
+      row.dataset.noteId = note.id;
+      row.dataset.selected = String(note.id === this.selectedId);
+
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'notes-list-item';
@@ -197,7 +239,18 @@ class NotesPage {
       button.appendChild(name);
 
       button.addEventListener('click', () => this.selectNote(note.id));
-      this.list.appendChild(button);
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'notes-list-remove';
+      remove.dataset.noteId = note.id;
+      remove.setAttribute('aria-label', `Remove ${note.name || 'Untitled'}`);
+      remove.title = `Remove ${note.name || 'Untitled'}`;
+      remove.appendChild(createRemoveIcon());
+      remove.addEventListener('click', () => void this.deleteNote(note.id));
+
+      row.append(button, remove);
+      this.list.appendChild(row);
     }
     if (visible.length === 0) {
       const empty = document.createElement('div');
@@ -225,7 +278,8 @@ class NotesPage {
     this.nameInput.value = note.name;
     this.languageSelect.value = note.language;
     this.tagsInput.value = note.tags.join(', ');
-    this.contentInput.value = note.content;
+    this.replaceEditorDocument(note.content);
+    this.contentHost.dataset.language = note.language;
   }
 
   private selectedNote(): Note | undefined {
@@ -248,7 +302,8 @@ class NotesPage {
     note.name = this.nameInput.value;
     note.language = this.languageSelect.value as NoteLanguage;
     note.tags = normalizeTags(this.tagsInput.value);
-    note.content = this.contentInput.value;
+    note.content = this.codeEditor.state.doc.toString();
+    this.contentHost.dataset.language = note.language;
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     this.setSaveStatus('Saving…', 'saving');
     if (document.activeElement === this.nameInput || this.searchInput.value.trim()) {
@@ -364,16 +419,19 @@ class NotesPage {
     if (!note) return;
     try {
       await window.serviceApi.writeClipboardText(note.content);
-      const original = this.copyButton.textContent;
-      this.copyButton.textContent = 'Copied';
-      window.setTimeout(() => { this.copyButton.textContent = original; }, 1_200);
+      this.copyLabel.textContent = 'Copied';
+      this.copyButton.dataset.copied = 'true';
+      window.setTimeout(() => {
+        this.copyLabel.textContent = 'Copy';
+        delete this.copyButton.dataset.copied;
+      }, 1_200);
     } catch (error) {
       this.setSaveStatus(`Copy failed: ${toErrorMessage(error)}`, 'error');
     }
   }
 
-  private async deleteSelectedNote(): Promise<void> {
-    const note = this.selectedNote();
+  private async deleteNote(id: string): Promise<void> {
+    const note = this.notes.find((item) => item.id === id);
     if (!note) return;
     let confirmed = false;
     try {
@@ -391,6 +449,11 @@ class NotesPage {
     }
     if (!confirmed) return;
 
+    const visibleBeforeDelete = rankNotes(this.notes, this.searchInput.value);
+    const deletedIndex = visibleBeforeDelete.findIndex((item) => item.id === note.id);
+    const focusAfterDelete = visibleBeforeDelete[deletedIndex + 1]?.id
+      ?? visibleBeforeDelete[deletedIndex - 1]?.id;
+
     await this.flushNote(note.id);
     this.deletedIds.add(note.id);
     this.clearSaveTimer(note.id);
@@ -401,9 +464,11 @@ class NotesPage {
       this.persistedVersions.delete(note.id);
       this.queuedVersions.delete(note.id);
       this.saveQueues.delete(note.id);
-      this.selectedId = rankNotes(this.notes, this.searchInput.value)[0]?.id ?? rankNotes(this.notes, '')[0]?.id;
-      this.renderList(this.selectedId);
-      this.renderEditor();
+      if (this.selectedId === note.id) {
+        this.selectedId = rankNotes(this.notes, this.searchInput.value)[0]?.id ?? rankNotes(this.notes, '')[0]?.id;
+        this.renderEditor();
+      }
+      this.renderList(focusAfterDelete ?? this.selectedId);
       if (!this.selectedId) this.newButton.focus();
       this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
     } catch (error) {
@@ -423,6 +488,27 @@ class NotesPage {
     const next = current < 0 ? 0 : (current + direction + items.length) % items.length;
     event.preventDefault();
     items[next]?.focus();
+  }
+
+  private replaceEditorDocument(content: string): void {
+    const current = this.codeEditor.state.doc.toString();
+    if (current === content) {
+      this.updateEditorEmptyState();
+      return;
+    }
+    this.replacingEditorDocument = true;
+    try {
+      this.codeEditor.dispatch({
+        changes: { from: 0, to: this.codeEditor.state.doc.length, insert: content },
+      });
+    } finally {
+      this.replacingEditorDocument = false;
+    }
+    this.updateEditorEmptyState();
+  }
+
+  private updateEditorEmptyState(): void {
+    this.contentHost.dataset.empty = String(this.codeEditor.state.doc.length === 0);
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {

@@ -159,15 +159,17 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 15. Notes provides a compact local snippet library:
     - the viewport-contained two-column page keeps a searchable name list on the left and the selected editor on the right; both constrained areas scroll internally at smaller window sizes
     - search ranks exact, prefix, and partial Name matches ahead of lower-priority Tag, Language, and full-content matches
-    - each note has a Name, comma-separated Tags, Language, and Content; Markdown is the default, with Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text options
+    - each note has a Name, comma-separated Tags, Language, and CodeMirror 6 Content editor; Markdown is the default, with Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text options
     - edits save automatically after a short debounce, note switches and page changes flush pending edits, and window/application close performs a bounded renderer-to-main flush handshake before the final close; create/update/delete operations are serialized into the versioned `<userData>/notes.json` file with private file permissions where the platform supports them
-    - content is rendered only through form values/text nodes and has a one-click `Copy` action; delete requires confirmation
-16. The bottom navigation Settings action provides manual, versioned S3 backup:
-    - configure a full S3 object URL, Region, Access Key ID, and Secret Access Key; the current upload format is explicitly `Version 1`
-    - newly entered credentials cross only the narrow save IPC; persisted credentials stay in the main process, are encrypted with Electron operating-system credential protection, never return to the renderer, and are not included in the backup. Linux `basic_text` storage is rejected rather than persisting credentials insecurely
-    - `Sync Now` uploads one SigV4-authenticated `PUT` to the configured object URL. Before upload, the versioned snapshot is encrypted with AES-256-GCM using an HKDF-derived key, so host SSH credentials and other durable configuration are not stored as plaintext in S3
+    - `New Note` and `Copy` use compact icon-labelled actions. Each list row owns an icon-only accessible Remove action, so any note can be deleted after confirmation without first opening it
+    - dynamic content is rendered only through CodeMirror state, form values, or text nodes; the bounded left list remains independently scrollable with large note collections
+16. The bottom navigation Settings action provides manual, versioned backup to a MinIO-compatible S3 bucket:
+    - configure a bucket URL such as `https://s3.example.com/bucket`, Region, Access Key ID, and Secret Access Key; do not include an object filename. The internal sync layout version is application-owned and is not shown as a `Sync format` control
+    - each installation keeps a stable local client ID. `Sync Now` appends the internal object key `service-manager/v1/clients/<clientId>/<revision>.json` to the bucket URL and uploads an immutable revision with an AWS SigV4-authenticated `PUT`, so clients sharing one bucket URL do not overwrite one another
+    - AK and SK are protected at rest with Electron `safeStorage`; Linux `basic_text` storage is rejected rather than persisting credentials insecurely. Ordinary settings reads disclose only whether credentials exist. Opening Settings uses a dedicated narrow IPC to refill the saved values into password-masked inputs; either eye may reveal only its selected field and immediately re-masks the other
+    - before upload, the versioned snapshot is encrypted with AES-256-GCM using an HKDF-derived key, so host SSH credentials and other durable configuration are not stored as plaintext in S3
     - the allowlisted snapshot contains Hosts, Notes, durable Proxy settings and retained source subscription, and the non-credential Kubernetes Context preference. Runtime logs, caches, live sessions, S3 settings/credentials, and transient process data are excluded
-    - uploads are single-flight, bounded to 50 MiB before encryption, time out after 30 seconds, and are aborted during application shutdown. Version 1 is upload-only and intentionally overwrites the configured object; changing the Secret Access Key also changes the snapshot encryption key
+    - uploads are single-flight, bounded to 50 MiB before encryption, time out after 30 seconds, and are aborted during application shutdown. Internal layout version 1 is upload-only; every revision has a distinct object key, and changing the Secret Access Key also changes the snapshot encryption key. Plaintext or protected credential material is never included in snapshots, runtime logs, diagnostics, or error messages
 
 ## Tech Stack
 
@@ -178,6 +180,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `asn1` (explicit dependency required by ssh2 stack in this project)
 - `@kubernetes/client-node` (main-process Kubernetes REST, Watch, log, exec, port-forward, and authenticated KubeVirt VNC transport)
 - `@xterm/xterm` and `@xterm/addon-fit` (Kubernetes bottom workspace)
+- CodeMirror 6 (local browser-ESM snippet editor copied into `dist/renderer/vendor` during the renderer asset step)
 - Base renderer CSS for local fonts, CSS variables, and terminal ANSI log colors
 - Local JSON persistence in Electron userData
 
@@ -193,7 +196,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
 - `src/main/notesStore.ts`: versioned, bounded local Notes CRUD with serialized atomic JSON persistence
 - `src/main/appDataSnapshot.ts`: explicit allowlist for the durable app data included in an S3 snapshot
-- `src/main/s3Sync.ts`: secure S3 settings persistence, versioned encrypted snapshots, SigV4 PUT signing, and bounded upload lifecycle
+- `src/main/s3Sync.ts`: `safeStorage`-protected MinIO/S3 settings, stable-client immutable revision paths, encrypted snapshots, SigV4 PUT signing, narrow credential hydration/reveal, and bounded upload lifecycle
 - `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime; service forwards release failed-start SSH chains, fence in-flight starts during bulk stop, and destroy active local sockets before waiting for listener close
 - `src/main/quitCoordinator.ts`: single-flight normal/signal/update quit sequencing with an eight-second cleanup deadline before the final Electron or installer action, plus a 1.5-second forced-exit fallback after that action begins
 - `src/main/proxy/proxyRuntime.ts`: local Mihomo process lifecycle, parsed-cache loading/replacement, persisted proxy settings and Custom Rule mutations, and system/TUN proxy controls
@@ -218,8 +221,8 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/kubernetes/podInteractions.ts`: bounded single-Pod/Deployment aggregate logs with live-stream and second-precision snapshot generation fencing, terminal shell fallback/first-output readiness/session lifecycle, and ten-forward ownership
 - `src/main/kubernetes/kubernetesRuntime.ts`: renderer-safe Kubernetes lifecycle facade with Context-scoped single-flight recovery, Context-preference restore, bounded resource-window IPC, and resource interactions
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
-- `src/renderer/notesPage.ts`: split-pane snippet editor, Name-priority search, tags, copy/delete actions, and debounced live save
-- `src/renderer/settingsDialog.ts`: main-process-backed S3 settings and manual sync UI without credential readback
+- `src/renderer/notesPage.ts`: split-pane CodeMirror 6 snippet editor, Name-priority search, tags, icon actions, per-list-row delete, and debounced live save
+- `src/renderer/settingsDialog.ts`: main-process-backed MinIO/S3 bucket settings, masked credential hydration, password visibility controls, and manual sync UI
 - `src/renderer/kubernetesPage.ts`: full-width Kubernetes controls/lists, right-side overlay drawers, text-safe browser-YAML rendering, on-demand relations, workspace, and count-backed Forwarded Ports dialog
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers
 - `src/renderer/kubernetesBuiltinResourceModel.ts`: pure bounded Lens-inspired detail models for Deployments, StatefulSets, Services, Ingresses, ConfigMaps, Secrets, and PVCs
@@ -235,7 +238,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/renderer/status.ts`: shared renderer status formatting and action-state helpers
 - `tailwind.config.cjs`: Tailwind content/theme configuration; preflight is disabled to avoid global reset drift
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm and `js-yaml` browser assets
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, and the CodeMirror browser ESM dependency graph
 - `src/shared/types.ts`: shared type contracts
 - `tests/*.test.js`: Node built-in test runner coverage for extracted main-process pure/runtime helpers
 - `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build

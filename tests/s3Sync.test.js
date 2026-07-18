@@ -1,11 +1,12 @@
 const assert = require('node:assert/strict');
-const { mkdtemp, readFile, rm, stat } = require('node:fs/promises');
+const { mkdtemp, readFile, rm, stat, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
 const {
   S3SyncRuntime,
+  buildS3SnapshotObjectUrl,
   canonicalizeS3Path,
   createServiceManagerSnapshot,
   decryptS3Snapshot,
@@ -17,7 +18,7 @@ const {
 
 const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
-const ENDPOINT = 'https://s3.example.test/example-bucket/service-manager/snapshot.json';
+const BUCKET_URL = 'https://s3.example.test/example-bucket';
 
 function fakeProtector() {
   return {
@@ -33,9 +34,8 @@ function fakeProtector() {
 
 function settingsDraft(overrides = {}) {
   return {
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
     ...overrides,
@@ -48,40 +48,65 @@ async function temporaryDirectory(t) {
   return directory;
 }
 
-test('S3 settings validation requires a full secure object URL and paired credentials', () => {
+test('S3 settings validation accepts a MinIO bucket URL and paired credentials', () => {
   assert.deepEqual(validateS3SyncSettingsDraft(settingsDraft()), settingsDraft());
   assert.equal(
-    validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://localhost:9000/bucket/data.json' })).endpoint,
-    'http://localhost:9000/bucket/data.json',
+    validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://localhost:9000/bucket/' })).endpoint,
+    'http://localhost:9000/bucket',
   );
   assert.equal(
-    validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://127.0.0.1:9000/bucket/data.json' })).endpoint,
-    'http://127.0.0.1:9000/bucket/data.json',
+    validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://127.0.0.1:9000/bucket' })).endpoint,
+    'http://127.0.0.1:9000/bucket',
+  );
+  assert.equal(
+    validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://s3.frp.tltr.top/service-manager' })).endpoint,
+    'https://s3.frp.tltr.top/service-manager',
   );
 
   assert.throws(
-    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://s3.example.test/bucket/data.json' })),
+    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'http://s3.example.test/bucket' })),
     /must use HTTPS unless it targets localhost/,
   );
   assert.throws(
-    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://user:pass@s3.example.test/bucket/data.json' })),
+    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://user:pass@s3.example.test/bucket' })),
     /cannot contain credentials/,
   );
   assert.throws(
-    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://s3.example.test/bucket/data.json?token=secret' })),
+    () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://s3.example.test/bucket?token=secret' })),
     /cannot contain credentials, a query, or a fragment/,
   );
   assert.throws(
     () => validateS3SyncSettingsDraft(settingsDraft({ endpoint: 'https://s3.example.test/' })),
-    /include an object path/,
+    /include a bucket path/,
   );
   assert.throws(
     () => validateS3SyncSettingsDraft({ ...settingsDraft(), secretAccessKey: undefined }),
     /Both the S3 access key ID and secret access key/,
   );
+  assert.deepEqual(
+    validateS3SyncSettingsDraft({ ...settingsDraft(), syncVersion: 99 }),
+    settingsDraft(),
+    'the object layout version is internal and cannot be selected by the renderer',
+  );
+});
+
+test('S3 object layout isolates clients and immutable revisions below one bucket URL', () => {
+  const first = buildS3SnapshotObjectUrl(`${BUCKET_URL}/`, 'client-a', 'revision-1');
+  const secondRevision = buildS3SnapshotObjectUrl(BUCKET_URL, 'client-a', 'revision-2');
+  const secondClient = buildS3SnapshotObjectUrl(BUCKET_URL, 'client-b', 'revision-1');
+
+  assert.equal(
+    first,
+    `${BUCKET_URL}/service-manager/v1/clients/client-a/revision-1.json`,
+  );
+  assert.equal(new Set([first, secondRevision, secondClient]).size, 3);
   assert.throws(
-    () => validateS3SyncSettingsDraft({ ...settingsDraft(), syncVersion: 2 }),
-    /Only S3 sync version 1/,
+    () => buildS3SnapshotObjectUrl(BUCKET_URL, '../client', 'revision-1'),
+    /client identity is invalid/,
+  );
+  assert.throws(
+    () => buildS3SnapshotObjectUrl(BUCKET_URL, 'client-a', '../revision'),
+    /snapshot revision is invalid/,
   );
 });
 
@@ -188,28 +213,40 @@ test('S3SyncRuntime encrypts credentials at rest and uploads one signed encrypte
     },
     now: () => new Date('2026-07-18T04:05:06.000Z'),
     createRevision: () => 'revision-1',
+    createClientId: () => 'client-1',
     createRandomBytes: (size) => Buffer.alloc(size, size),
   });
 
   const saved = await runtime.saveSettings(settingsDraft());
   assert.deepEqual(saved, {
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: true,
   });
   assert.doesNotMatch(JSON.stringify(saved), /AKIDEXAMPLE|wJalr|encrypted/i);
+  assert.deepEqual(await runtime.revealS3SyncCredentials(), {
+    accessKeyId: ACCESS_KEY,
+    secretAccessKey: SECRET_KEY,
+  });
 
   const settingsPath = path.join(userDataPath, 's3-sync.json');
   const persistedBeforeSync = await readFile(settingsPath, 'utf8');
   assert.doesNotMatch(persistedBeforeSync, /AKIDEXAMPLE|wJalr|host-password/);
+  const persistedSettings = JSON.parse(persistedBeforeSync);
+  assert.equal(persistedSettings.schemaVersion, 2);
+  assert.equal(persistedSettings.bucketUrl, BUCKET_URL);
+  assert.equal(persistedSettings.clientId, 'client-1');
+  assert.equal('syncVersion' in persistedSettings, false);
   if (process.platform !== 'win32') {
     assert.equal((await stat(settingsPath)).mode & 0o777, 0o600);
   }
 
   const result = await runtime.syncAllDataToS3();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, ENDPOINT);
+  assert.equal(
+    calls[0].url,
+    buildS3SnapshotObjectUrl(BUCKET_URL, 'client-1', 'revision-1'),
+  );
   assert.equal(calls[0].options.method, 'PUT');
   assert.equal(calls[0].options.redirect, 'manual');
   assert.match(calls[0].options.headers.authorization, /Credential=AKIDEXAMPLE\//);
@@ -233,21 +270,18 @@ test('S3SyncRuntime encrypts credentials at rest and uploads one signed encrypte
     etag: '"snapshot-etag"',
   });
   assert.deepEqual(await runtime.getSettings(), {
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: true,
     lastSyncedAt: '2026-07-18T04:05:06.000Z',
     lastRevision: 'revision-1',
   });
   assert.deepEqual(await runtime.saveSettings({
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
   }), {
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: true,
     lastSyncedAt: '2026-07-18T04:05:06.000Z',
     lastRevision: 'revision-1',
@@ -276,9 +310,9 @@ test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) =
   assert.deepEqual(await runtime.getS3SyncSettings(), {
     endpoint: '',
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: false,
   });
+  await assert.rejects(runtime.revealS3SyncCredentials(), /credentials are unavailable/);
 });
 
 test('S3SyncRuntime reloads protected settings and clears credentials durably', async (t) => {
@@ -288,30 +322,93 @@ test('S3SyncRuntime reloads protected settings and clears credentials durably', 
     appVersion: '0.3.19',
     credentialProtector: fakeProtector(),
     snapshotProvider: async () => ({}),
+    createClientId: () => 'stable-client',
   };
   await new S3SyncRuntime(options).saveSettings(settingsDraft());
 
   const reloaded = new S3SyncRuntime(options);
   assert.deepEqual(await reloaded.getSettings(), {
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: true,
   });
+  assert.deepEqual(await reloaded.revealS3SyncCredentials(), {
+    accessKeyId: ACCESS_KEY,
+    secretAccessKey: SECRET_KEY,
+  });
   await reloaded.saveSettings({
-    endpoint: ENDPOINT,
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     clearCredentials: true,
   });
 
-  assert.deepEqual(await new S3SyncRuntime(options).getSettings(), {
-    endpoint: ENDPOINT,
+  const cleared = new S3SyncRuntime(options);
+  assert.deepEqual(await cleared.getSettings(), {
+    endpoint: BUCKET_URL,
     region: 'us-east-1',
-    syncVersion: 1,
     hasCredentials: false,
   });
+  await assert.rejects(cleared.revealS3SyncCredentials(), /credentials are unavailable/);
   assert.doesNotMatch(await readFile(path.join(userDataPath, 's3-sync.json'), 'utf8'), /encryptedAccessKeyId|encryptedSecretAccessKey/);
+});
+
+test('S3SyncRuntime migrates schema 1 settings once and keeps a stable client identity', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  const settingsPath = path.join(userDataPath, 's3-sync.json');
+  const protector = fakeProtector();
+  const legacyEndpoint = `${BUCKET_URL}/service-manager/snapshot.json`;
+  await writeFile(settingsPath, JSON.stringify({
+    schemaVersion: 1,
+    endpoint: legacyEndpoint,
+    region: 'us-east-1',
+    syncVersion: 1,
+    encryptedAccessKeyId: protector.encryptString(ACCESS_KEY).toString('base64'),
+    encryptedSecretAccessKey: protector.encryptString(SECRET_KEY).toString('base64'),
+    lastSyncedAt: '2026-07-18T04:05:06.000Z',
+    lastRevision: 'legacy-revision',
+  }));
+
+  let clientIdsCreated = 0;
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: protector,
+    snapshotProvider: async () => ({}),
+    createClientId: () => {
+      clientIdsCreated += 1;
+      return 'migrated-client';
+    },
+  });
+  assert.deepEqual(await runtime.getSettings(), {
+    endpoint: BUCKET_URL,
+    region: 'us-east-1',
+    hasCredentials: true,
+    lastSyncedAt: '2026-07-18T04:05:06.000Z',
+    lastRevision: 'legacy-revision',
+  });
+  assert.equal(clientIdsCreated, 1);
+
+  const migrated = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.bucketUrl, BUCKET_URL);
+  assert.equal(migrated.clientId, 'migrated-client');
+  assert.equal('endpoint' in migrated, false);
+  assert.equal('syncVersion' in migrated, false);
+
+  const reloaded = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: protector,
+    snapshotProvider: async () => ({}),
+    createClientId: () => {
+      throw new Error('a migrated client identity must not be regenerated');
+    },
+  });
+  assert.equal((await reloaded.getSettings()).endpoint, BUCKET_URL);
+  assert.deepEqual(await reloaded.revealS3SyncCredentials(), {
+    accessKeyId: ACCESS_KEY,
+    secretAccessKey: SECRET_KEY,
+  });
 });
 
 test('S3SyncRuntime coalesces concurrent sync requests into one PUT', async (t) => {
