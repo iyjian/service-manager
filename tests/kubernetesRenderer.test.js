@@ -1968,6 +1968,30 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.match(styles, /\.kubernetes-related-pod-link\s*\{/);
 });
 
+test('Kubernetes-only visual hierarchy keeps table rows and drawer sections clearly separated', async () => {
+  const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
+  const tableShell = styles.match(/\.kubernetes-table-shell\s*\{([^}]*)\}/);
+  const tableHeader = styles.match(/\.kubernetes-table-header\s*\{([^}]*)\}/);
+  const namespaceCell = styles.match(/\.kubernetes-table-cell:first-child\s*\{([^}]*)\}/);
+  const nameCell = styles.match(/\.kubernetes-table-cell:nth-child\(2\)\s*\{([^}]*)\}/);
+  const drawerBody = styles.match(/\.kubernetes-detail-drawer-body\s*\{([^}]*)\}/);
+  const drawerSection = styles.match(/\.kubernetes-drawer-section\s*\{([^}]*)\}/);
+  const drawerToggle = styles.match(/\.kubernetes-drawer-section-toggle\s*\{([^}]*)\}/);
+
+  assert.ok(tableShell && tableHeader);
+  assert.ok(namespaceCell && nameCell && drawerBody && drawerSection && drawerToggle);
+  assert.match(tableShell[1], /border-zinc-300[^;]*bg-white/);
+  assert.match(tableHeader[1], /border-zinc-300[^;]*bg-zinc-100[^;]*text-zinc-600/);
+  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply border-b border-zinc-200[^;]*font-sans[^;]*text-\[13px\][^;]*text-zinc-800/);
+  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply cursor-pointer[^;]*hover:bg-sky-50[^;]*focus-visible:bg-sky-50/);
+  assert.match(namespaceCell[1], /font-normal[^;]*text-zinc-500/);
+  assert.match(nameCell[1], /font-medium[^;]*text-zinc-950/);
+  assert.match(drawerBody[1], /bg-zinc-50/);
+  assert.match(drawerSection[1], /border-zinc-300[^;]*bg-white/);
+  assert.match(drawerToggle[1], /bg-zinc-100[^;]*text-zinc-900/);
+  assert.match(styles, /\.kubernetes-drawer-events\s*\{[^}]*border-zinc-300/);
+});
+
 test('Kubernetes drawer narrows while Namespace menus remain unclipped and other controls scroll internally', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const responsiveStart = styles.indexOf('@media (max-width: 640px)');

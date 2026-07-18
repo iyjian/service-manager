@@ -258,7 +258,7 @@
   }
 
   .kubernetes-page {
-    @apply relative grid h-full min-h-0 min-w-0 gap-2 overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 shadow-sm ring-1 ring-zinc-950/[0.02];
+    @apply relative grid h-full min-h-0 min-w-0 gap-2 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50/60 p-2 shadow-sm ring-1 ring-zinc-950/[0.02];
   }
 
   .kubernetes-list-page {
@@ -469,7 +469,7 @@
       minmax(128px, 1.05fr) minmax(240px, 2fr) 88px 106px 82px
       minmax(104px, 0.95fr) minmax(148px, 1.2fr) 68px;
     --kubernetes-table-min-width: 1064px;
-    @apply grid min-h-0 min-w-0 rounded-lg border border-zinc-200;
+    @apply grid min-h-0 min-w-0 rounded-lg border border-zinc-300 bg-white shadow-sm;
     grid-template-rows: auto minmax(0, 1fr);
     overflow-x: auto;
     overflow-y: hidden;
@@ -526,7 +526,7 @@
   }
 
   .kubernetes-table-header {
-    @apply sticky top-0 z-10 border-b border-zinc-200 bg-zinc-50 px-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
+    @apply sticky top-0 z-10 border-b border-zinc-300 bg-zinc-100 px-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-600;
     height: 32px;
     align-items: center;
   }
@@ -599,7 +599,7 @@
   }
 
   .kubernetes-table-row {
-    @apply border-b border-zinc-100 px-3 font-mono text-[12.5px] text-zinc-700;
+    @apply border-b border-zinc-200 px-3 font-sans text-[13px] text-zinc-800;
     height: 36px;
     align-items: center;
   }
@@ -612,7 +612,11 @@
   }
 
   .kubernetes-table-cell:first-child {
-    @apply font-medium text-zinc-900;
+    @apply font-normal text-zinc-500;
+  }
+
+  .kubernetes-table-cell:nth-child(2) {
+    @apply font-medium text-zinc-950;
   }
 
   .kubernetes-empty-state,
@@ -648,7 +652,7 @@
   }
 
   .kubernetes-table-row {
-    @apply cursor-pointer outline-none transition hover:bg-zinc-50 focus-visible:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+    @apply cursor-pointer outline-none transition hover:bg-sky-50 focus-visible:bg-sky-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-300;
   }
 
   .kubernetes-detail-head,
@@ -1057,7 +1061,7 @@
 
   .kubernetes-detail-drawer-panel {
     width: clamp(560px, 38vw, 720px);
-    @apply absolute bottom-0 right-0 top-0 grid min-h-0 max-w-full grid-rows-[auto_minmax(0,1fr)] border-l border-zinc-200 bg-white shadow-2xl;
+    @apply absolute bottom-0 right-0 top-0 grid min-h-0 max-w-full grid-rows-[auto_minmax(0,1fr)] border-l border-zinc-300 bg-white shadow-2xl;
   }
 
   .kubernetes-detail-drawer-head {
@@ -1089,7 +1093,7 @@
   }
 
   .kubernetes-detail-drawer-body {
-    @apply grid min-h-0 min-w-0 content-start gap-3 overflow-y-auto p-3;
+    @apply grid min-h-0 min-w-0 content-start gap-3 overflow-y-auto bg-zinc-50 p-3;
     grid-auto-rows: max-content;
   }
 
@@ -1148,11 +1152,11 @@
   }
 
   .kubernetes-drawer-section {
-    @apply overflow-hidden rounded-lg border border-zinc-200 bg-white;
+    @apply overflow-hidden rounded-lg border border-zinc-300 bg-white;
   }
 
   .kubernetes-drawer-section-toggle {
-    @apply flex w-full items-center justify-between gap-2 border-0 bg-zinc-50 px-2.5 py-2 text-left text-[12.5px] font-medium text-zinc-800 outline-none hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+    @apply flex w-full items-center justify-between gap-2 border-0 bg-zinc-100 px-2.5 py-2 text-left text-[12.5px] font-medium text-zinc-900 outline-none hover:bg-zinc-200/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
   }
 
   .kubernetes-drawer-section-content {
@@ -1240,7 +1244,7 @@
   }
 
   .kubernetes-builtin-table-wrap {
-    @apply min-w-0 overflow-x-auto rounded border border-zinc-200;
+    @apply min-w-0 overflow-x-auto rounded border border-zinc-300;
   }
 
   .kubernetes-builtin-table {
@@ -1252,7 +1256,7 @@
   }
 
   .kubernetes-builtin-table td {
-    @apply max-w-56 whitespace-nowrap border-b border-zinc-100 px-2 py-1 align-top last:border-r-0;
+    @apply max-w-56 whitespace-nowrap border-b border-zinc-200 px-2 py-1 align-top last:border-r-0;
   }
 
   .kubernetes-builtin-table tbody tr:last-child td {
@@ -1378,7 +1382,7 @@
   }
 
   .kubernetes-drawer-events {
-    @apply grid gap-0 rounded-lg border border-zinc-200 bg-white p-0;
+    @apply grid gap-0 rounded-lg border border-zinc-300 bg-white p-0;
   }
 
   .kubernetes-drawer-event-list {
