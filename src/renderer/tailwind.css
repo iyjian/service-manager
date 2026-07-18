@@ -599,7 +599,8 @@
   }
 
   .kubernetes-table-row {
-    @apply border-b border-zinc-200 px-3 font-sans text-[13px] text-zinc-800;
+    @apply px-3 font-sans text-[13px] text-zinc-800;
+    border-bottom: 0.5px solid rgb(212 212 216);
     height: 36px;
     align-items: center;
   }

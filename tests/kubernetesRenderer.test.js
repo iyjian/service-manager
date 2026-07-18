@@ -1982,7 +1982,7 @@ test('Kubernetes-only visual hierarchy keeps table rows and drawer sections clea
   assert.ok(namespaceCell && nameCell && drawerBody && drawerSection && drawerToggle);
   assert.match(tableShell[1], /border-zinc-300[^;]*bg-white/);
   assert.match(tableHeader[1], /border-zinc-300[^;]*bg-zinc-100[^;]*text-zinc-600/);
-  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply border-b border-zinc-200[^;]*font-sans[^;]*text-\[13px\][^;]*text-zinc-800/);
+  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply px-3[^;]*font-sans[^;]*text-\[13px\][^;]*text-zinc-800;\s*border-bottom:\s*0\.5px solid rgb\(212 212 216\)/);
   assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply cursor-pointer[^;]*hover:bg-sky-50[^;]*focus-visible:bg-sky-50/);
   assert.match(namespaceCell[1], /font-normal[^;]*text-zinc-500/);
   assert.match(nameCell[1], /font-medium[^;]*text-zinc-950/);
