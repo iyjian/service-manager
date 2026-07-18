@@ -1,7 +1,8 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   ConfigTransferResult,
   ConfirmDialogOptions,
@@ -56,8 +57,12 @@ import { FileKubernetesContextPreference } from './kubernetes/contextPreference'
 import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
 import { AppQuitCoordinator } from './quitCoordinator';
 import { NotesStore } from './notesStore';
-import { collectPersistentAppData } from './appDataSnapshot';
 import { S3SyncRuntime } from './s3Sync';
+import {
+  createS3SharedAppDataV2,
+  stageS3SharedAppDataForLocalApply,
+  type S3SharedAppDataV2,
+} from './s3DataMerge';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -94,6 +99,8 @@ const IPC_CHANNELS = {
   s3SettingsSave: 'settings:s3:save',
   s3SettingsReveal: 'settings:s3:reveal-credentials',
   s3Sync: 'settings:s3:sync',
+  s3SyncState: 'settings:s3:state',
+  persistentDataReloaded: 'app:persistent-data-reloaded',
   proxyGetState: 'proxy:get-state',
   proxyDownloadCore: 'proxy:download-core',
   proxyStart: 'proxy:start',
@@ -159,6 +166,8 @@ let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
+let persistentDataGeneration = 0;
+let s3SharedDataMutationQueue: Promise<void> = Promise.resolve();
 const RENDERER_NOTES_FLUSH_TIMEOUT_MS = 2_000;
 const pendingRendererNotesFlushes = new Map<string, {
   senderId: number;
@@ -203,6 +212,25 @@ function getS3SyncRuntime(): S3SyncRuntime {
   return s3SyncRuntime;
 }
 
+function getProxyRuntime(): ProxyRuntime {
+  if (!proxyRuntime) throw new Error('Proxy runtime is not initialized.');
+  return proxyRuntime;
+}
+
+function runS3SharedDataMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = s3SharedDataMutationQueue.then(operation, operation);
+  s3SharedDataMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function mutateS3SharedData<T>(operation: () => Promise<T>): Promise<T> {
+  return runS3SharedDataMutation(async () => {
+    const result = await operation();
+    s3SyncRuntime?.markLocalChange();
+    return result;
+  });
+}
+
 function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
   if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
   const requestId = randomUUID();
@@ -230,7 +258,9 @@ function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
 
 async function flushRendererNotes(): Promise<void> {
   const windows = BrowserWindow.getAllWindows().filter((window) =>
-    !window.isDestroyed() && !window.webContents.isDestroyed()
+    !window.isDestroyed()
+    && !window.webContents.isDestroyed()
+    && !window.webContents.isLoadingMainFrame()
   );
   await Promise.all(windows.map((window) => requestRendererNotesFlush(window)));
 }
@@ -241,6 +271,27 @@ function serviceKey(hostId: string, serviceId: string): string {
 
 function serviceForwardKey(hostId: string, serviceId: string): string {
   return serviceKey(hostId, serviceId);
+}
+
+async function persistServicePidIfCurrent(
+  hostId: string,
+  serviceId: string,
+  expectedStartCommand: string,
+  expectedPort: number,
+  pid: number | undefined,
+): Promise<boolean> {
+  return runS3SharedDataMutation(async () => {
+    const currentHost = getStore().findHostById(hostId);
+    const currentService = currentHost?.services.find((service) => service.id === serviceId);
+    if (!currentHost || !currentService
+      || currentService.startCommand !== expectedStartCommand
+      || currentService.port !== expectedPort) {
+      return false;
+    }
+    currentService.pid = pid;
+    await getStore().upsertHost(currentHost);
+    return true;
+  });
 }
 
 function validateProxyExceptionDraft(value: unknown): ProxyExceptionDraft {
@@ -439,6 +490,14 @@ function createWindow(): BrowserWindow {
     logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
   });
 
+  window.on('focus', () => {
+    s3SyncRuntime?.checkForRemoteChanges();
+  });
+
+  window.webContents.once('did-finish-load', () => {
+    void s3SyncRuntime?.startAutoSync().catch((error) => logRuntimeError('s3:auto-start', error));
+  });
+
   let allowStandaloneWindowClose = false;
   let standaloneWindowClosePending = false;
   window.on('close', (event) => {
@@ -617,6 +676,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
 
   const shutdownResults = await Promise.allSettled([
     Promise.resolve().then(() => notesStore?.flush()),
+    Promise.resolve().then(() => s3SharedDataMutationQueue),
     Promise.resolve().then(() => s3SyncRuntime?.shutdown()),
     Promise.resolve().then(() => portForwardManager.shutdown()),
     Promise.resolve().then(() => tunnelManager.stopAll()),
@@ -744,6 +804,140 @@ async function autoStartHostRules(host: HostConfig): Promise<void> {
   }
 }
 
+const MAX_SYNCED_PRIVATE_KEY_BYTES = 4 * 1024 * 1024;
+
+async function hostsForS3Snapshot(hosts: HostConfig[]): Promise<HostConfig[]> {
+  return Promise.all(hosts.map(async (host) => {
+    let privateKey = host.privateKey;
+    if (host.authType === 'privateKey' && !privateKey?.trim() && host.privateKeyPath) {
+      try {
+        const metadata = await fs.stat(host.privateKeyPath);
+        if (!metadata.isFile() || metadata.size > MAX_SYNCED_PRIVATE_KEY_BYTES) {
+          throw new Error('invalid private key file');
+        }
+        privateKey = await fs.readFile(host.privateKeyPath, 'utf8');
+        if (!privateKey.trim() || Buffer.byteLength(privateKey, 'utf8') > MAX_SYNCED_PRIVATE_KEY_BYTES) {
+          throw new Error('invalid private key content');
+        }
+      } catch {
+        throw new Error(`The imported private key for Host "${host.name}" could not be prepared for encrypted sync.`);
+      }
+    }
+    return {
+      ...host,
+      ...(privateKey ? { privateKey } : {}),
+      jumpHosts: host.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
+      forwards: host.forwards.map((forward) => ({ ...forward })),
+      services: host.services.map((service) => ({ ...service })),
+    };
+  }));
+}
+
+async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
+  const activeNotesStore = getNotesStore();
+  await activeNotesStore.flush();
+  const [proxy, snapshotHosts] = await Promise.all([
+    getProxyRuntime().exportPersistentSnapshot(),
+    hostsForS3Snapshot(getStore().listHosts()),
+  ]);
+  return createS3SharedAppDataV2({
+    hosts: snapshotHosts,
+    notes: activeNotesStore.exportSnapshot(),
+    proxy,
+  });
+}
+
+async function collectS3SharedAppData(): Promise<S3SharedAppDataV2> {
+  await flushRendererNotes();
+  return runS3SharedDataMutation(collectS3SharedAppDataUnlocked);
+}
+
+function validateS3AppliedHosts(hosts: HostConfig[], currentHosts: HostConfig[]): HostConfig[] {
+  const hostIds = new Set<string>();
+  const forwardIds = new Set<string>();
+  return hosts.map((candidate, index) => {
+    let validated: HostConfig;
+    try {
+      validated = validateHostDraft(candidate);
+    } catch (error) {
+      throw new Error(`Synced Host ${index + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (hostIds.has(validated.id)) throw new Error('Synced Hosts contain a duplicate Host ID.');
+    hostIds.add(validated.id);
+    for (const forward of validated.forwards) {
+      if (forwardIds.has(forward.id)) throw new Error('Synced Hosts contain a duplicate Forward ID.');
+      forwardIds.add(forward.id);
+    }
+    return preserveServiceRuntimeFields(
+      currentHosts.find((host) => host.id === validated.id),
+      validated,
+    );
+  });
+}
+
+async function stopAndClearHostRuntime(hosts: HostConfig[]): Promise<void> {
+  await portForwardManager.stopAll();
+  await tunnelManager.stopAll();
+  for (const host of hosts) {
+    for (const forward of host.forwards) {
+      tunnelManager.clearTunnel(forward.id);
+      forwardOwners.delete(forward.id);
+    }
+    for (const service of host.services) emitForwardStatus(host.id, service.id, 'none');
+  }
+}
+
+async function applyS3SharedAppData(
+  data: S3SharedAppDataV2,
+  expectedLocal?: S3SharedAppDataV2,
+): Promise<boolean> {
+  return runS3SharedDataMutation(async () => {
+    if (expectedLocal) {
+      const currentShared = await collectS3SharedAppDataUnlocked();
+      if (!isDeepStrictEqual(currentShared, expectedLocal)) return false;
+    }
+
+    const currentHosts = getStore().listHosts();
+    const currentNotes = getNotesStore().exportSnapshot();
+    const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
+    const staged = stageS3SharedAppDataForLocalApply(data, {
+      hosts: currentHosts,
+      proxy: currentProxy,
+    });
+    const nextHosts = validateS3AppliedHosts(staged.hosts, currentHosts);
+    const hostsChanged = !isDeepStrictEqual(currentHosts, nextHosts);
+    const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes);
+    const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
+    if (!hostsChanged && !notesChanged && !proxyChanged) return true;
+
+    if (hostsChanged) await stopAndClearHostRuntime(currentHosts);
+    try {
+      if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes);
+      if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
+      if (hostsChanged) await getStore().replaceHosts(nextHosts);
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      if (notesChanged) await getNotesStore().replaceSnapshot(currentNotes).catch((rollback) => rollbackErrors.push(rollback));
+      if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(currentProxy).catch((rollback) => rollbackErrors.push(rollback));
+      if (hostsChanged) await getStore().replaceHosts(currentHosts).catch((rollback) => rollbackErrors.push(rollback));
+      if (hostsChanged) {
+        syncKnownForwards(currentHosts);
+        for (const host of currentHosts) await autoStartHostRules(host);
+      }
+      if (rollbackErrors.length > 0) {
+        throw new Error('Cloud data could not be applied and the local rollback was incomplete. Restart the application before editing data.');
+      }
+      throw error;
+    }
+
+    if (hostsChanged) {
+      syncKnownForwards(nextHosts);
+      for (const host of nextHosts) await autoStartHostRules(host);
+    }
+    return true;
+  });
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.listHosts, async () => {
     const hosts = getStore().listHosts();
@@ -752,16 +946,18 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.notesList, async () => getNotesStore().list());
-  ipcMain.handle(IPC_CHANNELS.notesCreate, async () => getNotesStore().create());
+  ipcMain.handle(IPC_CHANNELS.notesCreate, async () =>
+    mutateS3SharedData(() => getNotesStore().create())
+  );
   ipcMain.handle(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.id !== 'string') {
       throw new Error('Note update is invalid.');
     }
-    return getNotesStore().update(payload.id, payload.draft as NoteDraft);
+    return mutateS3SharedData(() => getNotesStore().update(payload.id as string, payload.draft as NoteDraft));
   });
   ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Note ID is invalid.');
-    await getNotesStore().delete(id);
+    await mutateS3SharedData(() => getNotesStore().delete(id));
   });
   ipcMain.on(IPC_CHANNELS.notesFlushResult, (event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.ok !== 'boolean') return;
@@ -847,24 +1043,26 @@ function registerIpcHandlers(): void {
       })
     );
 
-    const existingHosts = getStore().listHosts();
-    await portForwardManager.stopAll();
-    await tunnelManager.stopAll();
-    for (const host of existingHosts) {
-      for (const forward of host.forwards) {
-        tunnelManager.clearTunnel(forward.id);
-        forwardOwners.delete(forward.id);
+    await mutateS3SharedData(async () => {
+      const existingHosts = getStore().listHosts();
+      await portForwardManager.stopAll();
+      await tunnelManager.stopAll();
+      for (const host of existingHosts) {
+        for (const forward of host.forwards) {
+          tunnelManager.clearTunnel(forward.id);
+          forwardOwners.delete(forward.id);
+        }
+        for (const service of host.services) {
+          emitForwardStatus(host.id, service.id, 'none');
+        }
       }
-      for (const service of host.services) {
-        emitForwardStatus(host.id, service.id, 'none');
-      }
-    }
 
-    await getStore().replaceHosts(validatedHosts);
-    syncKnownForwards(validatedHosts);
-    for (const host of validatedHosts) {
-      await autoStartHostRules(host);
-    }
+      await getStore().replaceHosts(validatedHosts);
+      syncKnownForwards(validatedHosts);
+      for (const host of validatedHosts) {
+        await autoStartHostRules(host);
+      }
+    });
 
     return {
       path: selectedPath,
@@ -875,91 +1073,99 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.saveHost, async (_event, hostDraft: HostDraft) => {
-    const previous = hostDraft.id ? getStore().findHostById(hostDraft.id) : undefined;
-    if (previous) {
-      await portForwardManager.stopMany(previous.services.map((service) => serviceForwardKey(previous.id, service.id)));
-      await stopAllHostRules(previous);
-      for (const service of previous.services) {
-        emitForwardStatus(previous.id, service.id, 'none');
-      }
-    }
-
-    const validated = validateHostDraft(hostDraft);
-    const host = preserveServiceRuntimeFields(previous, validated);
-
-    if (previous) {
-      await clearRemovedRules(previous, host);
-    }
-
-    for (const forward of host.forwards) {
-      tunnelManager.setKnownTunnel(forward.id);
-      forwardOwners.set(forward.id, host.id);
-    }
-
-    await getStore().upsertHost(host);
-    await autoStartHostRules(host);
-
-    for (const service of host.services) {
-      if (!service.pid || !service.forwardLocalPort || service.port === 0) {
-        emitForwardStatus(host.id, service.id, 'none');
-        continue;
-      }
-      const status = await checkServiceStatus(host, service);
-      if (status.status === 'running') {
-        if (status.pid) {
-          service.pid = status.pid;
+    return mutateS3SharedData(async () => {
+      const previous = hostDraft.id ? getStore().findHostById(hostDraft.id) : undefined;
+      if (previous) {
+        await portForwardManager.stopMany(previous.services.map((service) => serviceForwardKey(previous.id, service.id)));
+        await stopAllHostRules(previous);
+        for (const service of previous.services) {
+          emitForwardStatus(previous.id, service.id, 'none');
         }
-        try {
-          await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-          emitForwardStatus(host.id, service.id, 'ok');
-        } catch (error) {
-          logRuntimeError('port-forward:start', error, {
-            hostId: host.id,
-            serviceId: service.id,
-            localPort: service.forwardLocalPort,
-            remotePort: service.port,
-          });
-          emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
-        }
-      } else {
-        emitForwardStatus(host.id, service.id, 'none');
       }
-    }
 
-    await getStore().upsertHost(host);
-    return toView([host])[0];
-  });
+      const validated = validateHostDraft(hostDraft);
+      const host = preserveServiceRuntimeFields(previous, validated);
 
-  ipcMain.handle(IPC_CHANNELS.deleteHost, async (_event, hostId: string) => {
-    const host = getStore().findHostById(hostId);
-    if (!host) return;
+      if (previous) {
+        await clearRemovedRules(previous, host);
+      }
 
-    await portForwardManager.stopMany(host.services.map((service) => serviceForwardKey(host.id, service.id)));
-    await stopAllHostRules(host);
-    for (const forward of host.forwards) {
-      tunnelManager.clearTunnel(forward.id);
-      forwardOwners.delete(forward.id);
-    }
-    for (const service of host.services) {
-      emitForwardStatus(host.id, service.id, 'none');
-    }
+      for (const forward of host.forwards) {
+        tunnelManager.setKnownTunnel(forward.id);
+        forwardOwners.set(forward.id, host.id);
+      }
 
-    await getStore().removeHost(hostId);
-  });
+      await getStore().upsertHost(host);
+      await autoStartHostRules(host);
 
-  ipcMain.handle(IPC_CHANNELS.deleteService, async (_event, payload: { hostId: string; serviceId: string }) => {
-    await serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
-      await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
-      emitForwardStatus(payload.hostId, payload.serviceId, 'none');
-      await getStore().removeService(payload.hostId, payload.serviceId);
+      for (const service of host.services) {
+        if (!service.pid || !service.forwardLocalPort || service.port === 0) {
+          emitForwardStatus(host.id, service.id, 'none');
+          continue;
+        }
+        const status = await checkServiceStatus(host, service);
+        if (status.status === 'running') {
+          if (status.pid) {
+            service.pid = status.pid;
+          }
+          try {
+            await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
+            emitForwardStatus(host.id, service.id, 'ok');
+          } catch (error) {
+            logRuntimeError('port-forward:start', error, {
+              hostId: host.id,
+              serviceId: service.id,
+              localPort: service.forwardLocalPort,
+              remotePort: service.port,
+            });
+            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
+          }
+        } else {
+          emitForwardStatus(host.id, service.id, 'none');
+        }
+      }
+
+      await getStore().upsertHost(host);
+      return toView([host])[0];
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.deleteHost, async (_event, hostId: string) => {
+    await mutateS3SharedData(async () => {
+      const host = getStore().findHostById(hostId);
+      if (!host) return;
+
+      await portForwardManager.stopMany(host.services.map((service) => serviceForwardKey(host.id, service.id)));
+      await stopAllHostRules(host);
+      for (const forward of host.forwards) {
+        tunnelManager.clearTunnel(forward.id);
+        forwardOwners.delete(forward.id);
+      }
+      for (const service of host.services) {
+        emitForwardStatus(host.id, service.id, 'none');
+      }
+
+      await getStore().removeHost(hostId);
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.deleteService, async (_event, payload: { hostId: string; serviceId: string }) => {
+    await serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), () =>
+      mutateS3SharedData(async () => {
+        await portForwardManager.stop(serviceForwardKey(payload.hostId, payload.serviceId));
+        emitForwardStatus(payload.hostId, payload.serviceId, 'none');
+        await getStore().removeService(payload.hostId, payload.serviceId);
+      })
+    );
+  });
+
   ipcMain.handle(IPC_CHANNELS.deleteForward, async (_event, payload: { hostId: string; forwardId: string }) => {
-    await tunnelManager.stop(payload.forwardId);
-    tunnelManager.clearTunnel(payload.forwardId);
-    forwardOwners.delete(payload.forwardId);
-    await getStore().removeForward(payload.hostId, payload.forwardId);
+    await mutateS3SharedData(async () => {
+      await tunnelManager.stop(payload.forwardId);
+      tunnelManager.clearTunnel(payload.forwardId);
+      forwardOwners.delete(payload.forwardId);
+      await getStore().removeForward(payload.hostId, payload.forwardId);
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.confirmAction, async (event, options: ConfirmDialogOptions) => {
@@ -1019,8 +1225,9 @@ function registerIpcHandlers(): void {
             return;
           }
           if (result.pid && result.pid !== service.pid) {
-            service.pid = result.pid;
-            await getStore().upsertHost(host);
+            if (await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, result.pid)) {
+              service.pid = result.pid;
+            }
           }
           if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
             try {
@@ -1047,8 +1254,9 @@ function registerIpcHandlers(): void {
           if (result.status === 'stopped' && service.pid) {
             await portForwardManager.stop(serviceForwardKey(host.id, service.id));
             emitForwardStatus(host.id, service.id, 'none', undefined, Boolean(payload.silent));
-            service.pid = undefined;
-            await getStore().upsertHost(host);
+            if (await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, undefined)) {
+              service.pid = undefined;
+            }
           }
           emitStatus(host.id, service.id, result.status, service.pid, result.error, Boolean(payload.silent));
         } catch (error) {
@@ -1081,8 +1289,10 @@ function registerIpcHandlers(): void {
             return;
           }
 
+          if (!await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, ret.pid)) {
+            throw new Error('Service configuration changed while the start operation was running. Refresh and try again.');
+          }
           service.pid = ret.pid;
-          await getStore().upsertHost(host);
           if (!service.forwardLocalPort || service.port === 0) {
             emitForwardStatus(host.id, service.id, 'none');
           }
@@ -1115,8 +1325,10 @@ function registerIpcHandlers(): void {
 
           await portForwardManager.stop(serviceForwardKey(host.id, service.id));
           emitForwardStatus(host.id, service.id, 'none');
+          if (!await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, undefined)) {
+            throw new Error('Service configuration changed while the stop operation was running. Refresh and try again.');
+          }
           service.pid = undefined;
-          await getStore().upsertHost(host);
           emitStatus(host.id, service.id, 'stopped', undefined);
         } catch (error) {
           logRuntimeError('service:stop', error, payload);
@@ -1197,13 +1409,6 @@ function registerIpcHandlers(): void {
     return updater.checkForUpdates('manual');
   });
 
-  const getProxyRuntime = (): ProxyRuntime => {
-    if (!proxyRuntime) {
-      throw new Error('Proxy runtime is not initialized.');
-    }
-    return proxyRuntime;
-  };
-
   const getKubernetesRuntime = (): KubernetesRuntime => {
     if (!kubernetesRuntime) {
       throw new Error('Kubernetes runtime is not initialized.');
@@ -1227,26 +1432,28 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.proxyStop, async () => getProxyRuntime().stop());
   ipcMain.handle(IPC_CHANNELS.proxySaveAndFetchSubscription, async (_event, url: string) =>
-    getProxyRuntime().saveAndFetchSubscription(url)
+    mutateS3SharedData(() => getProxyRuntime().saveAndFetchSubscription(url))
   );
-  ipcMain.handle(IPC_CHANNELS.proxySetMode, async (_event, mode: ProxyMode) => getProxyRuntime().setMode(mode));
+  ipcMain.handle(IPC_CHANNELS.proxySetMode, async (_event, mode: ProxyMode) =>
+    mutateS3SharedData(() => getProxyRuntime().setMode(mode))
+  );
   ipcMain.handle(IPC_CHANNELS.proxySetSystemProxy, async (_event, enabled: boolean) =>
     getProxyRuntime().setSystemProxy(enabled)
   );
   ipcMain.handle(IPC_CHANNELS.proxySetTun, async (_event, enabled: boolean) => getProxyRuntime().setTun(enabled));
   ipcMain.handle(IPC_CHANNELS.proxyAddException, async (_event, draft: unknown) =>
-    getProxyRuntime().addException(validateProxyExceptionDraft(draft))
+    mutateS3SharedData(() => getProxyRuntime().addException(validateProxyExceptionDraft(draft)))
   );
   ipcMain.handle(
     IPC_CHANNELS.proxyUpdateException,
     async (_event, payload: { id?: unknown; draft?: unknown }) =>
-      getProxyRuntime().updateException(
+      mutateS3SharedData(() => getProxyRuntime().updateException(
         validateProxyExceptionId(payload?.id),
         validateProxyExceptionDraft(payload?.draft)
-      )
+      ))
   );
   ipcMain.handle(IPC_CHANNELS.proxyDeleteException, async (_event, id: unknown) =>
-    getProxyRuntime().deleteException(validateProxyExceptionId(id))
+    mutateS3SharedData(() => getProxyRuntime().deleteException(validateProxyExceptionId(id)))
   );
   ipcMain.handle(IPC_CHANNELS.proxyGrantTun, async () => getProxyRuntime().grantTun());
   ipcMain.handle(IPC_CHANNELS.proxyRevokeTun, async () => getProxyRuntime().revokeTun());
@@ -1258,7 +1465,7 @@ function registerIpcHandlers(): void {
       if (typeof selection?.groupName !== 'string' || typeof selection.optionName !== 'string') {
         throw new Error('A strategy group and candidate name are required.');
       }
-      return getProxyRuntime().selectProxy(selection.groupName, selection.optionName);
+      return mutateS3SharedData(() => getProxyRuntime().selectProxy(selection.groupName as string, selection.optionName as string));
     }
   );
   ipcMain.handle(IPC_CHANNELS.proxyGetLogs, async () => getProxyRuntime().getLogs());
@@ -1541,21 +1748,19 @@ app.whenReady()
           ? safeStorage.getSelectedStorageBackend()
           : 'unknown',
       },
-      snapshotProvider: async () => {
-        const activeNotesStore = getNotesStore();
-        await activeNotesStore.flush();
-        const [proxy, kubernetesContextSelection] = await Promise.all([
-          initializedProxyRuntime.exportPersistentSnapshot(),
-          contextPreference.load(),
-        ]);
-        return collectPersistentAppData({
-          hosts: getStore().listHosts(),
-          notes: activeNotesStore.exportSnapshot(),
-          proxy,
-          kubernetesContextSelection,
+      snapshotProvider: collectS3SharedAppData,
+      snapshotApplier: applyS3SharedAppData,
+      onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),
+      onDataApplied: () => {
+        persistentDataGeneration += 1;
+        broadcast(IPC_CHANNELS.persistentDataReloaded, {
+          generation: persistentDataGeneration,
+          source: 's3',
         });
       },
     });
+
+    powerMonitor.on('resume', () => s3SyncRuntime?.checkForRemoteChanges());
 
     applyAppIcon();
     registerIpcHandlers();

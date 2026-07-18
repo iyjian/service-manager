@@ -81,7 +81,7 @@ test('Notes keeps a bounded two-column frame with independently scrolling conten
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
 });
 
-test('Settings stays at the bottom of the navigation rail and exposes compact MinIO bucket controls', async () => {
+test('Settings stays at the bottom of the navigation rail and exposes compact MinIO endpoint and bucket controls', async () => {
   const { html, styles, renderer, notesPage, settingsDialog, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
@@ -89,7 +89,8 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(styles, /\.nav-settings-button\{margin-top:auto;order:99\}/);
   assert.match(styles, /\.host-dialog\.settings-dialog\{width:min\(540px,calc\(100vw - 32px\)\)/);
   assert.match(html, /id="settings-dialog"/);
-  assert.match(html, /id="s3-endpoint"[^>]*placeholder="https:\/\/s3\.example\.com\/bucket"/);
+  assert.match(html, /id="s3-endpoint"[^>]*placeholder="https:\/\/s3\.example\.com"/);
+  assert.match(html, /id="s3-bucket"[^>]*placeholder="service-manager"/);
   assert.doesNotMatch(html, /id="s3-sync-version"|Sync format/i);
   assert.match(html, /id="s3-access-key"[^>]*type="password"/);
   assert.match(html, /id="s3-secret-key"[^>]*type="password"/);
@@ -104,15 +105,22 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(preload, /saveS3SyncSettings:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:save', draft\)/);
   assert.match(preload, /revealS3SyncCredentials:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:reveal-credentials'\)/);
   assert.match(preload, /syncAllDataToS3:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:sync'\)/);
+  assert.match(preload, /onS3SyncStateChanged:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('settings:s3:state', wrapped\)[\s\S]*?removeListener\('settings:s3:state', wrapped\)/);
+  assert.match(preload, /onPersistentDataReloaded:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('app:persistent-data-reloaded', wrapped\)[\s\S]*?removeListener\('app:persistent-data-reloaded', wrapped\)/);
   assert.match(preload, /exposeInMainWorld\('settingsApi', settingsApi\)/);
   for (const handler of ['s3SettingsGet', 's3SettingsSave', 's3SettingsReveal', 's3Sync']) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
   assert.match(renderer, /registerSettingsDialog\(\)/);
+  assert.match(renderer, /window\.settingsApi\.onPersistentDataReloaded\(\(\)\s*=>\s*\{[\s\S]*?Promise\.all\(\[loadHosts\(\), reloadNotesPage\(\)\]\)/);
   assert.match(settingsDialog, /window\.settingsApi\.syncAllDataToS3\(\)/);
+  assert.match(settingsDialog, /window\.settingsApi\.onS3SyncStateChanged\(renderSyncState\)/);
+  assert.match(settingsDialog, /bucketInput\.value = settings\.bucket/);
+  assert.match(settingsDialog, /bucket:\s*bucketInput\.value\.trim\(\)/);
   assert.match(settingsDialog, /await flushNotesPage\(\);[\s\S]*?saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)/);
   assert.match(notesPage, /await Promise\.all\([\s\S]*?if \(this\.notes\.some\([\s\S]*?throw new Error\('Some notes could not be saved\./);
   assert.match(settingsDialog, /endpointInput\.disabled = next/);
+  assert.match(settingsDialog, /bucketInput\.disabled = next/);
   assert.match(settingsDialog, /if \(busy \|\| credentialRevealPending\)\s*return/);
   assert.match(settingsDialog, /!clearCredentials && accessKeyId/);
   assert.match(settingsDialog, /!clearCredentials && secretAccessKey/);

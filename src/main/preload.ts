@@ -24,7 +24,9 @@ import type {
   ProxyMode,
   ProxyState,
   ProxyTraffic,
+  PersistentDataReloaded,
   ServiceApi,
+  S3SyncState,
   S3SyncSettingsDraft,
   SettingsApi,
   ServiceStatusChange,
@@ -111,6 +113,16 @@ const settingsApi: SettingsApi = {
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
   revealS3SyncCredentials: () => ipcRenderer.invoke('settings:s3:reveal-credentials'),
   syncAllDataToS3: () => ipcRenderer.invoke('settings:s3:sync'),
+  onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: S3SyncState): void => listener(state);
+    ipcRenderer.on('settings:s3:state', wrapped);
+    return () => ipcRenderer.removeListener('settings:s3:state', wrapped);
+  },
+  onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, event: PersistentDataReloaded): void => listener(event);
+    ipcRenderer.on('app:persistent-data-reloaded', wrapped);
+    return () => ipcRenderer.removeListener('app:persistent-data-reloaded', wrapped);
+  },
 };
 
 const proxyApi: ProxyApi = {

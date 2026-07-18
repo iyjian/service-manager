@@ -652,14 +652,17 @@ export interface NotesApi {
 
 export interface S3SyncSettingsView {
   endpoint: string;
+  bucket: string;
   region: string;
   hasCredentials: boolean;
   lastSyncedAt?: string;
   lastRevision?: string;
+  syncState: S3SyncState;
 }
 
 export interface S3SyncSettingsDraft {
   endpoint: string;
+  bucket: string;
   region: string;
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -672,10 +675,36 @@ export interface S3CredentialValues {
 }
 
 export interface S3SyncResult {
+  action: 'up-to-date' | 'pulled' | 'pushed' | 'conflict';
   syncedAt: string;
-  revision: string;
-  byteLength: number;
+  revision?: string;
+  byteLength?: number;
   etag?: string;
+  conflictCount?: number;
+}
+
+export type S3SyncStatus =
+  | 'not-configured'
+  | 'syncing'
+  | 'synced'
+  | 'pending'
+  | 'offline'
+  | 'conflict'
+  | 'error';
+
+export interface S3SyncState {
+  status: S3SyncStatus;
+  pending: boolean;
+  lastSyncedAt?: string;
+  lastRevision?: string;
+  pendingSince?: string;
+  conflictCount?: number;
+  message?: string;
+}
+
+export interface PersistentDataReloaded {
+  generation: number;
+  source: 's3';
 }
 
 export interface SettingsApi {
@@ -683,6 +712,8 @@ export interface SettingsApi {
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
   revealS3SyncCredentials: () => Promise<S3CredentialValues>;
   syncAllDataToS3: () => Promise<S3SyncResult>;
+  onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => () => void;
+  onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => () => void;
 }
 
 export interface ProxyDelayResult {

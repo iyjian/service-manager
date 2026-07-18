@@ -31,6 +31,31 @@
     order: 99;
   }
 
+  .nav-sync-indicator {
+    @apply absolute right-1.5 top-1.5 h-2 w-2 rounded-full border border-zinc-50 bg-zinc-300;
+  }
+
+  .nav-sync-indicator[data-state='synced'] {
+    @apply bg-emerald-500;
+  }
+
+  .nav-sync-indicator[data-state='syncing'] {
+    @apply animate-pulse bg-blue-500;
+  }
+
+  .nav-sync-indicator[data-state='pending'] {
+    @apply bg-amber-500;
+  }
+
+  .nav-sync-indicator[data-state='offline'],
+  .nav-sync-indicator[data-state='error'] {
+    @apply bg-red-500;
+  }
+
+  .nav-sync-indicator[data-state='conflict'] {
+    @apply bg-violet-500;
+  }
+
   .nav-item-active {
     @apply border-zinc-200 bg-white text-zinc-950 shadow-sm;
   }
@@ -266,10 +291,6 @@
     @apply grid grid-cols-2 gap-3;
   }
 
-  .settings-region-field {
-    width: calc(50% - 6px);
-  }
-
   .settings-password-control {
     @apply relative min-w-0;
   }
@@ -309,6 +330,18 @@
 
   .settings-status-error {
     @apply border-red-200 bg-red-50 text-red-800;
+  }
+
+  .settings-status-pending {
+    @apply border-amber-200 bg-amber-50 text-amber-800;
+  }
+
+  .settings-status-syncing {
+    @apply border-blue-200 bg-blue-50 text-blue-800;
+  }
+
+  .settings-status-conflict {
+    @apply border-violet-200 bg-violet-50 text-violet-800;
   }
 
   .settings-actions {
@@ -2428,10 +2461,6 @@
 
     .settings-grid {
       @apply grid-cols-1;
-    }
-
-    .settings-region-field {
-      width: 100%;
     }
 
     .kubernetes-context-control {

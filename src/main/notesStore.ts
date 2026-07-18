@@ -167,6 +167,22 @@ function normalizeFile(value: unknown): Note[] {
   return notes;
 }
 
+function normalizeReplacementFile(value: unknown): Note[] {
+  if (!isRecord(value) || value.schemaVersion !== NOTES_SCHEMA_VERSION || !Array.isArray(value.notes)) {
+    throw new Error('Synced Notes data is invalid.');
+  }
+  if (value.notes.length > NOTE_LIMITS.notes) throw new Error('Synced Notes data exceeds the supported limit.');
+  const notes: Note[] = [];
+  const ids = new Set<string>();
+  for (const candidate of value.notes) {
+    const note = normalizeStoredNote(candidate);
+    if (!note || ids.has(note.id)) throw new Error('Synced Notes data is invalid.');
+    ids.add(note.id);
+    notes.push(note);
+  }
+  return notes;
+}
+
 export class NotesStore {
   private notes: Note[] = [];
   private operationQueue: Promise<void> = Promise.resolve();
@@ -250,6 +266,16 @@ export class NotesStore {
       schemaVersion: NOTES_SCHEMA_VERSION,
       notes: this.list(),
     };
+  }
+
+  replaceSnapshot(value: unknown): Promise<void> {
+    const replacement = normalizeReplacementFile(value).map(cloneNote);
+    const operation = this.operationQueue.then(async () => {
+      await this.persist(replacement);
+      this.notes = replacement.map(cloneNote);
+    });
+    this.operationQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   private mutate<T>(mutation: (notes: Note[]) => T): Promise<T> {

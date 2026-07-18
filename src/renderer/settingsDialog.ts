@@ -1,4 +1,4 @@
-import type { S3SyncSettingsDraft, S3SyncSettingsView } from '../shared/types';
+import type { S3SyncSettingsDraft, S3SyncSettingsView, S3SyncState } from '../shared/types';
 import { flushNotesPage } from './notesPage.js';
 
 function requireElement<T extends Element>(selector: string): T {
@@ -12,6 +12,7 @@ const form = requireElement<HTMLFormElement>('#settings-form');
 const openButton = requireElement<HTMLButtonElement>('#nav-settings-btn');
 const closeButton = requireElement<HTMLButtonElement>('#settings-close-btn');
 const endpointInput = requireElement<HTMLInputElement>('#s3-endpoint');
+const bucketInput = requireElement<HTMLInputElement>('#s3-bucket');
 const regionInput = requireElement<HTMLInputElement>('#s3-region');
 const accessKeyInput = requireElement<HTMLInputElement>('#s3-access-key');
 const secretKeyInput = requireElement<HTMLInputElement>('#s3-secret-key');
@@ -21,6 +22,7 @@ const saveButton = requireElement<HTMLButtonElement>('#settings-save-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
 const clearCredentialsButton = requireElement<HTMLButtonElement>('#settings-clear-credentials-btn');
 const statusElement = requireElement<HTMLElement>('#s3-sync-status');
+const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
 let busy = false;
 let hasCredentials = false;
@@ -66,6 +68,7 @@ function updateCredentialControls(): void {
   syncButton.disabled = locked;
   clearCredentialsButton.disabled = locked || !hasCredentials;
   endpointInput.disabled = locked;
+  bucketInput.disabled = locked;
   regionInput.disabled = locked;
   accessKeyInput.disabled = locked;
   secretKeyInput.disabled = locked;
@@ -117,6 +120,7 @@ function setBusy(next: boolean, action: 'save' | 'sync' | 'clear' = 'save'): voi
   syncButton.disabled = next;
   clearCredentialsButton.disabled = next || !hasCredentials;
   endpointInput.disabled = next;
+  bucketInput.disabled = next;
   regionInput.disabled = next;
   accessKeyInput.disabled = next;
   secretKeyInput.disabled = next;
@@ -127,24 +131,58 @@ function setBusy(next: boolean, action: 'save' | 'sync' | 'clear' = 'save'): voi
   updateCredentialControls();
 }
 
-function setStatus(message: string, level: 'default' | 'success' | 'error' = 'default'): void {
+function setStatus(
+  message: string,
+  level: 'default' | 'success' | 'error' | 'pending' | 'syncing' | 'conflict' = 'default',
+): void {
   statusElement.textContent = message;
   statusElement.classList.toggle('settings-status-success', level === 'success');
   statusElement.classList.toggle('settings-status-error', level === 'error');
+  statusElement.classList.toggle('settings-status-pending', level === 'pending');
+  statusElement.classList.toggle('settings-status-syncing', level === 'syncing');
+  statusElement.classList.toggle('settings-status-conflict', level === 'conflict');
 }
 
-function formatLastSync(settings: S3SyncSettingsView): string {
-  if (!settings.lastSyncedAt) {
-    return settings.hasCredentials ? 'Credentials saved. No backup uploaded yet.' : 'S3 backup is not configured.';
+function formatSyncTimestamp(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
+}
+
+function renderSyncState(state: S3SyncState): void {
+  navSyncIndicator.dataset.state = state.status;
+  openButton.title = `Settings · S3 ${state.status.replace('-', ' ')}`;
+  const lastSync = formatSyncTimestamp(state.lastSyncedAt);
+  switch (state.status) {
+    case 'syncing':
+      setStatus('Syncing with S3…', 'syncing');
+      return;
+    case 'synced':
+      setStatus(lastSync ? `Synced ${lastSync}.` : 'Synced with S3.', 'success');
+      return;
+    case 'pending':
+      setStatus('Changes are saved locally and waiting to sync.', 'pending');
+      return;
+    case 'offline':
+      setStatus('S3 is unavailable. Local changes are safe and will retry automatically.', 'error');
+      return;
+    case 'conflict': {
+      const count = state.conflictCount ?? 1;
+      setStatus(`Synced with ${count} recoverable ${count === 1 ? 'conflict' : 'conflicts'}. Note conflicts are kept as copies.`, 'conflict');
+      return;
+    }
+    case 'error':
+      setStatus(state.message ? `Sync needs attention: ${state.message}` : 'Sync needs attention.', 'error');
+      return;
+    default:
+      setStatus('Automatic S3 sync is not configured.');
   }
-  const date = new Date(settings.lastSyncedAt);
-  const timestamp = Number.isFinite(date.getTime()) ? date.toLocaleString() : settings.lastSyncedAt;
-  return `Last synced ${timestamp}`;
 }
 
 function renderSettings(settings: S3SyncSettingsView, clearCredentialInputs = false): void {
   hasCredentials = settings.hasCredentials;
   endpointInput.value = settings.endpoint;
+  bucketInput.value = settings.bucket;
   regionInput.value = settings.region;
   if (clearCredentialInputs || !settings.hasCredentials) {
     accessKeyInput.value = '';
@@ -152,7 +190,7 @@ function renderSettings(settings: S3SyncSettingsView, clearCredentialInputs = fa
   }
   clearCredentialsButton.disabled = busy || !hasCredentials;
   updateCredentialControls();
-  setStatus(formatLastSync(settings), settings.lastSyncedAt ? 'success' : 'default');
+  renderSyncState(settings.syncState);
 }
 
 function currentDraft(clearCredentials = false): S3SyncSettingsDraft {
@@ -160,6 +198,7 @@ function currentDraft(clearCredentials = false): S3SyncSettingsDraft {
   const secretAccessKey = secretKeyInput.value;
   return {
     endpoint: endpointInput.value.trim(),
+    bucket: bucketInput.value.trim(),
     region: regionInput.value.trim() || 'us-east-1',
     ...(!clearCredentials && accessKeyId ? { accessKeyId } : {}),
     ...(!clearCredentials && secretAccessKey ? { secretAccessKey } : {}),
@@ -201,6 +240,7 @@ export function registerSettingsDialog(): void {
   closeButton.addEventListener('click', () => { if (!busy && !credentialRevealPending) dialog.close(); });
   accessKeyInput.addEventListener('input', updateCredentialControls);
   secretKeyInput.addEventListener('input', updateCredentialControls);
+  window.settingsApi.onS3SyncStateChanged(renderSyncState);
   accessKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(accessKeyControl); });
   secretKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(secretKeyControl); });
   dialog.addEventListener('click', (event) => {
@@ -223,9 +263,15 @@ export function registerSettingsDialog(): void {
         await flushNotesPage();
         renderSettings(await window.settingsApi.saveS3SyncSettings(currentDraft()));
         const result = await window.settingsApi.syncAllDataToS3();
-        const kib = Math.max(1, Math.round(result.byteLength / 1024));
         renderSettings(await window.settingsApi.getS3SyncSettings());
-        setStatus(`Synced ${kib} KiB.`, 'success');
+        const actionMessage = result.action === 'pulled'
+          ? 'Cloud changes downloaded.'
+          : result.action === 'pushed'
+            ? `Changes uploaded${result.byteLength ? ` (${Math.max(1, Math.round(result.byteLength / 1024))} KiB)` : ''}.`
+            : result.action === 'conflict'
+              ? 'Synced; recoverable conflicts were preserved.'
+              : 'Already up to date.';
+        setStatus(actionMessage, result.action === 'conflict' ? 'conflict' : 'success');
       } catch (error) {
         setStatus(`Sync failed: ${toErrorMessage(error)}`, 'error');
       } finally {
@@ -238,7 +284,7 @@ export function registerSettingsDialog(): void {
     void window.serviceApi.confirmAction({
       title: 'Clear S3 credentials?',
       message: 'Remove the saved Access Key ID and Secret Access Key?',
-      detail: 'The bucket address and uploaded backups remain unchanged.',
+      detail: 'The Endpoint, Bucket, and cloud revisions remain unchanged.',
       kind: 'warning',
       confirmLabel: 'Clear Credentials',
     }).then((confirmed) => {

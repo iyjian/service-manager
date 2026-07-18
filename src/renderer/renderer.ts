@@ -14,7 +14,7 @@ import type {
 import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
 import { initNav, registerPage } from './nav.js';
 import { registerKubernetesPage } from './kubernetesPage.js';
-import { registerNotesPage } from './notesPage.js';
+import { registerNotesPage, reloadNotesPage } from './notesPage.js';
 import { registerProxyPage } from './proxyPage.js';
 import { registerSettingsDialog } from './settingsDialog.js';
 import {
@@ -2371,6 +2371,12 @@ window.serviceApi.onUpdateStateChanged((state) => {
   } catch (error) {
     reportRendererError('update-state-changed', error, 'Unexpected updater status error.');
   }
+});
+
+window.settingsApi.onPersistentDataReloaded(() => {
+  void Promise.all([loadHosts(), reloadNotesPage()]).catch((error) => {
+    reportRendererError('persistent-data-reloaded', error, 'Cloud data was applied, but the page could not be refreshed.');
+  });
 });
 
 (async function init() {

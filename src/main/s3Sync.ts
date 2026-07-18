@@ -9,19 +9,42 @@ import {
 } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   S3CredentialValues,
   S3SyncResult,
   S3SyncSettingsDraft,
   S3SyncSettingsView,
+  S3SyncState,
 } from '../shared/types';
+import {
+  S3V2ObjectStore,
+  assertS3SyncHeadMatchesRevisionV2,
+  createS3SyncHeadV2,
+  createServiceManagerSyncRevisionV2,
+  encryptS3RevisionV2,
+  normalizeS3Bucket,
+  normalizeS3Endpoint,
+  splitLegacyS3BucketUrl,
+  serializeEncryptedS3RevisionV2,
+  type ServiceManagerSyncRevisionV2,
+} from './s3SyncV2';
+import {
+  mergeS3SharedAppDataV2,
+  parseS3SharedAppDataV2,
+  type S3SharedAppDataV2,
+} from './s3DataMerge';
 
-const SETTINGS_SCHEMA_VERSION = 2;
+const SETTINGS_SCHEMA_VERSION = 3;
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const SYNC_VERSION = 1 as const;
 const OBJECT_LAYOUT_VERSION = 1 as const;
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_TIMEOUT_MS = 30_000;
+const AUTO_SYNC_DEBOUNCE_MS = 2_000;
+const AUTO_SYNC_INTERVAL_MS = 45_000;
+const MAX_RECONCILE_ATTEMPTS = 4;
+const MAX_LOCAL_RECOVERY_FILES = 20;
 const MAX_ENDPOINT_LENGTH = 4_096;
 const MAX_REGION_LENGTH = 128;
 const MAX_ACCESS_KEY_LENGTH = 512;
@@ -37,13 +60,20 @@ export interface S3CredentialProtector {
   getSelectedStorageBackend?(): string;
 }
 
-export type S3SnapshotProvider = () => Promise<Record<string, unknown>>;
+export type S3SnapshotProvider = () => Promise<unknown>;
+export type S3SnapshotApplier = (
+  data: S3SharedAppDataV2,
+  expectedLocal?: S3SharedAppDataV2,
+) => Promise<boolean | void>;
 
 export interface S3SyncRuntimeOptions {
   userDataPath: string;
   appVersion: string;
   credentialProtector: S3CredentialProtector;
   snapshotProvider: S3SnapshotProvider;
+  snapshotApplier?: S3SnapshotApplier;
+  onStateChanged?: (state: S3SyncState) => void;
+  onDataApplied?: () => void;
   fetchImpl?: typeof fetch;
   now?: () => Date;
   createRevision?: () => string;
@@ -53,8 +83,9 @@ export interface S3SyncRuntimeOptions {
 }
 
 interface PersistedS3SyncSettings {
-  schemaVersion: 2;
-  bucketUrl: string;
+  schemaVersion: 3;
+  endpoint: string;
+  bucket: string;
   region: string;
   clientId: string;
   encryptedAccessKeyId?: string;
@@ -228,7 +259,8 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
   }
 
   return {
-    endpoint: normalizedEndpoint(value.endpoint),
+    endpoint: normalizeS3Endpoint(value.endpoint),
+    bucket: normalizeS3Bucket(value.bucket),
     region: normalizedRegion(value.region),
     ...(accessKeyId !== undefined ? { accessKeyId, secretAccessKey } : {}),
     ...(clearCredentials ? { clearCredentials: true } : {}),
@@ -541,100 +573,102 @@ export function signS3PutRequest(input: S3SigningInput): S3SignedRequest {
 function defaultSettings(clientId: string): PersistedS3SyncSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    bucketUrl: '',
+    endpoint: '',
+    bucket: '',
     region: DEFAULT_REGION,
     clientId: normalizedClientId(clientId),
   };
 }
 
-function settingsView(settings: PersistedS3SyncSettings): S3SyncSettingsView {
+function isConfigured(settings: PersistedS3SyncSettings): boolean {
+  return Boolean(
+    settings.endpoint
+    && settings.bucket
+    && settings.encryptedAccessKeyId
+    && settings.encryptedSecretAccessKey,
+  );
+}
+
+function cloneSyncState(state: S3SyncState): S3SyncState {
+  return { ...state };
+}
+
+function settingsView(settings: PersistedS3SyncSettings, state: S3SyncState): S3SyncSettingsView {
   return {
-    endpoint: settings.bucketUrl,
+    endpoint: settings.endpoint,
+    bucket: settings.bucket,
     region: settings.region,
     hasCredentials: Boolean(settings.encryptedAccessKeyId && settings.encryptedSecretAccessKey),
     ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
     ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
+    syncState: cloneSyncState(state),
   };
+}
+
+function protectedCredential(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > 16_384
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)
+  ) {
+    throw new Error('S3 sync settings are invalid.');
+  }
+  return value;
 }
 
 function parsePersistedSettings(
   value: unknown,
   createClientId: () => string,
 ): { settings: PersistedS3SyncSettings; migrated: boolean } {
-  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== SETTINGS_SCHEMA_VERSION)) {
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3)) {
     throw new Error('S3 sync settings are invalid.');
   }
-  const legacy = value.schemaVersion === 1;
-  if (legacy && value.syncVersion !== 1) {
-    throw new Error('S3 sync settings are invalid.');
+  const legacyV1 = value.schemaVersion === 1;
+  const legacyV2 = value.schemaVersion === 2;
+  if (legacyV1 && value.syncVersion !== 1) throw new Error('S3 sync settings are invalid.');
+
+  let endpoint: string;
+  let bucket: string;
+  if (legacyV1 || legacyV2) {
+    const bucketUrl = legacyV1 ? migrateLegacyObjectUrl(value.endpoint) : normalizedEndpoint(value.bucketUrl);
+    ({ endpoint, bucket } = splitLegacyS3BucketUrl(bucketUrl));
+  } else {
+    endpoint = normalizeS3Endpoint(value.endpoint);
+    bucket = normalizeS3Bucket(value.bucket);
   }
-  const bucketUrl = legacy
-    ? migrateLegacyObjectUrl(value.endpoint)
-    : normalizedEndpoint(value.bucketUrl);
-  const region = normalizedRegion(value.region);
-  const encryptedAccessKeyId = typeof value.encryptedAccessKeyId === 'string' && value.encryptedAccessKeyId.length > 0
-    ? value.encryptedAccessKeyId
-    : undefined;
-  const encryptedSecretAccessKey = typeof value.encryptedSecretAccessKey === 'string' && value.encryptedSecretAccessKey.length > 0
-    ? value.encryptedSecretAccessKey
-    : undefined;
+
+  const encryptedAccessKeyId = protectedCredential(value.encryptedAccessKeyId);
+  const encryptedSecretAccessKey = protectedCredential(value.encryptedSecretAccessKey);
   if ((encryptedAccessKeyId === undefined) !== (encryptedSecretAccessKey === undefined)) {
-    throw new Error('S3 sync settings are invalid.');
-  }
-  if (encryptedAccessKeyId && (!/^[A-Za-z0-9+/]+={0,2}$/.test(encryptedAccessKeyId) || encryptedAccessKeyId.length > 16_384)) {
-    throw new Error('S3 sync settings are invalid.');
-  }
-  if (encryptedSecretAccessKey && (!/^[A-Za-z0-9+/]+={0,2}$/.test(encryptedSecretAccessKey) || encryptedSecretAccessKey.length > 16_384)) {
     throw new Error('S3 sync settings are invalid.');
   }
   const settings: PersistedS3SyncSettings = {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
-    bucketUrl,
-    region,
-    clientId: legacy ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
+    endpoint,
+    bucket,
+    region: normalizedRegion(value.region),
+    clientId: legacyV1 ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
     ...(encryptedAccessKeyId ? { encryptedAccessKeyId, encryptedSecretAccessKey } : {}),
-    ...(isValidIsoTimestamp(value.lastSyncedAt) ? { lastSyncedAt: value.lastSyncedAt } : {}),
-    ...(typeof value.lastRevision === 'string' && value.lastRevision.length > 0 && value.lastRevision.length <= 256
-      ? { lastRevision: value.lastRevision }
+    ...(!legacyV1 && !legacyV2 && isValidIsoTimestamp(value.lastSyncedAt)
+      ? { lastSyncedAt: value.lastSyncedAt }
+      : {}),
+    ...(!legacyV1 && !legacyV2 && typeof value.lastRevision === 'string'
+      ? { lastRevision: normalizedRevision(value.lastRevision) }
       : {}),
   };
-  return { settings, migrated: legacy };
+  return { settings, migrated: legacyV1 || legacyV2 };
 }
 
-function safeHttpError(status: number, body: string): Error {
-  const match = body.slice(0, 8_192).match(/<Code>\s*([A-Za-z0-9._-]{1,128})\s*<\/Code>/i);
-  const suffix = match ? ` ${match[1]}` : '';
-  return new Error(`S3 sync failed (${status}${suffix}).`);
-}
-
-async function readBoundedResponseText(response: Response, signal: AbortSignal, maximumBytes = 8_192): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return '';
-  const chunks: Buffer[] = [];
-  let total = 0;
-  const cancel = (): void => { void reader.cancel().catch(() => undefined); };
-  signal.addEventListener('abort', cancel, { once: true });
-  try {
-    while (total < maximumBytes) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      const retained = chunk.subarray(0, maximumBytes - total);
-      chunks.push(retained);
-      total += retained.byteLength;
-      if (retained.byteLength < chunk.byteLength || total >= maximumBytes) {
-        await reader.cancel().catch(() => undefined);
-        break;
-      }
-    }
-  } finally {
-    signal.removeEventListener('abort', cancel);
-  }
-  return Buffer.concat(chunks, total).toString('utf8');
+function isOfflineSyncError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /request failed|timed out|sync failed \(5\d\d|temporar|network/i.test(message);
 }
 
 export class S3SyncRuntime {
   private readonly settingsPath: string;
+  private readonly recoveryDirectory: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly createRevision: () => string;
@@ -646,10 +680,17 @@ export class S3SyncRuntime {
   private operationQueue: Promise<void> = Promise.resolve();
   private syncPromise?: Promise<S3SyncResult>;
   private activeAbortController?: AbortController;
+  private debounceTimer?: NodeJS.Timeout;
+  private intervalTimer?: NodeJS.Timeout;
+  private dirtyGeneration = 0;
+  private syncAgain = false;
+  private autoStarted = false;
   private shuttingDown = false;
+  private state: S3SyncState = { status: 'not-configured', pending: false };
 
   public constructor(private readonly options: S3SyncRuntimeOptions) {
     this.settingsPath = path.join(options.userDataPath, 's3-sync.json');
+    this.recoveryDirectory = path.join(options.userDataPath, 's3-sync-recovery');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.createRevision = options.createRevision ?? randomUUID;
@@ -659,11 +700,51 @@ export class S3SyncRuntime {
   }
 
   public async getSettings(): Promise<S3SyncSettingsView> {
-    return settingsView(await this.ensureSettings());
+    const settings = await this.ensureSettings();
+    return settingsView(settings, this.state);
   }
 
   public getS3SyncSettings(): Promise<S3SyncSettingsView> {
     return this.getSettings();
+  }
+
+  public getSyncState(): S3SyncState {
+    return cloneSyncState(this.state);
+  }
+
+  public async startAutoSync(): Promise<void> {
+    if (this.shuttingDown || this.autoStarted) return;
+    this.autoStarted = true;
+    const settings = await this.ensureSettings();
+    if (isConfigured(settings)) this.scheduleSync(0, false);
+    this.intervalTimer = setInterval(() => {
+      if (!this.shuttingDown) this.checkForRemoteChanges();
+    }, AUTO_SYNC_INTERVAL_MS);
+    this.intervalTimer.unref?.();
+  }
+
+  public checkForRemoteChanges(): void {
+    if (this.shuttingDown) return;
+    void this.ensureSettings().then((settings) => {
+      if (isConfigured(settings) && !this.shuttingDown) this.scheduleSync(0, false);
+    }).catch(() => undefined);
+  }
+
+  public markLocalChange(): void {
+    if (this.shuttingDown) return;
+    this.dirtyGeneration += 1;
+    const pendingSince = this.state.pendingSince ?? this.now().toISOString();
+    void this.ensureSettings().then((settings) => {
+      if (!isConfigured(settings) || this.shuttingDown) return;
+      this.updateState({
+        status: 'pending',
+        pending: true,
+        pendingSince,
+        ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
+        ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
+      });
+      this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true);
+    }).catch(() => undefined);
   }
 
   public revealS3SyncCredentials(): Promise<S3CredentialValues> {
@@ -677,14 +758,20 @@ export class S3SyncRuntime {
       const current = await this.ensureSettings();
       let encryptedAccessKeyId = current.encryptedAccessKeyId;
       let encryptedSecretAccessKey = current.encryptedSecretAccessKey;
+      let credentialsChanged = false;
 
       if (draft.clearCredentials) {
+        credentialsChanged = Boolean(encryptedAccessKeyId || encryptedSecretAccessKey);
         encryptedAccessKeyId = undefined;
         encryptedSecretAccessKey = undefined;
       } else if (draft.accessKeyId !== undefined && draft.secretAccessKey !== undefined) {
-        if (!this.hasSecureCredentialStorage()) {
-          throw new Error('Secure credential storage is unavailable.');
+        try {
+          const saved = this.credentials(current);
+          credentialsChanged = saved.accessKeyId !== draft.accessKeyId || saved.secretAccessKey !== draft.secretAccessKey;
+        } catch {
+          credentialsChanged = true;
         }
+        if (!this.hasSecureCredentialStorage()) throw new Error('Secure credential storage is unavailable.');
         try {
           encryptedAccessKeyId = this.options.credentialProtector.encryptString(draft.accessKeyId).toString('base64');
           encryptedSecretAccessKey = this.options.credentialProtector.encryptString(draft.secretAccessKey).toString('base64');
@@ -693,24 +780,37 @@ export class S3SyncRuntime {
         }
       }
 
+      const sameTarget = current.endpoint === draft.endpoint
+        && current.bucket === draft.bucket
+        && current.region === draft.region
+        && !credentialsChanged;
       const next: PersistedS3SyncSettings = {
         schemaVersion: SETTINGS_SCHEMA_VERSION,
-        bucketUrl: draft.endpoint,
+        endpoint: draft.endpoint,
+        bucket: draft.bucket,
         region: draft.region,
         clientId: current.clientId,
         ...(encryptedAccessKeyId && encryptedSecretAccessKey
           ? { encryptedAccessKeyId, encryptedSecretAccessKey }
           : {}),
-        ...(current.bucketUrl === draft.endpoint && current.region === draft.region && current.lastSyncedAt
-          ? { lastSyncedAt: current.lastSyncedAt }
-          : {}),
-        ...(current.bucketUrl === draft.endpoint && current.region === draft.region && current.lastRevision
-          ? { lastRevision: current.lastRevision }
-          : {}),
+        ...(sameTarget && current.lastSyncedAt ? { lastSyncedAt: current.lastSyncedAt } : {}),
+        ...(sameTarget && current.lastRevision ? { lastRevision: current.lastRevision } : {}),
       };
       await this.persist(next);
       this.settings = next;
-      return settingsView(next);
+      if (isConfigured(next)) {
+        this.updateState({
+          status: 'pending',
+          pending: true,
+          pendingSince: this.now().toISOString(),
+          ...(next.lastSyncedAt ? { lastSyncedAt: next.lastSyncedAt } : {}),
+          ...(next.lastRevision ? { lastRevision: next.lastRevision } : {}),
+        });
+        this.scheduleSync(0, true);
+      } else {
+        this.updateState({ status: 'not-configured', pending: false });
+      }
+      return settingsView(next, this.state);
     });
   }
 
@@ -719,32 +819,64 @@ export class S3SyncRuntime {
   }
 
   public syncAllDataToS3(): Promise<S3SyncResult> {
-    if (this.syncPromise) return this.syncPromise;
-    const promise = this.enqueue(() => this.performSync());
-    this.syncPromise = promise;
-    void promise.finally(() => {
-      if (this.syncPromise === promise) this.syncPromise = undefined;
-    }).catch(() => undefined);
-    return promise;
+    return this.requestSync(true);
   }
 
   public async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    if (this.intervalTimer) clearInterval(this.intervalTimer);
+    this.debounceTimer = undefined;
+    this.intervalTimer = undefined;
     this.activeAbortController?.abort();
     try {
       await this.syncPromise;
     } catch {
-      // Cancellation and request failures are already reported to the caller.
+      // Cancellation and request failures are already reflected in state.
     }
     await this.operationQueue;
   }
 
+  private updateState(next: S3SyncState): void {
+    this.state = cloneSyncState(next);
+    try {
+      this.options.onStateChanged?.(cloneSyncState(this.state));
+    } catch {
+      // Renderer state publication is best effort.
+    }
+  }
+
+  private scheduleSync(delayMs: number, requireRerun: boolean): void {
+    if (this.shuttingDown) return;
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = undefined;
+      void this.requestSync(requireRerun).catch(() => undefined);
+    }, Math.max(0, delayMs));
+    this.debounceTimer.unref?.();
+  }
+
+  private requestSync(requireRerun: boolean): Promise<S3SyncResult> {
+    if (this.shuttingDown) return Promise.reject(new Error('S3 sync was cancelled.'));
+    if (this.syncPromise) {
+      if (requireRerun) this.syncAgain = true;
+      return this.syncPromise;
+    }
+    const promise = this.enqueue(() => this.performReconcile());
+    this.syncPromise = promise;
+    void promise.finally(() => {
+      if (this.syncPromise === promise) this.syncPromise = undefined;
+      if (this.syncAgain && !this.shuttingDown) {
+        this.syncAgain = false;
+        this.scheduleSync(0, false);
+      }
+    }).catch(() => undefined);
+    return promise;
+  }
+
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationQueue.then(operation, operation);
-    this.operationQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
+    this.operationQueue = result.then(() => undefined, () => undefined);
     return result;
   }
 
@@ -753,6 +885,16 @@ export class S3SyncRuntime {
     if (!this.loading) {
       this.loading = this.loadSettings().then((settings) => {
         this.settings = settings;
+        if (isConfigured(settings)) {
+          this.state = settings.lastRevision
+            ? {
+                status: 'synced',
+                pending: false,
+                ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
+                lastRevision: settings.lastRevision,
+              }
+            : { status: 'pending', pending: true, pendingSince: this.now().toISOString() };
+        }
         return settings;
       });
     }
@@ -761,10 +903,7 @@ export class S3SyncRuntime {
 
   private async loadSettings(): Promise<PersistedS3SyncSettings> {
     try {
-      const parsed = parsePersistedSettings(
-        JSON.parse(await fs.readFile(this.settingsPath, 'utf8')),
-        this.createClientId,
-      );
+      const parsed = parsePersistedSettings(JSON.parse(await fs.readFile(this.settingsPath, 'utf8')), this.createClientId);
       if (parsed.migrated) await this.persist(parsed.settings);
       return parsed.settings;
     } catch (error) {
@@ -791,9 +930,7 @@ export class S3SyncRuntime {
     if (!settings.encryptedAccessKeyId || !settings.encryptedSecretAccessKey) {
       throw new Error('S3 credentials are unavailable.');
     }
-    if (!this.hasSecureCredentialStorage()) {
-      throw new Error('S3 credentials are unavailable. Save them again.');
-    }
+    if (!this.hasSecureCredentialStorage()) throw new Error('S3 credentials are unavailable. Save them again.');
     try {
       const accessKeyId = this.options.credentialProtector.decryptString(Buffer.from(settings.encryptedAccessKeyId, 'base64'));
       const secretAccessKey = this.options.credentialProtector.decryptString(Buffer.from(settings.encryptedSecretAccessKey, 'base64'));
@@ -813,97 +950,281 @@ export class S3SyncRuntime {
     }
   }
 
-  private async performSync(): Promise<S3SyncResult> {
-    if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
-    const settings = { ...(await this.ensureSettings()) };
-    if (!settings.bucketUrl) throw new Error('S3 sync settings are incomplete.');
-    const { accessKeyId, secretAccessKey } = this.credentials(settings);
-
-    let data: Record<string, unknown>;
+  private async collectLocalData(): Promise<S3SharedAppDataV2> {
+    let data: unknown;
     try {
       data = await this.options.snapshotProvider();
     } catch {
       throw new Error('Unable to prepare the S3 snapshot.');
     }
-    if (!isRecord(data)) throw new Error('Unable to prepare the S3 snapshot.');
+    return parseS3SharedAppDataV2(data);
+  }
 
-    const createdAt = this.now().toISOString();
-    const revision = this.createRevision();
-    const snapshot = createServiceManagerSnapshot(data, this.options.appVersion, revision, createdAt);
-    const encrypted = encryptS3Snapshot(snapshot, secretAccessKey, this.createRandomBytes);
-    const body = JSON.stringify(encrypted);
-    const signed = signS3PutRequest({
-      endpoint: buildS3SnapshotObjectUrl(settings.bucketUrl, settings.clientId, revision),
+  private async applyData(
+    data: S3SharedAppDataV2,
+    expectedLocal?: S3SharedAppDataV2,
+  ): Promise<boolean> {
+    if (!this.options.snapshotApplier) throw new Error('Cloud data cannot be applied by this application version.');
+    const applied = await this.options.snapshotApplier(data, expectedLocal);
+    if (applied === false) return false;
+    try {
+      this.options.onDataApplied?.();
+    } catch {
+      // Renderer refresh publication is best effort.
+    }
+    return true;
+  }
+
+  private async applyDataIfLocalUnchanged(
+    expectedLocal: S3SharedAppDataV2,
+    expectedGeneration: number,
+    data: S3SharedAppDataV2,
+  ): Promise<boolean> {
+    const currentLocal = await this.collectLocalData();
+    if (this.dirtyGeneration !== expectedGeneration || !isDeepStrictEqual(currentLocal, expectedLocal)) {
+      this.dirtyGeneration += 1;
+      return false;
+    }
+    const applied = await this.applyData(data, expectedLocal);
+    if (!applied) this.dirtyGeneration += 1;
+    return applied;
+  }
+
+  private async commitSuccessfulRevision(
+    settings: PersistedS3SyncSettings,
+    revision: string,
+  ): Promise<{ settings: PersistedS3SyncSettings; syncedAt: string }> {
+    const syncedAt = this.now().toISOString();
+    const next: PersistedS3SyncSettings = { ...settings, lastSyncedAt: syncedAt, lastRevision: revision };
+    await this.persist(next);
+    this.settings = next;
+    return { settings: next, syncedAt };
+  }
+
+  private async persistLocalRecovery(
+    settings: PersistedS3SyncSettings,
+    data: S3SharedAppDataV2,
+    secretAccessKey: string,
+  ): Promise<void> {
+    const recoveryId = randomUUID();
+    const revision = createServiceManagerSyncRevisionV2({ ...data }, {
+      appVersion: this.options.appVersion,
+      revision: recoveryId,
+      clientId: settings.clientId,
+      createdAt: this.now().toISOString(),
+    });
+    const body = serializeEncryptedS3RevisionV2(
+      encryptS3RevisionV2(revision, secretAccessKey, this.createRandomBytes),
+    );
+    const filename = `${String(this.now().getTime()).padStart(16, '0')}-${recoveryId}.json`;
+    const target = path.join(this.recoveryDirectory, filename);
+    const temporary = `${target}.${process.pid}.tmp`;
+    try {
+      await fs.mkdir(this.recoveryDirectory, { recursive: true });
+      await fs.writeFile(temporary, body, { encoding: 'utf8', mode: 0o600 });
+      await fs.rename(temporary, target);
+      await fs.chmod(target, 0o600).catch(() => undefined);
+      const files = (await fs.readdir(this.recoveryDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && /^\d{16}-[A-Za-z0-9_-]+\.json$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort();
+      await Promise.all(files.slice(0, Math.max(0, files.length - MAX_LOCAL_RECOVERY_FILES)).map((name) =>
+        fs.unlink(path.join(this.recoveryDirectory, name)).catch(() => undefined)
+      ));
+    } catch {
+      await fs.unlink(temporary).catch(() => undefined);
+      throw new Error('A local encrypted conflict recovery could not be saved. Cloud data was not applied.');
+    }
+  }
+
+  private async publishRevision(
+    objectStore: S3V2ObjectStore,
+    settings: PersistedS3SyncSettings,
+    data: S3SharedAppDataV2,
+    parentRevision: string | undefined,
+    expectedHeadEtag: string | undefined,
+  ): Promise<
+    | { status: 'conflict' }
+    | { status: 'written'; revision: ServiceManagerSyncRevisionV2; byteLength: number; etag?: string }
+  > {
+    const revision = createServiceManagerSyncRevisionV2({ ...data }, {
+      appVersion: this.options.appVersion,
+      revision: normalizedRevision(this.createRevision()),
+      ...(parentRevision ? { parentRevision } : {}),
+      clientId: settings.clientId,
+      createdAt: this.now().toISOString(),
+    });
+    const written = await objectStore.putRevision(revision);
+    if (written.status === 'conflict') return { status: 'conflict' };
+    const head = createS3SyncHeadV2(revision, written.snapshotSha256);
+    const headResult = await objectStore.putHead(head, expectedHeadEtag);
+    if (headResult.status === 'conflict') return { status: 'conflict' };
+    return {
+      status: 'written',
+      revision,
+      byteLength: written.byteLength,
+      ...(headResult.etag ? { etag: headResult.etag } : {}),
+    };
+  }
+
+  private async reconcile(
+    settings: PersistedS3SyncSettings,
+    signal: AbortSignal,
+  ): Promise<S3SyncResult> {
+    const { accessKeyId, secretAccessKey } = this.credentials(settings);
+    const objectStore = new S3V2ObjectStore({
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
       region: settings.region,
       accessKeyId,
       secretAccessKey,
-      payload: body,
-      now: this.now(),
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      createRandomBytes: this.createRandomBytes,
+      timeoutMs: this.timeoutMs,
+      signal,
     });
+    let recoveredLocal: S3SharedAppDataV2 | undefined;
 
+    for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+      if (signal.aborted || this.shuttingDown) throw new Error('S3 sync was cancelled.');
+      const headResult = await objectStore.getHead();
+
+      if (headResult.status === 'missing') {
+        const local = await this.collectLocalData();
+        const published = await this.publishRevision(objectStore, settings, local, undefined, undefined);
+        if (published.status === 'conflict') continue;
+        const committed = await this.commitSuccessfulRevision(settings, published.revision.revision);
+        return {
+          action: 'pushed',
+          syncedAt: committed.syncedAt,
+          revision: published.revision.revision,
+          byteLength: published.byteLength,
+          ...(published.etag ? { etag: published.etag } : {}),
+        };
+      }
+
+      const remoteResult = await objectStore.getRevision(
+        headResult.head.revision,
+        headResult.head.snapshotSha256,
+      );
+      if (remoteResult.status === 'missing') throw new Error('The S3 sync head points to a missing revision.');
+      assertS3SyncHeadMatchesRevisionV2(
+        headResult.head,
+        remoteResult.revision,
+        remoteResult.snapshotSha256,
+      );
+      const cloud = parseS3SharedAppDataV2(remoteResult.revision.data);
+
+      let base: S3SharedAppDataV2 | undefined;
+      if (settings.lastRevision === headResult.head.revision) {
+        base = cloud;
+      } else if (settings.lastRevision) {
+        const baseResult = await objectStore.getRevision(settings.lastRevision);
+        if (baseResult.status === 'found') base = parseS3SharedAppDataV2(baseResult.revision.data);
+      }
+
+      const local = await this.collectLocalData();
+      const localGeneration = this.dirtyGeneration;
+      const merged = mergeS3SharedAppDataV2({ base, local, cloud, now: this.now().toISOString() });
+      if (merged.discardedLocalSections.length > 0
+        && (!recoveredLocal || !isDeepStrictEqual(recoveredLocal, local))) {
+        await this.persistLocalRecovery(settings, local, secretAccessKey);
+        recoveredLocal = local;
+      }
+      const conflictCount = merged.conflictCount + merged.discardedLocalSections.length;
+      const applyRequired = !isDeepStrictEqual(local, merged.data);
+      if (isDeepStrictEqual(merged.data, cloud)) {
+        if (applyRequired
+          && !await this.applyDataIfLocalUnchanged(local, localGeneration, merged.data)) {
+          continue;
+        }
+        const committed = await this.commitSuccessfulRevision(settings, headResult.head.revision);
+        return {
+          action: conflictCount > 0 ? 'conflict' : applyRequired ? 'pulled' : 'up-to-date',
+          syncedAt: committed.syncedAt,
+          revision: headResult.head.revision,
+          ...(conflictCount > 0 ? { conflictCount } : {}),
+        };
+      }
+
+      const published = await this.publishRevision(
+        objectStore,
+        settings,
+        merged.data,
+        headResult.head.revision,
+        headResult.etag,
+      );
+      if (published.status === 'conflict') continue;
+      if (applyRequired
+        && !await this.applyDataIfLocalUnchanged(local, localGeneration, merged.data)) {
+        continue;
+      }
+      const committed = await this.commitSuccessfulRevision(settings, published.revision.revision);
+      return {
+        action: conflictCount > 0 ? 'conflict' : 'pushed',
+        syncedAt: committed.syncedAt,
+        revision: published.revision.revision,
+        byteLength: published.byteLength,
+        ...(published.etag ? { etag: published.etag } : {}),
+        ...(conflictCount > 0 ? { conflictCount } : {}),
+      };
+    }
+    throw new Error('S3 sync changed concurrently too many times. Try again.');
+  }
+
+  private async performReconcile(): Promise<S3SyncResult> {
     if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
-
+    const settings = { ...(await this.ensureSettings()) };
+    if (!isConfigured(settings)) {
+      this.updateState({ status: 'not-configured', pending: false });
+      throw new Error('S3 sync settings are incomplete.');
+    }
+    const startingGeneration = this.dirtyGeneration;
+    this.updateState({
+      status: 'syncing',
+      pending: this.state.pending,
+      ...(this.state.pendingSince ? { pendingSince: this.state.pendingSince } : {}),
+      ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
+      ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
+    });
     const controller = new AbortController();
     this.activeAbortController = controller;
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.timeoutMs);
-
-    let response: Response;
     try {
-      try {
-        response = await this.fetchImpl(signed.url, {
-          method: 'PUT',
-          headers: signed.headers,
-          body,
-          signal: controller.signal,
-          redirect: 'manual',
+      const result = await this.reconcile(settings, controller.signal);
+      if (this.dirtyGeneration !== startingGeneration) {
+        this.updateState({
+          status: 'pending',
+          pending: true,
+          pendingSince: this.state.pendingSince ?? this.now().toISOString(),
+          lastSyncedAt: result.syncedAt,
+          ...(result.revision ? { lastRevision: result.revision } : {}),
         });
-      } catch {
-        if (timedOut) throw new Error('S3 sync timed out.');
-        if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
-        throw new Error('S3 sync request failed.');
+        this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true);
+      } else {
+        this.updateState({
+          status: result.action === 'conflict' ? 'conflict' : 'synced',
+          pending: false,
+          lastSyncedAt: result.syncedAt,
+          ...(result.revision ? { lastRevision: result.revision } : {}),
+          ...(result.conflictCount ? { conflictCount: result.conflictCount } : {}),
+        });
       }
-
-      if (!response.ok) {
-        let responseBody = '';
-        try {
-          responseBody = await readBoundedResponseText(response, controller.signal);
-        } catch {
-          if (timedOut) throw new Error('S3 sync timed out.');
-          if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
-        }
-        if (timedOut) throw new Error('S3 sync timed out.');
-        if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
-        throw safeHttpError(response.status, responseBody);
-      }
-      await response.body?.cancel().catch(() => undefined);
-      if (timedOut) throw new Error('S3 sync timed out.');
+      return result;
+    } catch (error) {
       if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
+      const message = error instanceof Error ? error.message : 'S3 sync failed.';
+      this.updateState({
+        status: isOfflineSyncError(error) ? 'offline' : 'error',
+        pending: this.state.pending || !settings.lastRevision || this.dirtyGeneration !== startingGeneration,
+        ...(this.state.pendingSince ? { pendingSince: this.state.pendingSince } : {}),
+        ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
+        ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
+        message,
+      });
+      throw error;
     } finally {
-      clearTimeout(timeout);
       if (this.activeAbortController === controller) this.activeAbortController = undefined;
     }
-
-    const syncedAt = this.now().toISOString();
-    const etagHeader = response.headers.get('etag');
-    const etag = etagHeader && etagHeader.length <= 512 && !/[\u0000-\u001f\u007f]/.test(etagHeader)
-      ? etagHeader
-      : undefined;
-    const next: PersistedS3SyncSettings = {
-      ...settings,
-      lastSyncedAt: syncedAt,
-      lastRevision: revision,
-    };
-    await this.persist(next);
-    this.settings = next;
-    return {
-      syncedAt,
-      revision,
-      byteLength: Buffer.byteLength(body, 'utf8'),
-      ...(etag ? { etag } : {}),
-    };
   }
 }

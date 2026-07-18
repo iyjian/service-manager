@@ -17,6 +17,7 @@
             <circle cx="8" cy="8" r="2.25"></circle>
             <path d="M8 1.75v1.4M8 12.85v1.4M14.25 8h-1.4M3.15 8h-1.4M12.42 3.58l-.99.99M4.57 11.43l-.99.99M12.42 12.42l-.99-.99M4.57 4.57l-.99-.99"></path>
           </svg>
+          <span id="nav-sync-indicator" class="nav-sync-indicator" aria-hidden="true"></span>
         </button>
       </nav>
       <div class="app-content">
@@ -388,18 +389,24 @@
         <div class="dialog-head">
           <div>
             <h2 id="settings-title" class="section-title">Settings</h2>
-            <p class="settings-subtitle">Encrypted S3 backup · MinIO compatible</p>
+            <p class="settings-subtitle">Encrypted automatic sync · MinIO compatible</p>
           </div>
           <button id="settings-close-btn" type="button" class="icon-btn" aria-label="Close Settings">×</button>
         </div>
         <label class="field field-xs">
-          S3 Object Address
-          <input id="s3-endpoint" class="input" type="url" placeholder="https://s3.example.com/bucket" spellcheck="false" autocomplete="off" required />
+          S3 Endpoint
+          <input id="s3-endpoint" class="input" type="url" placeholder="https://s3.example.com" spellcheck="false" autocomplete="off" required />
         </label>
-        <label class="field field-xs settings-region-field">
-          Region
-          <input id="s3-region" class="input" type="text" value="us-east-1" spellcheck="false" autocomplete="off" required />
-        </label>
+        <div class="settings-grid">
+          <label class="field field-xs">
+            Bucket
+            <input id="s3-bucket" class="input" type="text" placeholder="service-manager" spellcheck="false" autocomplete="off" required />
+          </label>
+          <label class="field field-xs">
+            Region
+            <input id="s3-region" class="input" type="text" value="us-east-1" spellcheck="false" autocomplete="off" required />
+          </label>
+        </div>
         <div class="settings-grid">
           <div class="field field-xs">
             <label for="s3-access-key">Access Key ID</label>
@@ -420,7 +427,7 @@
             </div>
           </div>
         </div>
-        <p class="settings-hint">Enter a MinIO bucket URL. The app stores encrypted, client-isolated snapshots under its own internal path, so clients using the same bucket do not overwrite one another.</p>
+        <p class="settings-hint">Cloud data is authoritative while online. Changes sync automatically; concurrent edits are version-checked and recoverable conflicts are kept as Notes copies.</p>
         <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
         <div class="form-actions settings-actions">
           <button id="settings-save-btn" type="submit" class="btn btn-secondary">Save</button>

@@ -266,6 +266,82 @@ export class ProxyRuntime extends EventEmitter {
     });
   }
 
+  async importPersistentSnapshot(value: PersistentProxySnapshot): Promise<ProxyState> {
+    return this.enqueueSubscriptionData(async () => {
+      await this.settingsWriteQueue;
+      const imported = sanitizeProxySettingsForSnapshot(value.settings);
+      const subscriptionYaml = value.subscriptionYaml;
+      if (subscriptionYaml !== undefined) {
+        if (typeof subscriptionYaml !== 'string' || Buffer.byteLength(subscriptionYaml, 'utf8') > MAX_BACKUP_SUBSCRIPTION_BYTES) {
+          throw new Error('The synced Proxy subscription is invalid or too large.');
+        }
+      }
+
+      const previousSettings: ProxySettings = {
+        ...this.settings,
+        customRules: this.currentCustomRules().map((rule) => ({ ...rule })),
+        ...(this.settings.selectedProxies ? { selectedProxies: { ...this.settings.selectedProxies } } : {}),
+      };
+      const [previousRaw, previousParsed] = await Promise.all([
+        this.readCacheForRollback(this.subscriptionCachePath),
+        this.readCacheForRollback(this.parsedSubscriptionCachePath),
+      ]);
+
+      let parsedSubscription: SubscriptionInfo | undefined;
+      if (subscriptionYaml !== undefined) {
+        try {
+          parsedSubscription = parseSubscription(subscriptionYaml);
+        } catch {
+          throw new Error('The synced Proxy subscription is invalid.');
+        }
+      }
+
+      const nextSettings: ProxySettings = {
+        ...this.settings,
+        mode: imported.mode,
+        customRules: imported.customRules?.map((rule) => ({ ...rule })) ?? [],
+        ...(imported.selectedProxies
+          ? { selectedProxies: { ...imported.selectedProxies } }
+          : { selectedProxies: undefined }),
+        ...(imported.selectedProxy ? { selectedProxy: imported.selectedProxy } : { selectedProxy: undefined }),
+        ...(parsedSubscription
+          ? {
+              proxyCount: parsedSubscription.proxies.length,
+              subscriptionUpdatedAt: imported.subscriptionUpdatedAt ?? new Date().toISOString(),
+            }
+          : { proxyCount: undefined, subscriptionUpdatedAt: undefined }),
+      };
+
+      try {
+        if (subscriptionYaml !== undefined && parsedSubscription) {
+          await this.replaceSubscriptionCaches(subscriptionYaml, serializeSubscriptionCache(parsedSubscription));
+        } else {
+          await Promise.all([
+            this.restoreCacheFile(this.subscriptionCachePath, undefined),
+            this.restoreCacheFile(this.parsedSubscriptionCachePath, undefined),
+          ]);
+        }
+        this.settings = nextSettings;
+        await this.persistSettings();
+      } catch (error) {
+        this.settings = previousSettings;
+        try {
+          await this.restoreSubscriptionCaches(previousRaw, previousParsed);
+          await this.persistSettings();
+        } catch (rollbackError) {
+          throw new Error(
+            `Synced Proxy data could not be applied and rollback failed: ${(rollbackError as Error).message}`
+          );
+        }
+        throw error;
+      }
+
+      this.clearDelayResults();
+      this.emitState();
+      return this.snapshot();
+    });
+  }
+
   getLogs(): string {
     return this.logLines.join('\n');
   }

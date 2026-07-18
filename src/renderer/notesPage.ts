@@ -248,6 +248,24 @@ class NotesPage {
     return this.flushAllPendingSaves();
   }
 
+  async reload(): Promise<void> {
+    // A user can type during the short main-process apply window after the
+    // final pre-apply flush. Persist that edit before replacing the view so it
+    // becomes a new pending local change instead of being silently discarded.
+    await this.flushAllPendingSaves();
+    for (const timer of this.saveTimers.values()) window.clearTimeout(timer);
+    this.saveTimers.clear();
+    this.saveQueues.clear();
+    this.editVersions.clear();
+    this.persistedVersions.clear();
+    this.queuedVersions.clear();
+    this.deletedIds.clear();
+    this.loaded = false;
+    this.loadPromise = undefined;
+    this.loadError = undefined;
+    await this.ensureLoaded();
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) {
       this.render();
@@ -653,4 +671,8 @@ export function registerNotesPage(): void {
 
 export function flushNotesPage(): Promise<void> {
   return page?.flush() ?? Promise.resolve();
+}
+
+export function reloadNotesPage(): Promise<void> {
+  return page?.reload() ?? Promise.resolve();
 }

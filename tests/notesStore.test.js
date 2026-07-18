@@ -25,6 +25,19 @@ function draft(overrides = {}) {
   };
 }
 
+function storedNote(overrides = {}) {
+  return {
+    id: 'synced-note',
+    name: 'Cloud note',
+    content: '# synced',
+    language: 'markdown',
+    tags: ['shared'],
+    createdAt: '2026-07-18T01:02:03.000Z',
+    updatedAt: '2026-07-18T01:02:04.000Z',
+    ...overrides,
+  };
+}
+
 test('NotesStore creates a private versioned notes file and a default Markdown note', async (t) => {
   const { filePath, store } = await createStore(t);
   const note = await store.create();
@@ -201,4 +214,100 @@ test('NotesStore requires the versioned envelope', async (t) => {
   await fs.writeFile(filePath, JSON.stringify([]));
 
   await assert.rejects(new NotesStore(filePath).load(), /Unsupported notes file schema/);
+});
+
+test('NotesStore atomically replaces a synced snapshot and detaches it from caller mutations', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await store.create();
+  const replacement = {
+    schemaVersion: NOTES_SCHEMA_VERSION,
+    notes: [storedNote({
+      name: '  Shared SQL  ',
+      content: 'SELECT id FROM users;',
+      language: 'sql',
+      tags: [' database ', 'DATABASE', 'shared'],
+      createdAt: '2026-07-18T01:02:03Z',
+      updatedAt: '2026-07-18T01:02:04Z',
+    })],
+  };
+
+  await store.replaceSnapshot(replacement);
+  replacement.notes[0].name = 'mutated after apply';
+  replacement.notes[0].tags.push('mutated');
+
+  const expected = [storedNote({
+    name: 'Shared SQL',
+    content: 'SELECT id FROM users;',
+    language: 'sql',
+    tags: ['database', 'shared'],
+  })];
+  assert.deepEqual(store.list(), expected);
+  assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
+    schemaVersion: NOTES_SCHEMA_VERSION,
+    notes: expected,
+  });
+
+  const reloaded = new NotesStore(filePath);
+  await reloaded.load();
+  assert.deepEqual(reloaded.list(), expected);
+});
+
+test('NotesStore rejects an invalid synced snapshot without partially replacing current data', async (t) => {
+  const { filePath, store } = await createStore(t);
+  const created = await store.create();
+  await store.update(created.id, draft({ content: 'keep this local value' }));
+  const before = store.exportSnapshot();
+  const beforeFile = await fs.readFile(filePath, 'utf8');
+
+  const invalidSnapshots = [
+    {
+      schemaVersion: NOTES_SCHEMA_VERSION,
+      notes: [storedNote(), storedNote({ id: 'invalid-language', language: 'python' })],
+    },
+    {
+      schemaVersion: NOTES_SCHEMA_VERSION,
+      notes: [storedNote(), storedNote({ name: 'duplicate must not be silently discarded' })],
+    },
+    {
+      schemaVersion: NOTES_SCHEMA_VERSION,
+      notes: [storedNote(), null],
+    },
+  ];
+
+  for (const invalid of invalidSnapshots) {
+    await assert.rejects(async () => store.replaceSnapshot(invalid));
+    assert.deepEqual(store.exportSnapshot(), before);
+    assert.equal(await fs.readFile(filePath, 'utf8'), beforeFile);
+  }
+});
+
+test('NotesStore keeps memory and disk unchanged when atomic snapshot persistence fails', async (t) => {
+  const { filePath, store } = await createStore(t);
+  const created = await store.create();
+  await store.update(created.id, draft({ content: 'original durable content' }));
+  const before = store.exportSnapshot();
+  const beforeFile = await fs.readFile(filePath, 'utf8');
+  const originalRename = fs.rename;
+  let injectedFailure = false;
+
+  fs.rename = async (source, destination) => {
+    if (!injectedFailure && path.resolve(String(destination)) === path.resolve(filePath)) {
+      injectedFailure = true;
+      throw new Error('simulated notes snapshot rename failure');
+    }
+    return originalRename(source, destination);
+  };
+  try {
+    await assert.rejects(
+      store.replaceSnapshot({ schemaVersion: NOTES_SCHEMA_VERSION, notes: [storedNote()] }),
+      /simulated notes snapshot rename failure/,
+    );
+  } finally {
+    fs.rename = originalRename;
+  }
+
+  assert.equal(injectedFailure, true);
+  assert.deepEqual(store.exportSnapshot(), before);
+  assert.equal(await fs.readFile(filePath, 'utf8'), beforeFile);
+  assert.equal((await fs.readdir(path.dirname(filePath))).some((name) => name.endsWith('.tmp')), false);
 });
