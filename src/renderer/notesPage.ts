@@ -1,8 +1,89 @@
 import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
+import { javascript, javascriptLanguage, typescriptLanguage } from '@codemirror/lang-javascript';
+import { json, jsonLanguage } from '@codemirror/lang-json';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { yaml, yamlLanguage } from '@codemirror/lang-yaml';
+import {
+  defaultHighlightStyle,
+  HighlightStyle,
+  StreamLanguage,
+  syntaxHighlighting,
+  type Language,
+  type TagStyle,
+} from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { registerPage } from './nav.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
+
+const bashLanguage = StreamLanguage.define(shell);
+
+const markdownFenceLanguages: Readonly<Record<string, Language>> = {
+  bash: bashLanguage,
+  javascript: javascriptLanguage,
+  js: javascriptLanguage,
+  json: jsonLanguage,
+  node: javascriptLanguage,
+  sh: bashLanguage,
+  shell: bashLanguage,
+  shellscript: bashLanguage,
+  ts: typescriptLanguage,
+  typescript: typescriptLanguage,
+  yaml: yamlLanguage,
+  yml: yamlLanguage,
+};
+
+const noteLanguageExtensions: Readonly<Record<NoteLanguage, Extension>> = {
+  markdown: markdown({
+    base: markdownLanguage,
+    codeLanguages: (info) => markdownFenceLanguages[info.trim().split(/\s+/, 1)[0]?.toLocaleLowerCase() ?? ''] ?? null,
+  }),
+  bash: bashLanguage,
+  javascript: javascript(),
+  typescript: javascript({ typescript: true }),
+  json: json(),
+  yaml: yaml(),
+  text: [],
+};
+
+const darkSyntaxColors: Readonly<Record<string, string>> = {
+  '#404740': '#94a3b8',
+  '#708': '#c084fc',
+  '#219': '#93c5fd',
+  '#164': '#86efac',
+  '#a11': '#fca5a5',
+  '#e40': '#fb923c',
+  '#00f': '#60a5fa',
+  '#30a': '#a78bfa',
+  '#085': '#5eead4',
+  '#167': '#67e8f9',
+  '#256': '#f0abfc',
+  '#00c': '#38bdf8',
+  '#940': '#a1a1aa',
+  '#f00': '#f87171',
+};
+
+const darkHighlightStyle = HighlightStyle.define(
+  defaultHighlightStyle.specs.map((spec): TagStyle => {
+    const mappedColor = typeof spec.color === 'string' ? darkSyntaxColors[spec.color] : undefined;
+    return mappedColor ? { ...spec, color: mappedColor } : { ...spec };
+  }),
+  { themeType: 'dark' },
+);
+
+const darkEditorTheme = EditorView.theme({
+  '&': {
+    backgroundColor: '#09090b',
+    color: '#f4f4f5',
+  },
+}, { dark: true });
+
+/** Returns parser-backed CodeMirror support for the selected Notes language. */
+export function noteLanguageExtension(language: NoteLanguage): Extension {
+  return noteLanguageExtensions[language];
+}
 
 const NOTES_NAV_ICON = `
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -116,6 +197,7 @@ class NotesPage {
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
   private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
   private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
+  private readonly languageCompartment = new Compartment();
   private readonly codeEditor: EditorView;
 
   private notes: Note[] = [];
@@ -130,25 +212,13 @@ class NotesPage {
   private readonly saveTimers = new Map<string, number>();
   private readonly saveQueues = new Map<string, Promise<void>>();
   private readonly deletedIds = new Set<string>();
+  private editorLanguage: NoteLanguage = 'markdown';
+  private editorNoteId: string | undefined;
   private replacingEditorDocument = false;
 
   constructor() {
     this.codeEditor = new EditorView({
-      doc: '',
-      extensions: [
-        basicSetup,
-        EditorView.lineWrapping,
-        EditorView.contentAttributes.of({
-          'aria-label': 'Note content',
-          'aria-multiline': 'true',
-          spellcheck: 'false',
-        }),
-        EditorView.updateListener.of((update) => {
-          if (!update.docChanged || this.replacingEditorDocument) return;
-          this.updateSelectedFromEditor();
-          this.updateEditorEmptyState();
-        }),
-      ],
+      state: this.createEditorState('', 'markdown'),
       parent: this.contentHost,
     });
     this.updateEditorEmptyState();
@@ -270,6 +340,7 @@ class NotesPage {
     this.emptyState.classList.toggle('hidden', Boolean(note));
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
+      this.editorNoteId = undefined;
       this.emptyState.textContent = this.loadError ?? (this.loaded ? 'Create or select a note.' : 'Loading notes…');
       this.emptyState.dataset.state = this.loadError ? 'error' : this.loaded ? 'empty' : 'loading';
       return;
@@ -278,7 +349,14 @@ class NotesPage {
     this.nameInput.value = note.name;
     this.languageSelect.value = note.language;
     this.tagsInput.value = note.tags.join(', ');
-    this.replaceEditorDocument(note.content);
+    if (this.editorNoteId !== note.id) {
+      this.editorNoteId = note.id;
+      this.codeEditor.setState(this.createEditorState(note.content, note.language));
+      this.updateEditorEmptyState();
+    } else {
+      this.setEditorLanguage(note.language);
+      this.replaceEditorDocument(note.content);
+    }
     this.contentHost.dataset.language = note.language;
   }
 
@@ -299,11 +377,13 @@ class NotesPage {
     const note = this.selectedNote();
     if (!note) return;
 
+    const language = this.languageSelect.value as NoteLanguage;
     note.name = this.nameInput.value;
-    note.language = this.languageSelect.value as NoteLanguage;
+    note.language = language;
     note.tags = normalizeTags(this.tagsInput.value);
     note.content = this.codeEditor.state.doc.toString();
-    this.contentHost.dataset.language = note.language;
+    this.setEditorLanguage(language);
+    this.contentHost.dataset.language = language;
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     this.setSaveStatus('Saving…', 'saving');
     if (document.activeElement === this.nameInput || this.searchInput.value.trim()) {
@@ -505,6 +585,38 @@ class NotesPage {
       this.replacingEditorDocument = false;
     }
     this.updateEditorEmptyState();
+  }
+
+  private createEditorState(content: string, language: NoteLanguage): EditorState {
+    this.editorLanguage = language;
+    return EditorState.create({
+      doc: content,
+      extensions: [
+        basicSetup,
+        darkEditorTheme,
+        syntaxHighlighting(darkHighlightStyle),
+        this.languageCompartment.of(noteLanguageExtension(language)),
+        EditorView.lineWrapping,
+        EditorView.contentAttributes.of({
+          'aria-label': 'Note content',
+          'aria-multiline': 'true',
+          spellcheck: 'false',
+        }),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged || this.replacingEditorDocument) return;
+          this.updateSelectedFromEditor();
+          this.updateEditorEmptyState();
+        }),
+      ],
+    });
+  }
+
+  private setEditorLanguage(language: NoteLanguage): void {
+    if (language === this.editorLanguage) return;
+    this.editorLanguage = language;
+    this.codeEditor.dispatch({
+      effects: this.languageCompartment.reconfigure(noteLanguageExtension(language)),
+    });
   }
 
   private updateEditorEmptyState(): void {

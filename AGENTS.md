@@ -65,7 +65,7 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/kubernetes/podInteractions.ts`: 2,000-line bounded single-Pod/Deployment aggregate logs with multi-stream and start-time snapshot generation fencing, terminal shell fallback/session ownership and first-output readiness gating, and ten-forward lifecycle.
 - `src/main/kubernetes/kubernetesRuntime.ts`: display-safe facade composing kubeconfig, persisted Context preference, Context-scoped single-flight recovery, session, resources, and Pod interactions for IPC.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
-- `src/renderer/notesPage.ts`: viewport-contained two-column Notes UI with a local CodeMirror 6 editor, Name-priority search, tags, icon actions, per-list-row delete, and debounced realtime save.
+- `src/renderer/notesPage.ts`: viewport-contained two-column Notes UI with a local CodeMirror 6 editor, dynamically selected parser-backed dark-theme syntax highlighting, Name-priority search, tags, icon actions, per-list-row delete, and debounced realtime save.
 - `src/renderer/settingsDialog.ts`: bottom-navigation Settings dialog for MinIO/S3 bucket configuration, masked credential hydration, password visibility controls, and manual versioned sync.
 - `src/renderer/kubernetesPage.ts`: full-width Context/Namespace controls with an unclipped Namespace popup, category lists, right-side overlay drawers with aligned Labels and fully expanded Env rows, text-safe browser-YAML rendering, Events, on-demand relations, bottom workspace, and count-backed Forwarded Ports dialog.
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers.
@@ -98,7 +98,7 @@ Hosts:
 
 Notes:
 
-- Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text are supported metadata choices.
+- Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Markdown, Bash, JavaScript, TypeScript, JSON, and YAML use parser-backed dark-theme syntax highlighting, Markdown fenced blocks recognize Bash, JavaScript, TypeScript, JSON, and YAML, and Plain Text remains unstyled.
 - Keep Notes in a viewport-contained left-list/right-editor layout backed by CodeMirror 6. Search ranks Name exact/prefix/substring matches before lower-priority Tag, Language, and Content matches. The list must retain bounded internal scrolling for large collections.
 - Save edits after a short debounce and flush pending edits on note/page changes. Window/application close attempts a bounded renderer-to-main Notes flush handshake before the main-process store flush; a standalone macOS window stays open on failure, while application quit records a failed/timed-out handshake and retains the global bounded-shutdown behavior. Persist only the schema-versioned `<userData>/notes.json` through serialized atomic writes with private permissions where supported.
 - Dynamic note names/content/tags must use CodeMirror state, form values, or text nodes. New Note and Copy use icon-labelled buttons. Remove is an icon-only, accessible action on each list row, can target any note, and requires confirmation.

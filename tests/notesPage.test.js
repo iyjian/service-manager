@@ -1,10 +1,36 @@
 const assert = require('node:assert/strict');
+const { createRequire } = require('node:module');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 const distRenderer = path.join(root, 'dist', 'renderer');
+
+async function loadNoteLanguageModules() {
+  const dependencyRequire = createRequire(require.resolve('@codemirror/language'));
+  const highlightCommonJsEntry = dependencyRequire.resolve('@lezer/highlight');
+  const highlightEsmEntry = path.join(path.dirname(highlightCommonJsEntry), 'index.js');
+  const [notesPage, stateApi, languageApi, highlightApi] = await Promise.all([
+    import(path.join(distRenderer, 'notesPage.js')),
+    import('@codemirror/state'),
+    import('@codemirror/language'),
+    import(pathToFileURL(highlightEsmEntry).href),
+  ]);
+  return { ...notesPage, ...stateApi, ...languageApi, ...highlightApi };
+}
+
+function highlightedSpans(state, syntaxTree, highlightTree, classHighlighter) {
+  const spans = [];
+  highlightTree(syntaxTree(state), classHighlighter, (from, to, classes) => {
+    spans.push({
+      text: state.doc.sliceString(from, to),
+      classes: classes.split(/\s+/),
+    });
+  });
+  return spans;
+}
 
 function note(overrides) {
   return {
@@ -71,6 +97,154 @@ test('Notes ranking keeps one hundred list entries available for the scrolling s
   assert.equal(ranked[99].id, 'note-0');
 });
 
+test('Notes maps every language choice to the intended CodeMirror parser', async () => {
+  const { EditorState, language, noteLanguageExtension } = await loadNoteLanguageModules();
+  const expectedLanguages = new Map([
+    ['markdown', 'markdown'],
+    ['bash', 'shell'],
+    ['javascript', 'javascript'],
+    ['typescript', 'typescript'],
+    ['json', 'json'],
+    ['yaml', 'yaml'],
+    ['text', null],
+  ]);
+
+  for (const [noteLanguage, parserName] of expectedLanguages) {
+    const state = EditorState.create({
+      doc: 'same content',
+      extensions: [noteLanguageExtension(noteLanguage)],
+    });
+    assert.equal(state.facet(language)?.name ?? null, parserName, noteLanguage);
+  }
+});
+
+test('Notes language parsers produce syntax highlight spans and Plain Text stays unstyled', async () => {
+  const {
+    EditorState,
+    classHighlighter,
+    highlightTree,
+    noteLanguageExtension,
+    syntaxTree,
+  } = await loadNoteLanguageModules();
+  const fixtures = [
+    {
+      language: 'markdown',
+      content: '# Heading\n\n**strong**',
+      token: 'Heading',
+      className: 'tok-heading',
+    },
+    {
+      language: 'bash',
+      content: 'export NAME="hello" # comment',
+      token: 'export',
+      className: 'tok-keyword',
+    },
+    {
+      language: 'javascript',
+      content: 'const enabled = true; // comment',
+      token: 'const',
+      className: 'tok-keyword',
+    },
+    {
+      language: 'typescript',
+      content: 'interface User { name: string }',
+      token: 'User',
+      className: 'tok-typeName',
+    },
+    {
+      language: 'json',
+      content: '{"enabled": true, "count": 2}',
+      token: 'enabled',
+      className: 'tok-propertyName',
+    },
+    {
+      language: 'yaml',
+      content: 'enabled: true\ncount: 2',
+      token: 'enabled',
+      className: 'tok-propertyName',
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const state = EditorState.create({
+      doc: fixture.content,
+      extensions: [noteLanguageExtension(fixture.language)],
+    });
+    const spans = highlightedSpans(state, syntaxTree, highlightTree, classHighlighter);
+    assert.ok(
+      spans.some((span) => span.text.includes(fixture.token) && span.classes.includes(fixture.className)),
+      `${fixture.language} did not highlight ${fixture.token} as ${fixture.className}: ${JSON.stringify(spans)}`,
+    );
+  }
+
+  const plainText = EditorState.create({
+    doc: 'const unstyled = true',
+    extensions: [noteLanguageExtension('text')],
+  });
+  assert.deepEqual(highlightedSpans(plainText, syntaxTree, highlightTree, classHighlighter), []);
+});
+
+test('Markdown fenced blocks reuse every supported code-language parser', async () => {
+  const {
+    EditorState,
+    classHighlighter,
+    highlightTree,
+    noteLanguageExtension,
+    syntaxTree,
+  } = await loadNoteLanguageModules();
+  const fences = [
+    ['bash', 'export NAME="value"', 'export', 'tok-keyword'],
+    ['javascript', 'const enabled = true', 'const', 'tok-keyword'],
+    ['typescript', 'interface User {}', 'User', 'tok-typeName'],
+    ['json', '{"enabled": true}', 'enabled', 'tok-propertyName'],
+    ['yaml', 'enabled: true', 'enabled', 'tok-propertyName'],
+  ];
+
+  for (const [fenceLanguage, content, token, className] of fences) {
+    const state = EditorState.create({
+      doc: `\`\`\`${fenceLanguage}\n${content}\n\`\`\``,
+      extensions: [noteLanguageExtension('markdown')],
+    });
+    const spans = highlightedSpans(state, syntaxTree, highlightTree, classHighlighter);
+    assert.ok(
+      spans.some((span) => span.text.includes(token) && span.classes.includes(className)),
+      `Markdown ${fenceLanguage} fence did not highlight ${token} as ${className}`,
+    );
+  }
+});
+
+test('Notes reconfigures one language compartment without replacing same-content documents', async () => {
+  const {
+    Compartment,
+    EditorState,
+    language,
+    noteLanguageExtension,
+    syntaxTree,
+  } = await loadNoteLanguageModules();
+  const content = 'interface User { name: string }';
+  const languageCompartment = new Compartment();
+  let state = EditorState.create({
+    doc: content,
+    extensions: [languageCompartment.of(noteLanguageExtension('markdown'))],
+  });
+
+  assert.equal(state.facet(language)?.name, 'markdown');
+  assert.equal(syntaxTree(state).topNode.name, 'Document');
+
+  for (const [noteLanguage, parserName, topNodeName] of [
+    ['javascript', 'javascript', 'Script'],
+    ['typescript', 'typescript', 'Script'],
+    ['text', null, ''],
+  ]) {
+    state = state.update({
+      effects: languageCompartment.reconfigure(noteLanguageExtension(noteLanguage)),
+    }).state;
+    assert.equal(state.doc.toString(), content, `${noteLanguage} changed the document`);
+    assert.equal(state.facet(language)?.name ?? null, parserName, noteLanguage);
+    assert.equal(syntaxTree(state).topNode.name, topNodeName, noteLanguage);
+  }
+});
+
 test('Notes page wires CRUD, copy, confirmation, and debounced flushes without unsafe dynamic HTML', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
@@ -98,19 +272,25 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
 });
 
-test('Notes page keeps user content in form values and CodeMirror state created through DOM APIs', async () => {
+test('Notes page keeps user content in form values and reconfigurable CodeMirror state created through DOM APIs', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /import \{ basicSetup, EditorView \} from 'codemirror'/);
-  assert.match(source, /new EditorView\(\{/);
+  assert.match(source, /import \{ Compartment, EditorState, type Extension \} from '@codemirror\/state'/);
+  assert.match(source, /new EditorView\(\{\s*state: this\.createEditorState\('', 'markdown'\)/);
+  assert.match(source, /return EditorState\.create\(\{/);
   assert.match(source, /EditorView\.updateListener\.of/);
   assert.match(source, /EditorView\.contentAttributes\.of/);
   assert.match(source, /document\.createElement\('button'\)/);
   assert.match(source, /document\.createElement\('span'\)/);
   assert.match(source, /document\.createElementNS\(namespace, 'svg'\)/);
   assert.match(source, /this\.nameInput\.value = note\.name/);
+  assert.match(source, /this\.codeEditor\.setState\(this\.createEditorState\(note\.content, note\.language\)\)/);
   assert.match(source, /this\.replaceEditorDocument\(note\.content\)/);
   assert.match(source, /note\.content = this\.codeEditor\.state\.doc\.toString\(\)/);
+  assert.match(source, /this\.languageCompartment\.of\(noteLanguageExtension\(language\)\)/);
+  assert.match(source, /this\.languageCompartment\.reconfigure\(noteLanguageExtension\(language\)\)/);
+  assert.match(source, /this\.setEditorLanguage\(language\)/);
   assert.match(source, /this\.codeEditor\.dispatch\(\{/);
   assert.match(source, /note\.tags = normalizeTags\(this\.tagsInput\.value\)/);
 });

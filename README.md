@@ -159,7 +159,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 15. Notes provides a compact local snippet library:
     - the viewport-contained two-column page keeps a searchable name list on the left and the selected editor on the right; both constrained areas scroll internally at smaller window sizes
     - search ranks exact, prefix, and partial Name matches ahead of lower-priority Tag, Language, and full-content matches
-    - each note has a Name, comma-separated Tags, Language, and CodeMirror 6 Content editor; Markdown is the default, with Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text options
+    - each note has a Name, comma-separated Tags, Language, and CodeMirror 6 Content editor; Markdown is the default, with parser-backed dark-theme syntax highlighting for Markdown, Bash, JavaScript, TypeScript, JSON, and YAML, while Plain Text remains unstyled. Markdown fenced blocks also highlight Bash, JavaScript, TypeScript, JSON, and YAML
     - edits save automatically after a short debounce, note switches and page changes flush pending edits, and window/application close performs a bounded renderer-to-main flush handshake before the final close; create/update/delete operations are serialized into the versioned `<userData>/notes.json` file with private file permissions where the platform supports them
     - `New Note` and `Copy` use compact icon-labelled actions. Each list row owns an icon-only accessible Remove action, so any note can be deleted after confirmation without first opening it
     - dynamic content is rendered only through CodeMirror state, form values, or text nodes; the bounded left list remains independently scrollable with large note collections
@@ -180,7 +180,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `asn1` (explicit dependency required by ssh2 stack in this project)
 - `@kubernetes/client-node` (main-process Kubernetes REST, Watch, log, exec, port-forward, and authenticated KubeVirt VNC transport)
 - `@xterm/xterm` and `@xterm/addon-fit` (Kubernetes bottom workspace)
-- CodeMirror 6 (local browser-ESM snippet editor copied into `dist/renderer/vendor` during the renderer asset step)
+- CodeMirror 6 (local browser-ESM snippet editor and language parsers copied into `dist/renderer/vendor` during the renderer asset step)
 - Base renderer CSS for local fonts, CSS variables, and terminal ANSI log colors
 - Local JSON persistence in Electron userData
 
@@ -221,7 +221,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/kubernetes/podInteractions.ts`: bounded single-Pod/Deployment aggregate logs with live-stream and second-precision snapshot generation fencing, terminal shell fallback/first-output readiness/session lifecycle, and ten-forward ownership
 - `src/main/kubernetes/kubernetesRuntime.ts`: renderer-safe Kubernetes lifecycle facade with Context-scoped single-flight recovery, Context-preference restore, bounded resource-window IPC, and resource interactions
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
-- `src/renderer/notesPage.ts`: split-pane CodeMirror 6 snippet editor, Name-priority search, tags, icon actions, per-list-row delete, and debounced live save
+- `src/renderer/notesPage.ts`: split-pane CodeMirror 6 snippet editor with dynamically selected parser-backed syntax highlighting, Name-priority search, tags, icon actions, per-list-row delete, and debounced live save
 - `src/renderer/settingsDialog.ts`: main-process-backed MinIO/S3 bucket settings, masked credential hydration, password visibility controls, and manual sync UI
 - `src/renderer/kubernetesPage.ts`: full-width Kubernetes controls/lists, right-side overlay drawers, text-safe browser-YAML rendering, on-demand relations, workspace, and count-backed Forwarded Ports dialog
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers
