@@ -623,6 +623,64 @@ export interface ProxyTraffic {
 
 export type ProxyDelayStatus = 'ready' | 'unavailable';
 
+export type NoteLanguage = 'markdown' | 'bash' | 'javascript' | 'typescript' | 'json' | 'yaml' | 'text';
+
+export interface Note {
+  id: string;
+  name: string;
+  content: string;
+  language: NoteLanguage;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NoteDraft {
+  name: string;
+  content: string;
+  language: NoteLanguage;
+  tags: string[];
+}
+
+export interface NotesApi {
+  listNotes: () => Promise<Note[]>;
+  createNote: () => Promise<Note>;
+  updateNote: (id: string, draft: NoteDraft) => Promise<Note>;
+  deleteNote: (id: string) => Promise<void>;
+  onFlushRequested: (listener: () => void | Promise<void>) => () => void;
+}
+
+export interface S3SyncSettingsView {
+  endpoint: string;
+  region: string;
+  syncVersion: 1;
+  hasCredentials: boolean;
+  lastSyncedAt?: string;
+  lastRevision?: string;
+}
+
+export interface S3SyncSettingsDraft {
+  endpoint: string;
+  region: string;
+  syncVersion: 1;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  clearCredentials?: boolean;
+}
+
+export interface S3SyncResult {
+  syncedAt: string;
+  revision: string;
+  byteLength: number;
+  etag?: string;
+}
+
+export interface SettingsApi {
+  getS3SyncSettings: () => Promise<S3SyncSettingsView>;
+  saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
+  syncAllDataToS3: () => Promise<S3SyncResult>;
+}
+
 export interface ProxyDelayResult {
   status: ProxyDelayStatus;
   delayMs?: number;

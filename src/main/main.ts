@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type {
@@ -7,6 +8,7 @@ import type {
   ForwardState,
   HostConfig,
   HostDraft,
+  NoteDraft,
   PrivateKeyImportResult,
   ServiceRefreshOptions,
   ServiceLogsResult,
@@ -53,6 +55,9 @@ import { KubernetesRuntime } from './kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from './kubernetes/contextPreference';
 import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
 import { AppQuitCoordinator } from './quitCoordinator';
+import { NotesStore } from './notesStore';
+import { collectPersistentAppData } from './appDataSnapshot';
+import { S3SyncRuntime } from './s3Sync';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -79,6 +84,15 @@ const IPC_CHANNELS = {
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
   appMemoryUsage: 'app:memory-usage',
+  notesList: 'notes:list',
+  notesCreate: 'notes:create',
+  notesUpdate: 'notes:update',
+  notesDelete: 'notes:delete',
+  notesFlushRequest: 'notes:flush-request',
+  notesFlushResult: 'notes:flush-result',
+  s3SettingsGet: 'settings:s3:get',
+  s3SettingsSave: 'settings:s3:save',
+  s3Sync: 'settings:s3:sync',
   proxyGetState: 'proxy:get-state',
   proxyDownloadCore: 'proxy:download-core',
   proxyStart: 'proxy:start',
@@ -139,9 +153,18 @@ const IPC_CHANNELS = {
 
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
+let notesStore: NotesStore | null = null;
+let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
+const RENDERER_NOTES_FLUSH_TIMEOUT_MS = 2_000;
+const pendingRendererNotesFlushes = new Map<string, {
+  senderId: number;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}>();
 const autoStartAbortController = new AbortController();
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
@@ -163,6 +186,52 @@ function getStore(): ServiceStore {
     throw new Error('Service store is not initialized.');
   }
   return store;
+}
+
+function getNotesStore(): NotesStore {
+  if (!notesStore) {
+    throw new Error('Notes store is not initialized.');
+  }
+  return notesStore;
+}
+
+function getS3SyncRuntime(): S3SyncRuntime {
+  if (!s3SyncRuntime) {
+    throw new Error('S3 sync is not initialized.');
+  }
+  return s3SyncRuntime;
+}
+
+function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
+  const requestId = randomUUID();
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingRendererNotesFlushes.delete(requestId);
+      reject(new Error('The renderer did not finish saving Notes before the timeout.'));
+    }, RENDERER_NOTES_FLUSH_TIMEOUT_MS);
+    timeout.unref();
+    pendingRendererNotesFlushes.set(requestId, {
+      senderId: window.webContents.id,
+      timeout,
+      resolve,
+      reject,
+    });
+    try {
+      window.webContents.send(IPC_CHANNELS.notesFlushRequest, requestId);
+    } catch {
+      clearTimeout(timeout);
+      pendingRendererNotesFlushes.delete(requestId);
+      reject(new Error('The renderer could not be asked to save Notes.'));
+    }
+  });
+}
+
+async function flushRendererNotes(): Promise<void> {
+  const windows = BrowserWindow.getAllWindows().filter((window) =>
+    !window.isDestroyed() && !window.webContents.isDestroyed()
+  );
+  await Promise.all(windows.map((window) => requestRendererNotesFlush(window)));
 }
 
 function serviceKey(hostId: string, serviceId: string): string {
@@ -369,6 +438,34 @@ function createWindow(): BrowserWindow {
     logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
   });
 
+  let allowStandaloneWindowClose = false;
+  let standaloneWindowClosePending = false;
+  window.on('close', (event) => {
+    if (quitCoordinator.canQuitImmediately() || allowStandaloneWindowClose) return;
+    event.preventDefault();
+    if (process.platform !== 'darwin') {
+      requestQuitAfterRuntimeShutdown();
+      return;
+    }
+    if (standaloneWindowClosePending) return;
+    standaloneWindowClosePending = true;
+    void requestRendererNotesFlush(window).then(() => {
+      allowStandaloneWindowClose = true;
+      if (!window.isDestroyed()) window.close();
+    }).catch((error) => {
+      standaloneWindowClosePending = false;
+      logRuntimeError('notes:window-close-flush', error);
+      if (!window.isDestroyed()) {
+        void dialog.showMessageBox(window, {
+          type: 'error',
+          title: 'Notes Could Not Be Saved',
+          message: 'The window was kept open because the latest Notes changes could not be saved.',
+          detail: 'Try saving again before closing the window.',
+        });
+      }
+    });
+  });
+
   void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html')).catch((error) => {
     logRuntimeError('window:load-file', error);
   });
@@ -511,7 +608,15 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     logRuntimeError('app:shutdown', error, { operation: 'updater-stop' });
   }
 
+  try {
+    await flushRendererNotes();
+  } catch (error) {
+    logRuntimeError('app:shutdown', error, { operation: 'renderer-notes-flush' });
+  }
+
   const shutdownResults = await Promise.allSettled([
+    Promise.resolve().then(() => notesStore?.flush()),
+    Promise.resolve().then(() => s3SyncRuntime?.shutdown()),
     Promise.resolve().then(() => portForwardManager.shutdown()),
     Promise.resolve().then(() => tunnelManager.stopAll()),
     Promise.resolve().then(() => proxyRuntime?.shutdown()),
@@ -644,6 +749,36 @@ function registerIpcHandlers(): void {
     syncKnownForwards(hosts);
     return toView(hosts);
   });
+
+  ipcMain.handle(IPC_CHANNELS.notesList, async () => getNotesStore().list());
+  ipcMain.handle(IPC_CHANNELS.notesCreate, async () => getNotesStore().create());
+  ipcMain.handle(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload.id !== 'string') {
+      throw new Error('Note update is invalid.');
+    }
+    return getNotesStore().update(payload.id, payload.draft as NoteDraft);
+  });
+  ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Note ID is invalid.');
+    await getNotesStore().delete(id);
+  });
+  ipcMain.on(IPC_CHANNELS.notesFlushResult, (event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.ok !== 'boolean') return;
+    const pending = pendingRendererNotesFlushes.get(payload.requestId);
+    if (!pending || pending.senderId !== event.sender.id) return;
+    pendingRendererNotesFlushes.delete(payload.requestId);
+    clearTimeout(pending.timeout);
+    if (payload.ok) {
+      pending.resolve();
+    } else {
+      pending.reject(new Error('The renderer could not save the latest Notes changes.'));
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
+  ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
+    getS3SyncRuntime().saveS3SyncSettings(draft)
+  );
+  ipcMain.handle(IPC_CHANNELS.s3Sync, async () => getS3SyncRuntime().syncAllDataToS3());
 
   ipcMain.handle(IPC_CHANNELS.exportConfig, async (): Promise<ConfigTransferResult | null> => {
     const hosts = getStore().listHosts();
@@ -1372,19 +1507,51 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
-    const initializedProxyRuntime = new ProxyRuntime(path.join(app.getPath('userData'), 'proxy'));
+    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes.json'));
+    await notesStore.load();
+
+    const userDataPath = app.getPath('userData');
+    const initializedProxyRuntime = new ProxyRuntime(path.join(userDataPath, 'proxy'));
     proxyRuntime = initializedProxyRuntime;
     await initializedProxyRuntime.init();
 
+    const contextPreference = new FileKubernetesContextPreference(
+      path.join(userDataPath, 'kubernetes-context.json')
+    );
     const initializedKubernetesRuntime = new KubernetesRuntime({
       kubeconfigDirectory: path.join(app.getPath('home'), '.kube'),
-      contextPreference: new FileKubernetesContextPreference(
-        path.join(app.getPath('userData'), 'kubernetes-context.json')
-      ),
+      contextPreference,
       onDiagnostic: (scope, error, context) => logRuntimeError(scope, error, context),
     });
     kubernetesRuntime = initializedKubernetesRuntime;
     await initializedKubernetesRuntime.init();
+
+    s3SyncRuntime = new S3SyncRuntime({
+      userDataPath,
+      appVersion: app.getVersion(),
+      credentialProtector: {
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        encryptString: (value) => safeStorage.encryptString(value),
+        decryptString: (value) => safeStorage.decryptString(value),
+        getSelectedStorageBackend: () => process.platform === 'linux'
+          ? safeStorage.getSelectedStorageBackend()
+          : 'unknown',
+      },
+      snapshotProvider: async () => {
+        const activeNotesStore = getNotesStore();
+        await activeNotesStore.flush();
+        const [proxy, kubernetesContextSelection] = await Promise.all([
+          initializedProxyRuntime.exportPersistentSnapshot(),
+          contextPreference.load(),
+        ]);
+        return collectPersistentAppData({
+          hosts: getStore().listHosts(),
+          notes: activeNotesStore.exportSnapshot(),
+          proxy,
+          kubernetesContextSelection,
+        });
+      },
+    });
 
     applyAppIcon();
     registerIpcHandlers();

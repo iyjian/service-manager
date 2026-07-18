@@ -31,6 +31,9 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/operationQueue.ts`: per-host/service async serialization for service mutations.
 - `src/main/hostConnection.ts`: shared SSH endpoint and private-key resolution.
 - `src/main/serviceRuntime.ts`: remote `systemd --user` lifecycle, categorized preflight checks, status checks, and journal log access.
+- `src/main/notesStore.ts`: versioned and bounded Notes CRUD with cloned values, serialized mutations, and atomic private JSON persistence.
+- `src/main/appDataSnapshot.ts`: explicit durable-data allowlist for S3 snapshots; runtime state, logs, caches, and S3 credentials are excluded.
+- `src/main/s3Sync.ts`: OS-protected S3 credentials, versioned AES-GCM snapshot encryption, SigV4 PUT signing, and single-flight timeout/shutdown ownership.
 - `src/main/runtimeLog.ts`: serialized, redacted local runtime diagnostic JSONL writer with 1 MiB current-file rotation.
 - `src/main/portForwardManager.ts`: service-owned local port forwarding with active-socket ownership, failed-listen cleanup, and cancellation-fenced in-flight starts for bounded shutdown.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
@@ -62,6 +65,8 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/kubernetes/podInteractions.ts`: 2,000-line bounded single-Pod/Deployment aggregate logs with multi-stream and start-time snapshot generation fencing, terminal shell fallback/session ownership and first-output readiness gating, and ten-forward lifecycle.
 - `src/main/kubernetes/kubernetesRuntime.ts`: display-safe facade composing kubeconfig, persisted Context preference, Context-scoped single-flight recovery, session, resources, and Pod interactions for IPC.
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring.
+- `src/renderer/notesPage.ts`: viewport-contained two-column Notes UI with Name-priority search, tags, copy/delete, and debounced realtime save.
+- `src/renderer/settingsDialog.ts`: bottom-navigation Settings dialog for write-only credential updates and manual versioned S3 sync.
 - `src/renderer/kubernetesPage.ts`: full-width Context/Namespace controls with an unclipped Namespace popup, category lists, right-side overlay drawers with aligned Labels and fully expanded Env rows, text-safe browser-YAML rendering, Events, on-demand relations, bottom workspace, and count-backed Forwarded Ports dialog.
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers.
 - `src/renderer/kubernetesBuiltinResourceModel.ts`: pure bounded Lens-inspired detail models for Deployments, StatefulSets, Services, Ingresses, ConfigMaps, Secrets, and PVCs.
@@ -90,6 +95,21 @@ Hosts:
 - Jump servers are configured inside Add/Edit Host as an ordered multi-hop chain.
 - Private-key auth supports pasted key content and imported key files; import should default to `~/.ssh` when possible.
 - The Hosts header shows the total local Service Manager Memory in GB. It aggregates all Electron `app.getAppMetrics()` processes and local Mihomo RSS when running, refreshes every five seconds only while Hosts is active, and replaces the old host/tunnel/service aggregate. Remote SSH services are excluded, as is system-wide memory.
+
+Notes:
+
+- Notes are local snippets with Name, Content, Language, Tags, created time, and updated time. Markdown is the default language; Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text are supported metadata choices.
+- Keep Notes in a viewport-contained left-list/right-editor layout. Search ranks Name exact/prefix/substring matches before lower-priority Tag, Language, and Content matches.
+- Save edits after a short debounce and flush pending edits on note/page changes. Window/application close attempts a bounded renderer-to-main Notes flush handshake before the main-process store flush; a standalone macOS window stays open on failure, while application quit records a failed/timed-out handshake and retains the global bounded-shutdown behavior. Persist only the schema-versioned `<userData>/notes.json` through serialized atomic writes with private permissions where supported.
+- Dynamic note names/content/tags must use form values or text nodes. Copy uses the existing clipboard bridge and delete requires confirmation.
+
+S3 backup:
+
+- Settings is a gear action fixed to the bottom of the navigation rail. It accepts one full S3 object URL, Region, AK, and SK, and exposes a manual upload action with explicit sync format version 1.
+- Newly entered S3 credentials may exist only in the renderer's password inputs and narrow save IPC. Persisted/read-back credentials remain main-process-only: protect them through Electron `safeStorage`, reject unavailable or Linux `basic_text` credential protection, never return credentials or ciphertext through IPC, and exclude the S3 settings file from its own snapshot.
+- Version 1 is a one-way overwrite upload to the exact configured object. Sign the PUT with AWS SigV4 and encrypt the complete snapshot with AES-256-GCM using an HKDF-derived key before network transfer. The secret access key therefore also controls snapshot decryption compatibility.
+- Snapshot only allowlisted durable data: Hosts, Notes, durable Proxy settings/source subscription, and the non-credential Kubernetes Context preference. Exclude logs, parsed/runtime caches, transient sessions/process state, and S3 settings/credentials.
+- Bound plaintext snapshots to 50 MiB, use a 30-second request timeout, coalesce concurrent uploads, and abort/wait for active upload work during application shutdown.
 
 Local proxy:
 
@@ -192,6 +212,7 @@ Logs:
 - Proxy Strategy Groups use compact per-group sections with a current selection and safe text-only rendering of dynamic group and candidate names.
 - Custom Rules use text-safe custom-rule rendering for all dynamic rule values and actions.
 - Proxy controls, Strategy Groups, and Custom Rules must share one white Proxy content container that remains responsive on narrow windows.
+- Notes keeps the left list and right editor visible at the default 1230×820 window. Constrained list/editor regions scroll internally, and the Settings gear stays at the bottom of the navigation rail.
 - Kubernetes alone uses the available application width in the existing white content-container style: matching compact label-free Context/Namespace custom selectors, a searchable non-wrapping Namespace popup, connection/disconnect state, selected Namespace scope, non-wrapping category/resource controls, and resource-specific eight-column virtual tables; no UI Cluster category is visible. The Namespace popup remains unclipped, while other constrained control strips scroll internally. Resource details are right-side overlay drawers that preserve the originating list's loaded pages, filters, sort, active Watch, and scroll state beneath. Pod basics and Labels align keys left and values right; expanded Env shows fully wrapped bounded key/value rows without source/reference badges and scrolls with the drawer. YAML is an icon action, Events are read-only/on-demand, and VNC is a Pod-header action only for a strictly recognized Running KubeVirt launcher. At 1230×820, drawer/workspace scrolling stays internal; smaller windows keep primary controls visible and move overflow into the active drawer and bottom workspace. The category row keeps a compact Forwarded Ports count button at its far right; active forwards appear only after that button opens its bounded dialog, while the bottom Logs/Shell workspace remains a viewport-contained layer.
 - Kubernetes dynamic values, including resource names, labels, YAML, Events, logs, and terminal output, must use DOM nodes and `textContent`; never insert Kubernetes-derived values with `innerHTML`.
 - Kubernetes YAML uses the copied local `js-yaml` browser asset and renders through `textContent`. Decoded Secret YAML remains only in the active detail DOM and is cleared when that detail closes or changes.
@@ -208,6 +229,7 @@ Logs:
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
 - Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
+- New S3 AK/SK values may enter renderer state only as user-supplied password fields until the narrow save IPC settles, after which successful settings rendering clears both fields. Persisted/read-back credentials and encrypted blobs stay in the main process and never enter renderer state, backup snapshots, runtime logs, diagnostics, or error messages. Durable app data may leave the machine only inside the authenticated, versioned encrypted S3 snapshot.
 - Kubeconfig bytes, absolute source paths, stable-ID source mappings, tokens, client certificates/keys, client transport/VNC handles, and terminal/port-forward/VNC credentials stay in the main process and never cross renderer IPC or persist to disk. Terminal output may be transiently relayed but must never be persisted to main-process state, disk, settings, or logs; retained xterm views and the bounded pre-bind bridge are renderer-memory-only.
 - Kubernetes Secret `data`/`stringData` must be absent from list/cache/diagnostic/settings data. Decode `secretKeyRef` and `envFrom.secretRef` only through a narrow request in the main process for the active drawer; keep its result bounded and locally searchable, clear it when that drawer closes or changes, and never cache, persist to settings, log, diagnose, or write it to disk.
 - Dialog open/close paths must be idempotent.

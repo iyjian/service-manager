@@ -52,7 +52,11 @@ export function activatePage(pageId: string): void {
   }
 
   for (const item of Array.from(getNavRail().querySelectorAll<HTMLElement>('.nav-item'))) {
-    item.classList.toggle('nav-item-active', item.dataset.pageTarget === pageId);
+    const active = item.dataset.pageTarget === pageId;
+    item.classList.toggle('nav-item-active', active);
+    if (item.dataset.pageTarget) {
+      item.setAttribute('aria-current', active ? 'page' : 'false');
+    }
   }
 
   try {

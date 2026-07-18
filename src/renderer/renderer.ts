@@ -14,7 +14,9 @@ import type {
 import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
 import { initNav, registerPage } from './nav.js';
 import { registerKubernetesPage } from './kubernetesPage.js';
+import { registerNotesPage } from './notesPage.js';
 import { registerProxyPage } from './proxyPage.js';
+import { registerSettingsDialog } from './settingsDialog.js';
 import {
   canStartForward,
   canStartService,
@@ -2095,6 +2097,8 @@ registerPage({
 });
 registerProxyPage();
 registerKubernetesPage();
+registerNotesPage();
+registerSettingsDialog();
 initNav('hosts');
 
 applyStaticButtonIcons();

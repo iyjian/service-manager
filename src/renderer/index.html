@@ -12,6 +12,12 @@
     <div class="app-layout">
       <nav id="nav-rail" class="nav-rail" aria-label="Primary">
         <img class="nav-logo" src="../../assets/icon-64.png" alt="Service Manager" />
+        <button id="nav-settings-btn" type="button" class="nav-item nav-settings-button" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.25"></circle>
+            <path d="M8 1.75v1.4M8 12.85v1.4M14.25 8h-1.4M3.15 8h-1.4M12.42 3.58l-.99.99M4.57 11.43l-.99.99M12.42 12.42l-.99-.99M4.57 4.57l-.99-.99"></path>
+          </svg>
+        </button>
       </nav>
       <div class="app-content">
     <main class="app-shell" data-page="hosts">
@@ -296,6 +302,60 @@
         </aside>
       </section>
     </main>
+
+    <main class="app-shell hidden" data-page="notes">
+      <header class="page-head">
+        <div class="page-head-main">
+          <div class="page-brand">
+            <div class="page-brand-copy">
+              <div class="page-title-row">
+                <h1 class="page-title">Notes</h1>
+                <span class="page-stats">Local snippets</span>
+              </div>
+            </div>
+          </div>
+          <div class="page-actions">
+            <button id="notes-new-btn" type="button" class="btn btn-primary btn-sm">New Note</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="notes-page" aria-label="Notes">
+        <aside class="notes-sidebar">
+          <label class="notes-search-wrap">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+            <input id="notes-search" type="search" placeholder="Search notes" aria-label="Search notes" spellcheck="false" />
+          </label>
+          <nav id="notes-list" class="notes-list" aria-label="Notes"></nav>
+        </aside>
+
+        <section class="notes-workspace" aria-label="Note editor">
+          <div id="notes-empty" class="notes-empty">Create or select a note.</div>
+          <div id="notes-editor" class="notes-editor hidden">
+            <div class="notes-editor-toolbar">
+              <input id="note-name" class="input notes-name-input" type="text" maxlength="200" placeholder="Note name" aria-label="Note name" />
+              <select id="note-language" class="input notes-language-select" aria-label="Language">
+                <option value="markdown">Markdown</option>
+                <option value="bash">Bash</option>
+                <option value="javascript">JavaScript</option>
+                <option value="typescript">TypeScript</option>
+                <option value="json">JSON</option>
+                <option value="yaml">YAML</option>
+                <option value="text">Plain Text</option>
+              </select>
+              <button id="note-copy-btn" type="button" class="btn btn-secondary btn-sm">Copy</button>
+              <button id="note-delete-btn" type="button" class="btn btn-danger btn-sm">Remove</button>
+            </div>
+            <div class="notes-tags-row">
+              <span class="notes-tags-label">Tags</span>
+              <input id="note-tags" class="input notes-tags-input" type="text" placeholder="api, deploy, example" aria-label="Tags, comma separated" spellcheck="false" />
+              <span id="note-save-status" class="notes-save-status" role="status" aria-live="polite">Saved</span>
+            </div>
+            <textarea id="note-content" class="notes-content" aria-label="Note content" placeholder="Write Markdown or paste a code snippet…" spellcheck="false"></textarea>
+          </div>
+        </section>
+      </section>
+    </main>
       </div>
     </div>
 
@@ -310,6 +370,51 @@
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
       </button>
     </div>
+
+    <dialog id="settings-dialog" class="host-dialog settings-dialog" aria-labelledby="settings-title">
+      <form id="settings-form" class="dialog-panel settings-panel form-stack">
+        <div class="dialog-head">
+          <div>
+            <h2 id="settings-title" class="section-title">Settings</h2>
+            <p class="settings-subtitle">S3 backup · encrypted format v1</p>
+          </div>
+          <button id="settings-close-btn" type="button" class="icon-btn" aria-label="Close Settings">×</button>
+        </div>
+        <label class="field field-xs">
+          S3 object address
+          <input id="s3-endpoint" class="input" type="url" placeholder="https://s3.example.com/bucket/service-manager/snapshot.json" spellcheck="false" autocomplete="off" required />
+        </label>
+        <div class="settings-grid">
+          <label class="field field-xs">
+            Region
+            <input id="s3-region" class="input" type="text" value="us-east-1" spellcheck="false" autocomplete="off" required />
+          </label>
+          <label class="field field-xs">
+            Sync format
+            <select id="s3-sync-version" class="input" disabled>
+              <option value="1">Version 1</option>
+            </select>
+          </label>
+        </div>
+        <div class="settings-grid">
+          <label class="field field-xs">
+            Access Key ID
+            <input id="s3-access-key" class="input" type="password" placeholder="Leave blank to keep saved value" autocomplete="off" />
+          </label>
+          <label class="field field-xs">
+            Secret Access Key
+            <input id="s3-secret-key" class="input" type="password" placeholder="Leave blank to keep saved value" autocomplete="off" />
+          </label>
+        </div>
+        <p class="settings-hint">Credentials are stored with the operating system credential protection. S3 credentials are never included in the backup.</p>
+        <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
+        <div class="form-actions settings-actions">
+          <button id="settings-save-btn" type="submit" class="btn btn-secondary">Save</button>
+          <button id="settings-sync-btn" type="button" class="btn btn-primary">Sync Now</button>
+          <button id="settings-clear-credentials-btn" type="button" class="btn btn-secondary">Clear Credentials</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="service-log-dialog" class="host-dialog service-log-dialog">
       <div class="dialog-panel service-log-panel">

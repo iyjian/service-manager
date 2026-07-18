@@ -42,9 +42,14 @@ import {
 } from './proxyDelays';
 import { applySystemProxy, readSystemProxy } from './systemProxy';
 import { checkTunSupport, grantTunPermission, revokeTunPermission } from './tunPermission';
+import {
+  sanitizeProxySettingsForSnapshot,
+  type PersistentProxySnapshot,
+} from '../appDataSnapshot';
 
 const MAX_LOG_LINES = 2000;
 const CONTROLLER_STARTUP_TIMEOUT_MS = 12000;
+const MAX_BACKUP_SUBSCRIPTION_BYTES = 20 * 1024 * 1024;
 
 const DEFAULT_SETTINGS: ProxySettings = {
   startOnLaunch: false,
@@ -151,6 +156,7 @@ export class ProxyRuntime extends EventEmitter {
   private tunSupport: ProxyTunSupport | undefined;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private settingsWriteQueue: Promise<void> = Promise.resolve();
+  private subscriptionDataQueue: Promise<void> = Promise.resolve();
   constructor(
     private readonly proxyDir: string,
     private readonly spawnProcess: typeof spawn = spawn,
@@ -163,6 +169,15 @@ export class ProxyRuntime extends EventEmitter {
   private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.lifecycleQueue.then(operation);
     this.lifecycleQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  private enqueueSubscriptionData<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.subscriptionDataQueue.then(operation, operation);
+    this.subscriptionDataQueue = result.then(
       () => undefined,
       () => undefined
     );
@@ -225,6 +240,30 @@ export class ProxyRuntime extends EventEmitter {
 
   async getState(): Promise<ProxyState> {
     return this.snapshot();
+  }
+
+  async exportPersistentSnapshot(): Promise<PersistentProxySnapshot> {
+    return this.enqueueSubscriptionData(async () => {
+      await this.settingsWriteQueue;
+      let subscriptionYaml: string | undefined;
+      try {
+        const stat = await fs.stat(this.subscriptionCachePath);
+        if (!stat.isFile() || stat.size > MAX_BACKUP_SUBSCRIPTION_BYTES) {
+          throw new Error('The retained Proxy subscription is too large to sync.');
+        }
+        const source = await fs.readFile(this.subscriptionCachePath);
+        if (source.byteLength > MAX_BACKUP_SUBSCRIPTION_BYTES) {
+          throw new Error('The retained Proxy subscription is too large to sync.');
+        }
+        subscriptionYaml = source.toString('utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      return {
+        settings: sanitizeProxySettingsForSnapshot(this.settings),
+        ...(subscriptionYaml !== undefined ? { subscriptionYaml } : {}),
+      };
+    });
   }
 
   getLogs(): string {
@@ -474,6 +513,10 @@ export class ProxyRuntime extends EventEmitter {
     }
     const text = await response.text();
     const info = parseSubscription(text);
+    return this.enqueueSubscriptionData(() => this.commitFetchedSubscription(text, info));
+  }
+
+  private async commitFetchedSubscription(text: string, info: SubscriptionInfo): Promise<ProxyState> {
     const [previousRaw, previousParsed] = await Promise.all([
       this.readCacheForRollback(this.subscriptionCachePath),
       this.readCacheForRollback(this.parsedSubscriptionCachePath),

@@ -26,6 +26,11 @@
     @apply h-5 w-5;
   }
 
+  .nav-settings-button {
+    @apply mt-auto;
+    order: 99;
+  }
+
   .nav-item-active {
     @apply border-zinc-200 bg-white text-zinc-950 shadow-sm;
   }
@@ -49,6 +54,169 @@
     max-height: 100dvh;
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
+  }
+
+  .app-shell[data-page='notes'] {
+    height: 100dvh;
+    max-height: 100dvh;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .notes-page {
+    @apply grid min-h-0 min-w-0 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm;
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+
+  .notes-sidebar {
+    @apply grid min-h-0 min-w-0 border-r border-zinc-300 bg-zinc-50;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .notes-search-wrap {
+    @apply m-2 flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-2 text-zinc-400 focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-300;
+  }
+
+  .notes-search-wrap svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .notes-search-wrap input {
+    @apply h-7 min-w-0 flex-1 border-0 bg-transparent p-0 text-[12.5px] text-zinc-900 outline-none placeholder:text-zinc-400;
+  }
+
+  .notes-list {
+    @apply min-h-0 overflow-y-auto border-t border-zinc-200 p-1.5;
+  }
+
+  .notes-list-empty {
+    @apply px-2 py-5 text-center text-[12px] text-zinc-400;
+  }
+
+  .notes-list-item {
+    @apply mb-1 grid w-full cursor-pointer gap-1 rounded-md border border-transparent bg-transparent px-2 py-2 text-left outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .notes-list-item[aria-current='true'] {
+    @apply border-zinc-300 bg-white shadow-sm;
+  }
+
+  .notes-list-item-name {
+    @apply min-w-0 truncate text-[13px] font-semibold text-zinc-900;
+  }
+
+  .notes-list-meta {
+    @apply flex min-w-0 items-center gap-1.5 overflow-hidden font-mono text-[10.5px] text-zinc-400;
+  }
+
+  .notes-list-language {
+    @apply shrink-0 rounded bg-zinc-200/70 px-1 py-0.5 uppercase tracking-[0.04em] text-zinc-600;
+  }
+
+  .notes-list-tags {
+    @apply min-w-0 truncate;
+  }
+
+  .notes-workspace {
+    @apply min-h-0 min-w-0 bg-white;
+  }
+
+  .notes-empty {
+    @apply flex h-full min-h-0 items-center justify-center text-[13px] text-zinc-400;
+  }
+
+  .notes-empty[data-state='error'] {
+    @apply px-6 text-center text-red-600;
+  }
+
+  .notes-editor {
+    @apply grid h-full min-h-0 min-w-0;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .notes-editor-toolbar {
+    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 p-2;
+  }
+
+  .notes-editor-toolbar .notes-name-input {
+    @apply min-w-0 flex-1 font-semibold;
+    width: auto;
+  }
+
+  .notes-editor-toolbar .notes-language-select {
+    @apply w-32 shrink-0;
+  }
+
+  .notes-tags-row {
+    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
+  }
+
+  .notes-tags-label {
+    @apply shrink-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
+  }
+
+  .notes-tags-row .notes-tags-input {
+    @apply h-7 min-w-0 flex-1 text-[12px];
+    width: auto;
+  }
+
+  .notes-save-status {
+    @apply shrink-0 font-mono text-[11px] text-zinc-400;
+  }
+
+  .notes-save-status[data-state='saving'] {
+    @apply text-amber-600;
+  }
+
+  .notes-save-status[data-state='error'] {
+    @apply text-red-600;
+  }
+
+  .notes-content {
+    @apply h-full min-h-0 w-full resize-none border-0 bg-zinc-950 p-4 font-mono text-[13px] leading-6 text-zinc-100 outline-none placeholder:text-zinc-600 focus:ring-2 focus:ring-inset focus:ring-zinc-500;
+    tab-size: 2;
+  }
+
+  .host-dialog.settings-dialog {
+    width: min(540px, calc(100vw - 32px));
+  }
+
+  .dialog-panel.settings-panel {
+    @apply gap-3;
+    max-height: min(720px, calc(100vh - 32px));
+  }
+
+  .settings-subtitle {
+    @apply m-0 mt-0.5 text-[12px] text-zinc-500;
+  }
+
+  .settings-grid {
+    @apply grid grid-cols-2 gap-3;
+  }
+
+  .settings-hint,
+  .settings-status {
+    @apply m-0 rounded-md px-2.5 py-2 text-[12px];
+  }
+
+  .settings-hint {
+    @apply bg-zinc-50 text-zinc-500;
+  }
+
+  .settings-status {
+    @apply border border-zinc-200 bg-white text-zinc-600;
+  }
+
+  .settings-status-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .settings-status-error {
+    @apply border-red-200 bg-red-50 text-red-800;
+  }
+
+  .settings-actions {
+    @apply static m-0 px-0 pb-0;
   }
 
   .proxy-grid {
@@ -2157,6 +2325,15 @@
   }
 
   @media (max-width: 640px) {
+    .notes-page {
+      grid-template-columns: minmax(190px, 220px) minmax(280px, 1fr);
+      overflow-x: auto;
+    }
+
+    .settings-grid {
+      @apply grid-cols-1;
+    }
+
     .kubernetes-context-control {
       width: 170px;
     }

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   HostDraft,
+  NoteDraft,
+  NotesApi,
   KubernetesApi,
   KubernetesListSnapshot,
   KubernetesLogScope,
@@ -23,6 +25,8 @@ import type {
   ProxyState,
   ProxyTraffic,
   ServiceApi,
+  S3SyncSettingsDraft,
+  SettingsApi,
   ServiceStatusChange,
   TunnelStatusChange,
   UpdateState,
@@ -80,6 +84,32 @@ const api: ServiceApi = {
     ipcRenderer.on('updater:state', wrapped);
     return () => ipcRenderer.removeListener('updater:state', wrapped);
   },
+};
+
+const notesApi: NotesApi = {
+  listNotes: () => ipcRenderer.invoke('notes:list'),
+  createNote: () => ipcRenderer.invoke('notes:create'),
+  updateNote: (id: string, draft: NoteDraft) => ipcRenderer.invoke('notes:update', { id, draft }),
+  deleteNote: (id: string) => ipcRenderer.invoke('notes:delete', id),
+  onFlushRequested: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, requestId: unknown): void => {
+      if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;
+      void Promise.resolve()
+        .then(listener)
+        .then(
+          () => ipcRenderer.send('notes:flush-result', { requestId, ok: true }),
+          () => ipcRenderer.send('notes:flush-result', { requestId, ok: false }),
+        );
+    };
+    ipcRenderer.on('notes:flush-request', handler);
+    return () => ipcRenderer.removeListener('notes:flush-request', handler);
+  },
+};
+
+const settingsApi: SettingsApi = {
+  getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
+  saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
+  syncAllDataToS3: () => ipcRenderer.invoke('settings:s3:sync'),
 };
 
 const proxyApi: ProxyApi = {
@@ -170,5 +200,7 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 }
 
 contextBridge.exposeInMainWorld('serviceApi', api);
+contextBridge.exposeInMainWorld('notesApi', notesApi);
+contextBridge.exposeInMainWorld('settingsApi', settingsApi);
 contextBridge.exposeInMainWorld('proxyApi', proxyApi);
 contextBridge.exposeInMainWorld('kubernetesApi', kubernetesApi);

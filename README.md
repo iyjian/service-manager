@@ -156,6 +156,18 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
     - `secretKeyRef` and `envFrom.secretRef` values are decoded only through a narrow request in the main process for the active drawer. The result is bounded and locally searchable, and is never placed in caches, settings, runtime logs, diagnostics, or disk. Secret list caches remove `data` and `stringData`; decoded Secret detail values exist only in the active viewer
     - before a Context is published as connected, the main process performs a read-only Kubernetes Version endpoint reachability probe. A 401/403 response proves the API endpoint is reachable but does not replace resource-level RBAC handling. Transient probe or transport failures share one Context-scoped bounded exponential retry; the renderer keeps one stable `Reconnecting` view and sends no resource LIST until that exact Context connects, then activates the current view once. Retry exhaustion settles to `disconnected` instead of briefly publishing a false connected state
     - a transport disconnect (including an unexpectedly closed Watch stream) closes Watches, log/terminal streams, and forwards; the current resource page reconnects with bounded exponential backoff and reloads after success, but forwards are never recreated automatically. Concurrent failures share the same recovery, and switching Contexts fences the older recovery from publishing stale state. A supported disconnected Context also exposes a manual `Reconnect` action; it only reconnects and reloads the active read-only view
+15. Notes provides a compact local snippet library:
+    - the viewport-contained two-column page keeps a searchable name list on the left and the selected editor on the right; both constrained areas scroll internally at smaller window sizes
+    - search ranks exact, prefix, and partial Name matches ahead of lower-priority Tag, Language, and full-content matches
+    - each note has a Name, comma-separated Tags, Language, and Content; Markdown is the default, with Bash, JavaScript, TypeScript, JSON, YAML, and Plain Text options
+    - edits save automatically after a short debounce, note switches and page changes flush pending edits, and window/application close performs a bounded renderer-to-main flush handshake before the final close; create/update/delete operations are serialized into the versioned `<userData>/notes.json` file with private file permissions where the platform supports them
+    - content is rendered only through form values/text nodes and has a one-click `Copy` action; delete requires confirmation
+16. The bottom navigation Settings action provides manual, versioned S3 backup:
+    - configure a full S3 object URL, Region, Access Key ID, and Secret Access Key; the current upload format is explicitly `Version 1`
+    - newly entered credentials cross only the narrow save IPC; persisted credentials stay in the main process, are encrypted with Electron operating-system credential protection, never return to the renderer, and are not included in the backup. Linux `basic_text` storage is rejected rather than persisting credentials insecurely
+    - `Sync Now` uploads one SigV4-authenticated `PUT` to the configured object URL. Before upload, the versioned snapshot is encrypted with AES-256-GCM using an HKDF-derived key, so host SSH credentials and other durable configuration are not stored as plaintext in S3
+    - the allowlisted snapshot contains Hosts, Notes, durable Proxy settings and retained source subscription, and the non-credential Kubernetes Context preference. Runtime logs, caches, live sessions, S3 settings/credentials, and transient process data are excluded
+    - uploads are single-flight, bounded to 50 MiB before encryption, time out after 30 seconds, and are aborted during application shutdown. Version 1 is upload-only and intentionally overwrites the configured object; changing the Secret Access Key also changes the snapshot encryption key
 
 ## Tech Stack
 
@@ -179,6 +191,9 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/operationQueue.ts`: per-key async queue used to serialize service mutations
 - `src/main/hostConnection.ts`: shared SSH endpoint/private-key resolution for service, tunnel, and forwarding paths
 - `src/main/serviceRuntime.ts`: remote `systemd --user` service lifecycle and journal log access
+- `src/main/notesStore.ts`: versioned, bounded local Notes CRUD with serialized atomic JSON persistence
+- `src/main/appDataSnapshot.ts`: explicit allowlist for the durable app data included in an S3 snapshot
+- `src/main/s3Sync.ts`: secure S3 settings persistence, versioned encrypted snapshots, SigV4 PUT signing, and bounded upload lifecycle
 - `src/main/portForwardManager.ts` / `src/main/tunnelManager.ts`: SSH local forwarding runtime; service forwards release failed-start SSH chains, fence in-flight starts during bulk stop, and destroy active local sockets before waiting for listener close
 - `src/main/quitCoordinator.ts`: single-flight normal/signal/update quit sequencing with an eight-second cleanup deadline before the final Electron or installer action, plus a 1.5-second forced-exit fallback after that action begins
 - `src/main/proxy/proxyRuntime.ts`: local Mihomo process lifecycle, parsed-cache loading/replacement, persisted proxy settings and Custom Rule mutations, and system/TUN proxy controls
@@ -203,6 +218,8 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/main/kubernetes/podInteractions.ts`: bounded single-Pod/Deployment aggregate logs with live-stream and second-precision snapshot generation fencing, terminal shell fallback/first-output readiness/session lifecycle, and ten-forward ownership
 - `src/main/kubernetes/kubernetesRuntime.ts`: renderer-safe Kubernetes lifecycle facade with Context-scoped single-flight recovery, Context-preference restore, bounded resource-window IPC, and resource interactions
 - `src/renderer/renderer.ts`: UI orchestration and DOM event wiring
+- `src/renderer/notesPage.ts`: split-pane snippet editor, Name-priority search, tags, copy/delete actions, and debounced live save
+- `src/renderer/settingsDialog.ts`: main-process-backed S3 settings and manual sync UI without credential readback
 - `src/renderer/kubernetesPage.ts`: full-width Kubernetes controls/lists, right-side overlay drawers, text-safe browser-YAML rendering, on-demand relations, workspace, and count-backed Forwarded Ports dialog
 - `src/renderer/kubernetesDrawerModel.ts`: pure display-safe Pod drawer fields, container metadata, and active-drawer environment filtering helpers
 - `src/renderer/kubernetesBuiltinResourceModel.ts`: pure bounded Lens-inspired detail models for Deployments, StatefulSets, Services, Ingresses, ConfigMaps, Secrets, and PVCs
