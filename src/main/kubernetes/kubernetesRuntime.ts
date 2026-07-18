@@ -167,9 +167,22 @@ function copySummary(value: KubernetesResourceSummary): KubernetesResourceSummar
 
 function copyRelatedResources(value: KubernetesRelatedResources): KubernetesRelatedResources {
   return {
+    ...(value.warnings ? { warnings: [...value.warnings] } : {}),
     ...(value.pods ? { pods: value.pods.map(copySummary) } : {}),
-    ...(value.endpoints ? { endpoints: value.endpoints.map(copySummary) } : {}),
-    ...(value.endpointSlices ? { endpointSlices: value.endpointSlices.map(copySummary) } : {}),
+    ...(value.endpoints ? {
+      endpoints: value.endpoints.map((backend) => ({
+        ...backend,
+        ports: [...backend.ports],
+        targets: [...backend.targets],
+      })),
+    } : {}),
+    ...(value.endpointSlices ? {
+      endpointSlices: value.endpointSlices.map((backend) => ({
+        ...backend,
+        ports: [...backend.ports],
+        targets: [...backend.targets],
+      })),
+    } : {}),
   };
 }
 

@@ -21,6 +21,10 @@ import {
 } from './podEnvironment';
 import { buildPodExecCommand, createUtf8ChunkDecoder } from './podExecTransport';
 import {
+  mapKubernetesEndpointsSummary,
+  mapKubernetesEndpointSliceSummaries,
+} from './relatedResourceSummary';
+import {
   createEphemeralVncPassword,
   isMatchingKubeVirtVmi,
   openKubeVirtVncBridge,
@@ -1035,7 +1039,7 @@ class KubernetesClientAdapter implements KubernetesClient {
     this.assertRelatedResourceRequest(request);
 
     if (request.kind === 'service') {
-      const [endpoint, endpointSlices] = await Promise.all([
+      const [endpointResult, endpointSlicesResult] = await Promise.allSettled([
         this.call(this.core, 'readNamespacedEndpoints', {
           name: request.name,
           namespace: request.namespace,
@@ -1046,10 +1050,27 @@ class KubernetesClientAdapter implements KubernetesClient {
           limit: PAGE_SIZE,
         }),
       ]);
-      const sliceList = asRecord(endpointSlices) as KubernetesListObject;
+      const warnings: string[] = [];
+      const partialValue = (
+        result: PromiseSettledResult<unknown>,
+        label: 'Endpoints' | 'EndpointSlices',
+      ): unknown | undefined => {
+        if (result.status === 'fulfilled') return result.value;
+        const status = statusCodeFrom(result.reason);
+        if (status === 404) return undefined;
+        if (status === 401 || status === 403) {
+          warnings.push(`No permission to read ${label}.`);
+          return undefined;
+        }
+        throw result.reason;
+      };
+      const endpoint = partialValue(endpointResult, 'Endpoints');
+      const endpointSlices = partialValue(endpointSlicesResult, 'EndpointSlices');
+      const sliceList = endpointSlices ? asRecord(endpointSlices) as KubernetesListObject : undefined;
       return {
-        endpoints: this.summaryItems('services', [endpoint]),
-        endpointSlices: this.summaryItems('services', sliceList.items),
+        endpoints: endpoint ? [mapKubernetesEndpointsSummary(asRecord(endpoint))] : [],
+        endpointSlices: mapKubernetesEndpointSliceSummaries((sliceList?.items ?? []).map(asRecord)),
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
     }
 

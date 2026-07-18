@@ -174,6 +174,21 @@ test('per-kind Kubernetes summaries expose stable operational list columns', () 
   }
 });
 
+test('Pending PVC summary falls back to requested storage until bound capacity exists', () => {
+  const { mapKubernetesResourceSummary } = require(summaryModule);
+  const summary = mapKubernetesResourceSummary('persistentvolumeclaims', {
+    metadata: metadata('pending-data'),
+    spec: {
+      accessModes: ['ReadWriteOnce'],
+      resources: { requests: { storage: '12Gi' } },
+    },
+    status: { phase: 'Pending' },
+  });
+
+  assert.equal(summary.columns.capacity, '12Gi');
+  assert.equal(summary.status, 'Pending');
+});
+
 test('Secret summaries expose only a data count and never retain key, value, or stringData text', () => {
   const { mapKubernetesResourceSummary } = require(summaryModule);
   const input = {

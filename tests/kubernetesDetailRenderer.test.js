@@ -350,6 +350,32 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
   assert.doesNotMatch(html, /id="kubernetes-log-panel"/);
 });
 
+test('Kubernetes built-in drawers dispatch to resource-specific text-safe sections with lazy collapsed content', async () => {
+  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const renderDetailStart = page.indexOf('    renderDetail() {');
+  const renderDetailEnd = page.indexOf('    renderOverview(detail, active) {', renderDetailStart);
+  const builtInStart = page.indexOf('    renderBuiltinResourceDrawer(detail, active) {');
+  const builtInEnd = page.indexOf('    renderCustomResourceDrawer(', builtInStart);
+  const persistentStart = page.indexOf('    createPersistentDrawerSection(', builtInStart);
+  const persistentEnd = page.indexOf('    renderCustomResourceDrawer(', persistentStart);
+  const renderDetail = page.slice(renderDetailStart, renderDetailEnd);
+  const builtIn = page.slice(builtInStart, builtInEnd);
+  const persistent = page.slice(persistentStart, persistentEnd);
+
+  assert.ok(renderDetailStart >= 0 && renderDetailEnd > renderDetailStart);
+  assert.ok(builtInStart >= 0 && builtInEnd > builtInStart);
+  assert.ok(persistentStart >= 0 && persistentEnd > persistentStart);
+  assert.match(renderDetail, /isKubernetesBuiltinDetailKind\(active\.query\.kind\)/);
+  assert.match(renderDetail, /this\.renderBuiltinResourceDrawer\(detail, active\)/);
+  assert.match(builtIn, /buildKubernetesBuiltinDetailModel\(active\.query\.kind, detail, active\.summary\)/);
+  assert.match(builtIn, /description\.textContent = field\.value/);
+  assert.match(builtIn, /cell\.textContent = value/);
+  assert.match(builtIn, /text\.textContent = value/);
+  assert.doesNotMatch(builtIn, /innerHTML/);
+  assert.match(persistent, /let rendered = false/);
+  assert.match(persistent, /const ensureContent = \(\) => \{[\s\S]*?renderContent\(content\)[\s\S]*?const update = \(\) => \{[\s\S]*?if \(expanded\)\s*ensureContent\(\)/);
+});
+
 test('Kubernetes Pod drawer exposes a fenced direct system VNC action only for detected KubeVirt launchers', async () => {
   const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
   const renderStart = page.indexOf('    renderDrawerVnc(detail, active) {');
@@ -716,7 +742,9 @@ test('Kubernetes related-Pod drawer navigation guards stale results and leaves t
   assert.match(related, /runKubernetesDrawerDetailRequest\(/);
   assert.match(related, /isCurrent:\s*\(\)\s*=> this\.isCurrentDrawerRequest\(request, originQuery\)/);
   assert.match(related, /const next = \{ originQuery, query, summary, detail, request \}/);
-  assert.match(related, /this\.renderDetail\(\)[\s\S]*?this\.requestDrawerEvents\(next\)/);
+  assert.match(related, /this\.renderDetail\(\)/);
+  assert.doesNotMatch(openDetail, /requestDrawerEvents/);
+  assert.doesNotMatch(related, /requestDrawerEvents/);
   assert.match(renderDetail, /this\.renderDrawerPortForward\(active\)/);
   assert.doesNotMatch(openDetail, /listPage\.classList\.add\('hidden'\)/);
   assert.doesNotMatch(related, /listPage\.classList\.add\('hidden'\)/);

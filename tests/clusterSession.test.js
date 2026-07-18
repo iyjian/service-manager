@@ -159,7 +159,16 @@ async function createRelatedResourceClient(t, calls) {
   const core = {
     async readNamespacedEndpoints(params) {
       calls.endpointCalls.push(params);
-      return { metadata: { uid: 'endpoint-api', name: 'api', namespace: 'team-a', resourceVersion: '7' } };
+      if (params.name === 'external') {
+        throw Object.assign(new Error('not found'), { statusCode: 404 });
+      }
+      return {
+        metadata: { uid: 'endpoint-api', name: 'api', namespace: 'team-a', resourceVersion: '7' },
+        subsets: [{
+          addresses: [{ ip: '10.42.0.7', targetRef: { kind: 'Pod', name: 'api-7b8c9d' } }],
+          ports: [{ name: 'http', port: 3000, protocol: 'TCP' }],
+        }],
+      };
     },
     async listNamespacedPod(params) {
       calls.podCalls.push(params);
@@ -174,9 +183,21 @@ async function createRelatedResourceClient(t, calls) {
   const discovery = {
     async listNamespacedEndpointSlice(params) {
       calls.endpointSliceCalls.push(params);
+      if (params.labelSelector === 'kubernetes.io/service-name=external') {
+        return { items: [] };
+      }
+      if (params.labelSelector === 'kubernetes.io/service-name=partial') {
+        throw Object.assign(new Error('forbidden'), { statusCode: 403 });
+      }
       return {
         items: [{
           metadata: { uid: 'slice-api', name: 'api-h9czv', namespace: 'team-a', resourceVersion: '9' },
+          endpoints: [{
+            addresses: ['10.42.0.7'],
+            conditions: { ready: true },
+            targetRef: { kind: 'Pod', name: 'api-7b8c9d' },
+          }],
+          ports: [{ name: 'http', port: 3000, protocol: 'TCP' }],
         }],
       };
     },
@@ -835,17 +856,39 @@ test('KubernetesClient reads Service backends and Workload Pods on demand withou
   const client = await createRelatedResourceClient(t, calls);
 
   const service = await client.getRelatedResources({ kind: 'service', namespace: 'team-a', name: 'api' });
+  const selectorlessService = await client.getRelatedResources({
+    kind: 'service', namespace: 'team-a', name: 'external',
+  });
+  const partialService = await client.getRelatedResources({
+    kind: 'service', namespace: 'team-a', name: 'partial',
+  });
   const workload = await client.getRelatedResources({
     kind: 'statefulset', namespace: 'team-a', name: 'api', selector: 'app=api',
   });
 
-  assert.deepEqual(calls.endpointCalls, [{ name: 'api', namespace: 'team-a' }]);
-  assert.deepEqual(calls.endpointSliceCalls, [{
-    namespace: 'team-a', labelSelector: 'kubernetes.io/service-name=api', limit: 200,
-  }]);
+  assert.deepEqual(calls.endpointCalls, [
+    { name: 'api', namespace: 'team-a' },
+    { name: 'external', namespace: 'team-a' },
+    { name: 'partial', namespace: 'team-a' },
+  ]);
+  assert.deepEqual(calls.endpointSliceCalls, [
+    { namespace: 'team-a', labelSelector: 'kubernetes.io/service-name=api', limit: 200 },
+    { namespace: 'team-a', labelSelector: 'kubernetes.io/service-name=external', limit: 200 },
+    { namespace: 'team-a', labelSelector: 'kubernetes.io/service-name=partial', limit: 200 },
+  ]);
   assert.deepEqual(calls.podCalls, [{ namespace: 'team-a', labelSelector: 'app=api', limit: 200 }]);
   assert.deepEqual(service.endpoints.map((item) => item.name), ['api']);
   assert.deepEqual(service.endpointSlices.map((item) => item.name), ['api-h9czv']);
+  assert.deepEqual(service.endpoints[0], {
+    kind: 'Endpoints', name: 'api', ready: 1, notReady: 0,
+    ports: ['http · 3000/TCP'], portCount: 1,
+    targets: ['Pod/api-7b8c9d'], targetCount: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(service), /10\.42\.0\.7/);
+  assert.deepEqual(selectorlessService, { endpoints: [], endpointSlices: [] });
+  assert.deepEqual(partialService.warnings, ['No permission to read EndpointSlices.']);
+  assert.equal(partialService.endpoints.length, 1);
+  assert.deepEqual(partialService.endpointSlices, []);
   assert.deepEqual(workload.pods.map((item) => item.name), ['api-7b8c9d']);
   await client.close();
 });

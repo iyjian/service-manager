@@ -233,7 +233,9 @@ function persistentVolumeClaimColumns(value: Record<string, unknown>): Record<st
   return {
     status: text(status.phase) ?? POD_SUMMARY_EMPTY,
     volume: text(spec.volumeName) ?? POD_SUMMARY_EMPTY,
-    capacity: text(record(status.capacity)?.storage) ?? POD_SUMMARY_EMPTY,
+    capacity: text(record(status.capacity)?.storage)
+      ?? text(record(record(spec.resources)?.requests)?.storage)
+      ?? POD_SUMMARY_EMPTY,
     accessModes: joined(uniqueTexts(modes).map((mode) => ACCESS_MODE_LABELS[mode] ?? mode)),
     storageClass: text(spec.storageClassName)
       ?? text(annotations?.['volume.beta.kubernetes.io/storage-class'])

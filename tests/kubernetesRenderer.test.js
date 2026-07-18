@@ -49,7 +49,7 @@ test('Kubernetes documentation states the supported read-only, bounded drawer-wo
     assert.match(document, /no resource LIST|without resource LIST|sends no resource LIST/i);
     assert.match(document, /2,000(?:-line| lines?) log/i);
     assert.match(document, /Logs.*search.*Follow.*Clear|search.*Follow.*Clear.*Logs/i);
-    assert.match(document, /Overview.*single-line|single-line.*Overview/i);
+    assert.match(document, /resource-specific Properties|Properties.*resource-specific/i);
     assert.match(document, /Age.*creation timestamp|creation timestamp.*Age/i);
     assert.match(document, /table-header.*sort|sort.*table-header/i);
     assert.match(document, /Custom Resources.*(?:directly|immediately).*select|select.*(?:directly|immediately).*Custom Resources/i);
@@ -79,7 +79,7 @@ test('Kubernetes documentation describes overlay drawers and reusable bottom wor
     assert.match(document, /(?:closing|close).*drawer.*preserv(?:es|e).*tabs|preserv(?:es|e).*tabs.*(?:closing|close).*drawer/i);
     assert.match(document, /Context.*page.*shutdown.*(?:close|clean)|(?:close|clean).*Context.*page.*shutdown/i);
     assert.match(document, /bottom workspace/i);
-    assert.match(document, /Overview.*Kind.*Namespace.*Status.*Name.*Pod IP/i);
+    assert.match(document, /Pod basics.*Name.*Namespace.*Status.*Node.*Pod IP/i);
     assert.match(document, /pause icon.*play icon|play icon.*pause icon/i);
     assert.match(document, /(?:Logs|Shell).*(?:open|focus).*tab|(?:open|focus).*tab.*(?:Logs|Shell)/i);
     assert.match(document, /terminal input.*(?:spaces|whitespace).*Enter|(?:spaces|whitespace).*Enter.*terminal input/i);
@@ -226,8 +226,10 @@ test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves
 test('Kubernetes Custom Resource selector filters GVK locally and list columns follow CRD printer priority', async () => {
   const {
     filterKubernetesCustomResourceDefinitions,
+    formatKubernetesResourceKindLabel,
     getKubernetesCustomResourceListColumns,
     getKubernetesResourceRowValues,
+    groupKubernetesCustomResourceDefinitions,
     hasCurrentKubernetesCustomResourceDefinitions,
     isPermissionError,
     rebindKubernetesCustomResourceDefinition,
@@ -247,6 +249,14 @@ test('Kubernetes Custom Resource selector filters GVK locally and list columns f
 
   assert.deepEqual(filterKubernetesCustomResourceDefinitions([clusterPolicy, application], ' ARGO '), [application]);
   assert.deepEqual(filterKubernetesCustomResourceDefinitions([clusterPolicy, application], 'adminnetwork'), [clusterPolicy]);
+  assert.deepEqual(filterKubernetesCustomResourceDefinitions([clusterPolicy, application], 'cluster'), []);
+  assert.deepEqual(groupKubernetesCustomResourceDefinitions([clusterPolicy, application], ''), [
+    { group: 'argoproj.io', definitions: [application] },
+    { group: 'policy.networking.k8s.io', definitions: [clusterPolicy] },
+  ]);
+  assert.equal(formatKubernetesResourceKindLabel('VirtualMachineInstance'), 'Virtual Machine Instance');
+  assert.equal(formatKubernetesResourceKindLabel('IPv6Policy'), 'IPv6 Policy');
+  assert.equal(formatKubernetesResourceKindLabel('OAuthClient'), 'OAuth Client');
   assert.deepEqual(getKubernetesCustomResourceListColumns(application).map(({ key, label }) => [key, label]), [
     ['namespace', 'Namespace'], ['name', 'Name'], ['printer0', 'Sync Status'], ['printer2', 'Health Status'],
     ['printer1', 'Revision'], ['kind', 'Kind'], ['apiVersion', 'API Version'], ['age', 'Age'],
@@ -495,13 +505,23 @@ test('Kubernetes query transitions synchronously clear stale virtual rows and fe
 
 test('Custom Resources opens a searchable custom selector without a redundant resource tab', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
+  const source = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const optionsStart = source.indexOf('    renderCustomResourceOptions() {');
+  const optionsEnd = source.indexOf('    selectCategory(category) {', optionsStart);
+  const options = source.slice(optionsStart, optionsEnd);
 
   assert.equal(page.categoryUsesResourceTabs('Workloads'), true);
   assert.equal(page.categoryUsesResourceTabs('Custom Resources'), false);
   assert.match(html, /id="kubernetes-custom-resource-toggle"/);
   assert.match(html, /id="kubernetes-custom-resource-search"/);
   assert.match(html, /placeholder="Filter Custom Resources"/);
+  assert.match(options, /groupKubernetesCustomResourceDefinitions\(/);
+  assert.match(options, /setAttribute\('role', 'group'\)/);
+  assert.match(options, /formatKubernetesResourceKindLabel\(definition\.kind\)/);
+  assert.match(options, /version\.textContent = definition\.version/);
+  assert.doesNotMatch(options, /scope\.textContent|definition\.scope/);
+  assert.doesNotMatch(options, /innerHTML/);
 });
 
 test('Kubernetes virtual table renders a bounded main-process window for ten thousand loaded rows', async () => {
@@ -599,6 +619,9 @@ test('Kubernetes resource details use a read-only overlay drawer and clear activ
   assert.match(page, /decodedSecretDetail\s*=\s*undefined/);
   assert.match(page, /this\.detailYaml\.textContent = ''/);
   assert.match(page, /Backend resources/);
+  assert.match(page, /backend\.portCount > backend\.ports\.length/);
+  assert.match(page, /backend\.targetCount > backend\.targets\.length/);
+  assert.match(page, /resources\.warnings \?\? \[\]/);
   assert.match(page, /Related Pods/);
   assert.match(page, /getRelatedResources/);
   assert.match(page, /No permission/);
@@ -863,12 +886,21 @@ test('Kubernetes drawer rendering keeps YAML opt-in and Events guarded to the ac
     page.indexOf('    requestDrawerEvents(active) {'),
     page.indexOf('    renderDrawerEvents(active) {'),
   );
+  const eventSection = page.slice(
+    page.indexOf('    renderDrawerEvents(active) {'),
+    page.indexOf('    renderDrawerPortForward(active) {'),
+  );
 
   assert.match(renderDetail, /if \(!this\.detailYaml\.classList\.contains\('hidden'\)\)\s*this\.renderDrawerYaml\(detail\)/);
   assert.match(yaml, /this\.detailYaml\.classList\.toggle\('hidden', !opening\)/);
   assert.match(yaml, /this\.detailYaml\.textContent = ''/);
   assert.match(events, /if \(!this\.isCurrentActiveDrawer\(active\)\)\s*return/);
   assert.match(events, /window\.kubernetesApi\.getResourceEvents/);
+  assert.match(eventSection, /active\.eventsExpanded \?\? false/);
+  assert.match(eventSection, /if \(opening\)\s*this\.requestDrawerEvents\(active\)/);
+  assert.match(eventSection, /aria-expanded/);
+  assert.match(eventSection, /retry\.textContent = 'Retry'/);
+  assert.match(eventSection, /active\.eventsError = undefined;\s*this\.requestDrawerEvents\(active\)/);
 });
 
 test('Kubernetes drawer Events render dynamic values through textContent', async () => {

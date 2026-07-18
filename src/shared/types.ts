@@ -341,8 +341,22 @@ export interface KubernetesResourceWindowRange {
  */
 export interface KubernetesRelatedResources {
   pods?: KubernetesResourceSummary[];
-  endpoints?: KubernetesResourceSummary[];
-  endpointSlices?: KubernetesResourceSummary[];
+  endpoints?: KubernetesRelatedBackendSummary[];
+  endpointSlices?: KubernetesRelatedBackendSummary[];
+  /** Display-safe partial-read notices; raw server error text never crosses IPC. */
+  warnings?: string[];
+}
+
+/** Display-safe Service backend metadata; endpoint addresses never cross IPC. */
+export interface KubernetesRelatedBackendSummary {
+  kind: 'Endpoints' | 'EndpointSlice';
+  name: string;
+  ready: number;
+  notReady: number;
+  ports: string[];
+  portCount: number;
+  targets: string[];
+  targetCount: number;
 }
 
 /** A narrow, read-only detail relationship request. */

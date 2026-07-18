@@ -252,8 +252,15 @@ test('KubernetesRuntime loads Service backends on demand without replacing the a
     async getRelatedResources(request) {
       relationRequests.push(request);
       return {
-        endpoints: [{ uid: 'endpoint-api', name: 'api', namespace: 'team-a', resourceVersion: '1', columns: {} }],
-        endpointSlices: [{ uid: 'slice-api', name: 'api-9qzjv', namespace: 'team-a', resourceVersion: '2', columns: {} }],
+        endpoints: [{
+          kind: 'Endpoints', name: 'api', ready: 1, notReady: 0,
+          ports: ['http · 3000/TCP'], portCount: 1, targets: ['Pod/api-a'], targetCount: 1,
+        }],
+        endpointSlices: [{
+          kind: 'EndpointSlice', name: 'api-9qzjv', ready: 1, notReady: 0,
+          ports: ['http · 3000/TCP'], portCount: 1, targets: ['Pod/api-a'], targetCount: 1,
+        }],
+        warnings: ['No permission to read another backend source.'],
       };
     },
     async watch() {
@@ -277,6 +284,10 @@ test('KubernetesRuntime loads Service backends on demand without replacing the a
   assert.deepEqual(relationRequests[0], { kind: 'service', namespace: 'team-a', name: 'api' });
   assert.deepEqual(first.endpoints.map((item) => item.name), ['api']);
   assert.deepEqual(second.endpointSlices.map((item) => item.name), ['api-9qzjv']);
+  first.endpoints[0].ports.push('mutated');
+  first.warnings.push('mutated');
+  assert.deepEqual(second.endpoints[0].ports, ['http · 3000/TCP']);
+  assert.deepEqual(second.warnings, ['No permission to read another backend source.']);
   assert.equal(watchCalls, 0);
   assert.deepEqual(listEvents, []);
   assert.deepEqual(calls, []);
