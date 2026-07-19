@@ -398,20 +398,21 @@
   }
 
   .notes-richtext-editor {
-    @apply grid h-full min-h-0 min-w-0 bg-white;
-    grid-template-rows: auto minmax(0, 1fr);
+    @apply relative grid h-full min-h-0 min-w-0 bg-white;
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .notes-richtext-toolbar {
-    @apply flex min-w-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-2 py-1;
+    @apply absolute z-30 flex min-w-0 items-center gap-0.5 overflow-visible rounded-lg border border-zinc-200 bg-white p-1 shadow-xl;
+    font-family: var(--font-family-notes-richtext);
   }
 
   .notes-richtext-tool {
-    @apply inline-flex h-7 min-w-7 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent bg-transparent px-1.5 text-[12px] text-zinc-600 outline-none transition hover:border-zinc-200 hover:bg-white hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-35;
+    @apply inline-flex h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent px-1.5 text-[13px] text-zinc-600 outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-35;
   }
 
   .notes-richtext-tool svg {
-    @apply h-3.5 w-3.5;
+    @apply h-4 w-4;
   }
 
   .notes-richtext-tool-text {
@@ -419,11 +420,64 @@
   }
 
   .notes-richtext-tool[data-active='true'] {
-    @apply border-zinc-300 bg-white text-zinc-950 shadow-sm;
+    @apply bg-zinc-100 text-zinc-950;
+  }
+
+  .notes-richtext-block-trigger {
+    @apply inline-flex h-8 max-w-[116px] shrink-0 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[12px] font-medium text-zinc-700 outline-none hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .notes-richtext-block-trigger > span {
+    @apply min-w-0 truncate;
+  }
+
+  .notes-richtext-block-trigger svg {
+    @apply h-3.5 w-3.5 shrink-0;
   }
 
   .notes-richtext-divider {
-    @apply mx-1 h-4 w-px shrink-0 bg-zinc-300;
+    @apply mx-0.5 h-5 w-px shrink-0 bg-zinc-200;
+  }
+
+  .notes-richtext-block-menu {
+    @apply absolute left-0 top-[calc(100%+6px)] z-10 grid max-h-96 w-44 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-1 shadow-xl;
+  }
+
+  .notes-richtext-block-item {
+    @apply flex h-9 w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] text-zinc-700 outline-none hover:bg-zinc-100 focus-visible:bg-zinc-100;
+  }
+
+  .notes-richtext-block-item[aria-selected='true'] {
+    @apply bg-zinc-100 font-medium text-zinc-950;
+  }
+
+  .notes-richtext-command-icon {
+    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center text-zinc-600;
+  }
+
+  .notes-richtext-command-icon svg {
+    @apply h-4 w-4;
+  }
+
+  .notes-richtext-heading-icon {
+    @apply font-mono text-[11px] font-semibold;
+  }
+
+  .notes-richtext-link-popover {
+    @apply absolute left-0 top-[calc(100%+6px)] z-10 grid w-[380px] grid-cols-[minmax(0,1fr)_auto_auto] gap-1 rounded-lg border border-zinc-200 bg-white p-1.5 shadow-xl;
+  }
+
+  .notes-richtext-link-input {
+    @apply h-8 min-w-0 rounded-md border border-zinc-300 bg-white px-2 text-[12px] text-zinc-900 outline-none focus:border-zinc-500 focus:ring-2 focus:ring-zinc-200;
+    font-family: var(--font-family-base);
+  }
+
+  .notes-richtext-link-action {
+    @apply h-8 cursor-pointer rounded-md border-0 bg-zinc-100 px-2.5 text-[11px] font-medium text-zinc-700 hover:bg-zinc-200 disabled:cursor-default disabled:opacity-40;
+  }
+
+  .notes-richtext-link-apply {
+    @apply bg-zinc-900 text-white hover:bg-zinc-700;
   }
 
   .notes-richtext-content {
@@ -431,15 +485,20 @@
   }
 
   .notes-richtext-content .ProseMirror {
-    @apply min-h-full px-5 py-4 text-zinc-800 outline-none;
-    font-family: var(--font-family-notes-ui);
+    @apply relative min-h-full p-12 text-zinc-700 outline-none;
+    font-family: var(--font-family-notes-richtext);
     font-size: var(--notes-editor-font-size);
-    line-height: 1.7;
+    line-height: 1.78;
     overflow-wrap: anywhere;
   }
 
   .notes-richtext-content .ProseMirror:focus {
-    @apply ring-2 ring-inset ring-zinc-300;
+    @apply outline-none;
+  }
+
+  .notes-richtext-content .ProseMirror.is-editor-empty::before {
+    @apply pointer-events-none absolute left-12 top-12 text-zinc-400;
+    content: attr(data-placeholder);
   }
 
   .notes-richtext-content .ProseMirror > *:first-child {
@@ -451,29 +510,31 @@
   }
 
   .notes-richtext-content .ProseMirror p {
-    @apply my-2;
+    @apply mb-6 mt-0;
   }
 
   .notes-richtext-content .ProseMirror h1,
   .notes-richtext-content .ProseMirror h2,
   .notes-richtext-content .ProseMirror h3 {
-    @apply mb-2 mt-4 font-bold leading-tight text-zinc-950;
+    @apply font-bold text-zinc-950;
+    font-family: var(--font-family-notes-richtext);
+    letter-spacing: -0.025em;
   }
 
-  .notes-richtext-content .ProseMirror h1 { @apply text-2xl; }
-  .notes-richtext-content .ProseMirror h2 { @apply text-xl; }
-  .notes-richtext-content .ProseMirror h3 { @apply text-lg; }
+  .notes-richtext-content .ProseMirror h1 { @apply mb-4 mt-8 text-[36px] leading-10; }
+  .notes-richtext-content .ProseMirror h2 { @apply mb-4 mt-8 text-[30px] leading-10; }
+  .notes-richtext-content .ProseMirror h3 { @apply mb-3 mt-6 text-2xl leading-8; }
 
   .notes-richtext-content .ProseMirror ul,
   .notes-richtext-content .ProseMirror ol {
-    @apply my-2 pl-6;
+    @apply mb-6 mt-0 pl-7;
   }
 
   .notes-richtext-content .ProseMirror ul { @apply list-disc; }
   .notes-richtext-content .ProseMirror ol { @apply list-decimal; }
 
   .notes-richtext-content .ProseMirror blockquote {
-    @apply my-3 border-l-2 border-zinc-300 pl-3 text-zinc-600;
+    @apply mb-6 mt-0 border-l-4 border-zinc-200 pl-4 italic text-zinc-600;
   }
 
   .notes-richtext-content .ProseMirror code {
@@ -482,7 +543,8 @@
   }
 
   .notes-richtext-content .ProseMirror pre {
-    @apply my-3 overflow-x-auto rounded-lg bg-zinc-950 p-3 text-zinc-100;
+    @apply mb-6 mt-0 overflow-x-auto rounded-lg bg-zinc-950 p-4 text-[0.9em] leading-7 text-zinc-100;
+    font-family: var(--font-family-notes-code);
   }
 
   .notes-richtext-content .ProseMirror pre code {
@@ -490,11 +552,76 @@
   }
 
   .notes-richtext-content .ProseMirror hr {
-    @apply my-4 border-0 border-t border-zinc-300;
+    @apply my-8 border-0 border-t border-zinc-300;
+  }
+
+  .notes-richtext-content .ProseMirror a {
+    @apply cursor-text text-blue-600 underline decoration-blue-300 underline-offset-2;
+  }
+
+  .notes-richtext-slash-menu {
+    @apply absolute z-40 max-h-[330px] w-72 overflow-y-auto rounded-md border border-zinc-200 bg-white px-1 py-2 shadow-xl;
+    font-family: var(--font-family-notes-richtext);
+  }
+
+  .notes-richtext-slash-item {
+    @apply flex h-12 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1 text-left text-zinc-700 outline-none hover:bg-zinc-100 focus-visible:bg-zinc-100;
+  }
+
+  .notes-richtext-slash-item[aria-selected='true'] {
+    @apply bg-zinc-100;
+  }
+
+  .notes-richtext-slash-icon {
+    @apply inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-700 shadow-sm;
+  }
+
+  .notes-richtext-slash-icon .notes-richtext-command-icon {
+    @apply h-5 w-5;
+  }
+
+  .notes-richtext-slash-copy {
+    @apply grid min-w-0 gap-0.5;
+  }
+
+  .notes-richtext-slash-copy strong {
+    @apply text-sm font-medium leading-5 text-zinc-900;
+  }
+
+  .notes-richtext-slash-copy small {
+    @apply truncate text-xs leading-4 text-zinc-500;
+  }
+
+  .notes-richtext-slash-empty {
+    @apply px-3 py-7 text-center text-xs text-zinc-500;
+  }
+
+  .notes-richtext-content .ProseMirror ul[data-type='taskList'] {
+    @apply list-none pl-0;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] {
+    @apply flex gap-2;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] > label {
+    @apply mt-[0.35em] shrink-0;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox'] {
+    @apply h-4 w-4 cursor-pointer accent-zinc-900;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] > div {
+    @apply min-w-0 flex-1;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div {
+    @apply text-zinc-400 line-through;
   }
 
   .notes-richtext-image {
-    @apply my-3 grid w-fit max-w-full gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1.5;
+    @apply mb-6 mt-0 grid w-fit max-w-full gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1.5;
   }
 
   .notes-richtext-image img {
@@ -519,15 +646,19 @@
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-toolbar {
-    @apply border-zinc-800 bg-zinc-900;
+    @apply border-zinc-700 bg-zinc-900;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-tool {
-    @apply text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:ring-zinc-600;
+    @apply text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:ring-zinc-600;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-tool[data-active='true'] {
-    @apply border-zinc-600 bg-zinc-800 text-zinc-50;
+    @apply bg-zinc-800 text-zinc-50;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-block-trigger {
+    @apply text-zinc-300 hover:bg-zinc-800 focus-visible:ring-zinc-600;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-divider {
@@ -538,8 +669,8 @@
     @apply text-zinc-200;
   }
 
-  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror:focus {
-    @apply ring-zinc-600;
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror.is-editor-empty::before {
+    @apply text-zinc-600;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h1,
@@ -568,8 +699,87 @@
     @apply border-zinc-700;
   }
 
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror a {
+    @apply text-blue-400 decoration-blue-700;
+  }
+
   .notes-content[data-theme='dark'] .notes-richtext-image {
     @apply border-zinc-700 bg-zinc-900;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-menu {
+    @apply border-zinc-700 bg-zinc-900;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-block-menu,
+  .notes-content[data-theme='dark'] .notes-richtext-link-popover {
+    @apply border-zinc-700 bg-zinc-900;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-block-item {
+    @apply text-zinc-300 hover:bg-zinc-800 focus-visible:bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-block-item[aria-selected='true'] {
+    @apply bg-zinc-800 text-zinc-50;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-command-icon {
+    @apply text-zinc-300;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-link-input {
+    @apply border-zinc-700 bg-zinc-950 text-zinc-100 focus:border-zinc-500 focus:ring-zinc-700;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-link-action {
+    @apply bg-zinc-800 text-zinc-200 hover:bg-zinc-700;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-link-apply {
+    @apply bg-zinc-100 text-zinc-900 hover:bg-white;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-item {
+    @apply text-zinc-300 hover:bg-zinc-800 focus-visible:bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-item[aria-selected='true'] {
+    @apply bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-icon {
+    @apply border-zinc-700 bg-zinc-950 text-zinc-300;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-copy strong {
+    @apply text-zinc-100;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-copy small {
+    @apply text-zinc-400;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-slash-empty {
+    @apply text-zinc-400;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div {
+    @apply text-zinc-500;
+  }
+
+  @media (max-width: 820px) {
+    .notes-richtext-content .ProseMirror {
+      @apply px-6 py-8;
+    }
+
+    .notes-richtext-content .ProseMirror.is-editor-empty::before {
+      @apply left-6 top-8;
+    }
+
+    .notes-richtext-link-popover {
+      @apply w-[min(380px,calc(100vw-48px))];
+    }
   }
 
   .host-dialog.settings-dialog {

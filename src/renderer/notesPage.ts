@@ -437,7 +437,6 @@ class NotesPage {
   private readonly richTextShell = requireElement<HTMLElement>('#note-richtext-editor');
   private readonly richTextHost = requireElement<HTMLElement>('#note-richtext-content');
   private readonly richTextToolbar = requireElement<HTMLElement>('#note-richtext-toolbar');
-  private readonly imageButton = requireElement<HTMLButtonElement>('#note-richtext-image-btn');
   private readonly imageInput = requireElement<HTMLInputElement>('#note-richtext-image-input');
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
   private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
@@ -482,6 +481,10 @@ class NotesPage {
       toolbar: this.richTextToolbar,
       onUpdate: (content) => this.updateSelectedRichTextContent(content),
       onError: (message) => setMessage(message, 'error'),
+      onRequestImage: (file, position) => {
+        if (file) void this.uploadImageFile(file, position);
+        else this.imageInput.click();
+      },
     });
     this.contentHost.dataset.theme = this.editorTheme;
     this.updateEditorEmptyState();
@@ -508,7 +511,6 @@ class NotesPage {
     this.languageSelect.addEventListener('change', () => void this.changeSelectedLanguage());
     this.tagsInput.addEventListener('input', () => this.updateSelectedMetadata());
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
-    this.imageButton.addEventListener('click', () => this.imageInput.click());
     this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
   }
 
@@ -1044,7 +1046,12 @@ class NotesPage {
   private async uploadSelectedImage(): Promise<void> {
     const file = this.imageInput.files?.[0];
     this.imageInput.value = '';
-    if (!file || this.uploadingImage) return;
+    if (!file) return;
+    await this.uploadImageFile(file);
+  }
+
+  private async uploadImageFile(file: File, position?: number): Promise<void> {
+    if (this.uploadingImage) return;
     const note = this.selectedNote();
     if (!note || note.language !== 'richtext') return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
@@ -1057,7 +1064,6 @@ class NotesPage {
     }
 
     this.uploadingImage = true;
-    this.imageButton.disabled = true;
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const alt = file.name
@@ -1081,7 +1087,7 @@ class NotesPage {
         return;
       }
       if (this.selectedId === destination.id) {
-        if (!this.richTextEditor.insertImage(result.reference)) {
+        if (!this.richTextEditor.insertImage(result.reference, position)) {
           throw new Error('The uploaded image could not be inserted.');
         }
       } else {
@@ -1093,7 +1099,6 @@ class NotesPage {
       setMessage(`Unable to add image: ${toErrorMessage(error)}`, 'error');
     } finally {
       this.uploadingImage = false;
-      this.imageButton.disabled = this.selectedNote()?.language !== 'richtext';
     }
   }
 
@@ -1435,7 +1440,6 @@ class NotesPage {
     this.richTextShell.classList.toggle('hidden', !richText);
     this.contentHost.dataset.mode = richText ? 'richtext' : 'code';
     this.contentHost.dataset.language = language;
-    this.imageButton.disabled = !richText || this.uploadingImage;
     if (!richText) this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
   }
 

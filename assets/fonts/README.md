@@ -22,6 +22,9 @@ If a WOFF2 file is absent, the corresponding bundled TTF is used.
   Its license is in `OFL-NotoSansCJK.txt`.
 - `notes-code-variable.woff2` is JetBrains Mono Variable, used by CodeMirror.
   Its license is in `OFL-JetBrainsMono.txt`.
+- Rich Text places the existing local Inter-compatible `STM UI` family first,
+  with Noto Sans SC retained as its Chinese-glyph fallback. This matches the
+  running Novel editor's system-sans proportions without a runtime font fetch.
 - CodeMirror falls back to the bundled Notes UI font for glyphs that JetBrains
   Mono does not contain, including Chinese characters.
 

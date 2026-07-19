@@ -100,6 +100,41 @@ test('rich text content is normalized to one bounded canonical Tiptap JSON repre
   }), '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","marks":[{"type":"link","attrs":{"href":"https://example.test","target":"_blank","rel":"nofollow noopener noreferrer"}}],"text":"default link"}]}]}');
 });
 
+test('rich text task lists preserve a bounded checked state and safe structure', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'taskList',
+      content: [{
+        type: 'taskItem',
+        attrs: { checked: true },
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Publish the release' }] }],
+      }],
+    }],
+  });
+  assert.equal(normalized, JSON.stringify({
+    type: 'doc',
+    content: [{
+      type: 'taskList',
+      content: [{
+        type: 'taskItem',
+        attrs: { checked: true },
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Publish the release' }] }],
+      }],
+    }],
+  }));
+  assert.equal(extractRichTextPlainText(normalized), 'Publish the release');
+
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'taskList', content: [{ type: 'taskItem', attrs: { checked: 'yes' }, content: [{ type: 'paragraph' }] }] }],
+  }), /checked state is invalid/);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'taskList', content: [{ type: 'taskItem', content: [{ type: 'heading', attrs: { level: 1 } }] }] }],
+  }), /must start with a paragraph/);
+});
+
 test('canonical rich text round-trips through the configured Tiptap schema without drift', async () => {
   const [{ getSchema }, { default: StarterKit }, { default: Image }] = await Promise.all([
     import('@tiptap/core'),

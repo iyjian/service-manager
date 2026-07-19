@@ -11,12 +11,15 @@ async function readEditorSource() {
 
 test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () => {
   const source = await readEditorSource();
-  assert.match(source, /import \{ Editor,[\s\S]*from '@tiptap\/core'/);
+  assert.match(source, /import \{[\s\S]*?\bEditor,[\s\S]*?from '@tiptap\/core'/);
   assert.match(source, /import Image from '@tiptap\/extension-image'/);
   assert.match(source, /import StarterKit from '@tiptap\/starter-kit'/);
   assert.match(source, /return Image\.extend\(\{\s*name: 's3Image'/);
 
-  const attributeStart = source.indexOf('    addAttributes() {');
+  const imageExtensionStart = source.indexOf("function createS3ImageExtension(onError: (message: string) => void)");
+  assert.notEqual(imageExtensionStart, -1);
+  const imageExtension = source.slice(imageExtensionStart);
+  const attributeStart = source.indexOf('    addAttributes() {', imageExtensionStart);
   const attributeEnd = source.indexOf('    // Rich text is loaded only', attributeStart);
   assert.notEqual(attributeStart, -1);
   assert.notEqual(attributeEnd, -1);
@@ -36,13 +39,13 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
   ]);
   assert.doesNotMatch(attributes, /\bsrc\b|\btitle\b/);
 
-  assert.match(source, /parseHTML\(\) \{\s*return \[\];\s*\}/);
-  assert.match(source, /addInputRules\(\) \{\s*return \[\];\s*\}/);
-  assert.match(source, /addPasteRules\(\) \{\s*return \[\];\s*\}/);
-  assert.match(source, /addCommands\(\) \{[\s\S]*?return \{\};\s*\}/);
-  assert.match(source, /parseMarkdown\(\) \{\s*return \[\];\s*\}/);
-  assert.match(source, /renderHTML\(\) \{[\s\S]*?notes-richtext-image-serialized/);
-  assert.doesNotMatch(source, /renderHTML\([^)]*HTMLAttributes/);
+  assert.match(imageExtension, /parseHTML\(\) \{\s*return \[\];\s*\}/);
+  assert.match(imageExtension, /addInputRules\(\) \{\s*return \[\];\s*\}/);
+  assert.match(imageExtension, /addPasteRules\(\) \{\s*return \[\];\s*\}/);
+  assert.match(imageExtension, /addCommands\(\) \{[\s\S]*?return \{\};\s*\}/);
+  assert.match(imageExtension, /parseMarkdown\(\) \{\s*return \[\];\s*\}/);
+  assert.match(imageExtension, /renderHTML\(\) \{[\s\S]*?notes-richtext-image-serialized/);
+  assert.doesNotMatch(imageExtension, /renderHTML\([^)]*HTMLAttributes/);
 });
 
 test('S3 image NodeView owns Blob URLs and exposes only safe UI states', async () => {
@@ -96,6 +99,7 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
     'redo',
     'bold',
     'italic',
+    'underline',
     'strike',
     'code',
     'heading',
@@ -112,6 +116,66 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
   assert.match(source, /delete control\.dataset\.active/);
   assert.match(source, /control\.setAttribute\('aria-pressed', String\(active\)\)/);
   assert.match(source, /control\.disabled = disabled/);
+});
+
+test('rich text provides the requested Novel-style slash blocks without embeds or AI actions', async () => {
+  const source = await readEditorSource();
+  const slashStart = source.indexOf('    this.commandItems = [');
+  const slashEnd = source.indexOf('    ];', slashStart);
+  assert.notEqual(slashStart, -1);
+  assert.notEqual(slashEnd, -1);
+  const slashSource = source.slice(slashStart, slashEnd);
+  const expectedTitles = [
+    'Text',
+    'To-do List',
+    'Heading 1',
+    'Heading 2',
+    'Heading 3',
+    'Bullet List',
+    'Numbered List',
+    'Quote',
+    'Code',
+    'Image',
+  ];
+  assert.deepEqual(
+    [...slashSource.matchAll(/title: '([^']+)'/g)].map((match) => match[1]),
+    expectedTitles,
+  );
+  assert.doesNotMatch(slashSource, /feedback|youtube|twitter|ask\s*ai/i);
+  assert.match(source, /class NotesRichTextSlashMenu/);
+  assert.match(source, /if \(editor\.isActive\('codeBlock'\)\) return undefined/);
+  assert.match(source, /event\.key === 'ArrowDown'/);
+  assert.match(source, /event\.key === 'Enter'/);
+  assert.match(source, /empty\.textContent = 'No results'/);
+  assert.match(source, /coordsAtPos\(this\.range\.to\)/);
+  assert.match(source, /scrollIntoView\(\{ block: 'nearest' \}\)/);
+  assert.match(source, /createTaskListExtension\(\)/);
+  assert.match(source, /createTaskItemExtension\(\)/);
+  assert.match(source, /checked: checkbox\.checked/);
+  assert.match(source, /Enter: \(\) => this\.editor\.commands\.splitListItem\(this\.name\)/);
+  assert.match(source, /Tab: \(\) => this\.editor\.commands\.sinkListItem\(this\.name\)/);
+  assert.match(source, /'Shift-Tab': \(\) => this\.editor\.commands\.liftListItem\(this\.name\)/);
+  assert.match(source, /aria-label', 'Mark task complete'/);
+});
+
+test('rich text uses a selection-only non-AI formatter with safe block and link controls', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /class NotesRichTextBubbleMenu/);
+  assert.match(source, /hasFormattableSelection\(this\.editor\)/);
+  assert.match(source, /posToDOMRect\(this\.editor\.view, selection\.from, selection\.to\)/);
+  assert.match(source, /RICH_TEXT_BLOCK_ITEMS:[\s\S]*?label: 'Text'[\s\S]*?label: 'To-do List'[\s\S]*?label: 'Heading 1'[\s\S]*?label: 'Heading 2'[\s\S]*?label: 'Heading 3'[\s\S]*?label: 'Bullet List'[\s\S]*?label: 'Numbered List'[\s\S]*?label: 'Quote'[\s\S]*?label: 'Code'/);
+  assert.match(source, /case 'underline': return chain\.toggleUnderline\(\)/);
+  assert.match(source, /isAllowedRichTextLinkHref\(href\)/);
+  assert.match(source, /extendMarkRange\('link'\)\.unsetLink\(\)/);
+  assert.match(source, /chain\.setLink\(\{ href \}\)\.run\(\)/);
+  assert.doesNotMatch(source, /Ask AI|askAI|GenerativeMenu|AISelector/);
+});
+
+test('rich text routes pasted and dropped image files through the existing S3 upload flow', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /handlePaste: \(view, event\) => \{[\s\S]*?firstImageFile\(event\.clipboardData\?\.files\)[\s\S]*?options\.onRequestImage\(file, view\.state\.selection\.to\)/);
+  assert.match(source, /handleDrop: \(view, event, _slice, moved\) => \{[\s\S]*?firstImageFile\(event\.dataTransfer\?\.files\)[\s\S]*?view\.posAtCoords\([\s\S]*?options\.onRequestImage\(file, position\)/);
+  assert.match(source, /insertAt !== undefined[\s\S]*?insertContentAt\(insertAt, content\)[\s\S]*?insertContent\(content\)/);
 });
 
 test('Tiptap Link uses the canonical absolute-http policy and never opens a browser window', async () => {

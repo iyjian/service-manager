@@ -408,5 +408,6 @@ test('Notes rich text mode searches readable content, confirms lossy changes, an
   assert.match(source, /window\.notesApi\.uploadImage\(\{/);
   assert.match(source, /Configure S3 in Settings before adding images\./);
   assert.match(source, /NOTE_IMAGE_MAX_BYTES = 10 \* 1024 \* 1024/);
-  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference\)/);
+  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference, position\)/);
+  assert.match(source, /onRequestImage: \(file, position\) => \{[\s\S]*?this\.uploadImageFile\(file, position\)[\s\S]*?this\.imageInput\.click\(\)/);
 });

@@ -45,6 +45,8 @@ const NODE_TYPES = new Set([
   'bulletList',
   'orderedList',
   'listItem',
+  'taskList',
+  'taskItem',
   'codeBlock',
   'horizontalRule',
   'text',
@@ -66,6 +68,7 @@ const BLOCK_TYPES = new Set([
   'blockquote',
   'bulletList',
   'orderedList',
+  'taskList',
   'codeBlock',
   'horizontalRule',
   's3Image',
@@ -327,6 +330,8 @@ function isAllowedChild(parentType: string, childType: string): boolean {
     return BLOCK_TYPES.has(childType);
   }
   if (parentType === 'bulletList' || parentType === 'orderedList') return childType === 'listItem';
+  if (parentType === 'taskList') return childType === 'taskItem';
+  if (parentType === 'taskItem') return BLOCK_TYPES.has(childType);
   if (parentType === 'paragraph' || parentType === 'heading') {
     return INLINE_TYPES.has(childType);
   }
@@ -417,6 +422,24 @@ function normalizeNode(
     };
   }
 
+  if (type === 'taskItem') {
+    assertAllowedKeys(value, new Set(['type', 'attrs', 'content']), 'A rich text task item node');
+    let checked = false;
+    if (value.attrs !== undefined) {
+      if (!isRecord(value.attrs)) invalid('Rich text task item attributes are invalid.');
+      assertAllowedKeys(value.attrs, new Set(['checked']), 'A rich text task item');
+      if (value.attrs.checked !== undefined && typeof value.attrs.checked !== 'boolean') {
+        invalid('The rich text task item checked state is invalid.');
+      }
+      checked = value.attrs.checked === true;
+    }
+    const content = normalizeContentArray(value.content, type, depth + 1, state);
+    if (!content || content[0]?.type !== 'paragraph') {
+      invalid('A rich text task item must start with a paragraph.');
+    }
+    return { type, attrs: { checked }, content };
+  }
+
   if (type === 'codeBlock') {
     assertAllowedKeys(value, new Set(['type', 'attrs', 'content']), 'A rich text code block node');
     let language: string | undefined;
@@ -441,7 +464,7 @@ function normalizeNode(
 
   assertAllowedKeys(value, new Set(['type', 'content']), `A rich text ${type} node`);
   const content = normalizeContentArray(value.content, type, depth + 1, state);
-  if ((type === 'blockquote' || type === 'bulletList' || type === 'listItem') && !content) {
+  if ((type === 'blockquote' || type === 'bulletList' || type === 'listItem' || type === 'taskList') && !content) {
     invalid(`A rich text ${type} must contain child content.`);
   }
   if (type === 'listItem' && content?.[0]?.type !== 'paragraph') {
