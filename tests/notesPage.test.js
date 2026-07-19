@@ -394,7 +394,8 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
   assert.match(source, /this\.languageCompartment\.reconfigure\(noteLanguageExtension\(language\)\)/);
   assert.match(source, /this\.setEditorLanguage\(note\.language\)/);
   assert.match(source, /this\.codeEditor\.dispatch\(\{/);
-  assert.match(source, /note\.tags = normalizeTags\(this\.tagsInput\.value\)/);
+  assert.doesNotMatch(source, /tagsInput|normalizeTags/);
+  assert.match(source, /tags: \[\.\.\.note\.tags\]/);
 });
 
 test('Notes rich text mode searches readable content, confirms lossy changes, and uploads images through narrow IPC', async () => {

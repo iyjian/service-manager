@@ -335,6 +335,7 @@
                 <option value="yaml">YAML</option>
                 <option value="text">Plain Text</option>
               </select>
+              <span id="note-save-status" class="notes-save-status" role="status" aria-live="polite">Saved</span>
               <button id="note-copy-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect>
@@ -342,11 +343,6 @@
                 </svg>
                 <span id="note-copy-label">Copy</span>
               </button>
-            </div>
-            <div class="notes-tags-row">
-              <span class="notes-tags-label">Tags</span>
-              <input id="note-tags" class="input notes-tags-input" type="text" placeholder="api, deploy, example" aria-label="Tags, comma separated" spellcheck="false" />
-              <span id="note-save-status" class="notes-save-status" role="status" aria-live="polite">Saved</span>
             </div>
             <div id="note-content" class="notes-content" data-empty="true" data-language="markdown" data-mode="code">
               <div id="note-code-content" class="notes-code-content"></div>

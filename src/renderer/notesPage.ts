@@ -376,19 +376,6 @@ function cloneNote(note: Note): Note {
   return { ...note, tags: [...note.tags] };
 }
 
-function normalizeTags(value: string): string[] {
-  const seen = new Set<string>();
-  const tags: string[] = [];
-  for (const part of value.split(',')) {
-    const tag = part.trim();
-    const key = tag.toLocaleLowerCase();
-    if (!tag || seen.has(key)) continue;
-    seen.add(key);
-    tags.push(tag);
-  }
-  return tags;
-}
-
 function createRemoveIcon(): SVGSVGElement {
   const namespace = 'http://www.w3.org/2000/svg';
   const icon = document.createElementNS(namespace, 'svg');
@@ -431,7 +418,6 @@ class NotesPage {
   private readonly editor = requireElement<HTMLElement>('#notes-editor');
   private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
   private readonly languageSelect = requireElement<HTMLSelectElement>('#note-language');
-  private readonly tagsInput = requireElement<HTMLInputElement>('#note-tags');
   private readonly contentHost = requireElement<HTMLElement>('#note-content');
   private readonly codeContentHost = requireElement<HTMLElement>('#note-code-content');
   private readonly richTextShell = requireElement<HTMLElement>('#note-richtext-editor');
@@ -509,7 +495,6 @@ class NotesPage {
 
     this.nameInput.addEventListener('input', () => this.updateSelectedMetadata());
     this.languageSelect.addEventListener('change', () => void this.changeSelectedLanguage());
-    this.tagsInput.addEventListener('input', () => this.updateSelectedMetadata());
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
     this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
   }
@@ -898,7 +883,6 @@ class NotesPage {
 
     this.nameInput.value = note.name;
     this.languageSelect.value = note.language;
-    this.tagsInput.value = note.tags.join(', ');
     const noteChanged = this.editorNoteId !== note.id;
     if (noteChanged) {
       this.editorNoteId = note.id;
@@ -946,7 +930,6 @@ class NotesPage {
     if (!note) return;
 
     note.name = this.nameInput.value;
-    note.tags = normalizeTags(this.tagsInput.value);
     this.markNoteEdited(note, document.activeElement === this.nameInput || Boolean(this.searchInput.value.trim()));
   }
 

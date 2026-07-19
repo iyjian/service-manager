@@ -183,10 +183,11 @@
 
   .notes-tree-toggle svg {
     @apply transition-transform;
+    transform: rotate(0deg);
   }
 
   .notes-tree-toggle[data-expanded='true'] svg {
-    @apply rotate-90;
+    transform: rotate(90deg);
   }
 
   .notes-tree-toggle-spacer {
@@ -244,10 +245,6 @@
     @apply shrink-0 rounded bg-zinc-200/70 px-1 py-0.5 uppercase tracking-[0.04em] text-zinc-600;
   }
 
-  .notes-list-tags {
-    @apply min-w-0 truncate;
-  }
-
   .notes-workspace {
     @apply min-h-0 min-w-0 bg-white;
   }
@@ -262,7 +259,7 @@
 
   .notes-editor {
     @apply grid h-full min-h-0 min-w-0;
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .notes-editor-toolbar {
@@ -288,19 +285,6 @@
 
   .notes-action-btn[data-copied='true'] {
     @apply border-emerald-300 bg-emerald-50 text-emerald-700;
-  }
-
-  .notes-tags-row {
-    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-2 py-1.5;
-  }
-
-  .notes-tags-label {
-    @apply shrink-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
-  }
-
-  .notes-tags-row .notes-tags-input {
-    @apply h-7 min-w-0 flex-1 text-[12px];
-    width: auto;
   }
 
   .notes-save-status {
@@ -597,27 +581,55 @@
   }
 
   .notes-richtext-content .ProseMirror ul[data-type='taskList'] {
-    @apply list-none pl-0;
+    @apply list-none pl-2;
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] {
-    @apply flex gap-2;
+    @apply my-4 flex items-start gap-2;
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] > label {
-    @apply mt-[0.35em] shrink-0;
+    @apply shrink-0 select-none;
+    margin-right: 0.2rem;
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox'] {
-    @apply h-4 w-4 cursor-pointer accent-zinc-900;
+    appearance: none;
+    -webkit-appearance: none;
+    @apply grid cursor-pointer place-content-center border-2 border-zinc-300 bg-white p-0 text-zinc-900 transition-colors hover:bg-zinc-100 active:bg-zinc-100;
+    width: 1.2em;
+    height: 1.2em;
+    margin: 0 0.3rem 0 0;
+    position: relative;
+    top: calc((1.78em - 1.2em) / 2);
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox']::before {
+    content: '';
+    width: 0.65em;
+    height: 0.65em;
+    transform: scale(0);
+    transition: 120ms transform ease-in-out;
+    box-shadow: inset 1em 1em currentColor;
+    transform-origin: center;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox']:checked::before {
+    transform: scale(1);
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] > div {
     @apply min-w-0 flex-1;
   }
 
-  .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div {
+  .notes-richtext-content .ProseMirror li[data-task-item] > div > p {
+    margin: 0;
+  }
+
+  .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div > p {
     @apply text-zinc-400 line-through;
+    text-decoration-thickness: 2px;
   }
 
   .notes-richtext-image {
@@ -701,6 +713,10 @@
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror a {
     @apply text-blue-400 decoration-blue-700;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox'] {
+    @apply border-zinc-600 bg-zinc-950 text-zinc-100 hover:bg-zinc-800 active:bg-zinc-800;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-image {
