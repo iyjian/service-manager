@@ -59,6 +59,11 @@ test('Notion-style table controls remain a DOM adapter around official Tiptap co
   assert.match(controls, /element\.addEventListener\('pointerleave', this\.handleControlsPointerLeave\)/);
   assert.match(controls, /element\.addEventListener\('focusin', this\.handleControlsFocusIn\)/);
   assert.match(controls, /element\.addEventListener\('focusout', this\.handleControlsFocusOut\)/);
+  assert.match(controls, /if \(this\.replacingMenuItems \|\| !this\.menuKind\) return/);
+  assert.match(
+    controls,
+    /this\.replacingMenuItems = true;\s*try \{\s*this\.menu\.replaceChildren\(\.\.\.items\);\s*\} finally \{\s*this\.replacingMenuItems = false;/,
+  );
   assert.match(controls, /host\.addEventListener\('blur', this\.handleHostBlur, true\)/);
   assert.match(controls, /this\.hoveredTarget = source instanceof Element\s*\? tableTarget\(this\.host, source\)/);
   assert.match(controls, /window\.addEventListener\('resize', this\.handleViewportChange\)/);

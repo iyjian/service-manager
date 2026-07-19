@@ -144,6 +144,7 @@ export class NotesRichTextTableControls {
   private hoveredTarget: TableTarget | undefined;
   private pinnedTarget: TableTarget | undefined;
   private menuKind: TableMenuKind | undefined;
+  private replacingMenuItems = false;
 
   public constructor(
     private readonly editor: Editor,
@@ -326,7 +327,7 @@ export class NotesRichTextTableControls {
   };
 
   private readonly handleControlsFocusOut = (event: FocusEvent): void => {
-    if (!this.menuKind) return;
+    if (this.replacingMenuItems || !this.menuKind) return;
     const destination = event.relatedTarget;
     if (destination instanceof Node && this.menu.contains(destination)) return;
     this.closeMenu();
@@ -409,7 +410,15 @@ export class NotesRichTextTableControls {
       button.textContent = definition.label;
       return button;
     });
-    this.menu.replaceChildren(...items);
+    // Removing the currently focused menu item emits `focusout` synchronously.
+    // Suppress its close path while replacing items so it cannot recursively
+    // empty the menu in the middle of `replaceChildren`.
+    this.replacingMenuItems = true;
+    try {
+      this.menu.replaceChildren(...items);
+    } finally {
+      this.replacingMenuItems = false;
+    }
     this.menu.setAttribute('aria-label', `${kind[0].toUpperCase()}${kind.slice(1)} actions`);
   }
 
