@@ -245,8 +245,9 @@
   }
 
   .notes-content .cm-editor {
-    @apply h-full min-h-0 bg-zinc-950 text-[14px] text-zinc-100 outline-none;
+    @apply h-full min-h-0 bg-zinc-950 text-zinc-100 outline-none;
     font-family: var(--font-family-notes-code);
+    font-size: var(--notes-editor-font-size);
     font-variant-ligatures: none;
   }
 
@@ -255,8 +256,9 @@
   }
 
   .notes-content .cm-scroller {
-    @apply min-h-0 overflow-auto leading-6;
+    @apply min-h-0 overflow-auto;
     font-family: var(--font-family-notes-code);
+    line-height: 1.55;
   }
 
   .notes-content .cm-content {
@@ -291,12 +293,36 @@
   }
 
   .dialog-panel.settings-panel {
-    @apply gap-3;
+    @apply gap-0;
     max-height: min(720px, calc(100vh - 32px));
+  }
+
+  .settings-head-actions {
+    @apply flex shrink-0 items-center gap-2;
   }
 
   .settings-subtitle {
     @apply m-0 mt-0.5 text-[12px] text-zinc-500;
+  }
+
+  .settings-tabs {
+    @apply mt-3 flex items-center gap-1 border-b border-zinc-200;
+  }
+
+  .settings-tab {
+    @apply relative -mb-px cursor-pointer border-0 border-b-2 border-transparent bg-transparent px-3 py-2 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-300 disabled:cursor-default disabled:opacity-50;
+  }
+
+  .settings-tab[aria-selected='true'] {
+    @apply border-zinc-900 text-zinc-950;
+  }
+
+  .settings-tab-panel {
+    @apply grid gap-3 pt-3;
+  }
+
+  .settings-tab-panel[hidden] {
+    @apply hidden;
   }
 
   .settings-grid {
@@ -379,8 +405,40 @@
     @apply border-violet-200 bg-violet-50 text-violet-800;
   }
 
-  .settings-actions {
-    @apply static m-0 px-0 pb-0;
+  .form-actions.settings-actions {
+    @apply static m-0 justify-end px-0 pb-0;
+  }
+
+  .settings-notes-card {
+    @apply flex min-h-20 items-center justify-between gap-6 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-3;
+  }
+
+  .settings-notes-title {
+    @apply block text-[12.5px] font-semibold text-zinc-800;
+  }
+
+  .settings-notes-description {
+    @apply m-0 mt-1 text-[11.5px] text-zinc-500;
+  }
+
+  .settings-number-control {
+    @apply flex shrink-0 items-center gap-1.5 text-[12px] text-zinc-500;
+  }
+
+  .settings-number-control .input {
+    @apply h-8 w-20 text-right text-[13px];
+  }
+
+  .settings-save-status {
+    @apply m-0 mt-3 rounded-md border px-2.5 py-2 text-[12px];
+  }
+
+  .settings-save-status-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .settings-save-status-error {
+    @apply border-red-200 bg-red-50 text-red-800;
   }
 
   .proxy-grid {

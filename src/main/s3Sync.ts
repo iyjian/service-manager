@@ -12,6 +12,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   Note,
+  S3ConnectionTestDraft,
   S3CredentialValues,
   S3SyncResult,
   S3SyncSettingsDraft,
@@ -38,6 +39,7 @@ import {
   getS3SyncEncryptionKeyId,
   normalizeS3SyncEncryptionKey,
   parseS3V3ManifestData,
+  testS3V3Connection,
   type S3V3ManifestData,
   type S3V3NoteReference,
   type ServiceManagerSyncManifestV3,
@@ -286,6 +288,24 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
     ...(accessKeyId !== undefined ? { accessKeyId, secretAccessKey } : {}),
     ...(syncEncryptionKey !== undefined ? { syncEncryptionKey } : {}),
     ...(clearCredentials ? { clearCredentials: true } : {}),
+  };
+}
+
+export function validateS3ConnectionTestDraft(value: unknown): S3ConnectionTestDraft {
+  if (!isRecord(value)) {
+    throw new Error('S3 connection settings are required.');
+  }
+  const accessKeyId = optionalCredential(value.accessKeyId, 'The S3 access key ID', MAX_ACCESS_KEY_LENGTH, true);
+  const secretAccessKey = optionalCredential(value.secretAccessKey, 'The S3 secret access key', MAX_SECRET_KEY_LENGTH, false);
+  if (accessKeyId === undefined || secretAccessKey === undefined) {
+    throw new Error('Both the S3 access key ID and secret access key are required.');
+  }
+  return {
+    endpoint: normalizeS3Endpoint(value.endpoint),
+    bucket: normalizeS3Bucket(value.bucket),
+    region: normalizedRegion(value.region),
+    accessKeyId,
+    secretAccessKey,
   };
 }
 
@@ -824,6 +844,7 @@ export class S3SyncRuntime {
   private settingsMutationQueue: Promise<void> = Promise.resolve();
   private syncPromise?: Promise<S3SyncResult>;
   private activeAbortController?: AbortController;
+  private readonly activeConnectionTests = new Map<AbortController, Promise<void>>();
   private debounceTimer?: NodeJS.Timeout;
   private intervalTimer?: NodeJS.Timeout;
   private dirtyGeneration = 0;
@@ -1066,6 +1087,25 @@ export class S3SyncRuntime {
     return this.saveSettings(value);
   }
 
+  public async testS3Connection(value: unknown): Promise<void> {
+    if (this.shuttingDown) throw new Error('S3 connection test was cancelled.');
+    const draft = validateS3ConnectionTestDraft(value);
+    const controller = new AbortController();
+    const test = testS3V3Connection({
+      ...draft,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      timeoutMs: this.timeoutMs,
+      signal: controller.signal,
+    });
+    this.activeConnectionTests.set(controller, test);
+    try {
+      await test;
+    } finally {
+      this.activeConnectionTests.delete(controller);
+    }
+  }
+
   public syncAllDataToS3(): Promise<S3SyncResult> {
     return this.requestSync(true);
   }
@@ -1077,6 +1117,7 @@ export class S3SyncRuntime {
     this.debounceTimer = undefined;
     this.intervalTimer = undefined;
     this.activeAbortController?.abort();
+    for (const controller of this.activeConnectionTests.keys()) controller.abort();
     try {
       await this.syncPromise;
     } catch {
@@ -1084,6 +1125,7 @@ export class S3SyncRuntime {
     }
     await this.operationQueue;
     await this.settingsMutationQueue;
+    await Promise.allSettled(this.activeConnectionTests.values());
   }
 
   private updateState(next: S3SyncState): void {

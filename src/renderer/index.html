@@ -385,69 +385,94 @@
     </div>
 
     <dialog id="settings-dialog" class="host-dialog settings-dialog" aria-labelledby="settings-title">
-      <form id="settings-form" class="dialog-panel settings-panel form-stack">
+      <form id="settings-form" class="dialog-panel settings-panel form-stack" novalidate>
         <div class="dialog-head">
           <div>
             <h2 id="settings-title" class="section-title">Settings</h2>
-            <p class="settings-subtitle">Encrypted automatic sync · MinIO compatible</p>
+            <p class="settings-subtitle">Application preferences</p>
           </div>
-          <button id="settings-close-btn" type="button" class="icon-btn" aria-label="Close Settings">×</button>
+          <div class="settings-head-actions">
+            <button id="settings-save-btn" type="submit" class="btn btn-primary btn-sm">Save</button>
+            <button id="settings-close-btn" type="button" class="icon-btn" aria-label="Close Settings">×</button>
+          </div>
         </div>
-        <label class="field field-xs">
-          S3 Endpoint
-          <input id="s3-endpoint" class="input" type="url" placeholder="https://s3.example.com" spellcheck="false" autocomplete="off" required />
-        </label>
-        <div class="settings-grid">
-          <label class="field field-xs">
-            Bucket
-            <input id="s3-bucket" class="input" type="text" placeholder="service-manager" spellcheck="false" autocomplete="off" required />
-          </label>
-          <label class="field field-xs">
-            Region
-            <input id="s3-region" class="input" type="text" value="us-east-1" spellcheck="false" autocomplete="off" required />
-          </label>
+
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button id="settings-s3-tab" type="button" class="settings-tab" role="tab" aria-selected="true" aria-controls="settings-s3-panel" tabindex="0" data-settings-tab="s3">S3</button>
+          <button id="settings-notes-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-notes-panel" tabindex="-1" data-settings-tab="notes">Notes</button>
         </div>
-        <div class="settings-grid">
-          <div class="field field-xs">
-            <label for="s3-access-key">Access Key ID</label>
-            <div class="settings-password-control">
-              <input id="s3-access-key" class="input" type="password" placeholder="Access Key ID" autocomplete="off" />
-              <button id="s3-access-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Access Key ID" aria-controls="s3-access-key" aria-pressed="false">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
-              </button>
+
+        <section id="settings-s3-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-s3-tab" data-settings-panel="s3">
+          <label class="field field-xs">
+            S3 Endpoint
+            <input id="s3-endpoint" class="input" type="url" placeholder="https://s3.example.com" spellcheck="false" autocomplete="off" />
+          </label>
+          <div class="settings-grid">
+            <label class="field field-xs">
+              Bucket
+              <input id="s3-bucket" class="input" type="text" placeholder="service-manager" spellcheck="false" autocomplete="off" />
+            </label>
+            <label class="field field-xs">
+              Region
+              <input id="s3-region" class="input" type="text" value="us-east-1" spellcheck="false" autocomplete="off" />
+            </label>
+          </div>
+          <div class="settings-grid">
+            <div class="field field-xs">
+              <label for="s3-access-key">Access Key ID</label>
+              <div class="settings-password-control">
+                <input id="s3-access-key" class="input" type="password" placeholder="Access Key ID" autocomplete="off" />
+                <button id="s3-access-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Access Key ID" aria-controls="s3-access-key" aria-pressed="false">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+                </button>
+              </div>
+            </div>
+            <div class="field field-xs">
+              <label for="s3-secret-key">Secret Access Key</label>
+              <div class="settings-password-control">
+                <input id="s3-secret-key" class="input" type="password" placeholder="Secret Access Key" autocomplete="off" />
+                <button id="s3-secret-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Secret Access Key" aria-controls="s3-secret-key" aria-pressed="false">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+                </button>
+              </div>
             </div>
           </div>
           <div class="field field-xs">
-            <label for="s3-secret-key">Secret Access Key</label>
-            <div class="settings-password-control">
-              <input id="s3-secret-key" class="input" type="password" placeholder="Secret Access Key" autocomplete="off" />
-              <button id="s3-secret-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Secret Access Key" aria-controls="s3-secret-key" aria-pressed="false">
+            <div class="settings-key-label-row">
+              <label for="s3-sync-encryption-key">Sync Encryption Key</label>
+              <span>Use the same key on every client</span>
+            </div>
+            <div class="settings-password-control settings-sync-key-control">
+              <input id="s3-sync-encryption-key" class="input" type="password" placeholder="Generated automatically on first save" autocomplete="off" spellcheck="false" />
+              <button id="s3-sync-encryption-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Sync Encryption Key" aria-controls="s3-sync-encryption-key" aria-pressed="false">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+              </button>
+              <button id="s3-sync-encryption-key-copy" type="button" class="settings-password-copy" aria-label="Copy Sync Encryption Key" title="Copy Sync Encryption Key">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect><path d="M10.5 5.25v-1.5a1 1 0 0 0-1-1H3.75a1 1 0 0 0-1 1V9.5a1 1 0 0 0 1 1h1.5"></path></svg>
               </button>
             </div>
           </div>
-        </div>
-        <div class="field field-xs">
-          <div class="settings-key-label-row">
-            <label for="s3-sync-encryption-key">Sync Encryption Key</label>
-            <span>Use the same key on every client</span>
+          <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
+          <div class="form-actions settings-actions">
+            <button id="settings-test-btn" type="button" class="btn btn-secondary">Test</button>
+            <button id="settings-sync-btn" type="button" class="btn btn-primary">Sync Now</button>
           </div>
-          <div class="settings-password-control settings-sync-key-control">
-            <input id="s3-sync-encryption-key" class="input" type="password" placeholder="Generated automatically on first save" autocomplete="off" spellcheck="false" />
-            <button id="s3-sync-encryption-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Sync Encryption Key" aria-controls="s3-sync-encryption-key" aria-pressed="false">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
-            </button>
-            <button id="s3-sync-encryption-key-copy" type="button" class="settings-password-copy" aria-label="Copy Sync Encryption Key" title="Copy Sync Encryption Key">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect><path d="M10.5 5.25v-1.5a1 1 0 0 0-1-1H3.75a1 1 0 0 0-1 1V9.5a1 1 0 0 0 1 1h1.5"></path></svg>
-            </button>
+        </section>
+
+        <section id="settings-notes-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-notes-tab" data-settings-panel="notes" hidden>
+          <div class="settings-notes-card">
+            <div>
+              <label class="settings-notes-title" for="notes-font-size">Editor font size</label>
+              <p class="settings-notes-description">Adjust the snippet editor text size.</p>
+            </div>
+            <div class="settings-number-control">
+              <input id="notes-font-size" class="input" type="number" min="12" max="24" step="1" value="14" inputmode="numeric" aria-describedby="notes-font-size-unit" />
+              <span id="notes-font-size-unit">px</span>
+            </div>
           </div>
-        </div>
-        <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
-        <div class="form-actions settings-actions">
-          <button id="settings-save-btn" type="submit" class="btn btn-secondary">Save</button>
-          <button id="settings-sync-btn" type="button" class="btn btn-primary">Sync Now</button>
-          <button id="settings-clear-credentials-btn" type="button" class="btn btn-secondary">Clear Credentials</button>
-        </div>
+        </section>
+
+        <p id="settings-save-status" class="settings-save-status hidden" role="status" aria-live="polite"></p>
       </form>
     </dialog>
 

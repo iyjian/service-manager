@@ -57,6 +57,7 @@ import { FileKubernetesContextPreference } from './kubernetes/contextPreference'
 import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
 import { AppQuitCoordinator } from './quitCoordinator';
 import { NotesStore } from './notesStore';
+import { UiPreferencesStore } from './uiPreferencesStore';
 import { S3SyncRuntime } from './s3Sync';
 import {
   createS3SharedAppDataV2,
@@ -95,8 +96,12 @@ const IPC_CHANNELS = {
   notesDelete: 'notes:delete',
   notesFlushRequest: 'notes:flush-request',
   notesFlushResult: 'notes:flush-result',
+  uiPreferencesGet: 'settings:ui:get',
+  uiPreferencesSave: 'settings:ui:save',
+  uiPreferencesChanged: 'settings:ui:changed',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
+  s3SettingsTest: 'settings:s3:test',
   s3SettingsReveal: 'settings:s3:reveal-credentials',
   s3Sync: 'settings:s3:sync',
   s3SyncState: 'settings:s3:state',
@@ -162,6 +167,7 @@ const IPC_CHANNELS = {
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 let notesStore: NotesStore | null = null;
+let uiPreferencesStore: UiPreferencesStore | null = null;
 let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
@@ -203,6 +209,13 @@ function getNotesStore(): NotesStore {
     throw new Error('Notes store is not initialized.');
   }
   return notesStore;
+}
+
+function getUiPreferencesStore(): UiPreferencesStore {
+  if (!uiPreferencesStore) {
+    throw new Error('UI preferences are not initialized.');
+  }
+  return uiPreferencesStore;
 }
 
 function getS3SyncRuntime(): S3SyncRuntime {
@@ -676,6 +689,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
 
   const shutdownResults = await Promise.allSettled([
     Promise.resolve().then(() => notesStore?.flush()),
+    Promise.resolve().then(() => uiPreferencesStore?.flush()),
     Promise.resolve().then(() => s3SharedDataMutationQueue),
     Promise.resolve().then(() => s3SyncRuntime?.shutdown()),
     Promise.resolve().then(() => portForwardManager.shutdown()),
@@ -977,9 +991,18 @@ function registerIpcHandlers(): void {
       pending.reject(new Error('The renderer could not save the latest Notes changes.'));
     }
   });
+  ipcMain.handle(IPC_CHANNELS.uiPreferencesGet, async () => getUiPreferencesStore().get());
+  ipcMain.handle(IPC_CHANNELS.uiPreferencesSave, async (_event, draft: unknown) => {
+    const preferences = await getUiPreferencesStore().save(draft);
+    broadcast(IPC_CHANNELS.uiPreferencesChanged, preferences);
+    return preferences;
+  });
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
     getS3SyncRuntime().saveS3SyncSettings(draft)
+  );
+  ipcMain.handle(IPC_CHANNELS.s3SettingsTest, async (_event, draft: unknown) =>
+    getS3SyncRuntime().testS3Connection(draft)
   );
   ipcMain.handle(IPC_CHANNELS.s3SettingsReveal, async () =>
     getS3SyncRuntime().revealS3SyncCredentials()
@@ -1742,6 +1765,9 @@ app.whenReady()
 
     notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes'));
     await notesStore.load();
+
+    uiPreferencesStore = new UiPreferencesStore(path.join(app.getPath('userData'), 'ui-preferences.json'));
+    await uiPreferencesStore.load();
 
     const userDataPath = app.getPath('userData');
     const initializedProxyRuntime = new ProxyRuntime(path.join(userDataPath, 'proxy'));

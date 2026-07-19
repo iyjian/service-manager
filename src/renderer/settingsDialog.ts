@@ -1,5 +1,15 @@
-import type { S3SyncSettingsDraft, S3SyncSettingsView, S3SyncState } from '../shared/types';
-import { flushNotesPage } from './notesPage.js';
+import type {
+  S3ConnectionTestDraft,
+  S3SyncSettingsDraft,
+  S3SyncSettingsView,
+  S3SyncState,
+  UiPreferences,
+} from '../shared/types';
+import { applyNotesFontSize, flushNotesPage } from './notesPage.js';
+
+const DEFAULT_NOTES_FONT_SIZE = 14;
+const MIN_NOTES_FONT_SIZE = 12;
+const MAX_NOTES_FONT_SIZE = 24;
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -22,15 +32,40 @@ const secretKeyVisibilityButton = requireElement<HTMLButtonElement>('#s3-secret-
 const syncEncryptionKeyVisibilityButton = requireElement<HTMLButtonElement>('#s3-sync-encryption-key-visibility');
 const syncEncryptionKeyCopyButton = requireElement<HTMLButtonElement>('#s3-sync-encryption-key-copy');
 const saveButton = requireElement<HTMLButtonElement>('#settings-save-btn');
+const testButton = requireElement<HTMLButtonElement>('#settings-test-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
-const clearCredentialsButton = requireElement<HTMLButtonElement>('#settings-clear-credentials-btn');
+const notesFontSizeInput = requireElement<HTMLInputElement>('#notes-font-size');
 const statusElement = requireElement<HTMLElement>('#s3-sync-status');
+const saveStatusElement = requireElement<HTMLElement>('#settings-save-status');
 const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
+type SettingsTab = 's3' | 'notes';
+type BusyAction = 'save' | 'test' | 'sync';
+
+interface SettingsTabElements {
+  button: HTMLButtonElement;
+  panel: HTMLElement;
+}
+
+const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
+  s3: {
+    button: requireElement<HTMLButtonElement>('#settings-s3-tab'),
+    panel: requireElement<HTMLElement>('#settings-s3-panel'),
+  },
+  notes: {
+    button: requireElement<HTMLButtonElement>('#settings-notes-tab'),
+    panel: requireElement<HTMLElement>('#settings-notes-panel'),
+  },
+};
+const settingsTabOrder: SettingsTab[] = ['s3', 'notes'];
+
 let busy = false;
+let busyAction: BusyAction | undefined;
+let activeTab: SettingsTab = 's3';
 let hasCredentials = false;
 let hasSyncEncryptionKey = false;
 let credentialRevealPending = false;
+let settingsOpenGeneration = 0;
 
 interface CredentialControl {
   input: HTMLInputElement;
@@ -58,9 +93,37 @@ const syncEncryptionKeyControl: CredentialControl = {
   hasSavedValue: () => hasSyncEncryptionKey,
 };
 const credentialControls = [accessKeyControl, secretKeyControl, syncEncryptionKeyControl];
+const s3Inputs = [
+  endpointInput,
+  bucketInput,
+  regionInput,
+  accessKeyInput,
+  secretKeyInput,
+  syncEncryptionKeyInput,
+];
 
 function toErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  return message.replace(/^Error invoking remote method '[^']+': Error: /, '');
+}
+
+function activateTab(tab: SettingsTab, focus = false): void {
+  activeTab = tab;
+  for (const name of settingsTabOrder) {
+    const selected = name === tab;
+    const { button, panel } = settingsTabs[name];
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    panel.hidden = !selected;
+  }
+  if (focus) settingsTabs[tab].button.focus();
+}
+
+function setSaveFeedback(message = '', level: 'success' | 'error' = 'error'): void {
+  saveStatusElement.textContent = message;
+  saveStatusElement.classList.toggle('hidden', !message);
+  saveStatusElement.classList.toggle('settings-save-status-success', Boolean(message) && level === 'success');
+  saveStatusElement.classList.toggle('settings-save-status-error', Boolean(message) && level === 'error');
 }
 
 function setCredentialVisibility(control: CredentialControl, visible: boolean): void {
@@ -75,20 +138,33 @@ function maskCredentials(): void {
   for (const control of credentialControls) setCredentialVisibility(control, false);
 }
 
-function updateCredentialControls(): void {
+function clearCredentialInputs(): void {
+  for (const control of credentialControls) control.input.value = '';
+}
+
+function prepareSettingsDialogClose(): void {
+  settingsOpenGeneration += 1;
+  clearCredentialInputs();
+  maskCredentials();
+  updateControls();
+}
+
+function closeSettingsDialog(): void {
+  prepareSettingsDialogClose();
+  dialog.close();
+}
+
+function updateControls(): void {
   const locked = busy || credentialRevealPending;
   saveButton.disabled = locked;
+  testButton.disabled = locked;
   syncButton.disabled = locked;
-  clearCredentialsButton.disabled = locked || !hasCredentials;
-  endpointInput.disabled = locked;
-  bucketInput.disabled = locked;
-  regionInput.disabled = locked;
-  accessKeyInput.disabled = locked;
-  secretKeyInput.disabled = locked;
-  syncEncryptionKeyInput.disabled = locked;
+  closeButton.disabled = locked;
+  notesFontSizeInput.disabled = locked;
+  for (const { button } of Object.values(settingsTabs)) button.disabled = locked;
+  for (const input of s3Inputs) input.disabled = locked;
   syncEncryptionKeyCopyButton.disabled = locked
     || (!syncEncryptionKeyInput.value && !hasSyncEncryptionKey);
-  closeButton.disabled = locked;
   for (const control of credentialControls) {
     control.input.placeholder = control.hasSavedValue() && !control.input.value
       ? 'Saved locally — use the eye to view'
@@ -113,7 +189,7 @@ async function toggleCredentialVisibility(control: CredentialControl): Promise<v
 
 async function revealSavedCredentials(): Promise<boolean> {
   credentialRevealPending = true;
-  updateCredentialControls();
+  updateControls();
   try {
     const credentials = await window.settingsApi.revealS3SyncCredentials();
     if (!accessKeyInput.value && credentials.accessKeyId) accessKeyInput.value = credentials.accessKeyId;
@@ -128,28 +204,18 @@ async function revealSavedCredentials(): Promise<boolean> {
     return false;
   } finally {
     credentialRevealPending = false;
-    updateCredentialControls();
+    updateControls();
   }
 }
 
-function setBusy(next: boolean, action: 'save' | 'sync' | 'clear' = 'save'): void {
+function setBusy(next: boolean, action: BusyAction = 'save'): void {
   busy = next;
+  busyAction = next ? action : undefined;
   if (next) maskCredentials();
-  saveButton.disabled = next;
-  syncButton.disabled = next;
-  clearCredentialsButton.disabled = next || !hasCredentials;
-  endpointInput.disabled = next;
-  bucketInput.disabled = next;
-  regionInput.disabled = next;
-  accessKeyInput.disabled = next;
-  secretKeyInput.disabled = next;
-  syncEncryptionKeyInput.disabled = next;
-  syncEncryptionKeyCopyButton.disabled = next;
-  closeButton.disabled = next;
   saveButton.textContent = next && action === 'save' ? 'Saving…' : 'Save';
+  testButton.textContent = next && action === 'test' ? 'Testing…' : 'Test';
   syncButton.textContent = next && action === 'sync' ? 'Syncing…' : 'Sync Now';
-  clearCredentialsButton.textContent = next && action === 'clear' ? 'Clearing…' : 'Clear Credentials';
-  updateCredentialControls();
+  updateControls();
 }
 
 function setStatus(
@@ -173,6 +239,7 @@ function formatSyncTimestamp(value: string | undefined): string | undefined {
 function renderSyncState(state: S3SyncState): void {
   navSyncIndicator.dataset.state = state.status;
   openButton.title = `Settings · S3 ${state.status.replace('-', ' ')}`;
+  if (busyAction === 'test') return;
   const lastSync = formatSyncTimestamp(state.lastSyncedAt);
   switch (state.status) {
     case 'syncing':
@@ -200,32 +267,32 @@ function renderSyncState(state: S3SyncState): void {
   }
 }
 
-function renderSettings(settings: S3SyncSettingsView, clearCredentialInputs = false): void {
+function renderSettings(settings: S3SyncSettingsView): void {
   hasCredentials = settings.hasCredentials;
   hasSyncEncryptionKey = settings.hasSyncEncryptionKey;
   endpointInput.value = settings.endpoint;
   bucketInput.value = settings.bucket;
-  regionInput.value = settings.region;
-  if (clearCredentialInputs || !settings.hasCredentials) {
+  regionInput.value = settings.region || 'us-east-1';
+  if (!settings.hasCredentials) {
     accessKeyInput.value = '';
     secretKeyInput.value = '';
   }
   if (!settings.hasSyncEncryptionKey) syncEncryptionKeyInput.value = '';
-  clearCredentialsButton.disabled = busy || !hasCredentials;
-  updateCredentialControls();
+  updateControls();
   renderSyncState(settings.syncState);
 }
 
-async function renderSettingsWithAuthoritativeSyncKey(
-  settings: S3SyncSettingsView,
-  clearCredentialInputs = false,
-): Promise<void> {
-  // A target change may cause main to generate a new key, while Clear
-  // Credentials deliberately ignores an unsaved key draft. Never leave either
-  // stale draft in the field or on the Copy action after the mutation returns.
+async function renderSettingsWithAuthoritativeSyncKey(settings: S3SyncSettingsView): Promise<void> {
+  // A target change may cause main to generate a new key. Always replace the
+  // draft with the authoritative protected value returned by main.
   syncEncryptionKeyInput.value = '';
-  renderSettings(settings, clearCredentialInputs);
+  renderSettings(settings);
   if (settings.hasSyncEncryptionKey) await revealSavedCredentials();
+}
+
+function renderUiPreferences(preferences: UiPreferences): void {
+  notesFontSizeInput.value = String(preferences.notesFontSize);
+  applyNotesFontSize(preferences.notesFontSize);
 }
 
 function currentDraft(): S3SyncSettingsDraft {
@@ -242,51 +309,191 @@ function currentDraft(): S3SyncSettingsDraft {
   };
 }
 
-async function saveSettings(action: 'save' | 'sync' | 'clear' = 'save'): Promise<S3SyncSettingsView> {
-  setBusy(true, action);
+function currentS3TestDraft(): S3ConnectionTestDraft {
+  return {
+    endpoint: endpointInput.value.trim(),
+    bucket: bucketInput.value.trim(),
+    region: regionInput.value.trim() || 'us-east-1',
+    accessKeyId: accessKeyInput.value.trim(),
+    secretAccessKey: secretKeyInput.value,
+  };
+}
+
+function currentUiPreferences(): UiPreferences {
+  const notesFontSize = notesFontSizeInput.valueAsNumber;
+  if (!Number.isInteger(notesFontSize)
+    || notesFontSize < MIN_NOTES_FONT_SIZE
+    || notesFontSize > MAX_NOTES_FONT_SIZE) {
+    throw new Error(
+      `Notes font size must be a whole number from ${MIN_NOTES_FONT_SIZE} to ${MAX_NOTES_FONT_SIZE}.`,
+    );
+  }
+  return { notesFontSize };
+}
+
+function shouldSaveS3Draft(draft: S3SyncSettingsDraft): boolean {
+  return Boolean(
+    draft.endpoint
+      || draft.bucket
+      || draft.accessKeyId
+      || draft.secretAccessKey
+      || draft.syncEncryptionKey
+      || hasCredentials
+      || hasSyncEncryptionKey
+      || (draft.region && draft.region !== 'us-east-1'),
+  );
+}
+
+async function saveAllSettings(): Promise<void> {
+  setSaveFeedback();
+  let preferences: UiPreferences;
   try {
-    const draft = action === 'clear'
-      ? await window.settingsApi.getS3SyncSettings().then((saved) => ({
-          endpoint: saved.endpoint,
-          bucket: saved.bucket,
-          region: saved.region,
-          clearCredentials: true as const,
-        }))
-      : currentDraft();
-    const settings = await window.settingsApi.saveS3SyncSettings(draft);
-    await renderSettingsWithAuthoritativeSyncKey(settings, action === 'clear');
-    return settings;
+    preferences = currentUiPreferences();
+  } catch (error) {
+    activateTab('notes');
+    setSaveFeedback(toErrorMessage(error));
+    notesFontSizeInput.focus();
+    return;
+  }
+
+  const s3Draft = currentDraft();
+  const saveS3 = shouldSaveS3Draft(s3Draft);
+  let stage: SettingsTab = saveS3 ? 's3' : 'notes';
+  let savedS3Settings: S3SyncSettingsView | undefined;
+  setBusy(true, 'save');
+  try {
+    if (saveS3) savedS3Settings = await window.settingsApi.saveS3SyncSettings(s3Draft);
+    stage = 'notes';
+    renderUiPreferences(await window.settingsApi.saveUiPreferences(preferences));
+    if (savedS3Settings) await renderSettingsWithAuthoritativeSyncKey(savedS3Settings);
+    setSaveFeedback();
+  } catch (error) {
+    activateTab(stage);
+    setSaveFeedback(`Unable to save settings: ${toErrorMessage(error)}`);
+    return;
   } finally {
-    setBusy(false, action);
+    setBusy(false, 'save');
+  }
+  closeSettingsDialog();
+}
+
+async function testS3Connection(): Promise<void> {
+  setSaveFeedback();
+  setBusy(true, 'test');
+  try {
+    if ((!accessKeyInput.value || !secretKeyInput.value) && hasCredentials) {
+      if (!await revealSavedCredentials()) return;
+    }
+    await window.settingsApi.testS3Connection(currentS3TestDraft());
+    setStatus('S3 connection succeeded.', 'success');
+  } catch (error) {
+    setStatus(`Connection test failed: ${toErrorMessage(error)}`, 'error');
+  } finally {
+    setBusy(false, 'test');
+  }
+}
+
+async function syncNow(): Promise<void> {
+  setSaveFeedback();
+  setBusy(true, 'sync');
+  try {
+    await flushNotesPage();
+    await renderSettingsWithAuthoritativeSyncKey(
+      await window.settingsApi.saveS3SyncSettings(currentDraft()),
+    );
+    const result = await window.settingsApi.syncAllDataToS3();
+    await renderSettingsWithAuthoritativeSyncKey(await window.settingsApi.getS3SyncSettings());
+    const actionMessage = result.action === 'pulled'
+      ? 'Cloud changes downloaded.'
+      : result.action === 'pushed'
+        ? `Changes uploaded${result.byteLength ? ` (${Math.max(1, Math.round(result.byteLength / 1024))} KiB)` : ''}.`
+        : result.action === 'conflict'
+          ? 'Synced; recoverable conflicts were preserved.'
+          : 'Already up to date.';
+    setStatus(actionMessage, result.action === 'conflict' ? 'conflict' : 'success');
+  } catch (error) {
+    setStatus(`Sync failed: ${toErrorMessage(error)}`, 'error');
+  } finally {
+    setBusy(false, 'sync');
   }
 }
 
 async function openSettings(): Promise<void> {
+  const openGeneration = ++settingsOpenGeneration;
+  clearCredentialInputs();
   maskCredentials();
+  updateControls();
+  setSaveFeedback();
   if (!dialog.open) dialog.showModal();
   setStatus('Loading S3 settings…');
-  try {
-    const settings = await window.settingsApi.getS3SyncSettings();
-    renderSettings(settings);
-    if ((settings.hasCredentials && (!accessKeyInput.value || !secretKeyInput.value))
-      || (settings.hasSyncEncryptionKey && !syncEncryptionKeyInput.value)) {
+
+  const [settingsResult, preferencesResult] = await Promise.allSettled([
+    window.settingsApi.getS3SyncSettings(),
+    window.settingsApi.getUiPreferences(),
+  ]);
+
+  if (!dialog.open || openGeneration !== settingsOpenGeneration) return;
+
+  if (settingsResult.status === 'fulfilled') {
+    renderSettings(settingsResult.value);
+    if ((settingsResult.value.hasCredentials && (!accessKeyInput.value || !secretKeyInput.value))
+      || (settingsResult.value.hasSyncEncryptionKey && !syncEncryptionKeyInput.value)) {
       await revealSavedCredentials();
     }
-    endpointInput.focus();
-  } catch (error) {
-    setStatus(`Unable to load settings: ${toErrorMessage(error)}`, 'error');
+  } else {
+    setStatus(`Unable to load S3 settings: ${toErrorMessage(settingsResult.reason)}`, 'error');
   }
+
+  if (preferencesResult.status === 'fulfilled') {
+    renderUiPreferences(preferencesResult.value);
+  } else {
+    notesFontSizeInput.value = String(DEFAULT_NOTES_FONT_SIZE);
+    applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE);
+    setSaveFeedback(`Unable to load Notes settings: ${toErrorMessage(preferencesResult.reason)}`);
+  }
+
+  if (activeTab === 'notes') notesFontSizeInput.focus();
+  else endpointInput.focus();
+}
+
+function handleTabKeydown(event: KeyboardEvent): void {
+  const currentIndex = settingsTabOrder.findIndex((name) => settingsTabs[name].button === event.target);
+  if (currentIndex < 0) return;
+  let nextIndex: number | undefined;
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % settingsTabOrder.length;
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    nextIndex = (currentIndex - 1 + settingsTabOrder.length) % settingsTabOrder.length;
+  } else if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = settingsTabOrder.length - 1;
+  if (nextIndex === undefined) return;
+  event.preventDefault();
+  activateTab(settingsTabOrder[nextIndex] ?? 's3', true);
 }
 
 export function registerSettingsDialog(): void {
   openButton.parentElement?.append(openButton);
-  updateCredentialControls();
+  activateTab(activeTab);
+  updateControls();
+
+  void window.settingsApi.getUiPreferences()
+    .then(renderUiPreferences)
+    .catch(() => applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE));
+
   openButton.addEventListener('click', () => { void openSettings(); });
-  closeButton.addEventListener('click', () => { if (!busy && !credentialRevealPending) dialog.close(); });
-  accessKeyInput.addEventListener('input', updateCredentialControls);
-  secretKeyInput.addEventListener('input', updateCredentialControls);
-  syncEncryptionKeyInput.addEventListener('input', updateCredentialControls);
+  closeButton.addEventListener('click', () => {
+    if (!busy && !credentialRevealPending) closeSettingsDialog();
+  });
+  for (const input of [accessKeyInput, secretKeyInput, syncEncryptionKeyInput]) {
+    input.addEventListener('input', updateControls);
+  }
+  for (const name of settingsTabOrder) {
+    const { button } = settingsTabs[name];
+    button.addEventListener('click', () => activateTab(name));
+    button.addEventListener('keydown', handleTabKeydown);
+  }
+
   window.settingsApi.onS3SyncStateChanged(renderSyncState);
+  window.settingsApi.onUiPreferencesChanged(renderUiPreferences);
   accessKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(accessKeyControl); });
   secretKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(secretKeyControl); });
   syncEncryptionKeyVisibilityButton.addEventListener('click', () => {
@@ -303,55 +510,28 @@ export function registerSettingsDialog(): void {
       window.setTimeout(() => { delete syncEncryptionKeyCopyButton.dataset.copied; }, 1_500);
     })().catch((error) => setStatus(`Unable to copy Sync Encryption Key: ${toErrorMessage(error)}`, 'error'));
   });
+
   dialog.addEventListener('click', (event) => {
-    if (!busy && !credentialRevealPending && event.target === dialog) dialog.close();
+    if (!busy && !credentialRevealPending && event.target === dialog) closeSettingsDialog();
   });
-  dialog.addEventListener('cancel', (event) => { if (busy || credentialRevealPending) event.preventDefault(); });
-  dialog.addEventListener('close', maskCredentials);
+  dialog.addEventListener('cancel', (event) => {
+    if (busy || credentialRevealPending) event.preventDefault();
+    else prepareSettingsDialogClose();
+  });
+  dialog.addEventListener('close', () => {
+    if (dialog.open) return;
+    clearCredentialInputs();
+    maskCredentials();
+    updateControls();
+  });
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (busy || credentialRevealPending) return;
-    void saveSettings('save')
-      .then(() => setStatus('S3 settings saved.', 'success'))
-      .catch((error) => setStatus(`Unable to save settings: ${toErrorMessage(error)}`, 'error'));
+    if (!busy && !credentialRevealPending) void saveAllSettings();
+  });
+  testButton.addEventListener('click', () => {
+    if (!busy && !credentialRevealPending) void testS3Connection();
   });
   syncButton.addEventListener('click', () => {
-    if (busy || credentialRevealPending) return;
-    void (async () => {
-      setBusy(true, 'sync');
-      try {
-        await flushNotesPage();
-        await renderSettingsWithAuthoritativeSyncKey(
-          await window.settingsApi.saveS3SyncSettings(currentDraft()),
-        );
-        const result = await window.settingsApi.syncAllDataToS3();
-        await renderSettingsWithAuthoritativeSyncKey(await window.settingsApi.getS3SyncSettings());
-        const actionMessage = result.action === 'pulled'
-          ? 'Cloud changes downloaded.'
-          : result.action === 'pushed'
-            ? `Changes uploaded${result.byteLength ? ` (${Math.max(1, Math.round(result.byteLength / 1024))} KiB)` : ''}.`
-            : result.action === 'conflict'
-              ? 'Synced; recoverable conflicts were preserved.'
-              : 'Already up to date.';
-        setStatus(actionMessage, result.action === 'conflict' ? 'conflict' : 'success');
-      } catch (error) {
-        setStatus(`Sync failed: ${toErrorMessage(error)}`, 'error');
-      } finally {
-        setBusy(false, 'sync');
-      }
-    })();
-  });
-  clearCredentialsButton.addEventListener('click', () => {
-    if (busy || credentialRevealPending || !hasCredentials) return;
-    void window.serviceApi.confirmAction({
-      title: 'Clear S3 credentials?',
-      message: 'Remove the saved Access Key ID and Secret Access Key?',
-      detail: 'The Endpoint, Bucket, Sync Encryption Key, and cloud revisions remain unchanged.',
-      kind: 'warning',
-      confirmLabel: 'Clear Credentials',
-    }).then((confirmed) => {
-      if (!confirmed) return;
-      return saveSettings('clear').then(() => setStatus('S3 credentials cleared.', 'success'));
-    }).catch((error) => setStatus(`Unable to clear credentials: ${toErrorMessage(error)}`, 'error'));
+    if (!busy && !credentialRevealPending) void syncNow();
   });
 }

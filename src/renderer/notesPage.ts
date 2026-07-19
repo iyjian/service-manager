@@ -248,6 +248,10 @@ class NotesPage {
     return this.flushAllPendingSaves();
   }
 
+  requestEditorMeasure(): void {
+    this.codeEditor.requestMeasure();
+  }
+
   async reload(): Promise<void> {
     // A user can type during the short main-process apply window after the
     // final pre-apply flush. Persist that edit before replacing the view so it
@@ -653,6 +657,12 @@ class NotesPage {
 
 let page: NotesPage | undefined;
 let flushListenerRegistered = false;
+
+export function applyNotesFontSize(fontSize: number): void {
+  const normalized = Number.isInteger(fontSize) && fontSize >= 12 && fontSize <= 24 ? fontSize : 14;
+  document.documentElement.style.setProperty('--notes-editor-font-size', `${normalized}px`);
+  window.requestAnimationFrame(() => page?.requestEditorMeasure());
+}
 
 export function registerNotesPage(): void {
   page ??= new NotesPage();

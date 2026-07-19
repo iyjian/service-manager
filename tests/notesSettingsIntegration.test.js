@@ -70,7 +70,7 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
 });
 
 test('Notes uses the full available width with a bounded responsive sidebar and independent scrolling', async () => {
-  const { html, styles, baseStyles } = await readIntegrationFiles();
+  const { html, styles, baseStyles, notesPage } = await readIntegrationFiles();
 
   assert.match(html, /<section class="notes-page"[^>]*>[\s\S]*?<aside class="notes-sidebar">[\s\S]*?<section class="notes-workspace"/);
   assert.match(styles, /\.app-shell\[data-page=notes\]\{[^}]*margin-left:0[^}]*margin-right:0[^}]*max-width:none[^}]*height:100dvh[^}]*max-height:100dvh[^}]*overflow:hidden/);
@@ -93,9 +93,11 @@ test('Notes uses the full available width with a bounded responsive sidebar and 
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes Code'[^}]*notes-code-variable\.woff2[^}]*font-weight:\s*100 800/);
   assert.match(baseStyles, /--font-family-notes-ui:\s*'STM Notes UI',\s*'STM UI',\s*sans-serif/);
   assert.match(baseStyles, /--font-family-notes-code:\s*'STM Notes Code',\s*'STM Notes UI',\s*monospace/);
+  assert.match(baseStyles, /--notes-editor-font-size:\s*14px/);
   assert.match(styles, /\.app-shell\[data-page=notes\][^{]*\{[^}]*font-family:var\(--font-family-notes-ui\)/);
-  assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-size:14px[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-variant-ligatures:none/);
+  assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*font-variant-ligatures:none/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
+  assert.match(notesPage, /function applyNotesFontSize\(fontSize\)[\s\S]*?style\.setProperty\('--notes-editor-font-size', `\$\{normalized\}px`\)[\s\S]*?requestAnimationFrame\(\(\) => page\?\.requestEditorMeasure\(\)\)/);
 });
 
 test('Notes local UI and code fonts are packaged with their licenses', async () => {
@@ -115,7 +117,7 @@ test('Notes local UI and code fonts are packaged with their licenses', async () 
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 
-test('Settings stays at the bottom of the navigation rail and exposes compact MinIO endpoint and bucket controls', async () => {
+test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
   const { html, styles, renderer, notesPage, settingsDialog, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
@@ -123,6 +125,11 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(styles, /\.nav-settings-button\{margin-top:auto;order:99\}/);
   assert.match(styles, /\.host-dialog\.settings-dialog\{width:min\(540px,calc\(100vw - 32px\)\)/);
   assert.match(html, /id="settings-dialog"/);
+  assert.match(html, /class="settings-head-actions"[\s\S]*?id="settings-save-btn"[^>]*type="submit"[^>]*>Save<\/button>[\s\S]*?id="settings-close-btn"/);
+  assert.match(html, /class="settings-tabs"[^>]*role="tablist"[\s\S]*?id="settings-s3-tab"[^>]*aria-selected="true"[\s\S]*?id="settings-notes-tab"[^>]*aria-selected="false"/);
+  assert.match(html, /id="settings-s3-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-s3-tab"/);
+  assert.match(html, /id="settings-notes-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-notes-tab"[^>]*hidden/);
+  assert.match(styles, /\.settings-tab-panel\[hidden\]\{display:none\}/);
   assert.match(html, /id="s3-endpoint"[^>]*placeholder="https:\/\/s3\.example\.com"/);
   assert.match(html, /id="s3-bucket"[^>]*placeholder="service-manager"/);
   assert.doesNotMatch(html, /id="s3-sync-version"|Sync format/i);
@@ -138,29 +145,48 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(styles, /\.settings-password-toggle\{[^}]*position:absolute[^}]*top:0[^}]*bottom:0[^}]*width:2\.25rem/);
   assert.match(styles, /\.settings-password-toggle svg\{[^}]*display:block[^}]*height:1\.25rem[^}]*width:1\.25rem/);
   assert.match(styles, /\.settings-password-toggle\[aria-pressed=true\]/);
+  assert.match(html, /id="settings-s3-panel"[\s\S]*?id="settings-test-btn"[^>]*>Test<\/button>[\s\S]*?id="settings-sync-btn"[^>]*>Sync Now<\/button>[\s\S]*?<\/section>/);
+  assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="14"/);
   assert.match(html, /id="settings-sync-btn"[^>]*>Sync Now<\/button>/);
+  assert.doesNotMatch(html, /settings-clear-credentials-btn|Clear Credentials/);
 
+  assert.match(preload, /getUiPreferences:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:ui:get'\)/);
+  assert.match(preload, /saveUiPreferences:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:ui:save', draft\)/);
   assert.match(preload, /getS3SyncSettings:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:get'\)/);
   assert.match(preload, /saveS3SyncSettings:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:save', draft\)/);
+  assert.match(preload, /testS3Connection:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:test', draft\)/);
   assert.match(preload, /revealS3SyncCredentials:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:reveal-credentials'\)/);
   assert.match(preload, /syncAllDataToS3:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:sync'\)/);
   assert.match(preload, /onS3SyncStateChanged:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('settings:s3:state', wrapped\)[\s\S]*?removeListener\('settings:s3:state', wrapped\)/);
   assert.match(preload, /onPersistentDataReloaded:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('app:persistent-data-reloaded', wrapped\)[\s\S]*?removeListener\('app:persistent-data-reloaded', wrapped\)/);
   assert.match(preload, /exposeInMainWorld\('settingsApi', settingsApi\)/);
-  for (const handler of ['s3SettingsGet', 's3SettingsSave', 's3SettingsReveal', 's3Sync']) {
+  for (const handler of [
+    'uiPreferencesGet',
+    'uiPreferencesSave',
+    's3SettingsGet',
+    's3SettingsSave',
+    's3SettingsTest',
+    's3SettingsReveal',
+    's3Sync',
+  ]) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
   assert.match(renderer, /registerSettingsDialog\(\)/);
   assert.match(renderer, /window\.settingsApi\.onPersistentDataReloaded\(\(\)\s*=>\s*\{[\s\S]*?Promise\.all\(\[loadHosts\(\), reloadNotesPage\(\)\]\)/);
   assert.match(settingsDialog, /window\.settingsApi\.syncAllDataToS3\(\)/);
+  assert.match(settingsDialog, /window\.settingsApi\.testS3Connection\(currentS3TestDraft\(\)\)/);
   assert.match(settingsDialog, /window\.settingsApi\.onS3SyncStateChanged\(renderSyncState\)/);
+  assert.match(settingsDialog, /window\.settingsApi\.onUiPreferencesChanged\(renderUiPreferences\)/);
   assert.match(settingsDialog, /bucketInput\.value = settings\.bucket/);
   assert.match(settingsDialog, /bucket:\s*bucketInput\.value\.trim\(\)/);
   assert.match(settingsDialog, /await flushNotesPage\(\);[\s\S]*?saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)/);
+  assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?closeSettingsDialog\(\)/);
+  assert.match(settingsDialog, /function shouldSaveS3Draft\(draft\)[\s\S]*?draft\.endpoint[\s\S]*?hasCredentials[\s\S]*?hasSyncEncryptionKey/);
+  assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?panel\.hidden = !selected/);
+  assert.match(settingsDialog, /event\.key === 'ArrowRight'[\s\S]*?event\.key === 'ArrowLeft'[\s\S]*?activateTab/);
+  assert.doesNotMatch(settingsDialog, /clearCredentials|Clear Credentials/);
   assert.match(notesPage, /await Promise\.all\([\s\S]*?if \(this\.notes\.some\([\s\S]*?throw new Error\('Some notes could not be saved\./);
-  assert.match(settingsDialog, /endpointInput\.disabled = next/);
-  assert.match(settingsDialog, /bucketInput\.disabled = next/);
-  assert.match(settingsDialog, /if \(busy \|\| credentialRevealPending\)\s*return/);
+  assert.match(settingsDialog, /for \(const input of s3Inputs\)\s*input\.disabled = locked/);
   assert.match(settingsDialog, /\.\.\.\(accessKeyId \? \{ accessKeyId \} : \{\}\)/);
   assert.match(settingsDialog, /\.\.\.\(secretAccessKey \? \{ secretAccessKey \} : \{\}\)/);
 });
@@ -174,7 +200,7 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
 
   assert.match(renderSettings, /hasCredentials = settings\.hasCredentials/);
   assert.match(renderSettings, /hasSyncEncryptionKey = settings\.hasSyncEncryptionKey/);
-  assert.match(renderSettings, /if \(clearCredentialInputs \|\| !settings\.hasCredentials\)/);
+  assert.match(renderSettings, /if \(!settings\.hasCredentials\)/);
   assert.match(renderSettings, /accessKeyInput\.value = ''/);
   assert.match(renderSettings, /secretKeyInput\.value = ''/);
   assert.doesNotMatch(renderSettings, /settings\.(?:accessKeyId|secretAccessKey|credentials)/);
@@ -191,16 +217,21 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   assert.match(settingsDialog, /control\.button\.setAttribute\('aria-label', label\)/);
   assert.match(settingsDialog, /const locked = busy \|\| credentialRevealPending/);
   assert.match(settingsDialog, /closeButton\.disabled = locked/);
-  assert.match(settingsDialog, /settings\.hasCredentials && \(!accessKeyInput\.value \|\| !secretKeyInput\.value\)[\s\S]*?settings\.hasSyncEncryptionKey && !syncEncryptionKeyInput\.value[\s\S]*?await revealSavedCredentials\(\)/);
+  assert.match(settingsDialog, /settingsResult\.value\.hasCredentials && \(!accessKeyInput\.value \|\| !secretKeyInput\.value\)[\s\S]*?settingsResult\.value\.hasSyncEncryptionKey && !syncEncryptionKeyInput\.value[\s\S]*?await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /syncEncryptionKeyInput\.value = credentials\.syncEncryptionKey/);
   assert.match(settingsDialog, /const syncEncryptionKey = syncEncryptionKeyInput\.value\.trim\(\)[\s\S]*?\{ syncEncryptionKey \}/);
   assert.match(settingsDialog, /writeClipboardText\(syncEncryptionKeyInput\.value\)/);
-  assert.match(settingsDialog, /function renderSettingsWithAuthoritativeSyncKey[\s\S]*?syncEncryptionKeyInput\.value = ''[\s\S]*?renderSettings\(settings, clearCredentialInputs\)[\s\S]*?await revealSavedCredentials\(\)/);
-  assert.match(settingsDialog, /action === 'clear'[\s\S]*?getS3SyncSettings\(\)[\s\S]*?clearCredentials: true[\s\S]*?saveS3SyncSettings\(draft\)[\s\S]*?renderSettingsWithAuthoritativeSyncKey\(settings, action === 'clear'\)/);
+  assert.match(settingsDialog, /function renderSettingsWithAuthoritativeSyncKey[\s\S]*?syncEncryptionKeyInput\.value = ''[\s\S]*?renderSettings\(settings\)[\s\S]*?await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)[\s\S]*?renderSettingsWithAuthoritativeSyncKey\(await window\.settingsApi\.getS3SyncSettings\(\)\)/);
   assert.match(settingsDialog, /if \(show\)[\s\S]*?other !== control[\s\S]*?setCredentialVisibility\(other, false\)/);
-  assert.match(settingsDialog, /dialog\.addEventListener\('close', maskCredentials\)/);
-  assert.match(settingsDialog, /renderSettingsWithAuthoritativeSyncKey\(settings, action === 'clear'\)/);
+  assert.match(settingsDialog, /function clearCredentialInputs\(\)[\s\S]*?control\.input\.value = ''/);
+  assert.match(settingsDialog, /function prepareSettingsDialogClose\(\)[\s\S]*?settingsOpenGeneration \+= 1[\s\S]*?clearCredentialInputs\(\)[\s\S]*?maskCredentials\(\)/);
+  assert.match(settingsDialog, /function closeSettingsDialog\(\)[\s\S]*?prepareSettingsDialogClose\(\)[\s\S]*?dialog\.close\(\)/);
+  assert.match(settingsDialog, /async function openSettings\(\)[\s\S]*?clearCredentialInputs\(\)[\s\S]*?getS3SyncSettings\(\)/);
+  assert.match(settingsDialog, /if \(!dialog\.open \|\| openGeneration !== settingsOpenGeneration\)\s*return/);
+  assert.match(settingsDialog, /dialog\.addEventListener\('cancel',[\s\S]*?prepareSettingsDialogClose\(\)/);
+  assert.match(settingsDialog, /dialog\.addEventListener\('close',[\s\S]*?if \(dialog\.open\)\s*return[\s\S]*?clearCredentialInputs\(\)[\s\S]*?maskCredentials\(\)/);
+  assert.doesNotMatch(settingsDialog, /clearCredentials|Clear Credentials/);
 });
 
 test('normal and signal shutdown flush Notes and stop S3 sync through the shared coordinator', async () => {
@@ -211,6 +242,7 @@ test('normal and signal shutdown flush Notes and stop S3 sync through the shared
   const shutdown = main.slice(shutdownStart, shutdownEnd);
 
   assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => notesStore\?\.flush\(\)\)/);
+  assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => uiPreferencesStore\?\.flush\(\)\)/);
   assert.match(shutdown, /await flushRendererNotes\(\);[\s\S]*?notesStore\?\.flush\(\)/);
   assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => s3SyncRuntime\?\.shutdown\(\)\)/);
   assert.match(main, /window\.on\('close',[\s\S]*?event\.preventDefault\(\)[\s\S]*?requestQuitAfterRuntimeShutdown\(\)/);

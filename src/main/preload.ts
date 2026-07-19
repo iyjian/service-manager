@@ -25,12 +25,15 @@ import type {
   ProxyState,
   ProxyTraffic,
   PersistentDataReloaded,
+  S3ConnectionTestDraft,
   ServiceApi,
   S3SyncState,
   S3SyncSettingsDraft,
   SettingsApi,
   ServiceStatusChange,
   TunnelStatusChange,
+  UiPreferences,
+  UiPreferencesDraft,
   UpdateState,
 } from '../shared/types';
 
@@ -109,14 +112,22 @@ const notesApi: NotesApi = {
 };
 
 const settingsApi: SettingsApi = {
+  getUiPreferences: () => ipcRenderer.invoke('settings:ui:get'),
+  saveUiPreferences: (draft: UiPreferencesDraft) => ipcRenderer.invoke('settings:ui:save', draft),
   getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
+  testS3Connection: (draft: S3ConnectionTestDraft) => ipcRenderer.invoke('settings:s3:test', draft),
   revealS3SyncCredentials: () => ipcRenderer.invoke('settings:s3:reveal-credentials'),
   syncAllDataToS3: () => ipcRenderer.invoke('settings:s3:sync'),
   onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: S3SyncState): void => listener(state);
     ipcRenderer.on('settings:s3:state', wrapped);
     return () => ipcRenderer.removeListener('settings:s3:state', wrapped);
+  },
+  onUiPreferencesChanged: (listener: (preferences: UiPreferences) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, preferences: UiPreferences): void => listener(preferences);
+    ipcRenderer.on('settings:ui:changed', wrapped);
+    return () => ipcRenderer.removeListener('settings:ui:changed', wrapped);
   },
   onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, event: PersistentDataReloaded): void => listener(event);

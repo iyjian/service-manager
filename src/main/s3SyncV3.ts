@@ -136,6 +136,16 @@ export interface S3V3ObjectStoreOptions extends S3EndpointBucket {
   signal?: AbortSignal;
 }
 
+export interface S3V3ConnectionTestOptions extends S3EndpointBucket {
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export type S3V3HeadReadResult =
   | { status: 'missing' }
   | { status: 'found'; head: S3SyncHeadV3; etag: string };
@@ -844,17 +854,26 @@ function normalizedEtag(value: unknown): string {
   return value;
 }
 
-function safeHttpError(status: number, body: Buffer): Error {
-  const match = body.toString('utf8').slice(0, MAX_ERROR_BYTES)
-    .match(/<Code>\s*([A-Za-z0-9._-]{1,128})\s*<\/Code>/i);
-  return new Error(`S3 sync failed (${status}${match ? ` ${match[1]}` : ''}).`);
+function safeS3ErrorCode(body: Buffer): string | undefined {
+  return body.toString('utf8').slice(0, MAX_ERROR_BYTES)
+    .match(/<Code>\s*([A-Za-z0-9._-]{1,128})\s*<\/Code>/i)?.[1];
 }
 
-async function readBoundedBody(response: Response, maximumBytes: number, signal: AbortSignal): Promise<Buffer> {
+function safeHttpError(status: number, body: Buffer, operation = 'S3 sync'): Error {
+  const code = safeS3ErrorCode(body);
+  return new Error(`${operation} failed (${status}${code ? ` ${code}` : ''}).`);
+}
+
+async function readBoundedBody(
+  response: Response,
+  maximumBytes: number,
+  signal: AbortSignal,
+  operation = 'S3 sync',
+): Promise<Buffer> {
   const declaredLength = response.headers.get('content-length');
   if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > maximumBytes) {
     await response.body?.cancel().catch(() => undefined);
-    throw new Error('The S3 sync response is too large.');
+    throw new Error(`The ${operation} response is too large.`);
   }
   const reader = response.body?.getReader();
   if (!reader) return Buffer.alloc(0);
@@ -870,7 +889,7 @@ async function readBoundedBody(response: Response, maximumBytes: number, signal:
       total += chunk.byteLength;
       if (total > maximumBytes) {
         await reader.cancel().catch(() => undefined);
-        throw new Error('The S3 sync response is too large.');
+        throw new Error(`The ${operation} response is too large.`);
       }
       chunks.push(chunk);
     }
@@ -878,6 +897,69 @@ async function readBoundedBody(response: Response, maximumBytes: number, signal:
     signal.removeEventListener('abort', cancel);
   }
   return Buffer.concat(chunks, total);
+}
+
+/**
+ * Sends one signed GET for the canonical v3 head. A missing object is a
+ * successful connectivity result because a newly configured bucket has no
+ * head yet; a missing bucket remains an error. Existing head content is
+ * deliberately neither parsed nor decrypted.
+ */
+export async function testS3V3Connection(options: S3V3ConnectionTestOptions): Promise<void> {
+  const target = normalizeS3EndpointBucket(options.endpoint, options.bucket);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) {
+    throw new Error('The S3 request timeout is invalid.');
+  }
+  const signed = signS3V3Request({
+    method: 'GET',
+    objectUrl: buildS3V3HeadObjectUrl(target.endpoint, target.bucket),
+    region: options.region,
+    accessKeyId: options.accessKeyId,
+    secretAccessKey: options.secretAccessKey,
+    now: (options.now ?? (() => new Date()))(),
+  });
+  const controller = new AbortController();
+  const abortFromOwner = (): void => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  else options.signal?.addEventListener('abort', abortFromOwner, { once: true });
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    let response: Response;
+    try {
+      response = await (options.fetchImpl ?? fetch)(signed.url, {
+        method: 'GET',
+        headers: signed.headers,
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+    } catch {
+      if (timedOut) throw new Error('S3 connection test timed out.');
+      if (controller.signal.aborted) throw new Error('S3 connection test was cancelled.');
+      throw new Error('S3 connection test request failed.');
+    }
+    if (response.status === 200) {
+      await response.body?.cancel().catch(() => undefined);
+    } else {
+      const body = await readBoundedBody(response, MAX_ERROR_BYTES, controller.signal, 'S3 connection test');
+      const missingHead = response.status === 404
+        && safeS3ErrorCode(body) === 'NoSuchKey';
+      if (!missingHead) throw safeHttpError(response.status, body, 'S3 connection test');
+    }
+    if (timedOut) throw new Error('S3 connection test timed out.');
+    if (controller.signal.aborted) throw new Error('S3 connection test was cancelled.');
+  } catch (error) {
+    if (timedOut) throw new Error('S3 connection test timed out.');
+    if (controller.signal.aborted) throw new Error('S3 connection test was cancelled.');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abortFromOwner);
+  }
 }
 
 function responseEtag(headers: Headers, required: boolean): string | undefined {

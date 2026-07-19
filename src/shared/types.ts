@@ -650,6 +650,12 @@ export interface NotesApi {
   onFlushRequested: (listener: () => void | Promise<void>) => () => void;
 }
 
+export interface UiPreferences {
+  notesFontSize: number;
+}
+
+export type UiPreferencesDraft = UiPreferences;
+
 export interface S3SyncSettingsView {
   endpoint: string;
   bucket: string;
@@ -669,6 +675,14 @@ export interface S3SyncSettingsDraft {
   secretAccessKey?: string;
   syncEncryptionKey?: string;
   clearCredentials?: boolean;
+}
+
+export interface S3ConnectionTestDraft {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
 }
 
 export interface S3CredentialValues {
@@ -711,11 +725,15 @@ export interface PersistentDataReloaded {
 }
 
 export interface SettingsApi {
+  getUiPreferences: () => Promise<UiPreferences>;
+  saveUiPreferences: (draft: UiPreferencesDraft) => Promise<UiPreferences>;
   getS3SyncSettings: () => Promise<S3SyncSettingsView>;
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
+  testS3Connection: (draft: S3ConnectionTestDraft) => Promise<void>;
   revealS3SyncCredentials: () => Promise<S3CredentialValues>;
   syncAllDataToS3: () => Promise<S3SyncResult>;
   onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => () => void;
+  onUiPreferencesChanged: (listener: (preferences: UiPreferences) => void) => () => void;
   onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => () => void;
 }
 
