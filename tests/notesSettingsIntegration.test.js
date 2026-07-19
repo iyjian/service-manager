@@ -165,7 +165,7 @@ test('Notes uses full width with a responsive tree, independent scrolling, and s
   assert.match(taskItemRule[1], /align-items:flex-start/);
   assert.match(taskItemRule[1], /margin-top:1rem/);
   assert.match(taskItemRule[1], /margin-bottom:1rem/);
-  assert.match(styles, /li\[data-task-item\] input\[type=checkbox\][^{]*\{[^}]*appearance:none[^}]*display:grid[^}]*place-content:center/);
+  assert.match(styles, /li\[data-task-item\] input\[type=checkbox\][^{]*\{[^}]*appearance:none[^}]*border-style:solid[^}]*display:grid[^}]*place-content:center/);
   assert.match(styles, /li\[data-task-item\] input\[type=checkbox\][^{]*\{[^}]*width:1\.2em[^}]*height:1\.2em[^}]*top:(?:\.29em|calc\(\(1\.78em - 1\.2em\)\/2\))/);
   assert.match(styles, /li\[data-task-item\]>div>p\{margin:0\}/);
   assert.match(styles, /\.notes-content\{[^}]*height:100%[^}]*min-height:0[^}]*overflow:hidden/);

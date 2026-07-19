@@ -1228,8 +1228,14 @@ export class NotesRichTextEditor {
 
   private updateEmptyState(): void {
     if (this.editor.isDestroyed) return;
-    this.editor.view.dom.classList.toggle('is-editor-empty', this.editor.isEmpty);
-    this.editor.view.dom.dataset.placeholder = "Press '/' for commands";
+    const editorElement = this.editor.view.dom;
+    const documentNode = this.editor.state.doc;
+    const showRootPlaceholder = this.editor.isEmpty
+      && documentNode.childCount === 1
+      && documentNode.firstChild?.type.name === 'paragraph';
+    editorElement.classList.toggle('is-editor-empty', showRootPlaceholder);
+    if (showRootPlaceholder) editorElement.dataset.placeholder = "Press '/' for commands";
+    else delete editorElement.dataset.placeholder;
   }
 
   private emitUpdate(): void {

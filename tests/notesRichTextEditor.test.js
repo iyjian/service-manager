@@ -160,6 +160,15 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /aria-label', 'Mark task complete'/);
 });
 
+test('empty To-do does not inherit the empty-editor slash hint', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /documentNode\.childCount === 1/);
+  assert.match(source, /documentNode\.firstChild\?\.type\.name === 'paragraph'/);
+  assert.match(source, /classList\.toggle\('is-editor-empty', showRootPlaceholder\)/);
+  assert.match(source, /delete editorElement\.dataset\.placeholder/);
+  assert.doesNotMatch(source, /notes-richtext-node-placeholder/);
+});
+
 test('slash menu reveal math keeps keyboard selection inside its own scrolling viewport', async () => {
   const { revealMenuItemScrollTop } = await import('../dist/renderer/notesRichTextMenuScroll.js');
   const base = {
