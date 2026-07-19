@@ -333,12 +333,12 @@ test('S3 settings validation accepts a root endpoint and a separate bucket', () 
     ENDPOINT,
   );
   assert.deepEqual(
-    validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: SYNC_KEY })),
-    settingsDraft({ syncEncryptionKey: SYNC_KEY }),
+    validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: SECRET_KEY })),
+    settingsDraft({ syncEncryptionKey: SECRET_KEY }),
   );
   assert.throws(
-    () => validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: SECRET_KEY })),
-    /256-bit base64url key/,
+    () => validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: '12345678' })),
+    /at least 9 characters/,
   );
   assert.deepEqual(
     validateS3SyncSettingsDraft(settingsDraft({

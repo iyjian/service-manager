@@ -89,19 +89,31 @@ test('S3 v3 uses an isolated head, immutable manifest paths, and opaque Note obj
   assert.throws(() => buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, '../revision'), /revision is invalid/);
 });
 
-test('Sync Encryption Keys are canonical copyable 256-bit values with stable non-secret identities', () => {
+test('Sync Encryption Keys accept user passphrases while generated keys retain stable identities', () => {
   const generated = createS3SyncEncryptionKey((size) => Buffer.alloc(size, 0xa5));
   assert.equal(generated, Buffer.alloc(32, 0xa5).toString('base64url'));
   assert.equal(normalizeS3SyncEncryptionKey(generated), generated);
   assert.equal(getS3SyncEncryptionKeyId(generated), getS3SyncEncryptionKeyId(generated));
   assert.equal(getS3SyncEncryptionKeyId(generated).length, 64);
-  for (const invalid of ['', SECRET_KEY, `${generated}=`, generated.slice(1), 'A'.repeat(42)]) {
-    assert.throws(() => normalizeS3SyncEncryptionKey(invalid), /256-bit base64url key/);
+  assert.equal(normalizeS3SyncEncryptionKey('  shared key 2026!  '), 'shared key 2026!');
+  assert.equal(normalizeS3SyncEncryptionKey('九个字符的同步密钥示例'), '九个字符的同步密钥示例');
+  assert.equal(getS3SyncEncryptionKeyId('shared key 2026!').length, 64);
+  for (const invalid of ['', '12345678', '  12345678  ', null]) {
+    assert.throws(() => normalizeS3SyncEncryptionKey(invalid), /at least 9 characters/);
   }
   assert.throws(
     () => createS3SyncEncryptionKey(() => Buffer.alloc(31)),
     /randomness is unavailable/,
   );
+});
+
+test('S3 v3 encrypts and decrypts with a user-defined Sync Encryption Key', () => {
+  const object = createServiceManagerNoteObjectV3(note(), createS3V3ObjectId(deterministicBytes));
+  const passphrase = 'shared key 2026!';
+  const encrypted = encryptS3NoteV3(object, passphrase, deterministicBytes);
+  assert.equal(encrypted.encryption.keyId, getS3SyncEncryptionKeyId(passphrase));
+  assert.deepEqual(decryptS3NoteV3(encrypted, passphrase), object);
+  assert.throws(() => decryptS3NoteV3(encrypted, 'different key 2026!'), /could not be decrypted/);
 });
 
 test('S3 v3 encrypts each Note independently and binds its type and opaque object identity', () => {
