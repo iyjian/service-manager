@@ -1289,6 +1289,51 @@
     width: 7rem;
   }
 
+  .settings-trilium-card {
+    @apply grid gap-2.5 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5;
+  }
+
+  .settings-trilium-head {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .settings-trilium-head > span:last-child {
+    @apply rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-[10px] font-semibold tracking-wide text-zinc-600;
+  }
+
+  .settings-trilium-progress {
+    @apply grid gap-1.5;
+  }
+
+  .settings-trilium-progress progress {
+    @apply h-1.5 w-full overflow-hidden rounded-full border-0 bg-zinc-200;
+    appearance: none;
+  }
+
+  .settings-trilium-progress progress::-webkit-progress-bar {
+    @apply rounded-full bg-zinc-200;
+  }
+
+  .settings-trilium-progress progress::-webkit-progress-value {
+    @apply rounded-full bg-blue-500 transition-all;
+  }
+
+  .settings-trilium-progress span {
+    @apply min-h-4 text-[11.5px] leading-4 text-zinc-600;
+  }
+
+  .settings-trilium-progress[data-phase='error'] span {
+    @apply text-red-700;
+  }
+
+  .settings-trilium-progress[data-phase='complete'] progress::-webkit-progress-value {
+    @apply bg-emerald-500;
+  }
+
+  .settings-trilium-actions {
+    @apply pt-0.5;
+  }
+
   .settings-inline-warning {
     @apply m-0 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11.5px] leading-4 text-amber-800;
   }

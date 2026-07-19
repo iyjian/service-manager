@@ -1,9 +1,11 @@
 import {
   Editor,
+  generateJSON,
   Mark,
   Node,
   posToDOMRect,
   type ChainedCommands,
+  type Extensions,
   type NodeViewRendererProps,
 } from '@tiptap/core';
 import Image from '@tiptap/extension-image';
@@ -1553,6 +1555,114 @@ function createS3ImageExtension(
   });
 }
 
+function createNotesRichTextExtensions(
+  onError: (message: string) => void,
+  onLayoutChange: () => void,
+): Extensions {
+  return [StarterKit.configure({
+    link: {
+      openOnClick: false,
+      enableClickSelection: false,
+      autolink: true,
+      linkOnPaste: true,
+      protocols: [],
+      defaultProtocol: 'https',
+      HTMLAttributes: {
+        target: '_blank',
+        rel: 'nofollow noopener noreferrer',
+      },
+      isAllowedUri: (url) => isAllowedRichTextLinkHref(url),
+      shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
+    },
+  }),
+  TableKit.configure({
+    table: {
+      cellMinWidth: 96,
+      resizable: true,
+    },
+  }),
+  createTextStyleExtension(),
+  createHighlightExtension(),
+  createMathExtension(),
+  createTaskListExtension(),
+  createTaskItemExtension(),
+  createS3ImageExtension(onError, onLayoutChange)];
+}
+
+export interface TriliumHtmlConversionResult {
+  content: string;
+  embeddedImageCount: number;
+  usedPlainTextFallback: boolean;
+}
+
+function richTextPlainTextFallback(value: string): string {
+  const safeText = value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .slice(0, 750_000);
+  if (!safeText.trim()) return EMPTY_RICH_TEXT_CONTENT;
+  const paragraphs = safeText.split(/\n{2,}/).slice(0, 4_000).map((paragraph) => ({
+    type: 'paragraph',
+    ...(paragraph ? { content: [{ type: 'text', text: paragraph }] } : {}),
+  }));
+  return normalizeRichTextContent({ type: 'doc', content: paragraphs });
+}
+
+/** Convert a Trilium HTML fragment through the exact schema and canonical validator used by Notes. */
+export function convertTriliumHtmlToRichText(
+  html: string,
+  endpoint: string,
+): TriliumHtmlConversionResult {
+  const endpointBase = `${endpoint.replace(/\/+$/, '')}/`;
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  parsed.body.querySelectorAll(
+    'script,style,iframe,object,embed,form,input,button,textarea,select,meta,link',
+  ).forEach((unsafe) => unsafe.remove());
+
+  let embeddedImageCount = 0;
+  parsed.body.querySelectorAll('img').forEach((image) => {
+    embeddedImageCount += 1;
+    const alt = image.getAttribute('alt')?.trim();
+    image.replaceWith(parsed.createTextNode(alt ? `[Image: ${alt}]` : '[Embedded image]'));
+  });
+
+  parsed.body.querySelectorAll('a[href]').forEach((anchor) => {
+    const href = anchor.getAttribute('href')?.trim();
+    if (!href) {
+      anchor.removeAttribute('href');
+      return;
+    }
+    try {
+      const absolute = new URL(href, endpointBase);
+      if (!isAllowedRichTextLinkHref(absolute.href)) throw new Error('unsupported link');
+      anchor.setAttribute('href', absolute.href);
+      anchor.setAttribute('target', '_blank');
+      anchor.setAttribute('rel', 'nofollow noopener noreferrer');
+    } catch {
+      anchor.removeAttribute('href');
+      anchor.removeAttribute('target');
+      anchor.removeAttribute('rel');
+    }
+  });
+
+  try {
+    const generated = generateJSON(
+      parsed.body.innerHTML,
+      createNotesRichTextExtensions(() => undefined, () => undefined),
+    );
+    return {
+      content: normalizeEditorContent(generated),
+      embeddedImageCount,
+      usedPlainTextFallback: false,
+    };
+  } catch {
+    return {
+      content: richTextPlainTextFallback(parsed.body.textContent ?? ''),
+      embeddedImageCount,
+      usedPlainTextFallback: true,
+    };
+  }
+}
+
 /** Small renderer adapter that keeps Tiptap JSON behind the Notes string API. */
 export class NotesRichTextEditor {
   private readonly editor: Editor;
@@ -1579,36 +1689,12 @@ export class NotesRichTextEditor {
     this.editor = new Editor({
       element: options.host,
       content: parseRichTextContent(EMPTY_RICH_TEXT_CONTENT),
-      extensions: [StarterKit.configure({
-        link: {
-          openOnClick: false,
-          enableClickSelection: false,
-          autolink: true,
-          linkOnPaste: true,
-          protocols: [],
-          defaultProtocol: 'https',
-          HTMLAttributes: {
-            target: '_blank',
-            rel: 'nofollow noopener noreferrer',
-          },
-          // HTML paste, plain-text paste, and autolink all share the exact
-          // absolute http/https-only policy enforced by canonical persistence.
-          isAllowedUri: (url) => isAllowedRichTextLinkHref(url),
-          shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
-        },
-      }),
-      TableKit.configure({
-        table: {
-          cellMinWidth: 96,
-          resizable: true,
-        },
-      }),
-      createTextStyleExtension(),
-      createHighlightExtension(),
-      createMathExtension(),
-      createTaskListExtension(),
-      createTaskItemExtension(),
-      createS3ImageExtension(this.onError, () => this.imageBubbleMenu?.sync())],
+      // HTML paste, plain-text paste, autolink, and Trilium import share the
+      // exact absolute http/https-only policy enforced by canonical persistence.
+      extensions: createNotesRichTextExtensions(
+        this.onError,
+        () => this.imageBubbleMenu?.sync(),
+      ),
       injectCSS: false,
       editorProps: {
         attributes: {

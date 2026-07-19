@@ -33,6 +33,9 @@ import type {
   SettingsApi,
   ServiceStatusChange,
   TunnelStatusChange,
+  TriliumImportApplyInput,
+  TriliumImportPrepareInput,
+  TriliumImportProgress,
   UiPreferences,
   UiPreferencesDraft,
   UpdateState,
@@ -124,6 +127,17 @@ const settingsApi: SettingsApi = {
   saveUiPreferences: (draft: UiPreferencesDraft) => ipcRenderer.invoke('settings:ui:save', draft),
   saveNotesSidebarWidth: (width: number) =>
     ipcRenderer.invoke('settings:ui:notes-sidebar-width:save', width),
+  prepareTriliumImport: (input: TriliumImportPrepareInput) =>
+    ipcRenderer.invoke('settings:notes:trilium-import:prepare', input),
+  applyTriliumImport: (input: TriliumImportApplyInput) =>
+    ipcRenderer.invoke('settings:notes:trilium-import:apply', input),
+  cancelTriliumImport: (requestId: string) =>
+    ipcRenderer.invoke('settings:notes:trilium-import:cancel', requestId),
+  onTriliumImportProgress: (listener: (progress: TriliumImportProgress) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, progress: TriliumImportProgress): void => listener(progress);
+    ipcRenderer.on('settings:notes:trilium-import:progress', wrapped);
+    return () => ipcRenderer.removeListener('settings:notes:trilium-import:progress', wrapped);
+  },
   getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
   testS3Connection: (draft: S3ConnectionTestDraft) => ipcRenderer.invoke('settings:s3:test', draft),

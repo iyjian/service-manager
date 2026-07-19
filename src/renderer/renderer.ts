@@ -2373,9 +2373,12 @@ window.serviceApi.onUpdateStateChanged((state) => {
   }
 });
 
-window.settingsApi.onPersistentDataReloaded(() => {
-  void Promise.all([loadHosts(), reloadNotesPage()]).catch((error) => {
-    reportRendererError('persistent-data-reloaded', error, 'Cloud data was applied, but the page could not be refreshed.');
+window.settingsApi.onPersistentDataReloaded((event) => {
+  const reload = event.source === 'trilium'
+    ? reloadNotesPage()
+    : Promise.all([loadHosts(), reloadNotesPage()]).then(() => undefined);
+  void reload.catch((error) => {
+    reportRendererError('persistent-data-reloaded', error, 'Persistent data changed, but the page could not be refreshed.');
   });
 });
 

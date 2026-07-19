@@ -753,6 +753,68 @@ export interface UiPreferences {
 
 export type UiPreferencesDraft = Pick<UiPreferences, 'notesFontSize' | 'notesEditorTheme'>;
 
+export type TriliumImportPhase =
+  | 'discovering'
+  | 'fetching'
+  | 'converting'
+  | 'applying'
+  | 'complete';
+
+export interface TriliumImportPrepareInput {
+  requestId: string;
+  endpoint: string;
+  etapiToken: string;
+  /** Used by bounded integration checks; the ordinary UI always imports the complete user tree. */
+  maxNotes?: number;
+}
+
+export interface TriliumImportHtmlNote {
+  noteId: string;
+  html: string;
+}
+
+export interface TriliumImportPreparation {
+  requestId: string;
+  sessionId: string;
+  endpoint: string;
+  total: number;
+  htmlNotes: TriliumImportHtmlNote[];
+  placeholderCount: number;
+  cloneCount: number;
+}
+
+export interface TriliumImportConvertedNote {
+  noteId: string;
+  content: string;
+  embeddedImageCount: number;
+  usedPlainTextFallback: boolean;
+}
+
+export interface TriliumImportApplyInput {
+  requestId: string;
+  sessionId: string;
+  convertedNotes: TriliumImportConvertedNote[];
+}
+
+export interface TriliumImportProgress {
+  requestId: string;
+  phase: TriliumImportPhase;
+  completed: number;
+  total?: number;
+  message: string;
+}
+
+export interface TriliumImportResult {
+  total: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  placeholderCount: number;
+  cloneCount: number;
+  embeddedImageCount: number;
+  plainTextFallbackCount: number;
+}
+
 export interface LlmSettingsView {
   endpoint: string;
   selectedModel: string;
@@ -837,13 +899,17 @@ export interface S3SyncState {
 
 export interface PersistentDataReloaded {
   generation: number;
-  source: 's3';
+  source: 's3' | 'trilium';
 }
 
 export interface SettingsApi {
   getUiPreferences: () => Promise<UiPreferences>;
   saveUiPreferences: (draft: UiPreferencesDraft) => Promise<UiPreferences>;
   saveNotesSidebarWidth: (width: number) => Promise<UiPreferences>;
+  prepareTriliumImport: (input: TriliumImportPrepareInput) => Promise<TriliumImportPreparation>;
+  applyTriliumImport: (input: TriliumImportApplyInput) => Promise<TriliumImportResult>;
+  cancelTriliumImport: (requestId: string) => Promise<void>;
+  onTriliumImportProgress: (listener: (progress: TriliumImportProgress) => void) => () => void;
   getS3SyncSettings: () => Promise<S3SyncSettingsView>;
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
   testS3Connection: (draft: S3ConnectionTestDraft) => Promise<void>;

@@ -5,6 +5,9 @@ import type {
   S3SyncSettingsDraft,
   S3SyncSettingsView,
   S3SyncState,
+  TriliumImportConvertedNote,
+  TriliumImportProgress,
+  TriliumImportResult,
   UiPreferences,
   UiPreferencesDraft,
 } from '../shared/types';
@@ -14,6 +17,7 @@ import {
   applyNotesSidebarWidth,
   flushNotesPage,
 } from './notesPage.js';
+import { convertTriliumHtmlToRichText } from './notesRichTextEditor.js';
 
 const DEFAULT_NOTES_FONT_SIZE = 14;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
@@ -45,6 +49,15 @@ const testButton = requireElement<HTMLButtonElement>('#settings-test-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
 const notesFontSizeInput = requireElement<HTMLInputElement>('#notes-font-size');
 const notesEditorThemeInput = requireElement<HTMLSelectElement>('#notes-editor-theme');
+const triliumEndpointInput = requireElement<HTMLInputElement>('#trilium-endpoint');
+const triliumEtapiTokenInput = requireElement<HTMLInputElement>('#trilium-etapi-token');
+const triliumEtapiTokenVisibilityButton = requireElement<HTMLButtonElement>('#trilium-etapi-token-visibility');
+const triliumHttpWarning = requireElement<HTMLElement>('#trilium-http-warning');
+const triliumImportProgressWrap = requireElement<HTMLElement>('#trilium-import-progress-wrap');
+const triliumImportProgress = requireElement<HTMLProgressElement>('#trilium-import-progress');
+const triliumImportStatus = requireElement<HTMLElement>('#trilium-import-status');
+const triliumImportButton = requireElement<HTMLButtonElement>('#settings-trilium-import-btn');
+const triliumCancelButton = requireElement<HTMLButtonElement>('#settings-trilium-cancel-btn');
 const llmEndpointInput = requireElement<HTMLInputElement>('#llm-endpoint');
 const llmTokenInput = requireElement<HTMLInputElement>('#llm-token');
 const llmTokenVisibilityButton = requireElement<HTMLButtonElement>('#llm-token-visibility');
@@ -58,7 +71,7 @@ const saveStatusElement = requireElement<HTMLElement>('#settings-save-status');
 const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
 type SettingsTab = 's3' | 'notes' | 'llm';
-type BusyAction = 'save' | 'test' | 'sync' | 'load-models';
+type BusyAction = 'save' | 'test' | 'sync' | 'load-models' | 'trilium-import';
 
 interface SettingsTabElements {
   button: HTMLButtonElement;
@@ -96,6 +109,11 @@ let s3SettingsLoaded = false;
 let uiPreferencesLoaded = false;
 let llmSettingsLoaded = false;
 let settingsOpenGeneration = 0;
+let activeTriliumImportRequestId: string | undefined;
+let triliumCancelRequested = false;
+let triliumApplyStarted = false;
+
+const TRILIUM_CONVERSION_BATCH_SIZE = 16;
 
 interface CredentialControl {
   input: HTMLInputElement;
@@ -175,12 +193,22 @@ function setCredentialVisibility(control: CredentialControl, visible: boolean): 
   control.button.title = label;
 }
 
+function setTriliumTokenVisibility(visible: boolean): void {
+  const label = `${visible ? 'Hide' : 'Show'} Trilium ETAPI Token`;
+  triliumEtapiTokenInput.type = visible ? 'text' : 'password';
+  triliumEtapiTokenVisibilityButton.setAttribute('aria-pressed', String(visible));
+  triliumEtapiTokenVisibilityButton.setAttribute('aria-label', label);
+  triliumEtapiTokenVisibilityButton.title = label;
+}
+
 function maskCredentials(): void {
   for (const control of credentialControls) setCredentialVisibility(control, false);
+  setTriliumTokenVisibility(false);
 }
 
 function clearCredentialInputs(): void {
   for (const control of credentialControls) control.input.value = '';
+  triliumEtapiTokenInput.value = '';
 }
 
 function prepareSettingsDialogClose(): void {
@@ -194,6 +222,7 @@ function prepareSettingsDialogClose(): void {
   llmSettingsLoaded = false;
   clearCredentialInputs();
   maskCredentials();
+  resetTriliumImportUi();
   updateControls();
 }
 
@@ -210,8 +239,16 @@ function updateLlmHttpWarning(): void {
   );
 }
 
+function updateTriliumHttpWarning(): void {
+  triliumHttpWarning.classList.toggle(
+    'hidden',
+    !triliumEtapiTokenInput.value || !/^http:\/\//i.test(triliumEndpointInput.value.trim()),
+  );
+}
+
 function updateControls(): void {
   const locked = busy || credentialRevealPending || settingsLoading;
+  const importingTrilium = busy && busyAction === 'trilium-import';
   const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && llmSettingsLoaded;
   saveButton.disabled = locked || !settingsReady;
   testButton.disabled = locked || !s3SettingsLoaded;
@@ -219,6 +256,14 @@ function updateControls(): void {
   closeButton.disabled = locked;
   notesFontSizeInput.disabled = locked || !uiPreferencesLoaded;
   notesEditorThemeInput.disabled = locked || !uiPreferencesLoaded;
+  triliumEndpointInput.disabled = locked;
+  triliumEtapiTokenInput.disabled = locked;
+  triliumEtapiTokenVisibilityButton.disabled = locked || !triliumEtapiTokenInput.value;
+  triliumImportButton.disabled = locked
+    || !triliumEndpointInput.value.trim()
+    || !triliumEtapiTokenInput.value.trim();
+  triliumCancelButton.classList.toggle('hidden', !importingTrilium || triliumApplyStarted);
+  triliumCancelButton.disabled = !importingTrilium || triliumCancelRequested || triliumApplyStarted;
   llmEndpointInput.disabled = locked || !llmSettingsLoaded;
   llmTokenInput.disabled = locked || !llmSettingsLoaded;
   llmModelInput.disabled = locked || !llmSettingsLoaded;
@@ -237,6 +282,7 @@ function updateControls(): void {
     control.button.disabled = locked || (!control.input.value && !control.hasSavedValue());
   }
   updateLlmHttpWarning();
+  updateTriliumHttpWarning();
 }
 
 async function toggleCredentialVisibility(control: CredentialControl): Promise<void> {
@@ -247,6 +293,7 @@ async function toggleCredentialVisibility(control: CredentialControl): Promise<v
   }
   if (!control.input.value) return;
   if (show) {
+    setTriliumTokenVisibility(false);
     for (const other of credentialControls) {
       if (other !== control) setCredentialVisibility(other, false);
     }
@@ -307,6 +354,7 @@ function setBusy(next: boolean, action: BusyAction = 'save'): void {
   testButton.textContent = next && action === 'test' ? 'Testing…' : 'Test';
   syncButton.textContent = next && action === 'sync' ? 'Syncing…' : 'Sync Now';
   llmLoadModelsButton.textContent = next && action === 'load-models' ? 'Loading…' : 'Load Models';
+  triliumImportButton.textContent = next && action === 'trilium-import' ? 'Importing…' : 'Import';
   updateControls();
 }
 
@@ -559,6 +607,177 @@ async function testS3Connection(): Promise<void> {
   }
 }
 
+function renderTriliumProgress(progress: TriliumImportProgress): void {
+  triliumImportProgressWrap.classList.remove('hidden');
+  triliumImportProgressWrap.dataset.phase = progress.phase;
+  if (progress.total !== undefined && progress.total > 0) {
+    triliumImportProgress.max = progress.total;
+    triliumImportProgress.value = Math.min(Math.max(0, progress.completed), progress.total);
+  } else {
+    triliumImportProgress.removeAttribute('value');
+  }
+  triliumImportStatus.textContent = progress.message;
+  triliumImportStatus.classList.remove('settings-status-error', 'settings-status-success');
+}
+
+function setTriliumImportMessage(message: string, level: 'default' | 'success' | 'error' = 'default'): void {
+  triliumImportProgressWrap.classList.remove('hidden');
+  if (level === 'default') delete triliumImportProgressWrap.dataset.phase;
+  else triliumImportProgressWrap.dataset.phase = level === 'success' ? 'complete' : 'error';
+  triliumImportStatus.textContent = message;
+  triliumImportStatus.classList.toggle('settings-status-success', level === 'success');
+  triliumImportStatus.classList.toggle('settings-status-error', level === 'error');
+}
+
+function resetTriliumImportUi(): void {
+  triliumImportProgressWrap.classList.add('hidden');
+  delete triliumImportProgressWrap.dataset.phase;
+  triliumImportProgress.max = 1;
+  triliumImportProgress.value = 0;
+  triliumImportStatus.textContent = '';
+  triliumImportStatus.classList.remove('settings-status-success', 'settings-status-error');
+}
+
+function formatTriliumImportSummary(result: TriliumImportResult): string {
+  return [
+    `Imported ${result.total} ${result.total === 1 ? 'note' : 'notes'}`,
+    `${result.created} created`,
+    `${result.updated} updated`,
+    `${result.unchanged} unchanged`,
+    `${result.placeholderCount} placeholders`,
+    `${result.cloneCount} clone placements deduplicated`,
+    `${result.embeddedImageCount} embedded image placeholders`,
+    `${result.plainTextFallbackCount} plain-text fallbacks`,
+  ].join(' · ');
+}
+
+function validateTriliumEndpoint(value: string): string {
+  if (!value) throw new Error('Enter the Trilium endpoint.');
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    throw new Error('Enter a valid Trilium endpoint.');
+  }
+  if (endpoint.protocol !== 'https:' && endpoint.protocol !== 'http:') {
+    throw new Error('The Trilium endpoint must use HTTP or HTTPS.');
+  }
+  return value;
+}
+
+function yieldToRenderer(): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
+async function importFromTrilium(): Promise<void> {
+  if (busy || credentialRevealPending || settingsLoading) return;
+  resetTriliumImportUi();
+
+  let endpoint: string;
+  try {
+    endpoint = validateTriliumEndpoint(triliumEndpointInput.value.trim());
+  } catch (error) {
+    setTriliumImportMessage(toErrorMessage(error), 'error');
+    triliumEndpointInput.focus();
+    return;
+  }
+  const etapiToken = triliumEtapiTokenInput.value.trim();
+  if (!etapiToken) {
+    setTriliumImportMessage('Enter the Trilium ETAPI Token.', 'error');
+    triliumEtapiTokenInput.focus();
+    return;
+  }
+
+  const requestId = crypto.randomUUID();
+  activeTriliumImportRequestId = requestId;
+  triliumCancelRequested = false;
+  triliumApplyStarted = false;
+  triliumImportProgress.max = 1;
+  triliumImportProgress.value = 0;
+  setTriliumImportMessage('Preparing local Notes…');
+  setBusy(true, 'trilium-import');
+
+  try {
+    await flushNotesPage();
+    if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
+
+    const preparation = await window.settingsApi.prepareTriliumImport({
+      requestId,
+      endpoint,
+      etapiToken,
+    });
+    if (preparation.requestId !== requestId) throw new Error('The Trilium import response did not match this request.');
+    if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
+
+    const convertedNotes: TriliumImportConvertedNote[] = [];
+    const conversionTotal = preparation.htmlNotes.length;
+    for (let index = 0; index < conversionTotal; index += 1) {
+      if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
+      const source = preparation.htmlNotes[index];
+      if (!source) continue;
+      const converted = convertTriliumHtmlToRichText(source.html, preparation.endpoint);
+      convertedNotes.push({ noteId: source.noteId, ...converted });
+
+      const completed = index + 1;
+      if (completed % TRILIUM_CONVERSION_BATCH_SIZE === 0 || completed === conversionTotal) {
+        renderTriliumProgress({
+          requestId,
+          phase: 'converting',
+          completed,
+          total: conversionTotal,
+          message: `Converting Notes… ${completed}/${conversionTotal}`,
+        });
+        await yieldToRenderer();
+      }
+    }
+
+    if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
+    triliumApplyStarted = true;
+    updateControls();
+    const result = await window.settingsApi.applyTriliumImport({
+      requestId,
+      sessionId: preparation.sessionId,
+      convertedNotes,
+    });
+    renderTriliumProgress({
+      requestId,
+      phase: 'complete',
+      completed: Math.max(1, result.total),
+      total: Math.max(1, result.total),
+      message: formatTriliumImportSummary(result),
+    });
+    triliumImportStatus.classList.add('settings-status-success');
+    triliumEtapiTokenInput.value = '';
+    setTriliumTokenVisibility(false);
+  } catch (error) {
+    if (triliumCancelRequested) {
+      setTriliumImportMessage('Trilium import cancelled.');
+    } else {
+      setTriliumImportMessage(`Import failed: ${toErrorMessage(error)}`, 'error');
+    }
+  } finally {
+    if (activeTriliumImportRequestId === requestId) activeTriliumImportRequestId = undefined;
+    triliumCancelRequested = false;
+    triliumApplyStarted = false;
+    setBusy(false, 'trilium-import');
+  }
+}
+
+async function cancelActiveTriliumImport(): Promise<void> {
+  const requestId = activeTriliumImportRequestId;
+  if (!requestId || busyAction !== 'trilium-import' || triliumCancelRequested || triliumApplyStarted) return;
+  triliumCancelRequested = true;
+  triliumEtapiTokenInput.value = '';
+  setTriliumTokenVisibility(false);
+  setTriliumImportMessage('Cancelling Trilium import…');
+  updateControls();
+  try {
+    await window.settingsApi.cancelTriliumImport(requestId);
+  } catch (error) {
+    setTriliumImportMessage(`Unable to cancel import: ${toErrorMessage(error)}`, 'error');
+  }
+}
+
 async function loadLlmModels(): Promise<void> {
   setSaveFeedback();
   setBusy(true, 'load-models');
@@ -616,6 +835,7 @@ async function openSettings(): Promise<void> {
   llmSettingsLoaded = false;
   clearCredentialInputs();
   maskCredentials();
+  resetTriliumImportUi();
   updateControls();
   setSaveFeedback();
   if (!dialog.open) dialog.showModal();
@@ -701,6 +921,9 @@ export function registerSettingsDialog(): void {
   for (const input of [accessKeyInput, secretKeyInput, syncEncryptionKeyInput, llmEndpointInput]) {
     input.addEventListener('input', updateControls);
   }
+  for (const input of [triliumEndpointInput, triliumEtapiTokenInput]) {
+    input.addEventListener('input', updateControls);
+  }
   llmTokenInput.addEventListener('input', () => {
     llmTokenEdited = true;
     llmTokenClearRequested = false;
@@ -714,6 +937,10 @@ export function registerSettingsDialog(): void {
 
   window.settingsApi.onS3SyncStateChanged(renderSyncState);
   window.settingsApi.onUiPreferencesChanged(renderUiPreferences);
+  window.settingsApi.onTriliumImportProgress((progress) => {
+    if (progress.requestId !== activeTriliumImportRequestId) return;
+    renderTriliumProgress(progress);
+  });
   accessKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(accessKeyControl); });
   secretKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(secretKeyControl); });
   syncEncryptionKeyVisibilityButton.addEventListener('click', () => {
@@ -721,6 +948,14 @@ export function registerSettingsDialog(): void {
   });
   llmTokenVisibilityButton.addEventListener('click', () => {
     void toggleCredentialVisibility(llmTokenControl);
+  });
+  triliumEtapiTokenVisibilityButton.addEventListener('click', () => {
+    if (!triliumEtapiTokenInput.value || busy || credentialRevealPending || settingsLoading) return;
+    const visible = triliumEtapiTokenInput.type === 'password';
+    if (visible) {
+      for (const control of credentialControls) setCredentialVisibility(control, false);
+    }
+    setTriliumTokenVisibility(visible);
   });
   llmTokenRemoveButton.addEventListener('click', () => {
     if (busy || credentialRevealPending || settingsLoading || !hasLlmToken) return;
@@ -763,6 +998,7 @@ export function registerSettingsDialog(): void {
     if (dialog.open) return;
     clearCredentialInputs();
     maskCredentials();
+    resetTriliumImportUi();
     updateControls();
   });
   form.addEventListener('submit', (event) => {
@@ -777,5 +1013,11 @@ export function registerSettingsDialog(): void {
   });
   llmLoadModelsButton.addEventListener('click', () => {
     if (!busy && !credentialRevealPending) void loadLlmModels();
+  });
+  triliumImportButton.addEventListener('click', () => {
+    if (!busy && !credentialRevealPending) void importFromTrilium();
+  });
+  triliumCancelButton.addEventListener('click', () => {
+    void cancelActiveTriliumImport();
   });
 }

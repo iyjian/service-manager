@@ -498,6 +498,34 @@
               <option value="dark">Dark</option>
             </select>
           </div>
+          <div class="settings-trilium-card">
+            <div class="settings-trilium-head">
+              <span class="settings-notes-title">Import from Trilium</span>
+              <span>ETAPI</span>
+            </div>
+            <label class="field field-xs">
+              Endpoint
+              <input id="trilium-endpoint" class="input" type="url" placeholder="https://notes.example.com" spellcheck="false" autocomplete="off" />
+            </label>
+            <div class="field field-xs">
+              <label for="trilium-etapi-token">Token</label>
+              <div class="settings-password-control">
+                <input id="trilium-etapi-token" class="input" type="password" placeholder="ETAPI Token" autocomplete="off" />
+                <button id="trilium-etapi-token-visibility" type="button" class="settings-password-toggle" aria-label="Show Trilium ETAPI Token" aria-controls="trilium-etapi-token" aria-pressed="false">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+                </button>
+              </div>
+            </div>
+            <p id="trilium-http-warning" class="settings-inline-warning hidden">HTTP sends the ETAPI Token without transport encryption.</p>
+            <div id="trilium-import-progress-wrap" class="settings-trilium-progress hidden">
+              <progress id="trilium-import-progress" max="1" value="0"></progress>
+              <span id="trilium-import-status" role="status" aria-live="polite"></span>
+            </div>
+            <div class="form-actions settings-actions settings-trilium-actions">
+              <button id="settings-trilium-cancel-btn" type="button" class="btn btn-secondary hidden">Cancel</button>
+              <button id="settings-trilium-import-btn" type="button" class="btn btn-primary">Import</button>
+            </div>
+          </div>
         </section>
 
         <section id="settings-llm-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-llm-tab" data-settings-panel="llm" hidden>

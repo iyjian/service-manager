@@ -347,7 +347,18 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
   assert.match(renderer, /registerSettingsDialog\(\)/);
-  assert.match(renderer, /window\.settingsApi\.onPersistentDataReloaded\(\(\)\s*=>\s*\{[\s\S]*?Promise\.all\(\[loadHosts\(\), reloadNotesPage\(\)\]\)/);
+  const persistentReloadStart = renderer.indexOf('window.settingsApi.onPersistentDataReloaded((event) => {');
+  const persistentReloadEnd = renderer.indexOf('(async function init()', persistentReloadStart);
+  assert.ok(persistentReloadStart >= 0 && persistentReloadEnd > persistentReloadStart);
+  const persistentReload = renderer.slice(persistentReloadStart, persistentReloadEnd);
+  const sourceCheck = persistentReload.indexOf("event.source === 'trilium'");
+  const triliumBranchStart = persistentReload.indexOf('?', sourceCheck);
+  const s3BranchStart = persistentReload.indexOf(':', triliumBranchStart);
+  const branchEnd = persistentReload.indexOf(';', s3BranchStart);
+  assert.ok(sourceCheck >= 0 && triliumBranchStart > sourceCheck && s3BranchStart > triliumBranchStart && branchEnd > s3BranchStart);
+  assert.match(persistentReload.slice(triliumBranchStart + 1, s3BranchStart), /reloadNotesPage\(\)/);
+  assert.doesNotMatch(persistentReload.slice(triliumBranchStart + 1, s3BranchStart), /loadHosts\(\)/);
+  assert.match(persistentReload.slice(s3BranchStart + 1, branchEnd), /Promise\.all\(\[loadHosts\(\), reloadNotesPage\(\)\]\)/);
   assert.match(settingsDialog, /window\.settingsApi\.syncAllDataToS3\(\)/);
   assert.match(settingsDialog, /window\.settingsApi\.testS3Connection\(currentS3TestDraft\(\)\)/);
   assert.match(settingsDialog, /window\.settingsApi\.onS3SyncStateChanged\(renderSyncState\)/);
