@@ -306,7 +306,8 @@
 
     <main class="app-shell hidden" data-page="notes">
       <section class="notes-page" aria-label="Notes">
-        <aside class="notes-sidebar">
+        <span id="note-save-status" class="notes-save-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
+        <aside id="notes-sidebar" class="notes-sidebar">
           <div class="notes-sidebar-tools">
             <label class="notes-search-wrap">
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
@@ -319,7 +320,20 @@
           <nav id="notes-list" class="notes-list" aria-label="Notes tree"></nav>
         </aside>
 
-        <section class="notes-workspace" aria-label="Note editor">
+        <div
+          id="notes-sidebar-resizer"
+          class="notes-sidebar-resizer"
+          role="separator"
+          aria-label="Resize Notes sidebar"
+          aria-orientation="vertical"
+          aria-controls="notes-sidebar notes-workspace"
+          aria-valuemin="240"
+          aria-valuemax="520"
+          aria-valuenow="280"
+          tabindex="0"
+        ></div>
+
+        <section id="notes-workspace" class="notes-workspace" aria-label="Note editor">
           <div id="notes-empty" class="notes-empty">Create or select a note.</div>
           <div id="notes-editor" class="notes-editor hidden">
             <div class="notes-editor-toolbar">
@@ -335,7 +349,6 @@
                 <option value="yaml">YAML</option>
                 <option value="text">Plain Text</option>
               </select>
-              <span id="note-save-status" class="notes-save-status" role="status" aria-live="polite">Saved</span>
               <button id="note-copy-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect>

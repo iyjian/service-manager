@@ -83,6 +83,26 @@ test('Notes empty search sorts by updated time descending and stays stable for t
   assert.deepEqual(notes.map(({ id }) => id), ['old', 'new-a', 'new-b']);
 });
 
+test('Notes sidebar width clamp rounds finite pixels and enforces stable bounds', async () => {
+  const { clampNotesSidebarWidth } = await import(path.join(distRenderer, 'notesPage.js'));
+
+  assert.equal(clampNotesSidebarWidth(Number.NaN), 280);
+  assert.equal(clampNotesSidebarWidth(100), 240);
+  assert.equal(clampNotesSidebarWidth(240), 240);
+  assert.equal(clampNotesSidebarWidth(319.6), 320);
+  assert.equal(clampNotesSidebarWidth(520), 520);
+  assert.equal(clampNotesSidebarWidth(900), 520);
+});
+
+test('Notes save indicator only occupies a tree row while saving or after a failure', async () => {
+  const { noteSaveIndicatorState } = await import(path.join(distRenderer, 'notesPage.js'));
+
+  assert.equal(noteSaveIndicatorState(false, false), undefined);
+  assert.equal(noteSaveIndicatorState(true, false), 'saving');
+  assert.equal(noteSaveIndicatorState(false, true), 'error');
+  assert.equal(noteSaveIndicatorState(true, true), 'error');
+});
+
 test('Notes ranking keeps one hundred list entries available for the scrolling sidebar', async () => {
   const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
   const notes = Array.from({ length: 100 }, (_, index) => note({
@@ -333,7 +353,8 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
-  assert.match(source, /hide\(\): void \{\s*void this\.flushAllPendingSaves\(\)\.catch\(\(\) => undefined\);/);
+  assert.match(source, /hide\(\): void \{\s*void this\.flush\(\)\.catch\(\(\) => undefined\);/);
+  assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?this\.finishSidebarResize\(\)[\s\S]*?this\.flushQueuedSidebarWidthSave\(\)[\s\S]*?this\.waitForSidebarWidthSaves\(\)/);
   assert.match(source, /private async selectNote\(id: string\): Promise<void>/);
   assert.match(source, /await this\.flushNote\(previousId\);\s*if \(this\.isDirty\(previousId\)\)/);
   assert.ok((source.match(/await this\.flushAllPendingSaves\(\)/g) ?? []).length >= 3);

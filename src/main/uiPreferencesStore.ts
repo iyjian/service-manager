@@ -4,10 +4,13 @@ import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import type { UiPreferences, UiPreferencesDraft } from '../shared/types';
 
-export const UI_PREFERENCES_SCHEMA_VERSION = 2 as const;
+export const UI_PREFERENCES_SCHEMA_VERSION = 3 as const;
 export const DEFAULT_NOTES_FONT_SIZE = 14;
 export const MIN_NOTES_FONT_SIZE = 12;
 export const MAX_NOTES_FONT_SIZE = 24;
+export const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
+export const MIN_NOTES_SIDEBAR_WIDTH = 240;
+export const MAX_NOTES_SIDEBAR_WIDTH = 520;
 
 const MAX_UI_PREFERENCES_BYTES = 16 * 1024;
 
@@ -16,6 +19,7 @@ interface PersistedUiPreferences {
   notes: {
     fontSize: number;
     editorTheme: 'light' | 'dark';
+    sidebarWidth: number;
   };
 }
 
@@ -24,7 +28,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function defaultPreferences(): UiPreferences {
-  return { notesFontSize: DEFAULT_NOTES_FONT_SIZE, notesEditorTheme: 'light' };
+  return {
+    notesFontSize: DEFAULT_NOTES_FONT_SIZE,
+    notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  };
 }
 
 export function normalizeUiPreferencesDraft(value: unknown): UiPreferencesDraft {
@@ -39,16 +47,32 @@ export function normalizeUiPreferencesDraft(value: unknown): UiPreferencesDraft 
   return { notesFontSize: value.notesFontSize, notesEditorTheme: value.notesEditorTheme };
 }
 
+export function normalizeNotesSidebarWidth(value: unknown): number {
+  if (typeof value !== 'number'
+    || !Number.isInteger(value)
+    || value < MIN_NOTES_SIDEBAR_WIDTH
+    || value > MAX_NOTES_SIDEBAR_WIDTH) {
+    throw new Error('Notes sidebar width is invalid.');
+  }
+  return value;
+}
+
 function parsePersistedPreferences(value: unknown): UiPreferences {
   if (!isRecord(value)
-    || (value.schemaVersion !== 1 && value.schemaVersion !== UI_PREFERENCES_SCHEMA_VERSION)
+    || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== UI_PREFERENCES_SCHEMA_VERSION)
     || !isRecord(value.notes)) {
     throw new Error('UI preferences are invalid.');
   }
-  return normalizeUiPreferencesDraft({
+  const editorPreferences = normalizeUiPreferencesDraft({
     notesFontSize: value.notes.fontSize,
     notesEditorTheme: value.schemaVersion === 1 ? 'light' : value.notes.editorTheme,
   });
+  return {
+    ...editorPreferences,
+    notesSidebarWidth: value.schemaVersion === UI_PREFERENCES_SCHEMA_VERSION
+      ? normalizeNotesSidebarWidth(value.notes.sidebarWidth)
+      : DEFAULT_NOTES_SIDEBAR_WIDTH,
+  };
 }
 
 function toPersistedPreferences(value: UiPreferences): PersistedUiPreferences {
@@ -57,6 +81,7 @@ function toPersistedPreferences(value: UiPreferences): PersistedUiPreferences {
     notes: {
       fontSize: value.notesFontSize,
       editorTheme: value.notesEditorTheme,
+      sidebarWidth: value.notesSidebarWidth,
     },
   };
 }
@@ -105,10 +130,24 @@ export class UiPreferencesStore {
   save(value: unknown): Promise<UiPreferences> {
     const normalized = normalizeUiPreferencesDraft(value);
     return this.enqueue(async () => {
-      const next = { ...normalized };
+      const next = { ...this.preferences, ...normalized };
       if (!this.hasPersistedPreferences
         || next.notesFontSize !== this.preferences.notesFontSize
-        || next.notesEditorTheme !== this.preferences.notesEditorTheme) {
+        || next.notesEditorTheme !== this.preferences.notesEditorTheme
+        || next.notesSidebarWidth !== this.preferences.notesSidebarWidth) {
+        await this.persist(next);
+        this.preferences = next;
+        this.hasPersistedPreferences = true;
+      }
+      return { ...this.preferences };
+    });
+  }
+
+  saveNotesSidebarWidth(value: unknown): Promise<UiPreferences> {
+    const notesSidebarWidth = normalizeNotesSidebarWidth(value);
+    return this.enqueue(async () => {
+      const next = { ...this.preferences, notesSidebarWidth };
+      if (!this.hasPersistedPreferences || notesSidebarWidth !== this.preferences.notesSidebarWidth) {
         await this.persist(next);
         this.preferences = next;
         this.hasPersistedPreferences = true;

@@ -748,9 +748,10 @@ export interface NotesApi {
 export interface UiPreferences {
   notesFontSize: number;
   notesEditorTheme: 'light' | 'dark';
+  notesSidebarWidth: number;
 }
 
-export type UiPreferencesDraft = UiPreferences;
+export type UiPreferencesDraft = Pick<UiPreferences, 'notesFontSize' | 'notesEditorTheme'>;
 
 export interface LlmSettingsView {
   endpoint: string;
@@ -842,6 +843,7 @@ export interface PersistentDataReloaded {
 export interface SettingsApi {
   getUiPreferences: () => Promise<UiPreferences>;
   saveUiPreferences: (draft: UiPreferencesDraft) => Promise<UiPreferences>;
+  saveNotesSidebarWidth: (width: number) => Promise<UiPreferences>;
   getS3SyncSettings: () => Promise<S3SyncSettingsView>;
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
   testS3Connection: (draft: S3ConnectionTestDraft) => Promise<void>;

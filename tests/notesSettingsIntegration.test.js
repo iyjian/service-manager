@@ -24,7 +24,7 @@ async function readIntegrationFiles() {
 }
 
 test('compiled Notes page and bridge expose the hierarchical local workspace flow', async () => {
-  const { html, renderer, notesPage, codeMirrorVendor, preload, main } = await readIntegrationFiles();
+  const { html, styles, renderer, notesPage, codeMirrorVendor, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<main class="app-shell hidden" data-page="notes">/);
   assert.match(html, /id="notes-search"[^>]*type="search"/);
@@ -34,13 +34,25 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.doesNotMatch(html, /Ask AI|data-richtext-ai/);
   assert.match(html, /id="note-richtext-image-input"[^>]*accept="image\/png,image\/jpeg,image\/webp"/);
   assert.doesNotMatch(html, /id="note-tags"|notes-tags-row|Tags, comma separated/);
-  assert.match(html, /notes-editor-toolbar[\s\S]*?id="note-save-status"[\s\S]*?id="note-copy-btn"/);
+  assert.match(html, /id="note-save-status"[^>]*class="notes-save-announcement"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+  assert.doesNotMatch(html, /notes-editor-toolbar[\s\S]*?id="note-save-status"[\s\S]*?id="note-copy-btn"/);
   assert.match(html, /id="note-copy-btn"/);
   assert.match(html, /id="notes-new-root-btn"[^>]*class="notes-tree-root-add"[^>]*aria-label="New root Note"[\s\S]*?<svg/);
   assert.match(html, /id="notes-list"[^>]*aria-label="Notes tree"/);
   assert.doesNotMatch(html, /Notes\s+Local snippets\s+New Note/);
   assert.match(html, /id="note-copy-btn"[\s\S]*?<svg[\s\S]*?id="note-copy-label">Copy<\/span>/);
   assert.doesNotMatch(html, /id="note-delete-btn"/);
+  assert.match(styles, /\.notes-list-save-indicator[\s\S]*?width:\s*5px/);
+  assert.match(styles, /\.notes-list-save-indicator\[data-state=error\]/);
+  assert.match(styles, /\.notes-list-save-label\{[^}]*position:absolute[^}]*width:1px/);
+  assert.match(notesPage, /noteSaveIndicatorState\(this\.isDirty\(note\.id\), this\.saveErrorNoteIds\.has\(note\.id\)\)/);
+  assert.match(notesPage, /if \(this\.selectedId === note\.id\)\s*this\.setSaveStatus\('Saving…', 'saving'\)/);
+  assert.match(notesPage, /saveLabel\.textContent = state === 'error' \? 'Save failed' : 'Saving'/);
+  assert.match(notesPage, /if \(refreshList\)\s*this\.renderList\(\)[\s\S]*?else if \(!wasDirty \|\| hadSaveError\)\s*this\.updateListSaveIndicator\(note\.id\)/);
+  assert.match(notesPage, /if \(!this\.deletedIds\.has\(id\)\) \{[\s\S]*?this\.saveErrorNoteIds\.add\(id\)[\s\S]*?if \(this\.selectedId === id\)/);
+  assert.ok((notesPage.match(/this\.updateListSaveIndicator\(id\)/g) ?? []).length >= 2);
+  assert.match(notesPage, /normalizedNameChanged = current\.name !== saved\.name[\s\S]*?if \(normalizedNameChanged\)\s*this\.renderList\(\)[\s\S]*?else\s*this\.updateListSaveIndicator\(id\)/);
+  assert.match(notesPage, /if \(this\.saveStatus\.textContent === text && this\.saveStatus\.dataset\.state === state\)\s*return/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
   for (const language of ['markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
     assert.match(html, new RegExp(`<option value="${language}"`));
@@ -144,14 +156,18 @@ test('rich text validation has distinct CommonJS main and ESM renderer artifacts
   assert.match(packageManifest, /"build:main": "tsc -p tsconfig\.main\.json && node scripts\/copy-main-runtime\.cjs"/);
 });
 
-test('Notes uses full width with a responsive tree, independent scrolling, and shared editor themes', async () => {
+test('Notes uses full width with a persistent resizable tree, independent scrolling, and shared editor themes', async () => {
   const { html, styles, baseStyles, notesPage } = await readIntegrationFiles();
 
-  assert.match(html, /<section class="notes-page"[^>]*>[\s\S]*?<aside class="notes-sidebar">[\s\S]*?<section class="notes-workspace"/);
+  assert.match(html, /<section class="notes-page"[^>]*>[\s\S]*?<aside id="notes-sidebar" class="notes-sidebar">[\s\S]*?id="notes-sidebar-resizer"[\s\S]*?<section id="notes-workspace" class="notes-workspace"/);
+  assert.match(html, /id="notes-sidebar-resizer"[\s\S]*?role="separator"[\s\S]*?aria-orientation="vertical"[\s\S]*?aria-controls="notes-sidebar notes-workspace"[\s\S]*?tabindex="0"/);
   assert.match(styles, /\.app-shell\[data-page=notes\]\{[^}]*margin-left:0[^}]*margin-right:0[^}]*max-width:none[^}]*height:100dvh[^}]*max-height:100dvh[^}]*overflow:hidden/);
-  assert.match(styles, /\.notes-page\{[^}]*overflow:hidden[^}]*grid-template-columns:clamp\(240px,22vw,360px\) minmax\(0,1fr\)/);
+  assert.match(styles, /\.notes-page\{[^}]*overflow:hidden[^}]*grid-template-columns:var\(--notes-sidebar-width,280px\) 6px minmax\(0,1fr\)/);
+  assert.doesNotMatch(styles, /\.notes-page\{[^}]*grid-template-columns:[^}]*vw/);
   assert.match(styles, /\.notes-page,\.notes-sidebar\{[^}]*display:grid[^}]*min-height:0[^}]*min-width:0/);
   assert.match(styles, /\.notes-sidebar\{[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(styles, /\.notes-sidebar-resizer\{[^}]*cursor:col-resize[^}]*touch-action:none/);
+  assert.match(styles, /\.notes-sidebar-resizer:before\{[^}]*width:1px[^}]*background-color:/);
   assert.match(styles, /\.notes-list\{[^}]*min-height:0[^}]*overflow-y:auto/);
   assert.match(styles, /\.notes-list-row\{[^}]*grid-template-columns:22px minmax\(0,1fr\) 52px/);
   assert.match(styles, /\.notes-list-row\{padding-left:calc\(var\(--notes-tree-depth, 0\)\*14px\)\}/);
@@ -178,13 +194,14 @@ test('Notes uses full width with a responsive tree, independent scrolling, and s
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*min-height:0[^}]*overflow:auto/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-language-select\{[^}]*width:8rem/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
-  assert.match(styles, /@media \(max-width:640px\)\{\.notes-page\{[^}]*grid-template-columns:minmax\(190px,220px\) minmax\(280px,1fr\)[^}]*overflow-x:auto/);
+  assert.doesNotMatch(styles, /@media \(max-width:640px\)\{\.notes-page\{/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes Code'[^}]*notes-code-variable\.woff2[^}]*font-weight:\s*100 800/);
   assert.match(baseStyles, /--font-family-notes-ui:\s*'STM Notes UI',\s*'STM UI',\s*sans-serif/);
   assert.match(baseStyles, /--font-family-notes-code:\s*'STM Notes Code',\s*'STM Notes UI',\s*monospace/);
   assert.match(baseStyles, /--font-family-notes-richtext:\s*'STM UI',\s*'STM Notes UI',\s*ui-sans-serif,\s*sans-serif/);
   assert.match(baseStyles, /--notes-editor-font-size:\s*14px/);
+  assert.match(baseStyles, /--notes-sidebar-width:\s*280px/);
   assert.match(styles, /\.app-shell\[data-page=notes\][^{]*\{[^}]*font-family:var\(--font-family-notes-ui\)/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*font-variant-ligatures:none/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
@@ -204,9 +221,9 @@ test('Notes uses full width with a responsive tree, independent scrolling, and s
   assert.match(styles, /\.notes-richtext-link-action\[hidden\]\{display:none\}/);
   assert.match(styles, /\.notes-richtext-color-menu\{[^}]*max-height:20rem[^}]*width:12rem/);
   assert.match(styles, /\.notes-richtext-color-item\{grid-template-columns:28px minmax\(0,1fr\) 16px\}/);
-  assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*position:relative[^}]*min-height:100%[^}]*padding:3rem 1\.5rem/);
-  assert.match(styles, /\.notes-richtext-content \.ProseMirror\.is-editor-empty:before\{[^}]*left:1\.5rem[^}]*top:3rem/);
-  assert.match(styles, /@media \(max-width:820px\)\{\.notes-richtext-content \.ProseMirror\{padding:2rem \.75rem\}/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*position:relative[^}]*min-height:100%[^}]*padding:\.625rem 1\.5rem 3rem/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror\.is-editor-empty:before\{[^}]*left:1\.5rem[^}]*top:\.625rem/);
+  assert.match(styles, /@media \(max-width:820px\)\{\.notes-richtext-content \.ProseMirror\{padding:\.625rem \.75rem 2rem/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*font-family:var\(--font-family-notes-richtext\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*line-height:1\.78/);
   assert.match(styles, /\.notes-richtext-slash-menu\{[^}]*max-height:330px[^}]*width:18rem/);
   assert.match(styles, /\.notes-richtext-slash-item\{[^}]*height:3rem/);
@@ -223,6 +240,12 @@ test('Notes uses full width with a responsive tree, independent scrolling, and s
   assert.match(styles, /\.notes-richtext-image\.ProseMirror-selectednode \.notes-richtext-image-handle\{[^}]*pointer-events:auto[^}]*opacity:1/);
   assert.match(styles, /\.notes-richtext-math\{[^}]*display:inline-flex[^}]*cursor:pointer/);
   assert.match(notesPage, /function applyNotesFontSize\(fontSize\)[\s\S]*?style\.setProperty\('--notes-editor-font-size', `\$\{normalized\}px`\)[\s\S]*?requestAnimationFrame\(\(\) => page\?\.requestEditorMeasure\(\)\)/);
+  assert.match(notesPage, /function clampNotesSidebarWidth\(value\)[\s\S]*?Math\.min\(MAX_NOTES_SIDEBAR_WIDTH, Math\.max\(MIN_NOTES_SIDEBAR_WIDTH, rounded\)\)/);
+  assert.match(notesPage, /handleSidebarResizePointerDown[\s\S]*?setPointerCapture\(event\.pointerId\)[\s\S]*?handleSidebarResizePointerMove[\s\S]*?startWidth \+ event\.clientX - drag\.startX/);
+  assert.match(notesPage, /finishSidebarResize[\s\S]*?saveNotesSidebarWidth\(width\)/);
+  assert.match(notesPage, /handleSidebarResizeKeyDown[\s\S]*?ArrowLeft[\s\S]*?ArrowRight[\s\S]*?Home[\s\S]*?End/);
+  assert.match(notesPage, /NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS = 180[\s\S]*?queueSidebarWidthSave/);
+  assert.match(notesPage, /async flush\(\)[\s\S]*?finishSidebarResize\(\)[\s\S]*?waitForSidebarWidthSaves\(\)/);
   assert.match(notesPage, /function applyNotesEditorTheme\(theme\)[\s\S]*?theme === 'dark' \? 'dark' : 'light'[\s\S]*?dataset\.notesEditorTheme = normalized[\s\S]*?page\?\.applyEditorTheme\(normalized\)/);
 });
 
@@ -294,6 +317,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
 
   assert.match(preload, /getUiPreferences:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:ui:get'\)/);
   assert.match(preload, /saveUiPreferences:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:ui:save', draft\)/);
+  assert.match(preload, /saveNotesSidebarWidth:\s*\(width\)\s*=>[\s\S]*?invoke\('settings:ui:notes-sidebar-width:save', width\)/);
   assert.match(preload, /getS3SyncSettings:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:get'\)/);
   assert.match(preload, /saveS3SyncSettings:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:save', draft\)/);
   assert.match(preload, /testS3Connection:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:test', draft\)/);
@@ -309,6 +333,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   for (const handler of [
     'uiPreferencesGet',
     'uiPreferencesSave',
+    'uiPreferencesNotesSidebarWidthSave',
     's3SettingsGet',
     's3SettingsSave',
     's3SettingsTest',
@@ -339,6 +364,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /notesEditorTheme !== 'light' && notesEditorTheme !== 'dark'/);
   assert.match(settingsDialog, /return \{ notesFontSize, notesEditorTheme \}/);
   assert.match(settingsDialog, /applyNotesEditorTheme\(preferences\.notesEditorTheme\)/);
+  assert.match(settingsDialog, /applyNotesSidebarWidth\(preferences\.notesSidebarWidth\)/);
   assert.match(settingsDialog, /window\.settingsApi\.listLlmModels\(\{/);
   assert.match(settingsDialog, /\.\.\.\(!token && hasLlmToken && !shouldClearLlmToken\(\) \? \{ useSavedToken: true \} : \{\}\)/);
   assert.match(settingsDialog, /function shouldClearLlmToken\(\)[\s\S]*?llmTokenClearRequested[\s\S]*?!llmTokenInput\.value && llmTokenEdited && llmSavedTokenHydrated/);

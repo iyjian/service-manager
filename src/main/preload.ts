@@ -122,6 +122,8 @@ const notesApi: NotesApi = {
 const settingsApi: SettingsApi = {
   getUiPreferences: () => ipcRenderer.invoke('settings:ui:get'),
   saveUiPreferences: (draft: UiPreferencesDraft) => ipcRenderer.invoke('settings:ui:save', draft),
+  saveNotesSidebarWidth: (width: number) =>
+    ipcRenderer.invoke('settings:ui:notes-sidebar-width:save', width),
   getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
   testS3Connection: (draft: S3ConnectionTestDraft) => ipcRenderer.invoke('settings:s3:test', draft),

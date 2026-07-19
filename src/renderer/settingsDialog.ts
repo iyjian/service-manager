@@ -6,10 +6,17 @@ import type {
   S3SyncSettingsView,
   S3SyncState,
   UiPreferences,
+  UiPreferencesDraft,
 } from '../shared/types';
-import { applyNotesEditorTheme, applyNotesFontSize, flushNotesPage } from './notesPage.js';
+import {
+  applyNotesEditorTheme,
+  applyNotesFontSize,
+  applyNotesSidebarWidth,
+  flushNotesPage,
+} from './notesPage.js';
 
 const DEFAULT_NOTES_FONT_SIZE = 14;
+const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
 const MIN_NOTES_FONT_SIZE = 12;
 const MAX_NOTES_FONT_SIZE = 24;
 
@@ -380,6 +387,7 @@ function renderUiPreferences(preferences: UiPreferences): void {
   notesEditorThemeInput.value = preferences.notesEditorTheme;
   applyNotesFontSize(preferences.notesFontSize);
   applyNotesEditorTheme(preferences.notesEditorTheme);
+  applyNotesSidebarWidth(preferences.notesSidebarWidth);
 }
 
 function setLlmStatus(message: string, error = false): void {
@@ -445,7 +453,7 @@ function currentS3TestDraft(): S3ConnectionTestDraft {
   };
 }
 
-function currentUiPreferences(): UiPreferences {
+function currentUiPreferences(): UiPreferencesDraft {
   const notesFontSize = notesFontSizeInput.valueAsNumber;
   if (!Number.isInteger(notesFontSize)
     || notesFontSize < MIN_NOTES_FONT_SIZE
@@ -497,7 +505,7 @@ async function saveAllSettings(): Promise<void> {
     setSaveFeedback('Settings are not fully loaded. Close this dialog and try again.');
     return;
   }
-  let preferences: UiPreferences;
+  let preferences: UiPreferencesDraft;
   try {
     preferences = currentUiPreferences();
   } catch (error) {
@@ -683,6 +691,7 @@ export function registerSettingsDialog(): void {
     .catch(() => {
       applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE);
       applyNotesEditorTheme('light');
+      applyNotesSidebarWidth(DEFAULT_NOTES_SIDEBAR_WIDTH);
     });
 
   openButton.addEventListener('click', () => { void openSettings(); });

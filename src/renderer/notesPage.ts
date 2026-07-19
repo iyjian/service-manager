@@ -34,6 +34,16 @@ import { NotesRichTextEditor } from './notesRichTextEditor.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
 const NOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
+const MIN_NOTES_SIDEBAR_WIDTH = 240;
+const MAX_NOTES_SIDEBAR_WIDTH = 520;
+const NOTES_SIDEBAR_KEYBOARD_STEP = 8;
+const NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS = 180;
+
+export function clampNotesSidebarWidth(value: number): number {
+  const rounded = Number.isFinite(value) ? Math.round(value) : DEFAULT_NOTES_SIDEBAR_WIDTH;
+  return Math.min(MAX_NOTES_SIDEBAR_WIDTH, Math.max(MIN_NOTES_SIDEBAR_WIDTH, rounded));
+}
 
 const bashLanguage = StreamLanguage.define(shell);
 const sqlLanguage = StreamLanguage.define(standardSQL);
@@ -225,6 +235,14 @@ export function rankNotes(notes: readonly Note[], query: string): Note[] {
     .map(({ note }) => note);
 }
 
+export function noteSaveIndicatorState(
+  dirty: boolean,
+  failed: boolean,
+): 'saving' | 'error' | undefined {
+  if (failed) return 'error';
+  return dirty ? 'saving' : undefined;
+}
+
 export type NoteTreeDropPosition = 'before' | 'inside' | 'after';
 
 export interface NoteTreeRow {
@@ -411,6 +429,7 @@ function createTreeIcon(pathData: string): SVGSVGElement {
 
 class NotesPage {
   private readonly pageRoot = requireElement<HTMLElement>('.notes-page');
+  private readonly sidebarResizeHandle = requireElement<HTMLElement>('#notes-sidebar-resizer');
   private readonly newButton = requireElement<HTMLButtonElement>('#notes-new-root-btn');
   private readonly searchInput = requireElement<HTMLInputElement>('#notes-search');
   private readonly list = requireElement<HTMLElement>('#notes-list');
@@ -447,6 +466,7 @@ class NotesPage {
   private readonly saveQueues = new Map<string, Promise<void>>();
   private readonly persistedNotes = new Map<string, Note>();
   private readonly deletedIds = new Set<string>();
+  private readonly saveErrorNoteIds = new Set<string>();
   private editorLanguage: NoteLanguage = 'markdown';
   private editorNoteId: string | undefined;
   private replacingEditorDocument = false;
@@ -456,6 +476,11 @@ class NotesPage {
   private draggingNoteId: string | undefined;
   private selectionVersion = 0;
   private saveGeneration = 0;
+  private sidebarWidth = DEFAULT_NOTES_SIDEBAR_WIDTH;
+  private sidebarResizeDrag: { pointerId: number; startX: number; startWidth: number } | undefined;
+  private sidebarMeasureFrame: number | undefined;
+  private sidebarKeyboardSaveTimer: number | undefined;
+  private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
 
   constructor() {
     this.codeEditor = new EditorView({
@@ -473,6 +498,7 @@ class NotesPage {
       },
     });
     this.contentHost.dataset.theme = this.editorTheme;
+    this.setSidebarWidth(this.sidebarWidth);
     this.updateEditorEmptyState();
     this.newButton.addEventListener('click', () => void this.createNote(null));
     this.searchInput.addEventListener('input', () => this.renderList());
@@ -497,6 +523,12 @@ class NotesPage {
     this.languageSelect.addEventListener('change', () => void this.changeSelectedLanguage());
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
     this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
+    this.sidebarResizeHandle.addEventListener('pointerdown', this.handleSidebarResizePointerDown);
+    this.sidebarResizeHandle.addEventListener('pointermove', this.handleSidebarResizePointerMove);
+    this.sidebarResizeHandle.addEventListener('pointerup', this.handleSidebarResizePointerEnd);
+    this.sidebarResizeHandle.addEventListener('pointercancel', this.handleSidebarResizePointerEnd);
+    this.sidebarResizeHandle.addEventListener('lostpointercapture', this.handleSidebarResizeLostCapture);
+    this.sidebarResizeHandle.addEventListener('keydown', this.handleSidebarResizeKeyDown);
   }
 
   show(): void {
@@ -504,17 +536,136 @@ class NotesPage {
   }
 
   hide(): void {
-    void this.flushAllPendingSaves().catch(() => undefined);
+    void this.flush().catch(() => undefined);
   }
 
-  flush(): Promise<void> {
-    return this.flushAllPendingSaves();
+  async flush(): Promise<void> {
+    this.finishSidebarResize();
+    this.flushQueuedSidebarWidthSave();
+    await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
   }
 
   requestEditorMeasure(): void {
     this.codeEditor.requestMeasure();
     this.richTextEditor.requestMeasure();
   }
+
+  applyPersistedSidebarWidth(width: number): void {
+    if (this.sidebarResizeDrag
+      || this.sidebarKeyboardSaveTimer !== undefined
+      || this.sidebarWidthSaveTasks.size > 0) return;
+    this.setSidebarWidth(width);
+  }
+
+  private setSidebarWidth(value: number): void {
+    const width = clampNotesSidebarWidth(value);
+    this.sidebarWidth = width;
+    document.documentElement.style.setProperty('--notes-sidebar-width', `${width}px`);
+    this.sidebarResizeHandle.setAttribute('aria-valuenow', String(width));
+    if (this.sidebarMeasureFrame !== undefined) return;
+    this.sidebarMeasureFrame = window.requestAnimationFrame(() => {
+      this.sidebarMeasureFrame = undefined;
+      this.requestEditorMeasure();
+    });
+  }
+
+  private persistSidebarWidth(width: number): void {
+    const task = window.settingsApi.saveNotesSidebarWidth(width).then(
+      () => undefined,
+      (error) => {
+        setMessage(`Unable to save Notes sidebar width: ${toErrorMessage(error)}`, 'error');
+      },
+    );
+    this.sidebarWidthSaveTasks.add(task);
+    void task.finally(() => this.sidebarWidthSaveTasks.delete(task));
+  }
+
+  private queueSidebarWidthSave(): void {
+    if (this.sidebarKeyboardSaveTimer !== undefined) {
+      window.clearTimeout(this.sidebarKeyboardSaveTimer);
+    }
+    this.sidebarKeyboardSaveTimer = window.setTimeout(() => {
+      this.sidebarKeyboardSaveTimer = undefined;
+      this.persistSidebarWidth(this.sidebarWidth);
+    }, NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS);
+  }
+
+  private flushQueuedSidebarWidthSave(): void {
+    if (this.sidebarKeyboardSaveTimer === undefined) return;
+    window.clearTimeout(this.sidebarKeyboardSaveTimer);
+    this.sidebarKeyboardSaveTimer = undefined;
+    this.persistSidebarWidth(this.sidebarWidth);
+  }
+
+  private async waitForSidebarWidthSaves(): Promise<void> {
+    while (this.sidebarWidthSaveTasks.size > 0) {
+      await Promise.all([...this.sidebarWidthSaveTasks]);
+    }
+  }
+
+  private finishSidebarResize(pointerId?: number, releaseCapture = true): void {
+    const drag = this.sidebarResizeDrag;
+    if (!drag || (pointerId !== undefined && pointerId !== drag.pointerId)) return;
+    this.sidebarResizeDrag = undefined;
+    delete this.pageRoot.dataset.sidebarResizing;
+    if (releaseCapture && this.sidebarResizeHandle.hasPointerCapture(drag.pointerId)) {
+      try {
+        this.sidebarResizeHandle.releasePointerCapture(drag.pointerId);
+      } catch {
+        // Native cancellation can release pointer capture before this callback.
+      }
+    }
+    if (this.sidebarWidth !== drag.startWidth) this.persistSidebarWidth(this.sidebarWidth);
+  }
+
+  private readonly handleSidebarResizePointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    this.finishSidebarResize();
+    this.flushQueuedSidebarWidthSave();
+    this.sidebarResizeDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: this.sidebarWidth,
+    };
+    this.pageRoot.dataset.sidebarResizing = 'true';
+    try {
+      this.sidebarResizeHandle.setPointerCapture(event.pointerId);
+    } catch {
+      this.sidebarResizeDrag = undefined;
+      delete this.pageRoot.dataset.sidebarResizing;
+      return;
+    }
+    event.preventDefault();
+  };
+
+  private readonly handleSidebarResizePointerMove = (event: PointerEvent): void => {
+    const drag = this.sidebarResizeDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    this.setSidebarWidth(drag.startWidth + event.clientX - drag.startX);
+    event.preventDefault();
+  };
+
+  private readonly handleSidebarResizePointerEnd = (event: PointerEvent): void => {
+    this.finishSidebarResize(event.pointerId);
+  };
+
+  private readonly handleSidebarResizeLostCapture = (event: PointerEvent): void => {
+    this.finishSidebarResize(event.pointerId, false);
+  };
+
+  private readonly handleSidebarResizeKeyDown = (event: KeyboardEvent): void => {
+    const step = event.shiftKey ? NOTES_SIDEBAR_KEYBOARD_STEP * 4 : NOTES_SIDEBAR_KEYBOARD_STEP;
+    let requestedWidth: number | undefined;
+    if (event.key === 'ArrowLeft') requestedWidth = this.sidebarWidth - step;
+    if (event.key === 'ArrowRight') requestedWidth = this.sidebarWidth + step;
+    if (event.key === 'Home') requestedWidth = MIN_NOTES_SIDEBAR_WIDTH;
+    if (event.key === 'End') requestedWidth = MAX_NOTES_SIDEBAR_WIDTH;
+    if (requestedWidth === undefined) return;
+    const previousWidth = this.sidebarWidth;
+    this.setSidebarWidth(requestedWidth);
+    if (this.sidebarWidth !== previousWidth) this.queueSidebarWidthSave();
+    event.preventDefault();
+  };
 
   applyEditorTheme(theme: 'light' | 'dark'): void {
     if (theme === this.editorTheme) {
@@ -575,6 +726,7 @@ class NotesPage {
       this.queuedVersions.clear();
       this.persistedNotes.clear();
       this.deletedIds.clear();
+      this.saveErrorNoteIds.clear();
       this.loaded = false;
       this.loadPromise = undefined;
       this.loadError = undefined;
@@ -663,6 +815,7 @@ class NotesPage {
       this.queuedVersions.delete(id);
       this.saveQueues.delete(id);
       this.persistedNotes.delete(id);
+      this.saveErrorNoteIds.delete(id);
       this.clearSaveTimer(id);
     }
     if (this.selectedId && !activeIds.has(this.selectedId)) this.selectedId = undefined;
@@ -690,6 +843,37 @@ class NotesPage {
   private dropPlacement(target: NotesTreeNode, position: NoteTreeDropPosition): NoteTreePlacement | undefined {
     if (!this.draggingNoteId) return undefined;
     return resolveNoteTreeDropPlacement(this.treeNodes, this.draggingNoteId, target.noteId, position);
+  }
+
+  private renderListSaveIndicator(
+    nameRow: HTMLElement,
+    state: 'saving' | 'error' | undefined,
+  ): void {
+    nameRow.querySelector('.notes-list-save-indicator')?.remove();
+    nameRow.querySelector('.notes-list-save-label')?.remove();
+    if (!state) return;
+
+    const saveIndicator = document.createElement('span');
+    saveIndicator.className = 'notes-list-save-indicator';
+    saveIndicator.dataset.state = state;
+    saveIndicator.title = state === 'error' ? 'Save failed' : 'Saving';
+    saveIndicator.setAttribute('aria-hidden', 'true');
+
+    const saveLabel = document.createElement('span');
+    saveLabel.className = 'notes-list-save-label';
+    saveLabel.textContent = state === 'error' ? 'Save failed' : 'Saving';
+    nameRow.append(saveIndicator, saveLabel);
+  }
+
+  private updateListSaveIndicator(noteId: string): void {
+    const row = Array.from(this.list.querySelectorAll<HTMLElement>('.notes-tree-row'))
+      .find((candidate) => candidate.dataset.noteId === noteId);
+    const nameRow = row?.querySelector<HTMLElement>('.notes-list-item-name-row');
+    if (!nameRow) return;
+    this.renderListSaveIndicator(
+      nameRow,
+      noteSaveIndicatorState(this.isDirty(noteId), this.saveErrorNoteIds.has(noteId)),
+    );
   }
 
   private renderList(focusId?: string): void {
@@ -743,10 +927,19 @@ class NotesPage {
       button.dataset.noteId = note.id;
       button.setAttribute('aria-current', note.id === this.selectedId ? 'true' : 'false');
 
+      const nameRow = document.createElement('span');
+      nameRow.className = 'notes-list-item-name-row';
+
       const name = document.createElement('span');
       name.className = 'notes-list-item-name';
       name.textContent = note.name || 'Untitled';
-      button.appendChild(name);
+      nameRow.appendChild(name);
+
+      this.renderListSaveIndicator(
+        nameRow,
+        noteSaveIndicatorState(this.isDirty(note.id), this.saveErrorNoteIds.has(note.id)),
+      );
+      button.appendChild(nameRow);
 
       if (searchActive) {
         const path = this.breadcrumb(note.id);
@@ -920,9 +1113,16 @@ class NotesPage {
     }
     if (selectionVersion !== this.selectionVersion || !this.notes.some((note) => note.id === id)) return;
     this.selectedId = id;
+    const selectedDirty = this.isDirty(id);
+    if (selectedDirty) this.saveErrorNoteIds.delete(id);
     this.renderList(id);
     this.renderEditor();
-    this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
+    if (selectedDirty) {
+      this.setSaveStatus('Saving…', 'saving');
+      this.scheduleSave(id);
+    } else {
+      this.setSaveStatus('Saved', 'saved');
+    }
   }
 
   private updateSelectedMetadata(): void {
@@ -952,9 +1152,12 @@ class NotesPage {
   }
 
   private markNoteEdited(note: Note, refreshList: boolean): void {
+    const wasDirty = this.isDirty(note.id);
+    const hadSaveError = this.saveErrorNoteIds.delete(note.id);
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
-    this.setSaveStatus('Saving…', 'saving');
+    if (this.selectedId === note.id) this.setSaveStatus('Saving…', 'saving');
     if (refreshList) this.renderList();
+    else if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
     this.scheduleSave(note.id);
   }
 
@@ -1132,11 +1335,15 @@ class NotesPage {
 
       this.persistedNotes.set(id, cloneNote(saved));
       this.persistedVersions.set(id, Math.max(this.persistedVersions.get(id) ?? 0, version));
+      this.saveErrorNoteIds.delete(id);
       const current = this.notes.find((item) => item.id === id);
+      let normalizedNameChanged = false;
       if (current && (this.editVersions.get(id) ?? 0) === version) {
+        normalizedNameChanged = current.name !== saved.name;
         Object.assign(current, saved, { tags: [...saved.tags] });
       }
-      this.renderList();
+      if (normalizedNameChanged) this.renderList();
+      else this.updateListSaveIndicator(id);
       if (this.selectedId === id) {
         this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
       }
@@ -1145,8 +1352,12 @@ class NotesPage {
       if ((this.queuedVersions.get(id) ?? 0) === version) {
         this.queuedVersions.set(id, this.persistedVersions.get(id) ?? 0);
       }
-      if (this.selectedId === id && !this.deletedIds.has(id)) {
-        this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+      if (!this.deletedIds.has(id)) {
+        this.saveErrorNoteIds.add(id);
+        this.updateListSaveIndicator(id);
+        if (this.selectedId === id) {
+          this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+        }
       }
     });
     this.saveQueues.set(id, queued);
@@ -1427,8 +1638,10 @@ class NotesPage {
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {
+    if (this.saveStatus.textContent === text && this.saveStatus.dataset.state === state) return;
     this.saveStatus.textContent = text;
     this.saveStatus.dataset.state = state;
+    if (state === 'error' && text) setMessage(text, 'error');
   }
 }
 
@@ -1445,6 +1658,15 @@ export function applyNotesEditorTheme(theme: 'light' | 'dark'): void {
   const normalized = theme === 'dark' ? 'dark' : 'light';
   document.documentElement.dataset.notesEditorTheme = normalized;
   page?.applyEditorTheme(normalized);
+}
+
+export function applyNotesSidebarWidth(width: number): void {
+  const normalized = clampNotesSidebarWidth(width);
+  if (page) {
+    page.applyPersistedSidebarWidth(normalized);
+    return;
+  }
+  document.documentElement.style.setProperty('--notes-sidebar-width', `${normalized}px`);
 }
 
 export function registerNotesPage(): void {

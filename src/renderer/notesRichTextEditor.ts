@@ -1739,7 +1739,9 @@ export class NotesRichTextEditor {
   public requestMeasure(): void {
     if (this.editor.isDestroyed) return;
     window.requestAnimationFrame(() => {
-      if (!this.editor.isDestroyed) this.editor.view.updateState(this.editor.state);
+      if (this.editor.isDestroyed) return;
+      this.editor.view.updateState(this.editor.state);
+      this.handleViewportChange();
     });
   }
 

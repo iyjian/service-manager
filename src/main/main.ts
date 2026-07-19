@@ -124,6 +124,7 @@ const IPC_CHANNELS = {
   notesFlushResult: 'notes:flush-result',
   uiPreferencesGet: 'settings:ui:get',
   uiPreferencesSave: 'settings:ui:save',
+  uiPreferencesNotesSidebarWidthSave: 'settings:ui:notes-sidebar-width:save',
   uiPreferencesChanged: 'settings:ui:changed',
   llmSettingsGet: 'settings:llm:get',
   llmSettingsSave: 'settings:llm:save',
@@ -1377,6 +1378,9 @@ function registerIpcHandlers(): void {
     const preferences = await getUiPreferencesStore().save(draft);
     broadcast(IPC_CHANNELS.uiPreferencesChanged, preferences);
     return preferences;
+  });
+  ipcMain.handle(IPC_CHANNELS.uiPreferencesNotesSidebarWidthSave, async (_event, width: unknown) => {
+    return getUiPreferencesStore().saveNotesSidebarWidth(width);
   });
   ipcMain.handle(IPC_CHANNELS.llmSettingsGet, async () => getLlmSettingsStore().get());
   ipcMain.handle(IPC_CHANNELS.llmSettingsSave, async (_event, draft: unknown) =>

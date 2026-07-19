@@ -6,10 +6,14 @@ const test = require('node:test');
 
 const {
   DEFAULT_NOTES_FONT_SIZE,
+  DEFAULT_NOTES_SIDEBAR_WIDTH,
   MAX_NOTES_FONT_SIZE,
+  MAX_NOTES_SIDEBAR_WIDTH,
   MIN_NOTES_FONT_SIZE,
+  MIN_NOTES_SIDEBAR_WIDTH,
   UI_PREFERENCES_SCHEMA_VERSION,
   UiPreferencesStore,
+  normalizeNotesSidebarWidth,
   normalizeUiPreferencesDraft,
 } = require('../dist/main/uiPreferencesStore');
 
@@ -28,6 +32,7 @@ test('UI preferences use stable Notes defaults when the file is missing', async 
   assert.deepEqual(store.get(), {
     notesFontSize: DEFAULT_NOTES_FONT_SIZE,
     notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
   });
   await assert.rejects(fs.stat(filePath), { code: 'ENOENT' });
 });
@@ -37,13 +42,21 @@ test('UI preferences persist atomically with a versioned private JSON shape', as
   await store.load();
   assert.deepEqual(
     await store.save({ notesFontSize: 17, notesEditorTheme: 'dark' }),
-    { notesFontSize: 17, notesEditorTheme: 'dark' },
+    {
+      notesFontSize: 17,
+      notesEditorTheme: 'dark',
+      notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
   );
   await store.flush();
 
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
-    notes: { fontSize: 17, editorTheme: 'dark' },
+    notes: {
+      fontSize: 17,
+      editorTheme: 'dark',
+      sidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
   });
   if (process.platform !== 'win32') {
     assert.equal((await fs.stat(filePath)).mode & 0o777, 0o600);
@@ -55,7 +68,11 @@ test('UI preferences persist atomically with a versioned private JSON shape', as
 
   const reloaded = new UiPreferencesStore(filePath);
   await reloaded.load();
-  assert.deepEqual(reloaded.get(), { notesFontSize: 17, notesEditorTheme: 'dark' });
+  assert.deepEqual(reloaded.get(), {
+    notesFontSize: 17,
+    notesEditorTheme: 'dark',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  });
 });
 
 test('damaged UI preferences safely fall back and a default Save repairs the file', async (t) => {
@@ -65,12 +82,17 @@ test('damaged UI preferences safely fall back and a default Save repairs the fil
   assert.deepEqual(store.get(), {
     notesFontSize: DEFAULT_NOTES_FONT_SIZE,
     notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
   });
 
   await store.save({ notesFontSize: DEFAULT_NOTES_FONT_SIZE, notesEditorTheme: 'light' });
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
-    notes: { fontSize: DEFAULT_NOTES_FONT_SIZE, editorTheme: 'light' },
+    notes: {
+      fontSize: DEFAULT_NOTES_FONT_SIZE,
+      editorTheme: 'light',
+      sidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
   });
 });
 
@@ -82,7 +104,26 @@ test('schema 1 UI preferences migrate to the default light Notes editor theme', 
   }), 'utf8');
 
   await store.load();
-  assert.deepEqual(store.get(), { notesFontSize: 18, notesEditorTheme: 'light' });
+  assert.deepEqual(store.get(), {
+    notesFontSize: 18,
+    notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  });
+});
+
+test('schema 2 UI preferences migrate to the default Notes sidebar width', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await fs.writeFile(filePath, JSON.stringify({
+    schemaVersion: 2,
+    notes: { fontSize: 16, editorTheme: 'dark' },
+  }), 'utf8');
+
+  await store.load();
+  assert.deepEqual(store.get(), {
+    notesFontSize: 16,
+    notesEditorTheme: 'dark',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  });
 });
 
 test('Notes font size validation accepts only bounded whole pixels', () => {
@@ -110,6 +151,51 @@ test('Notes font size validation accepts only bounded whole pixels', () => {
   assert.throws(() => normalizeUiPreferencesDraft(null), /Notes preferences/);
 });
 
+test('Notes sidebar width accepts only bounded whole pixels', () => {
+  assert.equal(normalizeNotesSidebarWidth(MIN_NOTES_SIDEBAR_WIDTH), MIN_NOTES_SIDEBAR_WIDTH);
+  assert.equal(normalizeNotesSidebarWidth(MAX_NOTES_SIDEBAR_WIDTH), MAX_NOTES_SIDEBAR_WIDTH);
+
+  for (const value of [
+    MIN_NOTES_SIDEBAR_WIDTH - 1,
+    MIN_NOTES_SIDEBAR_WIDTH + 0.5,
+    MAX_NOTES_SIDEBAR_WIDTH + 1,
+    Number.NaN,
+    String(DEFAULT_NOTES_SIDEBAR_WIDTH),
+    undefined,
+  ]) {
+    assert.throws(() => normalizeNotesSidebarWidth(value), /Notes sidebar width is invalid\./);
+  }
+});
+
+test('sidebar and editor preference saves merge against the latest queued state', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await store.load();
+
+  await Promise.all([
+    store.saveNotesSidebarWidth(420),
+    store.save({ notesFontSize: 18, notesEditorTheme: 'dark' }),
+  ]);
+  assert.deepEqual(store.get(), {
+    notesFontSize: 18,
+    notesEditorTheme: 'dark',
+    notesSidebarWidth: 420,
+  });
+
+  await Promise.all([
+    store.save({ notesFontSize: 16, notesEditorTheme: 'light' }),
+    store.saveNotesSidebarWidth(360),
+  ]);
+  assert.deepEqual(store.get(), {
+    notesFontSize: 16,
+    notesEditorTheme: 'light',
+    notesSidebarWidth: 360,
+  });
+
+  const reloaded = new UiPreferencesStore(filePath);
+  await reloaded.load();
+  assert.deepEqual(reloaded.get(), store.get());
+});
+
 test('concurrent UI preference saves remain serialized in invocation order', async (t) => {
   const { filePath, store } = await createStore(t);
   await store.load();
@@ -121,12 +207,32 @@ test('concurrent UI preference saves remain serialized in invocation order', asy
   ]);
 
   assert.deepEqual(results, [
-    { notesFontSize: 16, notesEditorTheme: 'light' },
-    { notesFontSize: 18, notesEditorTheme: 'dark' },
-    { notesFontSize: 20, notesEditorTheme: 'light' },
+    {
+      notesFontSize: 16,
+      notesEditorTheme: 'light',
+      notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
+    {
+      notesFontSize: 18,
+      notesEditorTheme: 'dark',
+      notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
+    {
+      notesFontSize: 20,
+      notesEditorTheme: 'light',
+      notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    },
   ]);
-  assert.deepEqual(store.get(), { notesFontSize: 20, notesEditorTheme: 'light' });
+  assert.deepEqual(store.get(), {
+    notesFontSize: 20,
+    notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  });
   const reloaded = new UiPreferencesStore(filePath);
   await reloaded.load();
-  assert.deepEqual(reloaded.get(), { notesFontSize: 20, notesEditorTheme: 'light' });
+  assert.deepEqual(reloaded.get(), {
+    notesFontSize: 20,
+    notesEditorTheme: 'light',
+    notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+  });
 });
