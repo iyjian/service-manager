@@ -9,14 +9,15 @@ const {
 } = require('node:fs');
 const { createHash } = require('node:crypto');
 const { createRequire } = require('node:module');
-const { dirname, join, resolve, sep } = require('node:path');
+const { dirname, join, relative, resolve, sep } = require('node:path');
 
 const root = join(__dirname, '..');
 const outDir = join(root, 'dist', 'renderer');
 const vendorDir = join(outDir, 'vendor');
-const sharedRichTextRuntime = join(root, 'dist', 'shared', 'noteRichText.js');
-const mainRichTextRuntime = join(root, 'dist', 'main', 'noteRichText.cjs');
-const rendererRichTextRuntime = join(outDir, 'noteRichText.js');
+const dualTargetRuntimes = Object.freeze([
+  { shared: 'noteRichText.js', main: 'noteRichText.cjs', renderer: 'noteRichText.js', label: 'rich text' },
+  { shared: 'sentryPrivacy.js', main: 'sentryPrivacy.cjs', renderer: 'sentryPrivacy.js', label: 'Sentry privacy' },
+]);
 
 const rootRequire = createRequire(join(root, 'package.json'));
 const codeMirrorSeedPackages = Object.freeze([
@@ -34,6 +35,10 @@ const tipTapSeedPackages = Object.freeze([
   '@tiptap/extension-image',
   '@tiptap/extension-table',
   '@tiptap/pm',
+]);
+const sentryBrowserSeedPackages = Object.freeze([
+  '@sentry/browser',
+  '@sentry/core',
 ]);
 const legacyModeSpecifiers = Object.freeze([
   '@codemirror/legacy-modes/mode/shell',
@@ -242,10 +247,17 @@ function copyBrowserVendor() {
   if (!legacyRoot || legacyRoots.some((candidate) => candidate !== legacyRoot)) {
     throw new Error('CodeMirror legacy mode exports must resolve from one installed package');
   }
+  const sentryElectronRoot = findPackageRoot(
+    '@sentry/electron',
+    rootRequire.resolve('@sentry/electron/renderer'),
+  );
   const initialRequests = [...codeMirrorSeedPackages, ...tipTapSeedPackages].map((name) => ({
     name,
     requesterRoot: root,
   }));
+  for (const name of sentryBrowserSeedPackages) {
+    initialRequests.push({ name, requesterRoot: sentryElectronRoot });
+  }
   for (const dependency of Object.keys(readPackage(legacyRoot).dependencies ?? {}).sort()) {
     initialRequests.push({ name: dependency, requesterRoot: legacyRoot });
   }
@@ -259,11 +271,37 @@ function copyBrowserVendor() {
 
   for (const [name, packageRoot] of [...packages].sort(([left], [right]) => compareNames(left, right))) {
     for (const { specifier, entry } of browserEsmEntries(packageRoot)) {
+      if (name.startsWith('@sentry/')) {
+        const output = join(
+          vendorDir,
+          'sentry-packages',
+          name.slice('@sentry/'.length),
+          relative(packageRoot, entry),
+        );
+        copyBrowserModule(entry, output, packageRoot, copiedModules);
+        imports.set(specifier, `./${relative(outDir, output).split(sep).join('/')}`);
+        continue;
+      }
       const outputName = claimVendorFileName(specifier, outputOwners);
       copyBrowserModule(entry, join(vendorDir, outputName), packageRoot, copiedModules);
       imports.set(specifier, `./vendor/${outputName}`);
     }
   }
+
+  const sentryRendererEntry = browserEsmEntries(sentryElectronRoot).find(
+    ({ specifier }) => specifier === '@sentry/electron/renderer',
+  );
+  if (!sentryRendererEntry) {
+    throw new Error('The installed @sentry/electron package has no browser renderer entry');
+  }
+  const sentryRendererOutput = join(vendorDir, 'sentry-electron', 'esm', 'renderer', 'index.js');
+  copyBrowserModule(
+    sentryRendererEntry.entry,
+    sentryRendererOutput,
+    sentryElectronRoot,
+    copiedModules,
+  );
+  imports.set('@sentry/electron/renderer', './vendor/sentry-electron/esm/renderer/index.js');
 
   for (const specifier of legacyModeSpecifiers) {
     const modeName = specifier.slice(specifier.lastIndexOf('/') + 1);
@@ -296,27 +334,30 @@ function copyRendererHtml(imports) {
   writeFileSync(join(outDir, 'index.html'), source.replace(importMapPattern, importMap));
 }
 
-function finalizeDualTargetRichTextRuntime() {
-  if (!existsSync(sharedRichTextRuntime)) {
-    throw new Error('The renderer rich text runtime was not emitted.');
+function finalizeDualTargetRuntime(runtime) {
+  const sharedRuntime = join(root, 'dist', 'shared', runtime.shared);
+  const mainRuntime = join(root, 'dist', 'main', runtime.main);
+  const rendererRuntime = join(outDir, runtime.renderer);
+  if (!existsSync(sharedRuntime)) {
+    throw new Error(`The renderer ${runtime.label} runtime was not emitted.`);
   }
   // The shared TypeScript source is compiled once as CommonJS for Electron's
   // main process and once as ESM for the sandboxed browser renderer. Preserve
   // each artifact at the path consumed by that runtime, then restore the
   // CommonJS shared output that existing main-process imports require.
-  const sharedSource = readFileSync(sharedRichTextRuntime, 'utf8');
+  const sharedSource = readFileSync(sharedRuntime, 'utf8');
   if (/^export\s|\nexport\s/m.test(sharedSource)) {
-    copyFileSync(sharedRichTextRuntime, rendererRichTextRuntime);
+    copyFileSync(sharedRuntime, rendererRuntime);
   } else {
-    const rendererSource = existsSync(rendererRichTextRuntime)
-      ? readFileSync(rendererRichTextRuntime, 'utf8')
+    const rendererSource = existsSync(rendererRuntime)
+      ? readFileSync(rendererRuntime, 'utf8')
       : '';
     if (!/^export\s|\nexport\s/m.test(rendererSource)) {
-      throw new Error('The renderer rich text ESM runtime is unavailable. Run build:renderer first.');
+      throw new Error(`The renderer ${runtime.label} ESM runtime is unavailable. Run build:renderer first.`);
     }
   }
-  if (existsSync(mainRichTextRuntime)) {
-    copyFileSync(mainRichTextRuntime, sharedRichTextRuntime);
+  if (existsSync(mainRuntime)) {
+    copyFileSync(mainRuntime, sharedRuntime);
   }
 }
 
@@ -329,5 +370,5 @@ copyFileSync(
   join(root, 'node_modules', 'js-yaml', 'dist', 'browser', 'js-yaml.umd.min.js'),
   join(outDir, 'js-yaml.umd.min.js')
 );
-finalizeDualTargetRichTextRuntime();
+for (const runtime of dualTargetRuntimes) finalizeDualTargetRuntime(runtime);
 copyRendererHtml(copyBrowserVendor());

@@ -2,12 +2,14 @@ const { copyFileSync, existsSync, mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 
 const root = join(__dirname, '..');
-const sharedRichText = join(root, 'dist', 'shared', 'noteRichText.js');
-const mainRuntime = join(root, 'dist', 'main', 'noteRichText.cjs');
-
-if (!existsSync(sharedRichText)) {
-  throw new Error('The main-process rich text runtime was not emitted.');
-}
-
 mkdirSync(join(root, 'dist', 'main'), { recursive: true });
-copyFileSync(sharedRichText, mainRuntime);
+for (const runtime of [
+  { shared: 'noteRichText.js', main: 'noteRichText.cjs', label: 'rich text' },
+  { shared: 'sentryPrivacy.js', main: 'sentryPrivacy.cjs', label: 'Sentry privacy' },
+]) {
+  const sharedRuntime = join(root, 'dist', 'shared', runtime.shared);
+  if (!existsSync(sharedRuntime)) {
+    throw new Error(`The main-process ${runtime.label} runtime was not emitted.`);
+  }
+  copyFileSync(sharedRuntime, join(root, 'dist', 'main', runtime.main));
+}

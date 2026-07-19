@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { readdir, readFile, stat } = require('node:fs/promises');
+const { readFile, stat } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -36,7 +36,7 @@ function relativeModuleSpecifiers(source) {
   return specifiers;
 }
 
-test('renderer browser vendor graph has exact import-map coverage for CodeMirror and Tiptap', async () => {
+test('renderer browser vendor graph has exact import-map coverage for CodeMirror, Tiptap, and Sentry', async () => {
   const html = await readFile(path.join(rendererRoot, 'index.html'), 'utf8');
   const imports = readImportMap(html).imports;
   const requiredEntries = [
@@ -53,6 +53,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     '@tiptap/starter-kit',
     '@tiptap/extension-image',
     '@tiptap/extension-table',
+    '@sentry/electron/renderer',
   ];
   for (const specifier of requiredEntries) {
     assert.equal(typeof imports[specifier], 'string', `missing generated import-map entry for ${specifier}`);
@@ -103,12 +104,8 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     'each exact import-map entry must own one vendor file'
   );
 
-  const vendorRoot = path.join(rendererRoot, 'vendor');
-  const vendorFiles = (await readdir(vendorRoot)).filter((name) => name.endsWith('.js')).sort();
-  assert.equal(vendorFiles.length, Object.keys(imports).length);
-
   for (const [specifier, target] of Object.entries(imports)) {
-    assert.match(target, /^\.\/vendor\/[a-zA-Z0-9.-]+\.js$/);
+    assert.match(target, /^\.\/vendor\/(?:[a-zA-Z0-9@._+-]+\/)*[a-zA-Z0-9@._+-]+\.js$/);
     const targetPath = path.resolve(rendererRoot, target);
     assert.equal((await stat(targetPath)).isFile(), true, `${specifier} must map to a copied vendor file`);
   }
@@ -128,13 +125,13 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     await verifyRelativeClosure(path.resolve(rendererRoot, target));
   }
 
-  for (const file of vendorFiles) {
-    const source = await readFile(path.join(vendorRoot, file), 'utf8');
+  for (const file of visitedModules) {
+    const source = await readFile(file, 'utf8');
     for (const specifier of bareModuleSpecifiers(source)) {
       assert.equal(
         typeof imports[specifier],
         'string',
-        `${file} imports ${specifier}, which is absent from the generated import map`
+        `${path.relative(rendererRoot, file)} imports ${specifier}, which is absent from the generated import map`
       );
     }
   }

@@ -1,3 +1,4 @@
+import { flushSentry } from './sentry';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -1057,6 +1058,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     }
   }
 
+  await flushSentry();
   await flushRuntimeLog();
 }
 

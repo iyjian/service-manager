@@ -45,6 +45,7 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/main/s3SyncV2.ts`: retained legacy protocol plus shared endpoint/SigV4 and local-recovery helpers; the active runtime may reuse those protocol-neutral primitives but never reads, migrates, or deletes v2 S3 object paths.
 - `src/main/s3Sync.ts`: `safeStorage`-protected MinIO/S3 credentials and independent Sync Encryption Key, v4-only single-flight reconciliation, same-key Note/tree-reference reuse, Sync-Key rotation, a settings-mutation queue that persists pending/offline intent without waiting for an active network reconcile, encrypted conflict recovery, and timeout/shutdown ownership.
 - `src/main/runtimeLog.ts`: serialized, redacted local runtime diagnostic JSONL writer with 1 MiB current-file rotation.
+- `src/main/sentry.ts`: pre-ready Electron main-process Sentry initialization, privacy-minimal integration selection, renderer IPC transport ownership, and bounded shutdown flush.
 - `src/main/portForwardManager.ts`: service-owned local port forwarding with active-socket ownership, failed-listen cleanup, and cancellation-fenced in-flight starts for bounded shutdown.
 - `src/main/tunnelManager.ts`: forwarding-rule runtime and reconnect behavior.
 - `src/main/quitCoordinator.ts`: single-flight normal/signal/update quit intent merging with an eight-second cleanup deadline before the final Electron or installer action; main-process final actions have a short forced-exit fallback after graceful cleanup.
@@ -93,12 +94,14 @@ It also supports a local Mihomo proxy runtime backed by a Clash-format subscript
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers.
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering.
 - `src/renderer/status.ts`: renderer status formatting and action-state helpers.
+- `src/renderer/sentry.ts`: early renderer error capture through the official Electron renderer SDK with safe static scopes and no direct DSN or credential access.
 - `tailwind.config.cjs`: Tailwind content/theme configuration with preflight disabled to avoid global reset drift.
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper.
-- `scripts/copy-main-runtime.cjs`: captures the shared Rich Text model's CommonJS main-process runtime product before the renderer target is built.
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, CodeMirror, the recursively resolved Tiptap browser-ESM dependency graph, and the renderer ESM shared Rich Text product while restoring the main CommonJS counterpart.
+- `scripts/copy-main-runtime.cjs`: captures the shared Rich Text and Sentry-privacy CommonJS main-process runtime products before the renderer target is built.
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, CodeMirror, recursively resolved Tiptap and Sentry browser-ESM dependency graphs, and renderer ESM shared runtime products while restoring their main CommonJS counterparts.
 - `src/shared/noteRichText.ts`: bounded canonical Tiptap JSON, safe link/node/mark normalization, table-span/rectangular-geometry validation, readable-text extraction, and private S3-image-reference validation compiled as separate CommonJS main-process and ESM renderer products.
 - `src/shared/types.ts`: shared IPC/data contracts.
+- `src/shared/sentryPrivacy.ts`: shared Sentry data-collection shutdown policy and strict event allowlist that retains only safe error identity, static scope/process tags, and app-relative stack locations.
 - `tests/*.test.js`: Node built-in tests against compiled `dist` output.
 
 ## Runtime Model
@@ -261,6 +264,8 @@ Logs:
 - Renderer runtime failures should be surfaced through page toasts instead of failing silently.
 - Main process must log top-level `uncaughtException`, `unhandledRejection`, renderer-process exits, and IPC broadcast failures.
 - Runtime diagnostic logging must be best-effort and must never interrupt lifecycle handling. Redact sensitive error/context material before local persistence.
+- Initialize `@sentry/electron/main` synchronously before Electron `ready` and initialize `@sentry/electron/renderer` before renderer application modules read the DOM. Sentry is error-only: disable minidumps, screenshots, sessions, breadcrumbs, network/console/context collection, local variables/source context, logs, metrics, tracing, profiling, attachments, and client reports. Renderer events travel through the official Electron IPC transport and the main process owns the DSN and bounded final flush.
+- Every Sentry event must pass the shared strict allowlist. Retain only a safe generated error value, validated exception type, static process/scope tags, release/environment, and app-relative stack filenames/functions/line numbers. Never send Notes names/content, DOM text, IPC payloads, runtime-log context, Host/Kubernetes resource names, Secret values, S3/SSH/Kubernetes/LLM/Trilium endpoints or credentials, URLs/query/header/body/cookies, home paths, console arguments, screenshots, minidumps, or attachments.
 - S3 AK/SK, Sync Encryption Key, the optional LLM Token, and a transient Trilium ETAPI Token may enter renderer state only through their designated password inputs and narrow IPCs. Persisted S3/LLM secrets remain protected by `safeStorage`, and ordinary reads expose only presence. Keep hydrated values masked except for the one eye-selected field, and re-mask them on Save, Sync, or dialog close. Never persist a Trilium Token or importer Endpoint configuration, and never include either input in settings, runtime logs, diagnostics, or error messages; imported Note content is ordinary shared content and may itself contain Trilium URLs. Neither plaintext nor protected secret material may enter v4 shared payloads; the Sync-Key identity is only a non-secret linkage digest. Durable shared app data may leave the machine only inside authenticated encrypted v4 manifest/Note/Note-tree objects; the plaintext v4 head contains only integrity/linkage metadata. LLM settings and responses are never shared data.
 - Kubeconfig bytes, absolute source paths, stable-ID source mappings, tokens, client certificates/keys, client transport/VNC handles, and terminal/port-forward/VNC credentials stay in the main process and never cross renderer IPC or persist to disk. Terminal output may be transiently relayed but must never be persisted to main-process state, disk, settings, or logs; retained xterm views and the bounded pre-bind bridge are renderer-memory-only.
 - Kubernetes Secret `data`/`stringData` must be absent from list/cache/diagnostic/settings data. Decode `secretKeyRef` and `envFrom.secretRef` only through a narrow request in the main process for the active drawer; keep its result bounded and locally searchable, clear it when that drawer closes or changes, and never cache, persist to settings, log, diagnose, or write it to disk.
@@ -270,6 +275,7 @@ Logs:
 ## Testing
 
 - Run `pnpm test` after behavioral or architecture changes.
+- A local, git-ignored `.secrets` file may provide `SENTRY_AUTH_TOKEN` for read-only Sentry API diagnostics. Load it only into the current process, never print it, commit it, send it to the renderer, or include it in logs, diagnostics, tests, screenshots, or Sentry events.
 - `pnpm test` must build first, then run `node --test tests/*.test.js`.
 - Add `node:test` coverage for extracted pure logic, runtime orchestration helpers, import/export behavior, and command-building logic.
 - Kubernetes changes need coverage for safe kubeconfig classification, query/cache deduplication, 200-item paging, virtual scrolling, Watch cleanup/410 recovery, logs/terminals/forwards, strict KubeVirt VNC identity/bridge cleanup, Secret non-persistence, local RBAC failure, and renderer-safe IPC.

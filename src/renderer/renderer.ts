@@ -1,3 +1,4 @@
+import { captureRendererException } from './sentry.js';
 import type {
   AppMemoryUsage,
   ConfigTransferResult,
@@ -157,8 +158,14 @@ function logRendererError(scope: string, error: unknown, context?: Record<string
   }
 }
 
-function reportRendererError(scope: string, error: unknown, fallbackMessage?: string): void {
+function reportRendererError(
+  scope: string,
+  error: unknown,
+  fallbackMessage?: string,
+  capture = true,
+): void {
   logRendererError(scope, error);
+  if (capture) captureRendererException(scope, error);
   setMessage(fallbackMessage ?? toErrorMessage(error), 'error');
 }
 
@@ -2399,10 +2406,10 @@ window.settingsApi.onPersistentDataReloaded((event) => {
 })();
 
 window.addEventListener('error', (event) => {
-  reportRendererError('window:error', event.error ?? event.message, 'Unexpected UI error.');
+  reportRendererError('window:error', event.error ?? event.message, 'Unexpected UI error.', false);
 });
 
 window.addEventListener('unhandledrejection', (event) => {
-  reportRendererError('window:unhandledrejection', event.reason, 'Unexpected async UI error.');
+  reportRendererError('window:unhandledrejection', event.reason, 'Unexpected async UI error.', false);
   event.preventDefault();
 });

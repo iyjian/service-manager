@@ -196,6 +196,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `ssh2` (SSH connection and remote command execution)
 - `asn1` (explicit dependency required by ssh2 stack in this project)
 - `@kubernetes/client-node` (main-process Kubernetes REST, Watch, log, exec, port-forward, and authenticated KubeVirt VNC transport)
+- `@sentry/electron` (privacy-minimal main/renderer JavaScript error reporting through Electron IPC)
 - `@xterm/xterm` and `@xterm/addon-fit` (Kubernetes bottom workspace)
 - CodeMirror 6 (local browser-ESM snippet editor and language parsers copied into `dist/renderer/vendor` during the renderer asset step)
 - Tiptap (local Rich Text editor and recursively copied browser-ESM dependency graph)
@@ -206,6 +207,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 
 - `src/main/main.ts`: Electron app/window/menu wiring and IPC orchestration
 - `src/main/preload.ts`: secure renderer bridge
+- `src/main/sentry.ts`: pre-ready main-process Sentry initialization and bounded shutdown flush
 - `src/main/validation.ts`: host/forward/service draft validation and runtime-field preservation
 - `src/main/configTransfer.ts`: config import/export parsing, counting, and imported-ID normalization
 - `src/main/runtimeRegistry.ts`: in-memory service/forward runtime state and `HostView` assembly
@@ -267,12 +269,14 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - `src/renderer/styles.css`: base-only renderer CSS for local fonts, CSS variables, browser defaults, and ANSI log helpers
 - `src/renderer/html.ts`: dynamic HTML escaping and ANSI-to-HTML rendering helpers
 - `src/renderer/status.ts`: shared renderer status formatting and action-state helpers
+- `src/renderer/sentry.ts`: early renderer exception capture through the official Electron renderer SDK
 - `tailwind.config.cjs`: Tailwind content/theme configuration; preflight is disabled to avoid global reset drift
 - `scripts/build-tailwind.cjs`: Tailwind CSS build wrapper
-- `scripts/copy-main-runtime.cjs`: preserves the shared Rich Text model as a CommonJS main-process runtime artifact before renderer compilation
-- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, CodeMirror, the recursively resolved Tiptap browser-ESM dependency graph, and the renderer ESM build of the shared Rich Text model while restoring its main-process CommonJS counterpart
+- `scripts/copy-main-runtime.cjs`: preserves shared Rich Text and Sentry-privacy CommonJS main-process runtime artifacts before renderer compilation
+- `scripts/copy-renderer.cjs`: renderer static asset copy helper, including local xterm, `js-yaml`, CodeMirror, recursively resolved Tiptap and Sentry browser-ESM dependency graphs, and renderer ESM builds of shared runtime products while restoring their main-process CommonJS counterparts
 - `src/shared/noteRichText.ts`: bounded canonical Tiptap JSON, table-span/rectangular-geometry, and S3-image-reference validation shared through separate CommonJS main-process and ESM renderer build products
 - `src/shared/types.ts`: shared type contracts
+- `src/shared/sentryPrivacy.ts`: strict shared telemetry allowlist and disabled data-collection policy
 - `tests/*.test.js`: Node built-in test runner coverage for extracted main-process pure/runtime helpers
 - `assets/source.png` + `assets/icon.*`: app icon source and generated icons (rounded white background) used by runtime/build
 - `dist/*`: compiled output (generated)
@@ -395,6 +399,12 @@ loginctl show-user "$USER" -p Linger --value
 For later troubleshooting of intermittent SSH or `systemd` service failures, the app records structured local diagnostics in Electron's user-data directory at `logs/runtime.jsonl` (that is, `<userData>/logs/runtime.jsonl`). When the active file would exceed 1 MiB, it is rotated to `runtime.previous.jsonl`; only the current file and one previous file are retained.
 
 These diagnostics are deliberately narrow: they capture app/runtime and `systemd` preflight failure scope, category, attempt, timing, and other safe context needed to investigate a later failure. Sensitive material—including passwords, passphrases, private keys, tokens, authorization/cookie data, subscription URLs, and command text—is redacted or omitted. This local diagnostic stream is not a replacement for the service's `journalctl --user` logs.
+
+## Sentry Error Reporting
+
+Service Manager initializes the official Electron Sentry SDK before Electron is ready and initializes its renderer SDK before the renderer application. JavaScript exceptions from both processes are delivered through Sentry's Electron IPC transport; the main process owns the project DSN and performs a short best-effort flush during orderly shutdown.
+
+Reporting is deliberately error-only and uses a strict allowlist. Events retain a generated safe error title, validated exception type, static process/scope tags, release/environment, and app-relative stack filenames/functions/line numbers. Minidumps, screenshots, sessions, breadcrumbs, console/network/DOM context, local variables, source context, logs, metrics, traces, profiles, attachments, client reports, URLs, headers, bodies, cookies, IPC payloads, and arbitrary error text are not sent. In particular, Notes content and names, Host/Kubernetes resource identifiers, decoded Kubernetes Secrets, endpoints, credentials, home paths, and runtime-log context are excluded.
 
 Remote service preflight reports differentiated failures for SSH timeout/connection errors, missing required systemd tools, unavailable user-manager D-Bus sessions, other tooling or user-manager check failures, and lingering failures. A disabled linger setting continues to provide the `sudo loginctl enable-linger <username>` setup guidance.
 
