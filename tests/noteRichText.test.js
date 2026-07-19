@@ -240,6 +240,8 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
         width: { default: null },
         height: { default: null },
         alt: { default: null },
+        displayWidth: { default: null },
+        alignment: { default: null },
       };
     },
   });
@@ -262,7 +264,7 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
       }],
     }, {
       type: 's3Image',
-      attrs: imageReference(),
+      attrs: { ...imageReference(), displayWidth: 360, alignment: 'center' },
     }],
   });
 
@@ -319,11 +321,15 @@ test('s3Image nodes retain only strict non-URL S3 asset references and searchabl
     () => parseNoteImageReference({ ...reference, displayWidth: 320 }),
     /image reference contains an unsupported field/,
   );
+  assert.throws(
+    () => parseNoteImageReference({ ...reference, alignment: 'center' }),
+    /image reference contains an unsupported field/,
+  );
 });
 
-test('s3Image node attributes canonicalize an independent bounded display width', () => {
+test('s3Image node attributes canonicalize bounded display width and alignment independently', () => {
   const reference = imageReference();
-  const attributes = { ...reference, displayWidth: 360 };
+  const attributes = { ...reference, displayWidth: 360, alignment: 'center' };
   assert.deepEqual(parseNoteImageNodeAttributes(attributes), attributes);
 
   const normalized = normalizeRichTextContent({
@@ -337,6 +343,16 @@ test('s3Image node attributes canonicalize an independent bounded display width'
   assert.equal(extractRichTextPlainText(normalized), reference.alt);
 
   assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, displayWidth: null }), reference);
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, alignment: null }), reference);
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, alignment: 'left' }), reference);
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, alignment: 'center' }), {
+    ...reference,
+    alignment: 'center',
+  });
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, alignment: 'right' }), {
+    ...reference,
+    alignment: 'right',
+  });
   assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, displayWidth: 48 }), {
     ...reference,
     displayWidth: 48,
@@ -366,6 +382,12 @@ test('s3Image node attributes canonicalize an independent bounded display width'
     () => parseNoteImageNodeAttributes({ ...reference, displayWidth: 320, src: 'blob:renderer-only' }),
     /image attributes contains an unsupported field/,
   );
+  for (const alignment of ['', 'Left', 'centre', ' left ', 1, false, {}]) {
+    assert.throws(
+      () => parseNoteImageNodeAttributes({ ...reference, alignment }),
+      /image alignment is invalid/,
+    );
+  }
 });
 
 test('rich text allows only absolute http/https links with canonical safe attributes', () => {

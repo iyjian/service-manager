@@ -1,6 +1,16 @@
-import type { NoteImageMimeType, NoteImageNodeAttributes, NoteImageReference } from './types';
+import type {
+  NoteImageAlignment,
+  NoteImageMimeType,
+  NoteImageNodeAttributes,
+  NoteImageReference,
+} from './types';
 
-export type { NoteImageMimeType, NoteImageNodeAttributes, NoteImageReference } from './types';
+export type {
+  NoteImageAlignment,
+  NoteImageMimeType,
+  NoteImageNodeAttributes,
+  NoteImageReference,
+} from './types';
 
 export const RICH_TEXT_LIMITS = Object.freeze({
   documentCharacters: 1_048_576,
@@ -216,20 +226,32 @@ export function parseNoteImageReference(value: unknown): NoteImageReference {
  */
 export function parseNoteImageNodeAttributes(value: unknown): NoteImageNodeAttributes {
   if (!isRecord(value)) invalid('The rich text image attributes are invalid.');
-  assertAllowedKeys(value, new Set([...NOTE_IMAGE_REFERENCE_KEYS, 'displayWidth']), 'The rich text image attributes');
+  assertAllowedKeys(
+    value,
+    new Set([...NOTE_IMAGE_REFERENCE_KEYS, 'displayWidth', 'alignment']),
+    'The rich text image attributes',
+  );
   const referenceValue: Record<string, unknown> = {};
   for (const key of NOTE_IMAGE_REFERENCE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(value, key)) referenceValue[key] = value[key];
   }
   const reference = parseNoteImageReference(referenceValue);
-  if (value.displayWidth === undefined || value.displayWidth === null) return reference;
-  const displayWidth = boundedInteger(
-    value.displayWidth,
-    48,
-    RICH_TEXT_LIMITS.imageDimension,
-    'The rich text image display width',
-  );
-  return { ...reference, displayWidth };
+  const attributes: NoteImageNodeAttributes = { ...reference };
+  if (value.displayWidth !== undefined && value.displayWidth !== null) {
+    attributes.displayWidth = boundedInteger(
+      value.displayWidth,
+      48,
+      RICH_TEXT_LIMITS.imageDimension,
+      'The rich text image display width',
+    );
+  }
+  if (value.alignment !== undefined && value.alignment !== null && value.alignment !== 'left') {
+    if (value.alignment !== 'center' && value.alignment !== 'right') {
+      invalid('The rich text image alignment is invalid.');
+    }
+    attributes.alignment = value.alignment as NoteImageAlignment;
+  }
+  return attributes;
 }
 
 function normalizeSafeLink(value: unknown): string {

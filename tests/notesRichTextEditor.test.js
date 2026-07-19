@@ -16,7 +16,7 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
   assert.match(source, /import StarterKit from '@tiptap\/starter-kit'/);
   assert.match(source, /return Image\.extend\(\{\s*name: 's3Image'/);
 
-  const imageExtensionStart = source.indexOf("function createS3ImageExtension(onError: (message: string) => void)");
+  const imageExtensionStart = source.indexOf('function createS3ImageExtension(');
   assert.notEqual(imageExtensionStart, -1);
   const imageExtension = source.slice(imageExtensionStart);
   const attributeStart = source.indexOf('    addAttributes() {', imageExtensionStart);
@@ -37,6 +37,7 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
     'height',
     'alt',
     'displayWidth',
+    'alignment',
   ]);
   assert.doesNotMatch(attributes, /\bsrc\b|\btitle\b/);
 
@@ -58,7 +59,7 @@ test('S3 image NodeView owns Blob URLs, strips layout metadata from loads, and e
   const nodeView = source.slice(nodeViewStart, nodeViewEnd);
 
   assert.match(nodeView, /parseNoteImageNodeAttributes\(node\.attrs\)/);
-  assert.match(nodeView, /const \{ displayWidth: _displayWidth, \.\.\.assetReference \} = attributes/);
+  assert.match(nodeView, /displayWidth: _displayWidth,[\s\S]*?alignment: _alignment,[\s\S]*?\.\.\.assetReference/);
   assert.match(nodeView, /parseNoteImageReference\(assetReference\)/);
   assert.match(nodeView, /await loadNoteImage\(reference\)/);
   assert.match(nodeView, /URL\.createObjectURL\(new Blob\(\[imageBytes\]/);
@@ -257,6 +258,7 @@ test('S3 image NodeView provides selected resize handles and commits only displa
   assert.match(nodeView, /aria-label', 'Resize image from left'/);
   assert.match(nodeView, /aria-label', 'Resize image from right'/);
   assert.match(nodeView, /attributes\.displayWidth \?\? attributes\.width/);
+  assert.match(nodeView, /dom\.dataset\.alignment = attributes\.alignment \?\? 'left'/);
   assert.match(nodeView, /calculateRichTextImageDisplayWidth\(/);
   assert.match(nodeView, /window\.addEventListener\('pointermove', handlePointerMove, true\)/);
   assert.match(nodeView, /window\.addEventListener\('pointerup', handlePointerUp, true\)/);
@@ -268,6 +270,32 @@ test('S3 image NodeView provides selected resize handles and commits only displa
   assert.match(nodeView, /deselectNode\(\): void \{\s*finishResize\(false\)/);
   assert.match(nodeView, /stopEvent: \(event\) =>[\s\S]*?westHandle\.contains\(event\.target\)[\s\S]*?eastHandle\.contains\(event\.target\)/);
   assert.match(nodeView, /destroy\(\): void \{[\s\S]*?finishResize\(false\)[\s\S]*?removeEventListener\('pointerdown', beginResize\)/);
+});
+
+test('selected S3 images expose a single icon-only alignment bubble menu', async () => {
+  const source = await readEditorSource();
+  const menuStart = source.indexOf('class NotesRichTextImageBubbleMenu');
+  const menuEnd = source.indexOf('function createS3ImageNodeView(', menuStart);
+  assert.ok(menuStart >= 0 && menuEnd > menuStart);
+  const menu = source.slice(menuStart, menuEnd);
+
+  assert.match(source, /const NOTE_IMAGE_ALIGNMENTS:[^=]+= \['left', 'center', 'right'\]/);
+  assert.match(menu, /className = 'notes-richtext-image-toolbar hidden'/);
+  assert.match(menu, /setAttribute\('role', 'toolbar'\)/);
+  assert.match(menu, /setAttribute\('aria-label', 'Image alignment'\)/);
+  assert.match(menu, /button\.append\(createStrokeIcon\(NOTE_IMAGE_ALIGNMENT_ICONS\[alignment\]\)\)/);
+  assert.match(menu, /button\.setAttribute\('aria-pressed', String\(active\)\)/);
+  assert.match(menu, /node\?\.type\.name !== 's3Image'/);
+  assert.match(menu, /this\.editor\.view\.nodeDOM\(selection\.from\)/);
+  assert.match(menu, /if \(alignment === 'left'\) delete nextAttributes\.alignment/);
+  assert.match(menu, /else nextAttributes\.alignment = alignment/);
+  assert.match(menu, /setNodeMarkup\(selected\.position, undefined, nextAttributes\)/);
+  assert.match(menu, /setNodeSelection\(selected\.position\)/);
+  assert.match(menu, /handleMouseDown[\s\S]*?event\.preventDefault\(\)/);
+  assert.match(menu, /imageBounds\.top - overlayBounds\.top - toolbarBounds\.height/);
+  assert.match(menu, /if \(top < inset\) top = imageBounds\.bottom - overlayBounds\.top \+ inset/);
+  assert.match(source, /this\.imageBubbleMenu = new NotesRichTextImageBubbleMenu\(this\.editor, this\.overlayRoot\)/);
+  assert.match(source, /this\.imageBubbleMenu\.destroy\(\)/);
 });
 
 test('rich text routes pasted and dropped image files through the existing S3 upload flow', async () => {

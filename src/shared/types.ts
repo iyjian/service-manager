@@ -697,6 +697,7 @@ export interface NoteDraftRecoveryResult {
 }
 
 export type NoteImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
+export type NoteImageAlignment = 'left' | 'center' | 'right';
 
 export interface NoteImageReference {
   objectId: string;
@@ -713,6 +714,7 @@ export interface NoteImageReference {
 /** Layout attributes belong to the encrypted Note body, not the immutable S3 asset reference. */
 export interface NoteImageNodeAttributes extends NoteImageReference {
   displayWidth?: number;
+  alignment?: NoteImageAlignment;
 }
 
 export interface NoteImageUploadInput {

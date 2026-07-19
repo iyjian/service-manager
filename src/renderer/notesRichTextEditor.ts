@@ -17,6 +17,7 @@ import {
   parseNoteImageReference,
   parseRichTextContent,
   RICH_TEXT_LIMITS,
+  type NoteImageAlignment,
   type NoteImageNodeAttributes,
   type NoteImageReference,
 } from './noteRichText.js';
@@ -153,6 +154,12 @@ const RICH_TEXT_HIGHLIGHTS: readonly RichTextColorItem[] = [
 ] as const;
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+const NOTE_IMAGE_ALIGNMENTS: readonly NoteImageAlignment[] = ['left', 'center', 'right'];
+const NOTE_IMAGE_ALIGNMENT_ICONS: Readonly<Record<NoteImageAlignment, readonly string[]>> = {
+  left: ['M2.5 3.25h11', 'M2.5 6.75h7', 'M2.5 10.25h11', 'M2.5 13.75h7'],
+  center: ['M2.5 3.25h11', 'M4.5 6.75h7', 'M2.5 10.25h11', 'M4.5 13.75h7'],
+  right: ['M2.5 3.25h11', 'M6.5 6.75h7', 'M2.5 10.25h11', 'M6.5 13.75h7'],
+};
 const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3'>, readonly string[]>> = {
   text: ['M4 4h8', 'M8 4v8', 'M6 12h4'],
   todo: ['M2.5 4.25 4 5.75l2.25-3', 'M7.75 4.5h5.75', 'M2.5 10.25 4 11.75l2.25-3', 'M7.75 10.5h5.75'],
@@ -1036,11 +1043,142 @@ class NotesRichTextBubbleMenu {
   }
 }
 
+class NotesRichTextImageBubbleMenu {
+  private readonly element = document.createElement('div');
+
+  public constructor(
+    private readonly editor: Editor,
+    private readonly overlayRoot: HTMLElement,
+  ) {
+    this.element.className = 'notes-richtext-image-toolbar hidden';
+    this.element.setAttribute('role', 'toolbar');
+    this.element.setAttribute('aria-label', 'Image alignment');
+    for (const alignment of NOTE_IMAGE_ALIGNMENTS) {
+      const button = document.createElement('button');
+      const label = `Align image ${alignment}`;
+      button.type = 'button';
+      button.className = 'notes-richtext-image-align-button';
+      button.dataset.richtextImageAlignment = alignment;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', 'false');
+      button.title = label;
+      button.append(createStrokeIcon(NOTE_IMAGE_ALIGNMENT_ICONS[alignment]));
+      this.element.append(button);
+    }
+    this.element.addEventListener('mousedown', this.handleMouseDown);
+    this.element.addEventListener('click', this.handleClick);
+    this.overlayRoot.append(this.element);
+  }
+
+  public sync(): void {
+    if (this.editor.isDestroyed || !this.editor.isEditable) {
+      this.hide();
+      return;
+    }
+    const selected = this.selectedImage();
+    if (!selected) {
+      this.hide();
+      return;
+    }
+    for (const button of Array.from(
+      this.element.querySelectorAll<HTMLButtonElement>('[data-richtext-image-alignment]'),
+    )) {
+      const active = button.dataset.richtextImageAlignment === selected.alignment;
+      button.dataset.active = String(active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+    this.element.classList.remove('hidden');
+    this.position(selected.dom);
+  }
+
+  public destroy(): void {
+    this.element.removeEventListener('mousedown', this.handleMouseDown);
+    this.element.removeEventListener('click', this.handleClick);
+    this.element.remove();
+  }
+
+  private selectedImage(): {
+    alignment: NoteImageAlignment;
+    dom: HTMLElement;
+    node: NodeViewRendererProps['node'];
+    position: number;
+  } | undefined {
+    const selection = this.editor.state.selection;
+    const node = (selection as typeof selection & { node?: NodeViewRendererProps['node'] }).node;
+    if (node?.type.name !== 's3Image') return undefined;
+    const dom = this.editor.view.nodeDOM(selection.from);
+    if (!(dom instanceof HTMLElement)) return undefined;
+    try {
+      const attributes = parseNoteImageNodeAttributes(node.attrs);
+      return {
+        alignment: attributes.alignment ?? 'left',
+        dom,
+        node,
+        position: selection.from,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private readonly handleMouseDown = (event: MouseEvent): void => {
+    event.preventDefault();
+  };
+
+  private readonly handleClick = (event: MouseEvent): void => {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const button = source.closest<HTMLElement>('[data-richtext-image-alignment]');
+    const alignment = button?.dataset.richtextImageAlignment;
+    if (alignment !== 'left' && alignment !== 'center' && alignment !== 'right') return;
+    event.preventDefault();
+    this.applyAlignment(alignment);
+  };
+
+  private applyAlignment(alignment: NoteImageAlignment): void {
+    const selected = this.selectedImage();
+    if (!selected) return;
+    const nextAttributes: Record<string, unknown> = { ...selected.node.attrs };
+    if (alignment === 'left') delete nextAttributes.alignment;
+    else nextAttributes.alignment = alignment;
+    this.editor.view.dispatch(
+      this.editor.state.tr.setNodeMarkup(selected.position, undefined, nextAttributes),
+    );
+    this.editor.commands.setNodeSelection(selected.position);
+    this.sync();
+  }
+
+  private position(image: HTMLElement): void {
+    const overlayBounds = this.overlayRoot.getBoundingClientRect();
+    const imageBounds = image.getBoundingClientRect();
+    if (imageBounds.bottom <= overlayBounds.top || imageBounds.top >= overlayBounds.bottom) {
+      this.hide();
+      return;
+    }
+    const toolbarBounds = this.element.getBoundingClientRect();
+    const inset = 8;
+    const preferredLeft = imageBounds.left - overlayBounds.left
+      + (imageBounds.width - toolbarBounds.width) / 2;
+    const maximumLeft = Math.max(inset, overlayBounds.width - toolbarBounds.width - inset);
+    const left = Math.max(inset, Math.min(preferredLeft, maximumLeft));
+    let top = imageBounds.top - overlayBounds.top - toolbarBounds.height - inset;
+    if (top < inset) top = imageBounds.bottom - overlayBounds.top + inset;
+    const maximumTop = Math.max(inset, overlayBounds.height - toolbarBounds.height - inset);
+    this.element.style.left = `${left}px`;
+    this.element.style.top = `${Math.max(inset, Math.min(top, maximumTop))}px`;
+  }
+
+  private hide(): void {
+    this.element.classList.add('hidden');
+  }
+}
+
 function createS3ImageNodeView(
   initialNode: NodeViewRendererProps['node'],
   editor: Editor,
   getPos: NodeViewRendererProps['getPos'],
   onError: (message: string) => void,
+  onLayoutChange: () => void,
 ): {
   dom: HTMLElement;
   update: (node: NodeViewRendererProps['node']) => boolean;
@@ -1098,12 +1236,15 @@ function createS3ImageNodeView(
     status.setAttribute('role', 'status');
     status.textContent = text;
     frame.replaceChildren(status);
+    onLayoutChange();
   };
 
   const applyLayout = (attributes: NoteImageNodeAttributes): void => {
     const displayWidth = attributes.displayWidth ?? attributes.width;
     dom.style.width = `${displayWidth}px`;
     dom.dataset.displayWidth = String(displayWidth);
+    dom.dataset.alignment = attributes.alignment ?? 'left';
+    onLayoutChange();
   };
 
   const availableWidth = (): number => {
@@ -1121,7 +1262,11 @@ function createS3ImageNodeView(
     let reference: NoteImageReference;
     try {
       attributes = parseNoteImageNodeAttributes(node.attrs);
-      const { displayWidth: _displayWidth, ...assetReference } = attributes;
+      const {
+        displayWidth: _displayWidth,
+        alignment: _alignment,
+        ...assetReference
+      } = attributes;
       reference = parseNoteImageReference(assetReference);
     } catch {
       if (destroyed) return;
@@ -1194,6 +1339,7 @@ function createS3ImageNodeView(
       if (!destroyed && generation === loadGeneration) {
         delete dom.dataset.state;
         frame.replaceChildren(image);
+        onLayoutChange();
       }
     }, { once: true });
     image.addEventListener('error', () => {
@@ -1247,6 +1393,7 @@ function createS3ImageNodeView(
     );
     dom.style.width = `${resize.previewWidth}px`;
     dom.dataset.displayWidth = String(resize.previewWidth);
+    onLayoutChange();
   };
 
   const handlePointerUp = (event: PointerEvent): void => {
@@ -1329,7 +1476,10 @@ function createS3ImageNodeView(
   };
 }
 
-function createS3ImageExtension(onError: (message: string) => void) {
+function createS3ImageExtension(
+  onError: (message: string) => void,
+  onLayoutChange: () => void,
+) {
   return Image.extend({
     name: 's3Image',
     addAttributes() {
@@ -1344,6 +1494,7 @@ function createS3ImageExtension(onError: (message: string) => void) {
         height: { default: null },
         alt: { default: null },
         displayWidth: { default: null },
+        alignment: { default: null },
       };
     },
     // Rich text is loaded only from validated JSON. In particular, pasted or
@@ -1372,7 +1523,13 @@ function createS3ImageExtension(onError: (message: string) => void) {
       return ['span', { class: 'notes-richtext-image-serialized', 'aria-label': 'Embedded image' }];
     },
     addNodeView() {
-      return ({ node, editor, getPos }) => createS3ImageNodeView(node, editor, getPos, onError);
+      return ({ node, editor, getPos }) => createS3ImageNodeView(
+        node,
+        editor,
+        getPos,
+        onError,
+        onLayoutChange,
+      );
     },
   });
 }
@@ -1385,6 +1542,7 @@ export class NotesRichTextEditor {
   private readonly onError: (message: string) => void;
   private readonly slashMenu!: NotesRichTextSlashMenu;
   private readonly bubbleMenu!: NotesRichTextBubbleMenu;
+  private readonly imageBubbleMenu!: NotesRichTextImageBubbleMenu;
   private readonly host: HTMLElement;
   private readonly overlayRoot: HTMLElement;
   private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT;
@@ -1424,7 +1582,7 @@ export class NotesRichTextEditor {
       createMathExtension(),
       createTaskListExtension(),
       createTaskItemExtension(),
-      createS3ImageExtension(this.onError)],
+      createS3ImageExtension(this.onError, () => this.imageBubbleMenu?.sync())],
       injectCSS: false,
       editorProps: {
         attributes: {
@@ -1461,22 +1619,26 @@ export class NotesRichTextEditor {
         this.emitUpdate();
         this.updateEmptyState();
         this.bubbleMenu?.sync();
+        this.imageBubbleMenu?.sync();
         this.slashMenu?.sync();
       },
       onSelectionUpdate: () => {
         this.updateToolbarState();
         this.bubbleMenu?.sync();
+        this.imageBubbleMenu?.sync();
         this.slashMenu?.sync();
       },
       onTransaction: () => {
         this.updateToolbarState();
         this.updateEmptyState();
         this.bubbleMenu?.sync();
+        this.imageBubbleMenu?.sync();
         this.slashMenu?.sync();
       },
       onFocus: () => {
         this.updateToolbarState();
         this.bubbleMenu?.sync();
+        this.imageBubbleMenu?.sync();
         this.slashMenu?.sync();
       },
       onBlur: () => {
@@ -1484,6 +1646,7 @@ export class NotesRichTextEditor {
           if (this.editor.isDestroyed) return;
           this.updateToolbarState();
           this.bubbleMenu?.sync();
+          this.imageBubbleMenu?.sync();
           this.slashMenu?.sync();
         });
       },
@@ -1495,6 +1658,7 @@ export class NotesRichTextEditor {
       this.overlayRoot,
       this.onError,
     );
+    this.imageBubbleMenu = new NotesRichTextImageBubbleMenu(this.editor, this.overlayRoot);
     this.toolbar.addEventListener('click', this.handleToolbarClick);
     this.host.addEventListener('scroll', this.handleViewportChange, { passive: true });
     window.addEventListener('resize', this.handleViewportChange);
@@ -1516,6 +1680,7 @@ export class NotesRichTextEditor {
       this.updateEmptyState();
       this.updateToolbarState();
       this.bubbleMenu.sync();
+      this.imageBubbleMenu.sync();
       this.slashMenu.sync();
     } catch (error) {
       safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be opened.');
@@ -1583,6 +1748,7 @@ export class NotesRichTextEditor {
     this.host.removeEventListener('scroll', this.handleViewportChange);
     window.removeEventListener('resize', this.handleViewportChange);
     this.bubbleMenu.destroy();
+    this.imageBubbleMenu.destroy();
     this.slashMenu.destroy();
     this.editor.destroy();
   }
@@ -1600,6 +1766,7 @@ export class NotesRichTextEditor {
 
   private readonly handleViewportChange = (): void => {
     this.bubbleMenu.sync();
+    this.imageBubbleMenu.sync();
     this.slashMenu.sync();
   };
 
