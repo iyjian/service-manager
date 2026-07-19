@@ -1,6 +1,6 @@
-import type { NoteImageMimeType, NoteImageReference } from './types';
+import type { NoteImageMimeType, NoteImageNodeAttributes, NoteImageReference } from './types';
 
-export type { NoteImageMimeType, NoteImageReference } from './types';
+export type { NoteImageMimeType, NoteImageNodeAttributes, NoteImageReference } from './types';
 
 export const RICH_TEXT_LIMITS = Object.freeze({
   documentCharacters: 1_048_576,
@@ -12,6 +12,7 @@ export const RICH_TEXT_LIMITS = Object.freeze({
   linkCharacters: 2_048,
   linkTitleCharacters: 500,
   codeLanguageCharacters: 64,
+  mathCharacters: 2_048,
   imageAltCharacters: 500,
   imageBytes: 10 * 1024 * 1024,
   imageDimension: 8_192,
@@ -19,13 +20,13 @@ export const RICH_TEXT_LIMITS = Object.freeze({
 } as const);
 
 export interface RichTextMark {
-  type: 'bold' | 'italic' | 'strike' | 'underline' | 'code' | 'link';
+  type: 'bold' | 'italic' | 'strike' | 'underline' | 'code' | 'link' | 'textStyle' | 'highlight';
   attrs?: Record<string, string>;
 }
 
 export interface RichTextNode {
   type: string;
-  attrs?: Record<string, unknown> | NoteImageReference;
+  attrs?: Record<string, unknown> | NoteImageNodeAttributes;
   content?: RichTextNode[];
   marks?: RichTextMark[];
   text?: string;
@@ -51,6 +52,7 @@ const NODE_TYPES = new Set([
   'horizontalRule',
   'text',
   'hardBreak',
+  'math',
   's3Image',
 ]);
 const MARK_ORDER = new Map([
@@ -60,6 +62,8 @@ const MARK_ORDER = new Map([
   ['underline', 3],
   ['strike', 4],
   ['code', 5],
+  ['textStyle', 6],
+  ['highlight', 7],
 ]);
 const SIMPLE_MARKS = new Set(['bold', 'italic', 'strike', 'underline', 'code']);
 const BLOCK_TYPES = new Set([
@@ -73,7 +77,7 @@ const BLOCK_TYPES = new Set([
   'horizontalRule',
   's3Image',
 ]);
-const INLINE_TYPES = new Set(['text', 'hardBreak']);
+const INLINE_TYPES = new Set(['text', 'hardBreak', 'math']);
 const IMAGE_MIME_TYPES = new Set<NoteImageMimeType>([
   'image/png',
   'image/jpeg',
@@ -86,6 +90,37 @@ const OBJECT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const ASSET_KEY_PATTERN = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const CODE_LANGUAGE_PATTERN = /^[A-Za-z0-9_+.#-]{1,64}$/;
 const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:']);
+const NOTE_IMAGE_REFERENCE_KEYS = new Set([
+  'objectId',
+  'assetKey',
+  'ciphertextSha256',
+  'contentSha256',
+  'mimeType',
+  'byteLength',
+  'width',
+  'height',
+  'alt',
+]);
+const TEXT_STYLE_COLORS = new Set([
+  '#9333EA',
+  '#E00000',
+  '#EAB308',
+  '#2563EB',
+  '#008A00',
+  '#FFA500',
+  '#BA4081',
+  '#A8A29E',
+]);
+const HIGHLIGHT_COLORS = new Set([
+  '#F3E8FF',
+  '#FEE2E2',
+  '#FEF9C3',
+  '#DBEAFE',
+  '#DCFCE7',
+  '#FFEDD5',
+  '#FCE7F3',
+  '#E4E4E7',
+]);
 
 interface ValidationState {
   nodes: number;
@@ -129,17 +164,7 @@ function boundedInteger(value: unknown, minimum: number, maximum: number, label:
 /** Validates and returns the canonical safe reference stored by an s3Image node. */
 export function parseNoteImageReference(value: unknown): NoteImageReference {
   if (!isRecord(value)) invalid('The rich text image reference is invalid.');
-  assertAllowedKeys(value, new Set([
-    'objectId',
-    'assetKey',
-    'ciphertextSha256',
-    'contentSha256',
-    'mimeType',
-    'byteLength',
-    'width',
-    'height',
-    'alt',
-  ]), 'The rich text image reference');
+  assertAllowedKeys(value, NOTE_IMAGE_REFERENCE_KEYS, 'The rich text image reference');
 
   const objectId = requiredString(value.objectId, OBJECT_ID_PATTERN, 'The rich text image object identity');
   const assetKey = requiredString(value.assetKey, ASSET_KEY_PATTERN, 'The rich text image asset key');
@@ -183,6 +208,28 @@ export function parseNoteImageReference(value: unknown): NoteImageReference {
     height,
     ...(alt !== undefined ? { alt } : {}),
   };
+}
+
+/**
+ * Validates an image node while keeping its mutable display width outside the
+ * immutable S3 reference accepted by the main-process image IPC.
+ */
+export function parseNoteImageNodeAttributes(value: unknown): NoteImageNodeAttributes {
+  if (!isRecord(value)) invalid('The rich text image attributes are invalid.');
+  assertAllowedKeys(value, new Set([...NOTE_IMAGE_REFERENCE_KEYS, 'displayWidth']), 'The rich text image attributes');
+  const referenceValue: Record<string, unknown> = {};
+  for (const key of NOTE_IMAGE_REFERENCE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) referenceValue[key] = value[key];
+  }
+  const reference = parseNoteImageReference(referenceValue);
+  if (value.displayWidth === undefined || value.displayWidth === null) return reference;
+  const displayWidth = boundedInteger(
+    value.displayWidth,
+    48,
+    RICH_TEXT_LIMITS.imageDimension,
+    'The rich text image display width',
+  );
+  return { ...reference, displayWidth };
 }
 
 function normalizeSafeLink(value: unknown): string {
@@ -267,6 +314,19 @@ function normalizeLinkMark(value: Record<string, unknown>): RichTextMark {
   };
 }
 
+function normalizeColorMark(
+  value: Record<string, unknown>,
+  type: 'textStyle' | 'highlight',
+): RichTextMark {
+  if (!isRecord(value.attrs)) invalid(`The rich text ${type} attributes are invalid.`);
+  assertAllowedKeys(value.attrs, new Set(['color']), `The rich text ${type}`);
+  if (typeof value.attrs.color !== 'string') invalid(`The rich text ${type} color is invalid.`);
+  const color = value.attrs.color.toUpperCase();
+  const allowed = type === 'textStyle' ? TEXT_STYLE_COLORS : HIGHLIGHT_COLORS;
+  if (!allowed.has(color)) invalid(`The rich text ${type} color is invalid.`);
+  return { type, attrs: { color } };
+}
+
 function normalizeMarks(value: unknown): RichTextMark[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > RICH_TEXT_LIMITS.marksPerTextNode) {
@@ -281,6 +341,10 @@ function normalizeMarks(value: unknown): RichTextMark[] | undefined {
     types.add(candidate.type);
     if (candidate.type === 'link') {
       marks.push(normalizeLinkMark(candidate));
+      continue;
+    }
+    if (candidate.type === 'textStyle' || candidate.type === 'highlight') {
+      marks.push(normalizeColorMark(candidate, candidate.type));
       continue;
     }
     if (!SIMPLE_MARKS.has(candidate.type)) invalid('A rich text mark is not supported.');
@@ -375,9 +439,28 @@ function normalizeNode(
     return { type };
   }
 
+  if (type === 'math') {
+    assertAllowedKeys(value, new Set(['type', 'attrs']), 'A rich text math node');
+    if (!isRecord(value.attrs)) invalid('Rich text math attributes are invalid.');
+    assertAllowedKeys(value.attrs, new Set(['latex']), 'A rich text math node');
+    if (
+      typeof value.attrs.latex !== 'string'
+      || !value.attrs.latex
+      || value.attrs.latex.length > RICH_TEXT_LIMITS.mathCharacters
+      || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.attrs.latex)
+    ) {
+      invalid('The rich text math expression is invalid.');
+    }
+    state.textCharacters += value.attrs.latex.length;
+    if (state.textCharacters > RICH_TEXT_LIMITS.textCharacters) {
+      invalid('Rich text content contains too much text.');
+    }
+    return { type, attrs: { latex: value.attrs.latex } };
+  }
+
   if (type === 's3Image') {
     assertAllowedKeys(value, new Set(['type', 'attrs']), 'A rich text image node');
-    const attrs = parseNoteImageReference(value.attrs);
+    const attrs = parseNoteImageNodeAttributes(value.attrs);
     if (attrs.alt) {
       state.textCharacters += attrs.alt.length;
       if (state.textCharacters > RICH_TEXT_LIMITS.textCharacters) {
@@ -513,8 +596,12 @@ function appendPlainText(node: RichTextNode, chunks: string[]): void {
     chunks.push('\n');
     return;
   }
+  if (node.type === 'math') {
+    if (isRecord(node.attrs) && typeof node.attrs.latex === 'string') chunks.push(node.attrs.latex);
+    return;
+  }
   if (node.type === 's3Image') {
-    const attrs = parseNoteImageReference(node.attrs);
+    const attrs = parseNoteImageNodeAttributes(node.attrs);
     if (attrs.alt) chunks.push(attrs.alt);
     return;
   }

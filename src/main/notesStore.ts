@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { normalizeRichTextContent } from '../shared/noteRichText';
+import { EMPTY_RICH_TEXT_CONTENT, normalizeRichTextContent } from '../shared/noteRichText';
 import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
 
 export const NOTES_SCHEMA_VERSION = 1 as const;
@@ -346,8 +346,8 @@ export class NotesStore {
       const note: Note = {
         id,
         name: DEFAULT_NOTE_NAME,
-        content: '',
-        language: 'markdown',
+        content: EMPTY_RICH_TEXT_CONTENT,
+        language: 'richtext',
         tags: [],
         createdAt: timestamp,
         updatedAt: timestamp,

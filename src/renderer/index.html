@@ -325,8 +325,8 @@
             <div class="notes-editor-toolbar">
               <input id="note-name" class="input notes-name-input" type="text" maxlength="200" placeholder="Note name" aria-label="Note name" />
               <select id="note-language" class="input notes-language-select" aria-label="Language">
-                <option value="markdown">Markdown</option>
                 <option value="richtext">Rich Text</option>
+                <option value="markdown">Markdown</option>
                 <option value="bash">Bash</option>
                 <option value="javascript">JavaScript</option>
                 <option value="typescript">TypeScript</option>
@@ -353,15 +353,23 @@
                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 6 3 3 3-3"></path></svg>
                   </button>
                   <span class="notes-richtext-divider" aria-hidden="true"></span>
-                  <button type="button" class="notes-richtext-tool" data-richtext-link-trigger aria-label="Edit link" title="Edit link" aria-haspopup="dialog" aria-expanded="false">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.25 9.75 9.75 6.25"></path><path d="M5.15 11.95 3.8 13.3a2.2 2.2 0 0 1-3.1-3.1l2.4-2.4a2.2 2.2 0 0 1 3.1 0"></path><path d="m10.85 4.05 1.35-1.35a2.2 2.2 0 1 1 3.1 3.1l-2.4 2.4a2.2 2.2 0 0 1-3.1 0"></path></svg>
+                  <button type="button" class="notes-richtext-link-trigger" data-richtext-link-trigger aria-label="Edit link" title="Edit link" aria-haspopup="dialog" aria-expanded="false">
+                    <span class="notes-richtext-link-arrow" aria-hidden="true">↗</span>
+                    <span class="notes-richtext-link-label">Link</span>
                   </button>
                   <span class="notes-richtext-divider" aria-hidden="true"></span>
-                  <button type="button" class="notes-richtext-tool notes-richtext-tool-text" data-richtext-command="bold" aria-label="Bold" title="Bold"><strong>B</strong></button>
-                  <button type="button" class="notes-richtext-tool notes-richtext-tool-text" data-richtext-command="italic" aria-label="Italic" title="Italic"><em>I</em></button>
-                  <button type="button" class="notes-richtext-tool notes-richtext-tool-text" data-richtext-command="underline" aria-label="Underline" title="Underline"><span class="underline">U</span></button>
-                  <button type="button" class="notes-richtext-tool notes-richtext-tool-text" data-richtext-command="strike" aria-label="Strikethrough" title="Strikethrough"><span class="line-through">S</span></button>
-                  <button type="button" class="notes-richtext-tool notes-richtext-tool-text" data-richtext-command="code" aria-label="Inline code" title="Inline code"><span>&lt;/&gt;</span></button>
+                  <button type="button" class="notes-richtext-tool notes-richtext-math-tool" data-richtext-command="math" aria-label="Math" title="Math"><span aria-hidden="true">Σ</span></button>
+                  <span class="notes-richtext-divider" aria-hidden="true"></span>
+                  <button type="button" class="notes-richtext-tool" data-richtext-command="bold" aria-label="Bold" title="Bold"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 2.75h3.25a2.5 2.5 0 0 1 0 5H5z"></path><path d="M5 7.75h3.75a2.75 2.75 0 0 1 0 5.5H5z"></path></svg></button>
+                  <button type="button" class="notes-richtext-tool" data-richtext-command="italic" aria-label="Italic" title="Italic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3h4M4 13h4M9.5 3 6.5 13"></path></svg></button>
+                  <button type="button" class="notes-richtext-tool" data-richtext-command="underline" aria-label="Underline" title="Underline"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 2.75v4.5a4 4 0 0 0 8 0v-4.5M3 13.25h10"></path></svg></button>
+                  <button type="button" class="notes-richtext-tool" data-richtext-command="strike" aria-label="Strikethrough" title="Strikethrough"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M12 4.25c-.75-1-2-1.5-3.75-1.5-2 0-3.25.85-3.25 2.25 0 1.25 1.1 1.85 3 2.25M3 8h10M5 11.75c.8 1 2 1.5 3.75 1.5 2 0 3.25-.85 3.25-2.25 0-1.2-.95-1.8-2.75-2.25"></path></svg></button>
+                  <button type="button" class="notes-richtext-tool" data-richtext-command="code" aria-label="Inline code" title="Inline code"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5.25 4-3.5 4 3.5 4M10.75 4l3.5 4-3.5 4M9.5 2.75l-3 10.5"></path></svg></button>
+                  <span class="notes-richtext-divider" aria-hidden="true"></span>
+                  <button type="button" class="notes-richtext-color-trigger" data-richtext-color-trigger aria-label="Text color and background" title="Text color and background" aria-haspopup="dialog" aria-expanded="false">
+                    <span class="notes-richtext-color-preview" data-richtext-color-preview>A</span>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 6 3 3 3-3"></path></svg>
+                  </button>
                 </div>
                 <div id="note-richtext-content" class="notes-richtext-content"></div>
                 <input id="note-richtext-image-input" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" />

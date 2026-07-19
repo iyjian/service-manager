@@ -1,5 +1,6 @@
 import {
   Editor,
+  Mark,
   Node,
   posToDOMRect,
   type ChainedCommands,
@@ -12,11 +13,18 @@ import {
   extractRichTextPlainText,
   isAllowedRichTextLinkHref,
   normalizeRichTextContent,
+  parseNoteImageNodeAttributes,
   parseNoteImageReference,
   parseRichTextContent,
+  RICH_TEXT_LIMITS,
+  type NoteImageNodeAttributes,
   type NoteImageReference,
 } from './noteRichText.js';
 import { revealMenuItemScrollTop } from './notesRichTextMenuScroll.js';
+import {
+  calculateRichTextImageDisplayWidth,
+  RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
+} from './notesRichTextImageResize.js';
 
 export type RichTextToolbarCommand =
   | 'undo'
@@ -26,6 +34,7 @@ export type RichTextToolbarCommand =
   | 'underline'
   | 'strike'
   | 'code'
+  | 'math'
   | 'heading'
   | 'bulletList'
   | 'orderedList'
@@ -51,6 +60,7 @@ const TOOLBAR_COMMANDS = new Set<RichTextToolbarCommand>([
   'underline',
   'strike',
   'code',
+  'math',
   'heading',
   'bulletList',
   'orderedList',
@@ -63,6 +73,7 @@ const TOGGLE_COMMANDS = new Set<RichTextToolbarCommand>([
   'underline',
   'strike',
   'code',
+  'math',
   'heading',
   'bulletList',
   'orderedList',
@@ -102,14 +113,43 @@ interface RichTextBlockItem {
 
 const RICH_TEXT_BLOCK_ITEMS: readonly RichTextBlockItem[] = [
   { name: 'paragraph', label: 'Text', icon: 'text' },
-  { name: 'taskList', label: 'To-do List', icon: 'todo' },
   { name: 'heading1', label: 'Heading 1', icon: 'heading1' },
   { name: 'heading2', label: 'Heading 2', icon: 'heading2' },
   { name: 'heading3', label: 'Heading 3', icon: 'heading3' },
+  { name: 'taskList', label: 'To-do List', icon: 'todo' },
   { name: 'bulletList', label: 'Bullet List', icon: 'bulletList' },
   { name: 'orderedList', label: 'Numbered List', icon: 'numberedList' },
   { name: 'blockquote', label: 'Quote', icon: 'quote' },
   { name: 'codeBlock', label: 'Code', icon: 'code' },
+] as const;
+
+interface RichTextColorItem {
+  name: string;
+  color?: string;
+}
+
+const RICH_TEXT_COLORS: readonly RichTextColorItem[] = [
+  { name: 'Default' },
+  { name: 'Purple', color: '#9333EA' },
+  { name: 'Red', color: '#E00000' },
+  { name: 'Yellow', color: '#EAB308' },
+  { name: 'Blue', color: '#2563EB' },
+  { name: 'Green', color: '#008A00' },
+  { name: 'Orange', color: '#FFA500' },
+  { name: 'Pink', color: '#BA4081' },
+  { name: 'Gray', color: '#A8A29E' },
+] as const;
+
+const RICH_TEXT_HIGHLIGHTS: readonly RichTextColorItem[] = [
+  { name: 'Default' },
+  { name: 'Purple', color: '#F3E8FF' },
+  { name: 'Red', color: '#FEE2E2' },
+  { name: 'Yellow', color: '#FEF9C3' },
+  { name: 'Blue', color: '#DBEAFE' },
+  { name: 'Green', color: '#DCFCE7' },
+  { name: 'Orange', color: '#FFEDD5' },
+  { name: 'Pink', color: '#FCE7F3' },
+  { name: 'Gray', color: '#E4E4E7' },
 ] as const;
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
@@ -151,13 +191,39 @@ function createEditorIcon(name: EditorIconName): HTMLElement {
   return wrapper;
 }
 
+function createStrokeIcon(pathDataItems: readonly string[]): SVGSVGElement {
+  const icon = document.createElementNS(SVG_NAMESPACE, 'svg');
+  icon.setAttribute('viewBox', '0 0 16 16');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '1.5');
+  icon.setAttribute('stroke-linecap', 'round');
+  icon.setAttribute('stroke-linejoin', 'round');
+  icon.setAttribute('aria-hidden', 'true');
+  for (const pathData of pathDataItems) {
+    const path = document.createElementNS(SVG_NAMESPACE, 'path');
+    path.setAttribute('d', pathData);
+    icon.append(path);
+  }
+  return icon;
+}
+
 function firstImageFile(files: FileList | null | undefined): File | undefined {
   return Array.from(files ?? []).find((file) => file.type.startsWith('image/'));
 }
 
 function hasFormattableSelection(editor: Editor): boolean {
   const selection = editor.state.selection;
-  return !selection.empty && !(selection as typeof selection & { node?: unknown }).node;
+  if (selection.empty || (selection as typeof selection & { node?: unknown }).node) return false;
+  let hasFormattableContent = false;
+  editor.state.doc.nodesBetween(selection.from, selection.to, (node) => {
+    if ((node.isText && Boolean(node.text?.length)) || node.type.name === 'math') {
+      hasFormattableContent = true;
+      return false;
+    }
+    return !hasFormattableContent;
+  });
+  return hasFormattableContent;
 }
 
 function isToolbarCommand(value: unknown): value is RichTextToolbarCommand {
@@ -289,6 +355,80 @@ function createTaskItemExtension() {
           },
           ignoreMutation: (mutation) => mutation.type === 'attributes' && mutation.target === checkbox,
         };
+      };
+    },
+  });
+}
+
+function createTextStyleExtension() {
+  return Mark.create({
+    name: 'textStyle',
+    excludes: 'code',
+    addAttributes() {
+      return { color: { default: null } };
+    },
+    parseHTML() {
+      return [];
+    },
+    renderHTML({ mark }) {
+      const color = typeof mark.attrs.color === 'string' ? mark.attrs.color : '';
+      return ['span', { style: `color: ${color}` }, 0];
+    },
+  });
+}
+
+function createHighlightExtension() {
+  return Mark.create({
+    name: 'highlight',
+    excludes: 'code',
+    addAttributes() {
+      return { color: { default: null } };
+    },
+    parseHTML() {
+      return [];
+    },
+    renderHTML({ mark }) {
+      const color = typeof mark.attrs.color === 'string' ? mark.attrs.color : '';
+      return ['mark', { style: `background-color: ${color}` }, 0];
+    },
+  });
+}
+
+function createMathExtension() {
+  return Node.create({
+    name: 'math',
+    inline: true,
+    group: 'inline',
+    atom: true,
+    selectable: true,
+    marks: '',
+    addAttributes() {
+      return { latex: { default: '' } };
+    },
+    parseHTML() {
+      return [];
+    },
+    renderHTML({ node }) {
+      const latex = typeof node.attrs.latex === 'string' ? node.attrs.latex : '';
+      return ['span', { class: 'notes-richtext-math', 'data-type': 'math' }, latex];
+    },
+    renderText({ node }) {
+      return typeof node.attrs.latex === 'string' ? node.attrs.latex : '';
+    },
+    addNodeView() {
+      return ({ node, editor, getPos }) => {
+        const dom = document.createElement('span');
+        dom.className = 'notes-richtext-math';
+        dom.dataset.type = 'math';
+        dom.contentEditable = 'false';
+        dom.textContent = typeof node.attrs.latex === 'string' ? node.attrs.latex : '';
+        dom.setAttribute('aria-label', `Math: ${dom.textContent}`);
+        dom.addEventListener('click', () => {
+          const position = getPos();
+          if (!editor.isEditable || typeof position !== 'number') return;
+          editor.commands.setNodeSelection(position);
+        });
+        return { dom };
       };
     },
   });
@@ -521,10 +661,14 @@ class NotesRichTextBubbleMenu {
   private readonly blockTrigger: HTMLButtonElement;
   private readonly blockLabel: HTMLElement;
   private readonly linkTrigger: HTMLButtonElement;
+  private readonly colorTrigger: HTMLButtonElement;
+  private readonly colorPreview: HTMLElement;
   private readonly blockMenu = document.createElement('div');
   private readonly linkForm = document.createElement('form');
   private readonly linkInput = document.createElement('input');
+  private readonly applyLinkButton = document.createElement('button');
   private readonly removeLinkButton = document.createElement('button');
+  private readonly colorMenu = document.createElement('div');
 
   public constructor(
     private readonly editor: Editor,
@@ -535,12 +679,16 @@ class NotesRichTextBubbleMenu {
     const blockTrigger = toolbar.querySelector<HTMLButtonElement>('[data-richtext-block-trigger]');
     const blockLabel = toolbar.querySelector<HTMLElement>('[data-richtext-block-label]');
     const linkTrigger = toolbar.querySelector<HTMLButtonElement>('[data-richtext-link-trigger]');
-    if (!blockTrigger || !blockLabel || !linkTrigger) {
+    const colorTrigger = toolbar.querySelector<HTMLButtonElement>('[data-richtext-color-trigger]');
+    const colorPreview = toolbar.querySelector<HTMLElement>('[data-richtext-color-preview]');
+    if (!blockTrigger || !blockLabel || !linkTrigger || !colorTrigger || !colorPreview) {
       throw new Error('The Rich Text selection toolbar is incomplete.');
     }
     this.blockTrigger = blockTrigger;
     this.blockLabel = blockLabel;
     this.linkTrigger = linkTrigger;
+    this.colorTrigger = colorTrigger;
+    this.colorPreview = colorPreview;
 
     this.blockMenu.className = 'notes-richtext-block-menu hidden';
     this.blockMenu.setAttribute('role', 'listbox');
@@ -551,10 +699,17 @@ class NotesRichTextBubbleMenu {
       button.className = 'notes-richtext-block-item';
       button.dataset.richtextBlock = item.name;
       button.setAttribute('role', 'option');
-      button.append(createEditorIcon(item.icon));
+      const iconFrame = document.createElement('span');
+      iconFrame.className = 'notes-richtext-block-icon';
+      iconFrame.append(createEditorIcon(item.icon));
       const label = document.createElement('span');
+      label.className = 'notes-richtext-block-item-label';
       label.textContent = item.label;
-      button.append(label);
+      const check = document.createElement('span');
+      check.className = 'notes-richtext-block-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.textContent = '✓';
+      button.append(iconFrame, label, check);
       this.blockMenu.append(button);
     }
 
@@ -563,32 +718,42 @@ class NotesRichTextBubbleMenu {
     this.linkForm.setAttribute('aria-label', 'Edit link');
     this.linkInput.className = 'notes-richtext-link-input';
     this.linkInput.type = 'url';
-    this.linkInput.placeholder = 'https://example.com';
+    this.linkInput.placeholder = 'Paste a link';
     this.linkInput.setAttribute('aria-label', 'Link URL');
     this.linkInput.autocomplete = 'off';
     this.linkInput.spellcheck = false;
-    const applyButton = document.createElement('button');
-    applyButton.type = 'submit';
-    applyButton.className = 'notes-richtext-link-action notes-richtext-link-apply';
-    applyButton.textContent = 'Apply';
+    this.applyLinkButton.type = 'submit';
+    this.applyLinkButton.className = 'notes-richtext-link-action notes-richtext-link-apply';
+    this.applyLinkButton.setAttribute('aria-label', 'Apply link');
+    this.applyLinkButton.title = 'Apply link';
+    this.applyLinkButton.append(createStrokeIcon(['m3 8 3 3 7-7']));
     this.removeLinkButton.type = 'button';
-    this.removeLinkButton.className = 'notes-richtext-link-action';
+    this.removeLinkButton.className = 'notes-richtext-link-action notes-richtext-link-remove';
     this.removeLinkButton.dataset.richtextLinkRemove = '';
-    this.removeLinkButton.textContent = 'Remove';
-    this.linkForm.append(this.linkInput, applyButton, this.removeLinkButton);
-    this.toolbar.append(this.blockMenu, this.linkForm);
+    this.removeLinkButton.setAttribute('aria-label', 'Remove link');
+    this.removeLinkButton.title = 'Remove link';
+    this.removeLinkButton.append(createStrokeIcon(['M4.5 5.5v7h7v-7', 'M3.5 3.5h9', 'M6 3.5v-1h4v1', 'M7 7v3.5', 'M9 7v3.5']));
+    this.linkForm.append(this.linkInput, this.applyLinkButton, this.removeLinkButton);
+
+    this.colorMenu.className = 'notes-richtext-color-menu hidden';
+    this.colorMenu.setAttribute('role', 'dialog');
+    this.colorMenu.setAttribute('aria-label', 'Text color and background');
+    this.appendColorSection('Color', 'text', RICH_TEXT_COLORS);
+    this.appendColorSection('Background', 'background', RICH_TEXT_HIGHLIGHTS);
+    this.toolbar.append(this.blockMenu, this.linkForm, this.colorMenu);
 
     this.toolbar.addEventListener('mousedown', this.handleMouseDown);
     this.toolbar.addEventListener('click', this.handleClick);
+    this.toolbar.addEventListener('keydown', this.handleToolbarKeyDown);
     this.linkForm.addEventListener('submit', this.handleLinkSubmit);
-    this.linkInput.addEventListener('keydown', this.handleLinkKeyDown);
     document.addEventListener('pointerdown', this.handleDocumentPointerDown, true);
   }
 
   public sync(): void {
     if (this.editor.isDestroyed) return;
     this.updateBlockState();
-    const hasTextSelection = hasFormattableSelection(this.editor);
+    this.updateColorState();
+    const hasTextSelection = this.editor.isEditable && hasFormattableSelection(this.editor);
     const editingLink = !this.linkForm.classList.contains('hidden')
       && (this.toolbar.contains(document.activeElement) || this.editor.isFocused);
     if (!hasTextSelection && !editingLink) {
@@ -602,11 +767,46 @@ class NotesRichTextBubbleMenu {
   public destroy(): void {
     this.toolbar.removeEventListener('mousedown', this.handleMouseDown);
     this.toolbar.removeEventListener('click', this.handleClick);
+    this.toolbar.removeEventListener('keydown', this.handleToolbarKeyDown);
     this.linkForm.removeEventListener('submit', this.handleLinkSubmit);
-    this.linkInput.removeEventListener('keydown', this.handleLinkKeyDown);
     document.removeEventListener('pointerdown', this.handleDocumentPointerDown, true);
     this.blockMenu.remove();
     this.linkForm.remove();
+    this.colorMenu.remove();
+  }
+
+  private appendColorSection(
+    title: string,
+    kind: 'text' | 'background',
+    items: readonly RichTextColorItem[],
+  ): void {
+    const section = document.createElement('section');
+    section.className = 'notes-richtext-color-section';
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    section.append(heading);
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'notes-richtext-color-item';
+      button.dataset.richtextColorKind = kind;
+      if (item.color) button.dataset.richtextColor = item.color;
+      const swatch = document.createElement('span');
+      swatch.className = 'notes-richtext-color-swatch';
+      swatch.textContent = 'A';
+      if (kind === 'text' && item.color) swatch.style.color = item.color;
+      if (kind === 'background' && item.color) swatch.style.backgroundColor = item.color;
+      const label = document.createElement('span');
+      label.className = 'notes-richtext-color-label';
+      label.textContent = item.name;
+      const check = document.createElement('span');
+      check.className = 'notes-richtext-color-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.textContent = '✓';
+      button.append(swatch, label, check);
+      section.append(button);
+    }
+    this.colorMenu.append(section);
   }
 
   private readonly handleMouseDown = (event: MouseEvent): void => {
@@ -623,6 +823,7 @@ class NotesRichTextBubbleMenu {
       if (opening) {
         this.blockMenu.classList.remove('hidden');
         this.blockTrigger.setAttribute('aria-expanded', 'true');
+        this.positionPopover(this.blockMenu, this.blockTrigger);
       }
       return;
     }
@@ -643,7 +844,34 @@ class NotesRichTextBubbleMenu {
       event.preventDefault();
       this.editor.chain().focus().extendMarkRange('link').unsetLink().run();
       this.closePopovers();
+      return;
     }
+    if (source.closest('[data-richtext-color-trigger]')) {
+      event.preventDefault();
+      const opening = this.colorMenu.classList.contains('hidden');
+      this.closePopovers();
+      if (opening) {
+        this.colorMenu.classList.remove('hidden');
+        this.colorTrigger.setAttribute('aria-expanded', 'true');
+        this.positionPopover(this.colorMenu, this.colorTrigger);
+      }
+      return;
+    }
+    const colorItem = source.closest<HTMLElement>('[data-richtext-color-kind]');
+    if (colorItem?.dataset.richtextColorKind) {
+      event.preventDefault();
+      const kind = colorItem.dataset.richtextColorKind;
+      if (kind === 'text' || kind === 'background') {
+        this.applyColor(kind, colorItem.dataset.richtextColor);
+      }
+    }
+  };
+
+  private readonly handleToolbarKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    this.closePopovers();
+    this.editor.commands.focus();
   };
 
   private readonly handleLinkSubmit = (event: SubmitEvent): void => {
@@ -666,13 +894,6 @@ class NotesRichTextBubbleMenu {
     this.closePopovers();
   };
 
-  private readonly handleLinkKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    this.closePopovers();
-    this.editor.commands.focus();
-  };
-
   private readonly handleDocumentPointerDown = (event: PointerEvent): void => {
     const source = event.target;
     if (source instanceof globalThis.Node && this.toolbar.contains(source)) return;
@@ -680,13 +901,13 @@ class NotesRichTextBubbleMenu {
   };
 
   private applyBlock(name: string): void {
-    const chain = this.editor.chain().focus();
+    const chain = this.editor.chain().focus().clearNodes();
     switch (name) {
-      case 'paragraph': chain.clearNodes().setParagraph().run(); break;
+      case 'paragraph': chain.setParagraph().run(); break;
       case 'taskList': chain.toggleList('taskList', 'taskItem').run(); break;
-      case 'heading1': chain.setHeading({ level: 1 }).run(); break;
-      case 'heading2': chain.setHeading({ level: 2 }).run(); break;
-      case 'heading3': chain.setHeading({ level: 3 }).run(); break;
+      case 'heading1': chain.toggleHeading({ level: 1 }).run(); break;
+      case 'heading2': chain.toggleHeading({ level: 2 }).run(); break;
+      case 'heading3': chain.toggleHeading({ level: 3 }).run(); break;
       case 'bulletList': chain.toggleBulletList().run(); break;
       case 'orderedList': chain.toggleOrderedList().run(); break;
       case 'blockquote': chain.toggleBlockquote().run(); break;
@@ -696,37 +917,73 @@ class NotesRichTextBubbleMenu {
     this.closePopovers();
   }
 
+  private applyColor(kind: 'text' | 'background', color?: string): void {
+    const mark = kind === 'text' ? 'textStyle' : 'highlight';
+    const chain = this.editor.chain().focus();
+    if (color) chain.setMark(mark, { color }).run();
+    else chain.unsetMark(mark).run();
+    this.closePopovers();
+    this.updateColorState();
+  }
+
   private openLinkForm(): void {
     const href = this.editor.getAttributes('link').href;
+    const linkActive = this.editor.isActive('link');
     this.linkInput.value = typeof href === 'string' ? href : '';
-    this.removeLinkButton.disabled = !this.editor.isActive('link');
+    this.applyLinkButton.hidden = linkActive;
+    this.removeLinkButton.hidden = !linkActive;
     this.linkForm.classList.remove('hidden');
     this.linkTrigger.setAttribute('aria-expanded', 'true');
+    this.positionPopover(this.linkForm, this.linkTrigger);
     window.requestAnimationFrame(() => {
       this.linkInput.focus();
       this.linkInput.select();
     });
   }
 
+  private isBlockActive(name: string): boolean {
+    if (name.startsWith('heading')) {
+      return this.editor.isActive('heading', { level: Number(name.slice(-1)) });
+    }
+    if (name === 'paragraph') {
+      return this.editor.isActive('paragraph')
+        && !this.editor.isActive('taskList')
+        && !this.editor.isActive('bulletList')
+        && !this.editor.isActive('orderedList')
+        && !this.editor.isActive('blockquote')
+        && !this.editor.isActive('codeBlock');
+    }
+    return this.editor.isActive(name);
+  }
+
   private updateBlockState(): void {
-    let activeName = 'paragraph';
-    let activeLabel = 'Text';
+    const activeItems: RichTextBlockItem[] = [];
     for (const item of RICH_TEXT_BLOCK_ITEMS) {
-      const active = item.name.startsWith('heading')
-        ? this.editor.isActive('heading', { level: Number(item.name.slice(-1)) })
-        : this.editor.isActive(item.name);
+      const active = this.isBlockActive(item.name);
       const button = this.blockMenu.querySelector<HTMLElement>(`[data-richtext-block="${item.name}"]`);
       button?.setAttribute('aria-selected', String(active));
-      if (active) {
-        activeName = item.name;
-        activeLabel = item.label;
-      }
+      if (active) activeItems.push(item);
     }
-    this.blockLabel.textContent = activeLabel;
-    this.blockTrigger.dataset.activeBlock = activeName;
+    const activeItem = activeItems.length === 1 ? activeItems[0] : undefined;
+    this.blockLabel.textContent = activeItem?.label ?? 'Multiple';
+    this.blockTrigger.dataset.activeBlock = activeItem?.name ?? 'multiple';
     const linkActive = this.editor.isActive('link');
     this.linkTrigger.dataset.active = String(linkActive);
     this.linkTrigger.setAttribute('aria-pressed', String(linkActive));
+  }
+
+  private updateColorState(): void {
+    const rawTextColor = this.editor.getAttributes('textStyle').color;
+    const rawBackgroundColor = this.editor.getAttributes('highlight').color;
+    const textColor = typeof rawTextColor === 'string' ? rawTextColor : undefined;
+    const backgroundColor = typeof rawBackgroundColor === 'string' ? rawBackgroundColor : undefined;
+    this.colorPreview.style.color = textColor ?? '';
+    this.colorPreview.style.backgroundColor = backgroundColor ?? '';
+    for (const button of Array.from(this.colorMenu.querySelectorAll<HTMLElement>('[data-richtext-color-kind]'))) {
+      const kind = button.dataset.richtextColorKind;
+      const selectedColor = kind === 'text' ? textColor : backgroundColor;
+      button.setAttribute('aria-selected', String((button.dataset.richtextColor ?? undefined) === selectedColor));
+    }
   }
 
   private position(): void {
@@ -749,6 +1006,21 @@ class NotesRichTextBubbleMenu {
     this.toolbar.style.top = `${Math.min(top, overlayBounds.height - toolbarBounds.height - inset)}px`;
   }
 
+  private positionPopover(popover: HTMLElement, trigger: HTMLElement): void {
+    const toolbarBounds = this.toolbar.getBoundingClientRect();
+    const triggerBounds = trigger.getBoundingClientRect();
+    const overlayBounds = this.overlayRoot.getBoundingClientRect();
+    const popoverBounds = popover.getBoundingClientRect();
+    const inset = 8;
+    const preferredLeft = triggerBounds.left - toolbarBounds.left;
+    const minimumLeft = overlayBounds.left - toolbarBounds.left + inset;
+    const maximumLeft = overlayBounds.right - toolbarBounds.left - popoverBounds.width - inset;
+    popover.style.left = `${Math.max(minimumLeft, Math.min(preferredLeft, maximumLeft))}px`;
+    const below = toolbarBounds.height + 6;
+    const above = -popoverBounds.height - 6;
+    popover.style.top = `${toolbarBounds.bottom + popoverBounds.height + 6 <= overlayBounds.bottom - inset ? below : above}px`;
+  }
+
   private hide(): void {
     this.closePopovers();
     this.toolbar.classList.add('hidden');
@@ -757,29 +1029,60 @@ class NotesRichTextBubbleMenu {
   private closePopovers(): void {
     this.blockMenu.classList.add('hidden');
     this.linkForm.classList.add('hidden');
+    this.colorMenu.classList.add('hidden');
     this.blockTrigger.setAttribute('aria-expanded', 'false');
     this.linkTrigger.setAttribute('aria-expanded', 'false');
+    this.colorTrigger.setAttribute('aria-expanded', 'false');
   }
 }
 
 function createS3ImageNodeView(
   initialNode: NodeViewRendererProps['node'],
+  editor: Editor,
+  getPos: NodeViewRendererProps['getPos'],
   onError: (message: string) => void,
 ): {
   dom: HTMLElement;
   update: (node: NodeViewRendererProps['node']) => boolean;
+  selectNode: () => void;
+  deselectNode: () => void;
+  stopEvent: (event: Event) => boolean;
   ignoreMutation: () => boolean;
   destroy: () => void;
 } {
   const dom = document.createElement('figure');
   dom.className = 'notes-richtext-image';
   dom.contentEditable = 'false';
+  const frame = document.createElement('div');
+  frame.className = 'notes-richtext-image-frame';
+  const westHandle = document.createElement('button');
+  westHandle.type = 'button';
+  westHandle.className = 'notes-richtext-image-handle notes-richtext-image-handle-west';
+  westHandle.dataset.resizeDirection = 'west';
+  westHandle.setAttribute('aria-label', 'Resize image from left');
+  westHandle.title = 'Resize image';
+  const eastHandle = document.createElement('button');
+  eastHandle.type = 'button';
+  eastHandle.className = 'notes-richtext-image-handle notes-richtext-image-handle-east';
+  eastHandle.dataset.resizeDirection = 'east';
+  eastHandle.setAttribute('aria-label', 'Resize image from right');
+  eastHandle.title = 'Resize image';
+  dom.append(frame, westHandle, eastHandle);
 
   let node = initialNode;
   let objectUrl: string | undefined;
   let requestedReferenceKey: string | undefined;
   let loadGeneration = 0;
   let destroyed = false;
+  let activeResize: {
+    pointerId: number;
+    direction: 'west' | 'east';
+    startX: number;
+    startWidth: number;
+    maximumWidth: number;
+    previewWidth: number;
+    handle: HTMLButtonElement;
+  } | undefined;
 
   const revokeObjectUrl = (): void => {
     if (!objectUrl) return;
@@ -788,18 +1091,38 @@ function createS3ImageNodeView(
   };
 
   const showState = (state: 'loading' | 'not-configured' | 'missing' | 'error', text: string): void => {
+    dom.dataset.state = state;
     const status = document.createElement('span');
     status.className = 'notes-richtext-image-status';
     status.dataset.state = state;
     status.setAttribute('role', 'status');
     status.textContent = text;
-    dom.replaceChildren(status);
+    frame.replaceChildren(status);
+  };
+
+  const applyLayout = (attributes: NoteImageNodeAttributes): void => {
+    const displayWidth = attributes.displayWidth ?? attributes.width;
+    dom.style.width = `${displayWidth}px`;
+    dom.dataset.displayWidth = String(displayWidth);
+  };
+
+  const availableWidth = (): number => {
+    const editorElement = editor.view.dom;
+    const style = getComputedStyle(editorElement);
+    const horizontalPadding = Number.parseFloat(style.paddingLeft || '0') + Number.parseFloat(style.paddingRight || '0');
+    return Math.max(
+      RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
+      Math.min(RICH_TEXT_LIMITS.imageDimension, editorElement.getBoundingClientRect().width - horizontalPadding),
+    );
   };
 
   const reload = async (): Promise<void> => {
+    let attributes: NoteImageNodeAttributes;
     let reference: NoteImageReference;
     try {
-      reference = parseNoteImageReference(node.attrs);
+      attributes = parseNoteImageNodeAttributes(node.attrs);
+      const { displayWidth: _displayWidth, ...assetReference } = attributes;
+      reference = parseNoteImageReference(assetReference);
     } catch {
       if (destroyed) return;
       loadGeneration += 1;
@@ -809,6 +1132,7 @@ function createS3ImageNodeView(
       safelyReport(onError, 'The embedded image reference is invalid.');
       return;
     }
+    applyLayout(attributes);
     const referenceKey = JSON.stringify(reference);
     if (referenceKey === requestedReferenceKey) return;
     requestedReferenceKey = referenceKey;
@@ -867,7 +1191,10 @@ function createS3ImageNodeView(
     image.height = reference.height;
     image.draggable = false;
     image.addEventListener('load', () => {
-      if (!destroyed && generation === loadGeneration) dom.replaceChildren(image);
+      if (!destroyed && generation === loadGeneration) {
+        delete dom.dataset.state;
+        frame.replaceChildren(image);
+      }
     }, { once: true });
     image.addEventListener('error', () => {
       if (destroyed || generation !== loadGeneration) return;
@@ -878,6 +1205,99 @@ function createS3ImageNodeView(
     image.src = nextObjectUrl;
   };
 
+  const finishResize = (commit: boolean): void => {
+    const resize = activeResize;
+    if (!resize) return;
+    activeResize = undefined;
+    window.removeEventListener('pointermove', handlePointerMove, true);
+    window.removeEventListener('pointerup', handlePointerUp, true);
+    window.removeEventListener('pointercancel', handlePointerCancel, true);
+    dom.classList.remove('notes-richtext-image-resizing');
+    try {
+      if (resize.handle.hasPointerCapture(resize.pointerId)) resize.handle.releasePointerCapture(resize.pointerId);
+    } catch {
+      // Losing pointer capture during window changes is harmless.
+    }
+    if (!commit || destroyed) {
+      try {
+        applyLayout(parseNoteImageNodeAttributes(node.attrs));
+      } catch {
+        // The normal reload path owns invalid-node error presentation.
+      }
+      return;
+    }
+    const position = getPos();
+    if (typeof position !== 'number' || resize.previewWidth === resize.startWidth) return;
+    const nextAttrs: Record<string, unknown> = { ...node.attrs };
+    if (resize.previewWidth === Number(node.attrs.width)) delete nextAttrs.displayWidth;
+    else nextAttrs.displayWidth = resize.previewWidth;
+    editor.view.dispatch(editor.state.tr.setNodeMarkup(position, undefined, nextAttrs));
+    editor.commands.setNodeSelection(position);
+  };
+
+  const handlePointerMove = (event: PointerEvent): void => {
+    const resize = activeResize;
+    if (!resize || event.pointerId !== resize.pointerId) return;
+    event.preventDefault();
+    resize.previewWidth = calculateRichTextImageDisplayWidth(
+      resize.startWidth,
+      event.clientX - resize.startX,
+      resize.direction,
+      resize.maximumWidth,
+    );
+    dom.style.width = `${resize.previewWidth}px`;
+    dom.dataset.displayWidth = String(resize.previewWidth);
+  };
+
+  const handlePointerUp = (event: PointerEvent): void => {
+    if (!activeResize || event.pointerId !== activeResize.pointerId) return;
+    event.preventDefault();
+    finishResize(true);
+  };
+
+  const handlePointerCancel = (event: PointerEvent): void => {
+    if (!activeResize || event.pointerId !== activeResize.pointerId) return;
+    finishResize(false);
+  };
+
+  const beginResize = (event: PointerEvent): void => {
+    const source = event.currentTarget;
+    if (!(source instanceof HTMLButtonElement) || event.button !== 0 || destroyed) return;
+    const direction = source.dataset.resizeDirection;
+    if (direction !== 'west' && direction !== 'east') return;
+    event.preventDefault();
+    event.stopPropagation();
+    finishResize(false);
+    const position = getPos();
+    if (typeof position !== 'number') return;
+    editor.commands.setNodeSelection(position);
+    const startWidth = Math.round(Math.max(
+      RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
+      dom.getBoundingClientRect().width,
+    ));
+    activeResize = {
+      pointerId: event.pointerId,
+      direction,
+      startX: event.clientX,
+      startWidth,
+      maximumWidth: availableWidth(),
+      previewWidth: Math.round(startWidth),
+      handle: source,
+    };
+    dom.classList.add('notes-richtext-image-resizing');
+    try {
+      source.setPointerCapture(event.pointerId);
+    } catch {
+      // Window-level listeners below retain ownership if capture is unavailable.
+    }
+    window.addEventListener('pointermove', handlePointerMove, true);
+    window.addEventListener('pointerup', handlePointerUp, true);
+    window.addEventListener('pointercancel', handlePointerCancel, true);
+  };
+
+  westHandle.addEventListener('pointerdown', beginResize);
+  eastHandle.addEventListener('pointerdown', beginResize);
+
   void reload();
   return {
     dom,
@@ -887,10 +1307,22 @@ function createS3ImageNodeView(
       void reload();
       return true;
     },
+    selectNode(): void {
+      dom.classList.add('ProseMirror-selectednode');
+    },
+    deselectNode(): void {
+      finishResize(false);
+      dom.classList.remove('ProseMirror-selectednode');
+    },
+    stopEvent: (event) => event.target instanceof globalThis.Node
+      && (westHandle.contains(event.target) || eastHandle.contains(event.target)),
     ignoreMutation: () => true,
     destroy(): void {
+      finishResize(false);
       destroyed = true;
       loadGeneration += 1;
+      westHandle.removeEventListener('pointerdown', beginResize);
+      eastHandle.removeEventListener('pointerdown', beginResize);
       revokeObjectUrl();
       dom.replaceChildren();
     },
@@ -911,6 +1343,7 @@ function createS3ImageExtension(onError: (message: string) => void) {
         width: { default: null },
         height: { default: null },
         alt: { default: null },
+        displayWidth: { default: null },
       };
     },
     // Rich text is loaded only from validated JSON. In particular, pasted or
@@ -939,7 +1372,7 @@ function createS3ImageExtension(onError: (message: string) => void) {
       return ['span', { class: 'notes-richtext-image-serialized', 'aria-label': 'Embedded image' }];
     },
     addNodeView() {
-      return ({ node }) => createS3ImageNodeView(node, onError);
+      return ({ node, editor, getPos }) => createS3ImageNodeView(node, editor, getPos, onError);
     },
   });
 }
@@ -985,7 +1418,13 @@ export class NotesRichTextEditor {
           isAllowedUri: (url) => isAllowedRichTextLinkHref(url),
           shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
         },
-      }), createTaskListExtension(), createTaskItemExtension(), createS3ImageExtension(this.onError)],
+      }),
+      createTextStyleExtension(),
+      createHighlightExtension(),
+      createMathExtension(),
+      createTaskListExtension(),
+      createTaskItemExtension(),
+      createS3ImageExtension(this.onError)],
       injectCSS: false,
       editorProps: {
         attributes: {
@@ -1128,7 +1567,9 @@ export class NotesRichTextEditor {
   }
 
   public run(command: RichTextToolbarCommand): boolean {
-    const completed = this.commandChain(command, this.editor.chain().focus()).run();
+    const completed = command === 'math'
+      ? this.convertSelectionToMath()
+      : this.commandChain(command, this.editor.chain().focus()).run();
     this.updateToolbarState();
     return completed;
   }
@@ -1171,6 +1612,7 @@ export class NotesRichTextEditor {
       case 'underline': return chain.toggleUnderline();
       case 'strike': return chain.toggleStrike();
       case 'code': return chain.toggleCode();
+      case 'math': return chain;
       case 'heading': return chain.toggleHeading({ level: 2 });
       case 'bulletList': return chain.toggleBulletList();
       case 'orderedList': return chain.toggleOrderedList();
@@ -1179,6 +1621,16 @@ export class NotesRichTextEditor {
   }
 
   private canRun(command: RichTextToolbarCommand): boolean {
+    if (command === 'math') {
+      const selection = this.editor.state.selection;
+      if (selection.empty || this.editor.isActive('codeBlock')) return false;
+      if (this.editor.isActive('math')) {
+        const latex = this.editor.getAttributes('math').latex;
+        return typeof latex === 'string' && Boolean(latex);
+      }
+      const latex = this.editor.state.doc.textBetween(selection.from, selection.to, ' ', ' ');
+      return Boolean(latex) && latex.length <= RICH_TEXT_LIMITS.mathCharacters;
+    }
     return this.commandChain(command, this.editor.can().chain().focus()).run();
   }
 
@@ -1189,6 +1641,7 @@ export class NotesRichTextEditor {
       case 'underline': return this.editor.isActive('underline');
       case 'strike': return this.editor.isActive('strike');
       case 'code': return this.editor.isActive('code');
+      case 'math': return this.editor.isActive('math');
       case 'heading': return this.editor.isActive('heading', { level: 2 });
       case 'bulletList': return this.editor.isActive('bulletList');
       case 'orderedList': return this.editor.isActive('orderedList');
@@ -1197,6 +1650,37 @@ export class NotesRichTextEditor {
       case 'redo':
         return false;
     }
+  }
+
+  private convertSelectionToMath(): boolean {
+    const selection = this.editor.state.selection;
+    if (selection.empty || this.editor.isActive('codeBlock')) return false;
+    if (this.editor.isActive('math')) {
+      const latex = this.editor.getAttributes('math').latex;
+      if (typeof latex !== 'string' || !latex) return false;
+      return this.editor.chain()
+        .focus()
+        .command(({ tr }) => {
+          tr.insertText(latex, selection.from, selection.to);
+          return true;
+        })
+        .setTextSelection({ from: selection.from, to: selection.from + latex.length })
+        .run();
+    }
+    const latex = this.editor.state.doc.textBetween(selection.from, selection.to, ' ', ' ');
+    if (!latex || latex.length > RICH_TEXT_LIMITS.mathCharacters) return false;
+    const inserted = this.editor.chain()
+      .focus()
+      .insertContentAt({ from: selection.from, to: selection.to }, {
+        type: 'math',
+        attrs: { latex },
+      })
+      .run();
+    if (!inserted) return false;
+    return this.editor.commands.setTextSelection({
+      from: selection.from,
+      to: selection.from + 1,
+    });
   }
 
   private updateToolbarState(): void {

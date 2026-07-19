@@ -7,6 +7,7 @@ const {
   extractRichTextPlainText,
   isAllowedRichTextLinkHref,
   normalizeRichTextContent,
+  parseNoteImageNodeAttributes,
   parseNoteImageReference,
   parseRichTextContent,
 } = require('../dist/shared/noteRichText');
@@ -135,6 +136,91 @@ test('rich text task lists preserve a bounded checked state and safe structure',
   }), /must start with a paragraph/);
 });
 
+test('rich text safely canonicalizes the bounded Novel math and color model', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'Energy ',
+        marks: [
+          { type: 'highlight', attrs: { color: '#dbeafe' } },
+          { type: 'textStyle', attrs: { color: '#2563eb' } },
+          { type: 'underline' },
+        ],
+      }, {
+        type: 'math',
+        attrs: { latex: 'E=mc^2' },
+      }],
+    }],
+  });
+  assert.deepEqual(JSON.parse(normalized), {
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        marks: [
+          { type: 'underline' },
+          { type: 'textStyle', attrs: { color: '#2563EB' } },
+          { type: 'highlight', attrs: { color: '#DBEAFE' } },
+        ],
+        text: 'Energy ',
+      }, {
+        type: 'math',
+        attrs: { latex: 'E=mc^2' },
+      }],
+    }],
+  });
+  assert.equal(extractRichTextPlainText(normalized), 'Energy E=mc^2');
+
+  for (const [type, color] of [
+    ['textStyle', 'red'],
+    ['textStyle', '#FFFFFF'],
+    ['textStyle', 'var(--secret)'],
+    ['highlight', '#000000'],
+    ['highlight', 'url(https://example.test/pixel)'],
+    ['highlight', '#DBEAFE;display:none'],
+  ]) {
+    assert.throws(() => normalizeRichTextContent({
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'unsafe', marks: [{ type, attrs: { color } }] }],
+      }],
+    }), /rich text (?:textStyle|highlight) color is invalid/i);
+  }
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'foreign color field',
+        marks: [{ type: 'textStyle', attrs: { color: '#2563EB', style: 'display:none' } }],
+      }],
+    }],
+  }), /unsupported field/);
+
+  for (const math of [
+    { type: 'math' },
+    { type: 'math', attrs: { latex: '' } },
+    { type: 'math', attrs: { latex: 'x'.repeat(RICH_TEXT_LIMITS.mathCharacters + 1) } },
+    { type: 'math', attrs: { latex: 'x\u0000y' } },
+    { type: 'math', attrs: { latex: 'x', onclick: 'run()' } },
+  ]) {
+    assert.throws(() => normalizeRichTextContent({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [math] }],
+    }), /rich text math/i);
+  }
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'math', attrs: { latex: 'x' } }],
+  }), /invalid location/);
+});
+
 test('canonical rich text round-trips through the configured Tiptap schema without drift', async () => {
   const [{ getSchema }, { default: StarterKit }, { default: Image }] = await Promise.all([
     import('@tiptap/core'),
@@ -228,6 +314,57 @@ test('s3Image nodes retain only strict non-URL S3 asset references and searchabl
   assert.throws(
     () => parseNoteImageReference({ ...reference, alt: 'x'.repeat(RICH_TEXT_LIMITS.imageAltCharacters + 1) }),
     /alternative text is invalid/,
+  );
+  assert.throws(
+    () => parseNoteImageReference({ ...reference, displayWidth: 320 }),
+    /image reference contains an unsupported field/,
+  );
+});
+
+test('s3Image node attributes canonicalize an independent bounded display width', () => {
+  const reference = imageReference();
+  const attributes = { ...reference, displayWidth: 360 };
+  assert.deepEqual(parseNoteImageNodeAttributes(attributes), attributes);
+
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 's3Image', attrs: attributes }],
+  });
+  assert.deepEqual(JSON.parse(normalized), {
+    type: 'doc',
+    content: [{ type: 's3Image', attrs: attributes }],
+  });
+  assert.equal(extractRichTextPlainText(normalized), reference.alt);
+
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, displayWidth: null }), reference);
+  assert.deepEqual(parseNoteImageNodeAttributes({ ...reference, displayWidth: 48 }), {
+    ...reference,
+    displayWidth: 48,
+  });
+  assert.deepEqual(parseNoteImageNodeAttributes({
+    ...reference,
+    displayWidth: RICH_TEXT_LIMITS.imageDimension,
+  }), {
+    ...reference,
+    displayWidth: RICH_TEXT_LIMITS.imageDimension,
+  });
+
+  for (const displayWidth of [
+    47,
+    RICH_TEXT_LIMITS.imageDimension + 1,
+    320.5,
+    '320',
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ]) {
+    assert.throws(
+      () => parseNoteImageNodeAttributes({ ...reference, displayWidth }),
+      /image display width is invalid/,
+    );
+  }
+  assert.throws(
+    () => parseNoteImageNodeAttributes({ ...reference, displayWidth: 320, src: 'blob:renderer-only' }),
+    /image attributes contains an unsupported field/,
   );
 });
 

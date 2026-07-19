@@ -11,6 +11,7 @@ const {
   NotesStore,
   classifyNoteDraftRecovery,
 } = require('../dist/main/notesStore');
+const { EMPTY_RICH_TEXT_CONTENT, normalizeRichTextContent } = require('../dist/shared/noteRichText');
 
 function noteFileName(id) {
   return `${createHash('sha256').update(id, 'utf8').digest('hex')}.json`;
@@ -108,8 +109,8 @@ test('NotesStore creates one private SHA-256-addressed active envelope per Note 
   const note = await store.create();
 
   assert.equal(note.name, 'Untitled note');
-  assert.equal(note.content, '');
-  assert.equal(note.language, 'markdown');
+  assert.equal(note.content, EMPTY_RICH_TEXT_CONTENT);
+  assert.equal(note.language, 'richtext');
   assert.deepEqual(note.tags, []);
   assert.ok(note.id);
   assert.equal(note.createdAt, note.updatedAt);
@@ -397,13 +398,22 @@ test('NotesStore staged replacement hard-links unchanged Note files instead of r
       firstSnapshot,
       {
         ...secondSnapshot,
-        content: 'changed in cloud',
+        content: normalizeRichTextContent({
+          type: 'doc',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'changed in cloud' }] }],
+        }),
         updatedAt: '2026-07-19T03:04:05.000Z',
       },
     ],
   }, []);
 
-  assert.equal(store.list().find((note) => note.id === second.id).content, 'changed in cloud');
+  assert.equal(
+    store.list().find((note) => note.id === second.id).content,
+    normalizeRichTextContent({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'changed in cloud' }] }],
+    }),
+  );
   if (process.platform !== 'win32' && before.ino !== 0) {
     const after = await fs.stat(noteFilePath(notesDirectory, first.id));
     assert.equal(after.ino, before.ino, 'the unchanged Note should retain its existing inode');
@@ -414,7 +424,13 @@ test('NotesStore verifies a reused hard link and rewrites disk content that drif
   const { notesDirectory, store } = await createStore(t);
   const created = await store.create();
   const expected = store.exportSnapshot();
-  const drifted = { ...created, content: 'changed by another process' };
+  const drifted = {
+    ...created,
+    content: normalizeRichTextContent({
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [{ type: 'text', text: 'changed by another process' }] }],
+    }),
+  };
   await fs.writeFile(
     noteFilePath(notesDirectory, created.id),
     JSON.stringify({ schemaVersion: NOTES_SCHEMA_VERSION, note: drifted }),
@@ -423,8 +439,8 @@ test('NotesStore verifies a reused hard link and rewrites disk content that drif
 
   await store.replaceSnapshot(expected, []);
 
-  assert.equal(store.list()[0].content, '');
-  assert.equal((await readEnvelope(notesDirectory, created.id)).note.content, '');
+  assert.equal(store.list()[0].content, EMPTY_RICH_TEXT_CONTENT);
+  assert.equal((await readEnvelope(notesDirectory, created.id)).note.content, EMPTY_RICH_TEXT_CONTENT);
   const reloaded = new NotesStore(notesDirectory);
   await reloaded.load();
   assert.deepEqual(reloaded.exportSnapshot(), expected);

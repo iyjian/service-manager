@@ -30,7 +30,8 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(html, /id="notes-search"[^>]*type="search"/);
   assert.match(html, /id="note-name"/);
   assert.match(html, /<div id="note-content" class="notes-content"[^>]*>[\s\S]*?id="note-code-content"[\s\S]*?id="note-richtext-editor"/);
-  assert.match(html, /id="note-richtext-toolbar"[\s\S]*?data-richtext-block-trigger[\s\S]*?data-richtext-link-trigger[\s\S]*?data-richtext-command="underline"/);
+  assert.match(html, /id="note-richtext-toolbar"[\s\S]*?data-richtext-block-trigger[\s\S]*?data-richtext-link-trigger[\s\S]*?>Link<[\s\S]*?data-richtext-command="math"[\s\S]*?data-richtext-command="bold"[\s\S]*?data-richtext-command="underline"[\s\S]*?data-richtext-color-trigger/);
+  assert.doesNotMatch(html, /Ask AI|data-richtext-ai/);
   assert.match(html, /id="note-richtext-image-input"[^>]*accept="image\/png,image\/jpeg,image\/webp"/);
   assert.doesNotMatch(html, /id="note-tags"|notes-tags-row|Tags, comma separated/);
   assert.match(html, /notes-editor-toolbar[\s\S]*?id="note-save-status"[\s\S]*?id="note-copy-btn"/);
@@ -44,6 +45,10 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   for (const language of ['markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
     assert.match(html, new RegExp(`<option value="${language}"`));
   }
+  assert.match(
+    html,
+    /<select id="note-language"[^>]*>\s*<option value="richtext">Rich Text<\/option>\s*<option value="markdown">Markdown<\/option>/,
+  );
 
   assert.match(preload, /listNotes:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:list'\)/);
   assert.match(preload, /getWorkspace:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:workspace'\)/);
@@ -185,12 +190,27 @@ test('Notes uses full width with a responsive tree, independent scrolling, and s
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
   assert.match(styles, /\.notes-content\[data-theme=dark\] \.notes-code-content/);
   assert.match(styles, /\.notes-content\[data-theme=dark\] \.notes-richtext-content/);
-  assert.match(styles, /\.notes-richtext-toolbar\{position:absolute[^}]*z-index:30[^}]*border-radius:var\(--radius-lg\)/);
+  assert.match(styles, /\.notes-richtext-toolbar\{position:absolute[^}]*z-index:30[^}]*border-radius:\.375rem[^}]*padding:0/);
+  assert.match(styles, /\.notes-richtext-tool\{[^}]*height:2\.25rem[^}]*border-radius:0/);
+  assert.match(styles, /\.notes-richtext-tool\[data-active=true\]\{[^}]*color:/);
+  assert.match(styles, /\.notes-richtext-block-menu\{[^}]*width:12rem/);
+  assert.match(styles, /\.notes-richtext-block-item\{grid-template-columns:24px minmax\(0,1fr\) 16px\}/);
+  assert.match(styles, /\.notes-richtext-block-item\[aria-selected=true\] \.notes-richtext-block-check\{visibility:visible\}/);
+  assert.match(styles, /\.notes-richtext-link-popover\{[^}]*width:15rem[^}]*grid-template-columns:minmax\(0,1fr\) 32px/);
+  assert.match(styles, /\.notes-richtext-link-action\[hidden\]\{display:none\}/);
+  assert.match(styles, /\.notes-richtext-color-menu\{[^}]*max-height:20rem[^}]*width:12rem/);
+  assert.match(styles, /\.notes-richtext-color-item\{grid-template-columns:28px minmax\(0,1fr\) 16px\}/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*position:relative[^}]*min-height:100%[^}]*padding:3rem/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*font-family:var\(--font-family-notes-richtext\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*line-height:1\.78/);
   assert.match(styles, /\.notes-richtext-slash-menu\{[^}]*max-height:330px[^}]*width:18rem/);
   assert.match(styles, /\.notes-richtext-slash-item\{[^}]*height:3rem/);
   assert.match(styles, /\.notes-richtext-slash-icon\{[^}]*height:2\.5rem[^}]*width:2\.5rem/);
+  assert.match(styles, /\.notes-richtext-image\{[^}]*max-width:100%/);
+  assert.match(styles, /\.notes-richtext-image,\.notes-richtext-image-frame\{position:relative\}/);
+  assert.match(styles, /\.notes-richtext-image\.ProseMirror-selectednode\{outline:2px solid #4af/);
+  assert.match(styles, /\.notes-richtext-image-handle\{[^}]*pointer-events:none[^}]*cursor:ew-resize[^}]*touch-action:none/);
+  assert.match(styles, /\.notes-richtext-image\.ProseMirror-selectednode \.notes-richtext-image-handle\{[^}]*pointer-events:auto[^}]*opacity:1/);
+  assert.match(styles, /\.notes-richtext-math\{[^}]*display:inline-flex[^}]*cursor:pointer/);
   assert.match(notesPage, /function applyNotesFontSize\(fontSize\)[\s\S]*?style\.setProperty\('--notes-editor-font-size', `\$\{normalized\}px`\)[\s\S]*?requestAnimationFrame\(\(\) => page\?\.requestEditorMeasure\(\)\)/);
   assert.match(notesPage, /function applyNotesEditorTheme\(theme\)[\s\S]*?theme === 'dark' \? 'dark' : 'light'[\s\S]*?dataset\.notesEditorTheme = normalized[\s\S]*?page\?\.applyEditorTheme\(normalized\)/);
 });

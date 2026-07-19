@@ -36,6 +36,7 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
     'width',
     'height',
     'alt',
+    'displayWidth',
   ]);
   assert.doesNotMatch(attributes, /\bsrc\b|\btitle\b/);
 
@@ -48,7 +49,7 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
   assert.doesNotMatch(imageExtension, /renderHTML\([^)]*HTMLAttributes/);
 });
 
-test('S3 image NodeView owns Blob URLs and exposes only safe UI states', async () => {
+test('S3 image NodeView owns Blob URLs, strips layout metadata from loads, and exposes only safe UI states', async () => {
   const source = await readEditorSource();
   const nodeViewStart = source.indexOf('function createS3ImageNodeView(');
   const nodeViewEnd = source.indexOf('function createS3ImageExtension(', nodeViewStart);
@@ -56,7 +57,9 @@ test('S3 image NodeView owns Blob URLs and exposes only safe UI states', async (
   assert.notEqual(nodeViewEnd, -1);
   const nodeView = source.slice(nodeViewStart, nodeViewEnd);
 
-  assert.match(nodeView, /parseNoteImageReference\(node\.attrs\)/);
+  assert.match(nodeView, /parseNoteImageNodeAttributes\(node\.attrs\)/);
+  assert.match(nodeView, /const \{ displayWidth: _displayWidth, \.\.\.assetReference \} = attributes/);
+  assert.match(nodeView, /parseNoteImageReference\(assetReference\)/);
   assert.match(nodeView, /await loadNoteImage\(reference\)/);
   assert.match(nodeView, /URL\.createObjectURL\(new Blob\(\[imageBytes\]/);
   assert.match(nodeView, /URL\.revokeObjectURL\(objectUrl\)/);
@@ -102,6 +105,7 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
     'underline',
     'strike',
     'code',
+    'math',
     'heading',
     'bulletList',
     'orderedList',
@@ -185,17 +189,85 @@ test('slash menu reveal math keeps keyboard selection inside its own scrolling v
   assert.equal(revealMenuItemScrollTop({ ...base, scrollTop: 72, itemTop: 200 }), 72);
 });
 
-test('rich text uses a selection-only non-AI formatter with safe block and link controls', async () => {
+test('rich text uses a Novel-style selection-only formatter without Ask AI', async () => {
   const source = await readEditorSource();
   assert.match(source, /class NotesRichTextBubbleMenu/);
-  assert.match(source, /hasFormattableSelection\(this\.editor\)/);
+  assert.match(source, /this\.editor\.isEditable && hasFormattableSelection\(this\.editor\)/);
   assert.match(source, /posToDOMRect\(this\.editor\.view, selection\.from, selection\.to\)/);
-  assert.match(source, /RICH_TEXT_BLOCK_ITEMS:[\s\S]*?label: 'Text'[\s\S]*?label: 'To-do List'[\s\S]*?label: 'Heading 1'[\s\S]*?label: 'Heading 2'[\s\S]*?label: 'Heading 3'[\s\S]*?label: 'Bullet List'[\s\S]*?label: 'Numbered List'[\s\S]*?label: 'Quote'[\s\S]*?label: 'Code'/);
+  const blockItemsStart = source.indexOf('const RICH_TEXT_BLOCK_ITEMS:');
+  const blockItemsEnd = source.indexOf('] as const;', blockItemsStart);
+  assert.ok(blockItemsStart >= 0 && blockItemsEnd > blockItemsStart);
+  assert.deepEqual(
+    [...source.slice(blockItemsStart, blockItemsEnd).matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
+    ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'To-do List', 'Bullet List', 'Numbered List', 'Quote', 'Code'],
+  );
+  assert.match(source, /const chain = this\.editor\.chain\(\)\.focus\(\)\.clearNodes\(\)/);
+  assert.match(source, /case 'heading1': chain\.toggleHeading\(\{ level: 1 \}\)\.run\(\)/);
+  assert.match(source, /activeItems\.length === 1 \? activeItems\[0\] : undefined/);
+  assert.match(source, /this\.blockLabel\.textContent = activeItem\?\.label \?\? 'Multiple'/);
+  assert.match(source, /notes-richtext-block-icon/);
+  assert.match(source, /notes-richtext-block-check/);
+  assert.match(source, /this\.positionPopover\(this\.blockMenu, this\.blockTrigger\)/);
+  assert.match(source, /event\.key !== 'Escape'/);
   assert.match(source, /case 'underline': return chain\.toggleUnderline\(\)/);
+  assert.match(source, /case 'math': return chain/);
   assert.match(source, /isAllowedRichTextLinkHref\(href\)/);
   assert.match(source, /extendMarkRange\('link'\)\.unsetLink\(\)/);
   assert.match(source, /chain\.setLink\(\{ href \}\)\.run\(\)/);
+  assert.match(source, /this\.linkInput\.placeholder = 'Paste a link'/);
+  assert.match(source, /this\.applyLinkButton\.hidden = linkActive/);
+  assert.match(source, /this\.removeLinkButton\.hidden = !linkActive/);
   assert.doesNotMatch(source, /Ask AI|askAI|GenerativeMenu|AISelector/);
+});
+
+test('Novel-style math and color controls use closed renderer extensions and canonical commands', async () => {
+  const source = await readEditorSource();
+
+  for (const factory of ['createTextStyleExtension', 'createHighlightExtension', 'createMathExtension']) {
+    const start = source.indexOf(`function ${factory}(`);
+    const end = source.indexOf('\nfunction ', start + 1);
+    assert.ok(start >= 0 && end > start, `${factory} must be present`);
+    assert.match(source.slice(start, end), /parseHTML\(\) \{\s*return \[\];\s*\}/);
+  }
+  assert.match(source, /name: 'textStyle'[\s\S]*?excludes: 'code'/);
+  assert.match(source, /name: 'highlight'[\s\S]*?excludes: 'code'/);
+  assert.match(source, /name: 'math'[\s\S]*?inline: true[\s\S]*?atom: true[\s\S]*?marks: ''/);
+  assert.match(source, /insertContentAt\(\{ from: selection\.from, to: selection\.to \}, \{\s*type: 'math',\s*attrs: \{ latex \}/);
+  assert.match(source, /if \(!inserted\) return false;\s*return this\.editor\.commands\.setTextSelection\(\{\s*from: selection\.from,\s*to: selection\.from \+ 1/);
+  assert.match(source, /if \(this\.editor\.isActive\('math'\)\)[\s\S]*?tr\.insertText\(latex, selection\.from, selection\.to\)/);
+  assert.match(source, /latex\.length > RICH_TEXT_LIMITS\.mathCharacters/);
+  assert.match(source, /doc\.nodesBetween\(selection\.from, selection\.to,[\s\S]*?node\.type\.name === 'math'/);
+  assert.match(source, /appendColorSection\('Color', 'text', RICH_TEXT_COLORS\)/);
+  assert.match(source, /appendColorSection\('Background', 'background', RICH_TEXT_HIGHLIGHTS\)/);
+  assert.match(source, /const mark = kind === 'text' \? 'textStyle' : 'highlight'/);
+  assert.match(source, /if \(color\) chain\.setMark\(mark, \{ color \}\)\.run\(\)/);
+  assert.match(source, /else chain\.unsetMark\(mark\)\.run\(\)/);
+  assert.match(source, /this\.updateColorState\(\)/);
+});
+
+test('S3 image NodeView provides selected resize handles and commits only displayWidth', async () => {
+  const source = await readEditorSource();
+  const nodeViewStart = source.indexOf('function createS3ImageNodeView(');
+  const nodeViewEnd = source.indexOf('function createS3ImageExtension(', nodeViewStart);
+  assert.ok(nodeViewStart >= 0 && nodeViewEnd > nodeViewStart);
+  const nodeView = source.slice(nodeViewStart, nodeViewEnd);
+
+  assert.match(nodeView, /notes-richtext-image-handle-west/);
+  assert.match(nodeView, /notes-richtext-image-handle-east/);
+  assert.match(nodeView, /aria-label', 'Resize image from left'/);
+  assert.match(nodeView, /aria-label', 'Resize image from right'/);
+  assert.match(nodeView, /attributes\.displayWidth \?\? attributes\.width/);
+  assert.match(nodeView, /calculateRichTextImageDisplayWidth\(/);
+  assert.match(nodeView, /window\.addEventListener\('pointermove', handlePointerMove, true\)/);
+  assert.match(nodeView, /window\.addEventListener\('pointerup', handlePointerUp, true\)/);
+  assert.match(nodeView, /window\.addEventListener\('pointercancel', handlePointerCancel, true\)/);
+  assert.match(nodeView, /nextAttrs\.displayWidth = resize\.previewWidth/);
+  assert.match(nodeView, /delete nextAttrs\.displayWidth/);
+  assert.match(nodeView, /setNodeMarkup\(position, undefined, nextAttrs\)/);
+  assert.match(nodeView, /selectNode\(\): void \{\s*dom\.classList\.add\('ProseMirror-selectednode'\)/);
+  assert.match(nodeView, /deselectNode\(\): void \{\s*finishResize\(false\)/);
+  assert.match(nodeView, /stopEvent: \(event\) =>[\s\S]*?westHandle\.contains\(event\.target\)[\s\S]*?eastHandle\.contains\(event\.target\)/);
+  assert.match(nodeView, /destroy\(\): void \{[\s\S]*?finishResize\(false\)[\s\S]*?removeEventListener\('pointerdown', beginResize\)/);
 });
 
 test('rich text routes pasted and dropped image files through the existing S3 upload flow', async () => {

@@ -710,6 +710,11 @@ export interface NoteImageReference {
   alt?: string;
 }
 
+/** Layout attributes belong to the encrypted Note body, not the immutable S3 asset reference. */
+export interface NoteImageNodeAttributes extends NoteImageReference {
+  displayWidth?: number;
+}
+
 export interface NoteImageUploadInput {
   bytes: Uint8Array;
   mimeType?: string;
