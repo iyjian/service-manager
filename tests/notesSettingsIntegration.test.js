@@ -49,6 +49,13 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   for (const handler of ['notesList', 'notesCreate', 'notesUpdate', 'notesDelete']) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
+  const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
+  const notesStoreInitialization = main.indexOf('new notesStore_1.NotesStore');
+  assert.ok(singleInstanceLock >= 0 && notesStoreInitialization > singleInstanceLock);
+  assert.match(main, /app\.on\('second-instance'/);
+  assert.match(main, /new notesStore_1\.NotesStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes'\)\)/);
+  assert.match(main, /noteTombstones: activeNotesStore\.exportTombstones\(\)/);
+  assert.match(main, /replaceSnapshot\(staged\.notes, staged\.noteTombstones\)/);
   assert.match(renderer, /registerNotesPage\(\)/);
   assert.match(notesPage, /id:\s*'notes'/);
   assert.match(notesPage, /import \{ basicSetup, EditorView \} from 'codemirror'/);

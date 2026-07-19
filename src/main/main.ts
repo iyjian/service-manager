@@ -843,6 +843,7 @@ async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
   return createS3SharedAppDataV2({
     hosts: snapshotHosts,
     notes: activeNotesStore.exportSnapshot(),
+    noteTombstones: activeNotesStore.exportTombstones(),
     proxy,
   });
 }
@@ -899,6 +900,7 @@ async function applyS3SharedAppData(
 
     const currentHosts = getStore().listHosts();
     const currentNotes = getNotesStore().exportSnapshot();
+    const currentNoteTombstones = getNotesStore().exportTombstones();
     const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
     const staged = stageS3SharedAppDataForLocalApply(data, {
       hosts: currentHosts,
@@ -906,18 +908,22 @@ async function applyS3SharedAppData(
     });
     const nextHosts = validateS3AppliedHosts(staged.hosts, currentHosts);
     const hostsChanged = !isDeepStrictEqual(currentHosts, nextHosts);
-    const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes);
+    const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes)
+      || !isDeepStrictEqual(currentNoteTombstones, staged.noteTombstones);
     const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
     if (!hostsChanged && !notesChanged && !proxyChanged) return true;
 
     if (hostsChanged) await stopAndClearHostRuntime(currentHosts);
     try {
-      if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes);
+      if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes, staged.noteTombstones);
       if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
       if (hostsChanged) await getStore().replaceHosts(nextHosts);
     } catch (error) {
       const rollbackErrors: unknown[] = [];
-      if (notesChanged) await getNotesStore().replaceSnapshot(currentNotes).catch((rollback) => rollbackErrors.push(rollback));
+      if (notesChanged) {
+        await getNotesStore().replaceSnapshot(currentNotes, currentNoteTombstones)
+          .catch((rollback) => rollbackErrors.push(rollback));
+      }
       if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(currentProxy).catch((rollback) => rollbackErrors.push(rollback));
       if (hostsChanged) await getStore().replaceHosts(currentHosts).catch((rollback) => rollbackErrors.push(rollback));
       if (hostsChanged) {
@@ -1696,8 +1702,24 @@ process.once('SIGTERM', () => {
   requestQuitAfterRuntimeShutdown(true);
 });
 
+const ownsSingleInstanceLock = app.requestSingleInstanceLock();
+if (!ownsSingleInstanceLock) {
+  // Notes directory transactions are intentionally single-writer. A second
+  // Electron process must exit before any persistent store is initialized.
+  app.exit(0);
+} else {
+  app.on('second-instance', () => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  });
+}
+
 app.whenReady()
   .then(async () => {
+    if (!ownsSingleInstanceLock) return;
     const initializedRuntimeLogWriter = new RuntimeLogWriter(path.join(app.getPath('userData'), 'logs'));
     runtimeLogWriter = initializedRuntimeLogWriter;
     setServiceRuntimeDiagnostics((event) =>
@@ -1718,7 +1740,7 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
-    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes.json'));
+    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes'));
     await notesStore.load();
 
     const userDataPath = app.getPath('userData');
@@ -1795,17 +1817,19 @@ app.whenReady()
     app.quit();
   });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+if (ownsSingleInstanceLock) {
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
 
-app.on('before-quit', (event) => {
-  if (quitCoordinator.canQuitImmediately()) {
-    return;
-  }
+  app.on('before-quit', (event) => {
+    if (quitCoordinator.canQuitImmediately()) {
+      return;
+    }
 
-  event.preventDefault();
-  requestQuitAfterRuntimeShutdown();
-});
+    event.preventDefault();
+    requestQuitAfterRuntimeShutdown();
+  });
+}

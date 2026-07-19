@@ -727,8 +727,9 @@ test('ProxyRuntime reports child spawn errors through Proxy error state', async 
 
   const startPromise = runtime.start();
   const rejection = assert.rejects(startPromise, /injected spawn failure/);
-  for (let attempt = 0; attempt < 20 && child.listenerCount('error') === 0; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  const listenerDeadline = Date.now() + 1_000;
+  while (child.listenerCount('error') === 0 && Date.now() < listenerDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
   assert.ok(child.listenerCount('error') > 0);
   child.emit('error', new Error('injected spawn failure'));

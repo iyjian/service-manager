@@ -17,10 +17,21 @@ const {
 } = require('../dist/main/s3Sync');
 const { createS3SharedAppDataV2 } = require('../dist/main/s3DataMerge');
 const {
-  buildS3V2HeadObjectUrl,
-  buildS3V2RevisionObjectUrl,
   decryptS3RevisionV2,
 } = require('../dist/main/s3SyncV2');
+const {
+  createS3SyncHeadV3,
+  createServiceManagerNoteObjectV3,
+  createServiceManagerSyncManifestV3,
+  buildS3V3HeadObjectUrl,
+  buildS3V3ManifestObjectUrl,
+  buildS3V3NoteObjectUrl,
+  encryptS3ManifestV3,
+  encryptS3NoteV3,
+  hashS3V3NoteContent,
+  hashS3V3Object,
+  serializeEncryptedS3ObjectV3,
+} = require('../dist/main/s3SyncV3');
 
 const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
@@ -67,10 +78,11 @@ function note(id, content, updatedAt = T0, overrides = {}) {
   };
 }
 
-function sharedData(notes = [], hosts = []) {
+function sharedData(notes = [], hosts = [], noteTombstones = []) {
   return createS3SharedAppDataV2({
     hosts,
     notes: { schemaVersion: 1, notes },
+    noteTombstones,
     proxy: {
       settings: {
         mode: 'rule',
@@ -108,7 +120,7 @@ async function temporaryDirectory(t) {
 async function writeConfiguredSettings(directory, clientId, overrides = {}) {
   const protector = fakeProtector();
   await writeFile(path.join(directory, 's3-sync.json'), JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -122,6 +134,11 @@ async function writeConfiguredSettings(directory, clientId, overrides = {}) {
 function createRevisionFactory(clientId) {
   let revision = 0;
   return () => `${clientId}-revision-${++revision}`;
+}
+
+function createObjectIdFactory(clientId) {
+  let object = 0;
+  return () => `${clientId}-note-${++object}`;
 }
 
 async function createRuntime(t, options) {
@@ -140,6 +157,7 @@ async function createRuntime(t, options) {
     fetchImpl: options.fetchImpl,
     now: options.now ?? (() => new Date(T0)),
     createRevision: options.createRevision ?? createRevisionFactory(options.clientId),
+    createObjectId: options.createObjectId ?? createObjectIdFactory(options.clientId),
     createClientId: () => options.clientId,
     createRandomBytes: (size) => Buffer.alloc(size, size),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
@@ -166,7 +184,7 @@ class MemoryS3 {
   }
 
   get headUrl() {
-    return buildS3V2HeadObjectUrl(ENDPOINT, BUCKET);
+    return buildS3V3HeadObjectUrl(ENDPOINT, BUCKET);
   }
 
   get head() {
@@ -228,6 +246,76 @@ class MemoryS3 {
     this.objects.set(request.url, { body: String(request.body ?? ''), etag });
     return new Response('', { status: 200, headers: { etag } });
   }
+}
+
+function serializedRemoteNote(entry) {
+  return serializeEncryptedS3ObjectV3(encryptS3NoteV3(
+    createServiceManagerNoteObjectV3(entry.note, entry.objectId),
+    SECRET_KEY,
+    (size) => Buffer.alloc(size, size),
+  ));
+}
+
+function seedGeneratedV3Manifest(s3, entries, revision = 'remote-revision-1') {
+  const references = entries.map((entry) => {
+    const body = serializedRemoteNote(entry);
+    return {
+      id: entry.note.id,
+      objectId: entry.objectId,
+      sha256: hashS3V3Object(body),
+      contentHash: hashS3V3NoteContent(entry.note),
+    };
+  });
+  const manifest = createServiceManagerSyncManifestV3({
+    schemaVersion: 3,
+    hosts: { schemaVersion: 1, items: [] },
+    notes: { schemaVersion: 3, items: references, tombstones: [] },
+    proxy: { schemaVersion: 1, settings: { mode: 'rule', customRules: [] } },
+  }, {
+    appVersion: '0.3.19',
+    revision,
+    clientId: 'remote-client',
+    createdAt: T0,
+  });
+  const manifestBody = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(
+    manifest,
+    SECRET_KEY,
+    (size) => Buffer.alloc(size, size),
+  ));
+  const head = createS3SyncHeadV3(manifest, hashS3V3Object(manifestBody));
+  s3.objects.set(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, revision), {
+    body: manifestBody,
+    etag: '"seed-manifest"',
+  });
+  s3.objects.set(buildS3V3HeadObjectUrl(ENDPOINT, BUCKET), {
+    body: JSON.stringify(head),
+    etag: '"seed-head"',
+  });
+  return references;
+}
+
+function generatedNoteFetch(s3, entries, missingObjectIds = new Set()) {
+  const entryByUrl = new Map(entries.map((entry) => [
+    buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, entry.objectId),
+    entry,
+  ]));
+  const stats = { noteGets: 0 };
+  return {
+    stats,
+    fetch: async (url, options = {}) => {
+      const objectUrl = String(url);
+      const entry = entryByUrl.get(objectUrl);
+      if ((options.method ?? 'GET') === 'GET' && entry) {
+        stats.noteGets += 1;
+        if (missingObjectIds.has(entry.objectId)) return new Response('', { status: 404 });
+        return new Response(serializedRemoteNote(entry), {
+          status: 200,
+          headers: { etag: '"generated-note"' },
+        });
+      }
+      return s3.fetch(url, options);
+    },
+  };
 }
 
 test('S3 settings validation accepts a root endpoint and a separate bucket', () => {
@@ -386,10 +474,12 @@ test('S3SyncRuntime stores Endpoint and Bucket separately with protected credent
   const settingsPath = path.join(userDataPath, 's3-sync.json');
   const persistedText = await readFile(settingsPath, 'utf8');
   const persisted = JSON.parse(persistedText);
-  assert.equal(persisted.schemaVersion, 3);
+  assert.equal(persisted.schemaVersion, 4);
   assert.equal(persisted.endpoint, ENDPOINT);
   assert.equal(persisted.bucket, BUCKET);
   assert.equal(persisted.clientId, 'client-1');
+  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+  assert.equal(typeof persisted.pendingSince, 'string');
   assert.equal('bucketUrl' in persisted, false);
   assert.equal('syncVersion' in persisted, false);
   assert.doesNotMatch(persistedText, /AKIDEXAMPLE|wJalr/);
@@ -397,7 +487,178 @@ test('S3SyncRuntime stores Endpoint and Bucket separately with protected credent
   await runtime.shutdown();
 });
 
-test('S3SyncRuntime migrates schema 1 and 2 settings to schema 3', async (t) => {
+test('S3SyncRuntime lets Settings replace a corrupt local settings file', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  const settingsPath = path.join(userDataPath, 's3-sync.json');
+  await writeFile(settingsPath, '{not-json');
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    createClientId: () => 'recovered-client',
+  });
+
+  const brokenView = await runtime.getSettings();
+  assert.equal(brokenView.endpoint, '');
+  assert.equal(brokenView.hasCredentials, false);
+  assert.equal(brokenView.syncState.status, 'error');
+  assert.match(brokenView.syncState.message, /could not be loaded/);
+
+  const saved = await runtime.saveSettings(settingsDraft());
+  assert.equal(saved.hasCredentials, true);
+  assert.equal(saved.syncState.status, 'pending');
+  await runtime.shutdown();
+
+  const persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(persisted.schemaVersion, 4);
+  assert.equal(persisted.clientId, 'recovered-client');
+  assert.equal(persisted.endpoint, ENDPOINT);
+  assert.equal(persisted.bucket, BUCKET);
+});
+
+test('S3SyncRuntime preserves its merge base across AK, Region, and temporary credential clearing', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  const settingsPath = path.join(userDataPath, 's3-sync.json');
+  await writeConfiguredSettings(userDataPath, 'stable-client', {
+    lastRevision: 'stable-v3-base',
+    lastSyncedAt: T0,
+  });
+  const createRuntime = () => new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    createClientId: () => 'must-not-replace-stable-client',
+  });
+
+  let runtime = createRuntime();
+  await runtime.saveSettings(settingsDraft({
+    region: 'eu-west-1',
+    accessKeyId: 'ROTATEDAK',
+  }));
+  await runtime.shutdown();
+  let persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(persisted.lastRevision, 'stable-v3-base');
+  assert.equal(persisted.lastSyncedAt, T0);
+  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+
+  runtime = createRuntime();
+  await runtime.saveSettings({
+    endpoint: ENDPOINT,
+    bucket: BUCKET,
+    region: 'eu-west-1',
+    clearCredentials: true,
+  });
+  await runtime.shutdown();
+  persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(persisted.lastRevision, 'stable-v3-base');
+  assert.equal('encryptedAccessKeyId' in persisted, false);
+  assert.equal('encryptedSecretAccessKey' in persisted, false);
+  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+  assert.doesNotMatch(JSON.stringify(persisted), new RegExp(SECRET_KEY.replace(/[+]/g, '\\+')));
+
+  runtime = createRuntime();
+  await runtime.saveSettings(settingsDraft({ region: 'eu-west-1', accessKeyId: 'RESTOREDAK' }));
+  await runtime.shutdown();
+  persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(persisted.lastRevision, 'stable-v3-base');
+
+  runtime = createRuntime();
+  await runtime.saveSettings(settingsDraft({
+    region: 'eu-west-1',
+    accessKeyId: 'DIFFERENTAK',
+    secretAccessKey: 'different-encryption-secret',
+  }));
+  await runtime.shutdown();
+  persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal('lastRevision' in persisted, false);
+  assert.equal('lastSyncedAt' in persisted, false);
+});
+
+test('S3SyncRuntime persists pending local intent across shutdown and clears it after success', async (t) => {
+  const s3 = new MemoryS3();
+  const work = await createRuntime(t, {
+    clientId: 'pending-client',
+    data: sharedData([note('note-1', 'initial')]),
+    fetchImpl: s3.fetch,
+  });
+  await work.runtime.syncAllDataToS3();
+  const settingsPath = path.join(work.userDataPath, 's3-sync.json');
+  let persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal('pendingSince' in persisted, false);
+
+  work.state.data = sharedData([note('note-1', 'offline edit', T1)]);
+  work.runtime.markLocalChange();
+  await work.runtime.shutdown();
+  persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(typeof persisted.pendingSince, 'string');
+
+  const reopened = new S3SyncRuntime({
+    userDataPath: work.userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => clone(work.state.data),
+    snapshotApplier: async (data) => { work.state.data = clone(data); },
+    fetchImpl: s3.fetch,
+    now: () => new Date(T1),
+    createRevision: createRevisionFactory('pending-reopened'),
+    createObjectId: createObjectIdFactory('pending-reopened'),
+    createClientId: () => 'must-not-replace-pending-client',
+    createRandomBytes: (size) => Buffer.alloc(size, size),
+  });
+  const reopenedView = await reopened.getSettings();
+  assert.equal(reopenedView.syncState.status, 'pending');
+  assert.equal(reopenedView.syncState.pending, true);
+  await reopened.syncAllDataToS3();
+  await reopened.shutdown();
+  persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal('pendingSince' in persisted, false);
+});
+
+test('S3SyncRuntime persists a new local pending intent while an S3 request is still active', async (t) => {
+  const s3 = new MemoryS3();
+  let releaseRequest;
+  let markRequestStarted;
+  const requestGate = new Promise((resolve) => { releaseRequest = resolve; });
+  const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
+  let firstRequest = true;
+  const fetchImpl = async (url, options) => {
+    if (firstRequest) {
+      firstRequest = false;
+      markRequestStarted();
+      await requestGate;
+    }
+    return s3.fetch(url, options);
+  };
+  const work = await createRuntime(t, {
+    clientId: 'pending-during-request',
+    data: sharedData([note('note-1', 'initial')]),
+    fetchImpl,
+  });
+
+  const syncing = work.runtime.syncAllDataToS3();
+  await requestStarted;
+  try {
+    work.state.data = sharedData([note('note-1', 'edited while syncing', T1)]);
+    work.runtime.markLocalChange();
+
+    const settingsPath = path.join(work.userDataPath, 's3-sync.json');
+    const deadline = Date.now() + 2_000;
+    let persisted;
+    while (!persisted?.pendingSince && Date.now() < deadline) {
+      persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+      if (!persisted.pendingSince) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(typeof persisted?.pendingSince, 'string');
+    assert.equal(work.runtime.getSyncState().pending, true);
+  } finally {
+    releaseRequest();
+    await syncing;
+  }
+});
+
+test('S3SyncRuntime migrates schema 1, 2, and v2-layout schema 3 settings to schema 4', async (t) => {
   const protector = fakeProtector();
   const encryptedAccessKeyId = protector.encryptString(ACCESS_KEY).toString('base64');
   const encryptedSecretAccessKey = protector.encryptString(SECRET_KEY).toString('base64');
@@ -434,6 +695,24 @@ test('S3SyncRuntime migrates schema 1 and 2 settings to schema 3', async (t) => 
         throw new Error('schema 2 must preserve its stable client identity');
       },
     },
+    {
+      name: 'schema 3',
+      value: {
+        schemaVersion: 3,
+        endpoint: ENDPOINT,
+        bucket: BUCKET,
+        region: 'us-east-1',
+        clientId: 'stable-schema-3-client',
+        encryptedAccessKeyId,
+        encryptedSecretAccessKey,
+        lastSyncedAt: T0,
+        lastRevision: 'legacy-v2-head-revision',
+      },
+      expectedClientId: 'stable-schema-3-client',
+      createClientId: () => {
+        throw new Error('schema 3 must preserve its stable client identity');
+      },
+    },
   ];
 
   for (const migration of cases) {
@@ -453,9 +732,9 @@ test('S3SyncRuntime migrates schema 1 and 2 settings to schema 3', async (t) => 
       assert.equal(view.endpoint, ENDPOINT);
       assert.equal(view.bucket, BUCKET);
       assert.equal(view.hasCredentials, true);
-      assert.equal(view.lastRevision, undefined, 'v1 backup state is not a v2 shared-head base');
+      assert.equal(view.lastRevision, undefined, 'older cloud-layout state is not a v3 manifest base');
       const migrated = JSON.parse(await readFile(settingsPath, 'utf8'));
-      assert.equal(migrated.schemaVersion, 3);
+      assert.equal(migrated.schemaVersion, 4);
       assert.equal(migrated.endpoint, ENDPOINT);
       assert.equal(migrated.bucket, BUCKET);
       assert.equal(migrated.clientId, migration.expectedClientId);
@@ -494,7 +773,7 @@ test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) =
   await runtime.shutdown();
 });
 
-test('v2 reconcile performs an initial conditional push', async (t) => {
+test('v3 reconcile uploads each Note independently before its manifest and conditional head', async (t) => {
   const s3 = new MemoryS3();
   const data = sharedData([note('note-1', '# deploy')]);
   const { runtime, userDataPath } = await createRuntime(t, {
@@ -507,11 +786,14 @@ test('v2 reconcile performs an initial conditional push', async (t) => {
   assert.equal(result.action, 'pushed');
   assert.equal(result.revision, 'home-revision-1');
   assert.ok(result.byteLength > 0);
-  assert.ok(s3.objects.has(buildS3V2RevisionObjectUrl(ENDPOINT, BUCKET, result.revision)));
-  assert.ok(s3.objects.has(buildS3V2HeadObjectUrl(ENDPOINT, BUCKET)));
-  assert.equal(s3.calls.filter((call) => call.method === 'PUT').length, 2);
-  assert.equal(s3.calls.find((call) => call.url.endsWith('/revisions/home-revision-1.json')).headers.get('if-none-match'), '*');
+  assert.ok(s3.objects.has(buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, 'home-note-1')));
+  assert.ok(s3.objects.has(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, result.revision)));
+  assert.ok(s3.objects.has(buildS3V3HeadObjectUrl(ENDPOINT, BUCKET)));
+  assert.equal(s3.calls.filter((call) => call.method === 'PUT').length, 3);
+  assert.equal(s3.calls.find((call) => call.url.endsWith('/notes/home-note-1.json')).headers.get('if-none-match'), '*');
+  assert.equal(s3.calls.find((call) => call.url.endsWith('/manifests/home-revision-1.json')).headers.get('if-none-match'), '*');
   assert.equal(s3.calls.find((call) => call.url.endsWith('/head.json') && call.method === 'PUT').headers.get('if-none-match'), '*');
+  assert.equal(s3.calls.some((call) => /\/service-manager\/v[12]\//.test(call.url)), false);
   assert.doesNotMatch([...s3.objects.values()].map((value) => value.body).join('\n'), /# deploy/);
 
   const persisted = await readFile(path.join(userDataPath, 's3-sync.json'), 'utf8');
@@ -520,6 +802,153 @@ test('v2 reconcile performs an initial conditional push', async (t) => {
   assert.equal(view.lastRevision, result.revision);
   assert.equal(view.syncState.status, 'synced');
   assert.equal(view.syncState.pending, false);
+});
+
+test('v3 reconciliation reuses unchanged Note references and transfers only the edited Note object', async (t) => {
+  const s3 = new MemoryS3();
+  const client = await createRuntime(t, {
+    clientId: 'home',
+    data: sharedData([
+      note('note-a', 'A base'),
+      note('note-b', 'B base'),
+    ]),
+    fetchImpl: s3.fetch,
+  });
+  await client.runtime.syncAllDataToS3();
+
+  const initialNotePuts = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+  );
+  assert.equal(initialNotePuts.length, 2);
+
+  client.state.data = sharedData([
+    note('note-a', 'A edited', T1),
+    note('note-b', 'B base'),
+  ]);
+  const result = await client.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pushed');
+
+  const notePuts = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+  );
+  assert.equal(notePuts.length, 3, 'only one new immutable Note object should be uploaded');
+  assert.match(notePuts.at(-1).url, /\/notes\/home-note-3\.json$/);
+  assert.equal(
+    s3.calls.filter((call) => call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')).length,
+    1,
+    'only the edited Note needs its previous cloud body for the three-way merge',
+  );
+});
+
+test('v3 pull downloads only the one remotely changed Note object', async (t) => {
+  const s3 = new MemoryS3();
+  const base = sharedData([
+    note('note-a', 'A base'),
+    note('note-b', 'B base'),
+    note('note-c', 'C base'),
+  ]);
+  const home = await createRuntime(t, { clientId: 'home', data: base, fetchImpl: s3.fetch });
+  const work = await createRuntime(t, { clientId: 'work', data: sharedData(), fetchImpl: s3.fetch });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+
+  home.state.data = sharedData([
+    note('note-a', 'A changed remotely', T1),
+    note('note-b', 'B base'),
+    note('note-c', 'C base'),
+  ]);
+  await home.runtime.syncAllDataToS3();
+  const getsBeforePull = s3.calls.filter((call) =>
+    call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')
+  ).length;
+
+  const result = await work.runtime.syncAllDataToS3();
+  const pullNoteGets = s3.calls.filter((call) =>
+    call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')
+  ).length - getsBeforePull;
+  assert.equal(result.action, 'pulled');
+  assert.equal(pullNoteGets, 1, 'unchanged local Note bodies must satisfy their immutable cloud references');
+  assert.deepEqual(
+    work.state.data.notes.notes.map((item) => [item.id, item.content]),
+    [['note-a', 'A changed remotely'], ['note-b', 'B base'], ['note-c', 'C base']],
+  );
+});
+
+test('v3 materialization stops before downloading all Notes after the 50 MiB aggregate budget is exceeded', async (t) => {
+  const s3 = new MemoryS3();
+  // NUL occupies one JavaScript character but six JSON bytes ("\\u0000").
+  // Every Note shares the same string allocation; encrypted bodies are
+  // generated only when requested, so this exercises the wire-size budget
+  // without retaining a large fixture in memory.
+  const escapedContent = '\0'.repeat(200_000);
+  const entries = Array.from({ length: 56 }, (_, index) => ({
+    objectId: `oversized-object-${index}`,
+    note: note(`oversized-note-${index}`, escapedContent),
+  }));
+  seedGeneratedV3Manifest(s3, entries);
+  const generated = generatedNoteFetch(s3, entries);
+  const client = await createRuntime(t, {
+    clientId: 'bounded-reader',
+    data: sharedData(),
+    fetchImpl: generated.fetch,
+  });
+
+  await assert.rejects(
+    client.runtime.syncAllDataToS3(),
+    /application data snapshot is too large to sync/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const oneNoteBytes = Buffer.byteLength(JSON.stringify(entries[0].note), 'utf8');
+  const notesWithinBudget = Math.floor((50 * 1024 * 1024) / oneNoteBytes);
+  assert.ok(
+    generated.stats.noteGets <= notesWithinBudget + 4,
+    `expected at most one four-request in-flight window past the byte budget, got ${generated.stats.noteGets}`,
+  );
+  assert.ok(generated.stats.noteGets < entries.length, 'the remaining manifest references must not be fetched');
+});
+
+test('v3 materialization stops dispatching work after the first missing Note object', async (t) => {
+  const s3 = new MemoryS3();
+  const entries = Array.from({ length: 24 }, (_, index) => ({
+    objectId: `missing-batch-object-${index}`,
+    note: note(`missing-batch-note-${index}`, `body ${index}`),
+  }));
+  seedGeneratedV3Manifest(s3, entries);
+  const generated = generatedNoteFetch(s3, entries, new Set([entries[0].objectId]));
+  const client = await createRuntime(t, {
+    clientId: 'missing-reader',
+    data: sharedData(),
+    fetchImpl: generated.fetch,
+  });
+
+  await assert.rejects(
+    client.runtime.syncAllDataToS3(),
+    /manifest points to a missing Note object/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(
+    generated.stats.noteGets <= 4,
+    `only the initial concurrency window may start, got ${generated.stats.noteGets} Note GETs`,
+  );
+});
+
+test('v3 reconciliation leaves legacy v1 and v2 cloud objects untouched and unread', async (t) => {
+  const s3 = new MemoryS3();
+  const legacyObjects = new Map([
+    [`${BUCKET_URL}/service-manager/v1/clients/old/revision.json`, { body: 'legacy-v1', etag: '"v1"' }],
+    [`${BUCKET_URL}/service-manager/v2/head.json`, { body: 'legacy-v2', etag: '"v2"' }],
+  ]);
+  for (const [url, value] of legacyObjects) s3.objects.set(url, { ...value });
+  const client = await createRuntime(t, {
+    clientId: 'current',
+    data: sharedData([note('current-note', 'v3 only')]),
+    fetchImpl: s3.fetch,
+  });
+
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+  assert.equal(s3.calls.some((call) => /\/service-manager\/v[12]\//.test(call.url)), false);
+  for (const [url, value] of legacyObjects) assert.deepEqual(s3.objects.get(url), value);
 });
 
 test('a second independent client automatically pulls the shared cloud head', async (t) => {
@@ -546,7 +975,7 @@ test('a second independent client automatically pulls the shared cloud head', as
   assert.equal(
     s3.calls.filter((call) => call.url.includes('/service-manager/v1/clients/')).length,
     0,
-    'v2 clients must coordinate through one shared head',
+    'v3 clients must coordinate through one shared head without reading v1 objects',
   );
 });
 
@@ -595,7 +1024,7 @@ test('a late local edit fences cloud apply and is reconciled before advancing th
   assert.equal(runtime.getSyncState().lastRevision, result.revision);
 });
 
-test('v2 reconcile automatically merges edits to different Notes from two clients', async (t) => {
+test('v3 reconcile automatically merges edits to different Notes from two clients', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([
     note('note-a', 'A base'),
@@ -627,6 +1056,50 @@ test('v2 reconcile automatically merges edits to different Notes from two client
   assert.deepEqual(home.state.data.notes.notes, work.state.data.notes.notes);
 });
 
+test('v3 CAS retry reuses the immutable Note object uploaded by the losing head writer', async (t) => {
+  const s3 = new MemoryS3();
+  const base = sharedData([
+    note('note-a', 'A base'),
+    note('note-b', 'B base'),
+  ]);
+  const home = await createRuntime(t, { clientId: 'home', data: base, fetchImpl: s3.fetch });
+  const work = await createRuntime(t, { clientId: 'work', data: sharedData(), fetchImpl: s3.fetch });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+
+  home.state.data = sharedData([
+    note('note-a', 'A changed at home', T1),
+    note('note-b', 'B base'),
+  ]);
+  work.state.data = sharedData([
+    note('note-a', 'A base'),
+    note('note-b', 'B changed at work', T1),
+  ]);
+  const putsBeforeRace = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+  ).length;
+  s3.raceNextConditionalHeadWrites(2);
+  const results = await Promise.all([
+    home.runtime.syncAllDataToS3(),
+    work.runtime.syncAllDataToS3(),
+  ]);
+
+  assert.deepEqual(results.map((result) => result.action), ['pushed', 'pushed']);
+  const racedNotePuts = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+  ).slice(putsBeforeRace);
+  assert.equal(
+    racedNotePuts.length,
+    2,
+    'each client uploads its changed Note once; the CAS loser must reuse that object on retry',
+  );
+  await Promise.all([
+    home.runtime.syncAllDataToS3(),
+    work.runtime.syncAllDataToS3(),
+  ]);
+  assert.deepEqual(home.state.data.notes.notes, work.state.data.notes.notes);
+});
+
 test('a synced Note deletion remains deleted when a stale client reconnects', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([note('deleted-note', 'remove me')]);
@@ -635,7 +1108,7 @@ test('a synced Note deletion remains deleted when a stale client reconnects', as
   await home.runtime.syncAllDataToS3();
   await work.runtime.syncAllDataToS3();
 
-  home.state.data = sharedData();
+  home.state.data = sharedData([], [], [{ id: 'deleted-note', deletedAt: T2 }]);
   assert.equal((await home.runtime.syncAllDataToS3()).action, 'pushed');
   assert.equal((await work.runtime.syncAllDataToS3()).action, 'pulled');
   assert.deepEqual(work.state.data.notes.notes, []);
@@ -778,6 +1251,35 @@ test('S3SyncRuntime times out a stalled reconcile and shutdown aborts an active 
   await requestStarted;
   await shutdown.runtime.shutdown();
   await assert.rejects(pending, /^Error: S3 sync was cancelled\.$/);
+});
+
+test('S3SyncRuntime does not recreate its auto-sync interval after shutdown starts', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  let releaseSettings;
+  const settingsGate = new Promise((resolve) => { releaseSettings = resolve; });
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    createClientId: () => 'shutdown-settings-client',
+  });
+  runtime.loadSettings = () => settingsGate;
+
+  const starting = runtime.startAutoSync();
+  await new Promise((resolve) => setImmediate(resolve));
+  await runtime.shutdown();
+  releaseSettings({
+    schemaVersion: 4,
+    endpoint: '',
+    bucket: '',
+    region: 'us-east-1',
+    clientId: 'shutdown-settings-client',
+  });
+  await starting;
+
+  assert.equal(runtime.intervalTimer, undefined);
+  assert.equal(runtime.debounceTimer, undefined);
 });
 
 test('S3SyncRuntime returns bounded safe errors without leaking endpoint, data, or credentials', async (t) => {

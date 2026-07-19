@@ -502,11 +502,11 @@ function rawNoteState(
   return tombstone ? { kind: 'deleted', tombstone } : ABSENT_NOTE_STATE;
 }
 
-function effectiveBranchState(branch: NoteState, base: NoteState, now: string): NoteState {
+function effectiveBranchState(branch: NoteState, base: NoteState): NoteState {
   if (branch.kind !== 'absent') return branch;
-  if (base.kind === 'note') return { kind: 'deleted', tombstone: { id: base.note.id, deletedAt: now } };
-  if (base.kind === 'deleted') return base;
-  return branch;
+  // Deletion is explicit. A missing per-Note file must not turn a fresh or
+  // partially recovered local directory into a deletion of the cloud Note.
+  return base;
 }
 
 function notesEquivalent(left: Note, right: Note): boolean {
@@ -629,11 +629,12 @@ export function mergeS3SharedAppDataV2(options: {
   const mergedTombstones: S3NoteTombstone[] = [];
   const conflictNotes: Note[] = [];
   const noteConflicts: S3NoteConflict[] = [];
+  let deletionConflicts = 0;
 
   for (const id of orderedIds) {
     const baseState = rawNoteState(baseNotes, baseTombstones, id);
-    const localState = effectiveBranchState(rawNoteState(localNotes, localTombstones, id), baseState, now);
-    const cloudState = effectiveBranchState(rawNoteState(cloudNotes, cloudTombstones, id), baseState, now);
+    const localState = effectiveBranchState(rawNoteState(localNotes, localTombstones, id), baseState);
+    const cloudState = effectiveBranchState(rawNoteState(cloudNotes, cloudTombstones, id), baseState);
     const localChanged = !noteStatesEquivalent(localState, baseState);
     const cloudChanged = !noteStatesEquivalent(cloudState, baseState);
     let chosen: NoteState;
@@ -657,6 +658,11 @@ export function mergeS3SharedAppDataV2(options: {
         const conflict = createConflictNote(localState.note, now, reservedIds, createId);
         conflictNotes.push(conflict);
         noteConflicts.push({ sourceNoteId: id, conflictNoteId: conflict.id });
+      } else if (localState.kind === 'deleted' && cloudState.kind === 'note') {
+        // There is no local body to preserve as a conflict copy, but the cloud
+        // edit did override an intentional local deletion and must remain
+        // visible as a synchronization conflict rather than an ordinary pull.
+        deletionConflicts += 1;
       }
     }
 
@@ -680,7 +686,7 @@ export function mergeS3SharedAppDataV2(options: {
   });
   return {
     data,
-    conflictCount: noteConflicts.length,
+    conflictCount: noteConflicts.length + deletionConflicts,
     noteConflicts,
     discardedLocalSections,
   };

@@ -194,13 +194,38 @@ test('cloud deletion removes an unchanged local Note without creating a false co
 
 test('a local deletion becomes a tombstone when cloud has not changed', () => {
   const base = data([note('note-1', 'base')]);
-  const local = data([]);
+  const local = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T2 }] });
   const cloud = data([note('note-1', 'base')]);
 
   const result = mergeS3SharedAppDataV2({ base, local, cloud, now: T2 });
 
   assert.deepEqual(result.data.notes.notes, []);
   assert.deepEqual(result.data.notes.tombstones, [{ id: 'note-1', deletedAt: T2 }]);
+  assert.equal(result.conflictCount, 0);
+});
+
+test('a cloud edit that overrides a local deletion is reported as a conflict', () => {
+  const base = data([note('note-1', 'base')]);
+  const local = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T1 }] });
+  const cloud = data([note('note-1', 'cloud edit', T2)]);
+
+  const result = mergeS3SharedAppDataV2({ base, local, cloud, now: T2 });
+
+  assert.deepEqual(result.data.notes.notes, [note('note-1', 'cloud edit', T2)]);
+  assert.deepEqual(result.data.notes.tombstones, []);
+  assert.equal(result.conflictCount, 1);
+  assert.deepEqual(result.noteConflicts, []);
+});
+
+test('a missing local per-Note file is not inferred as a deletion without a tombstone', () => {
+  const base = data([note('note-1', 'base')]);
+  const local = data([]);
+  const cloud = data([note('note-1', 'base')]);
+
+  const result = mergeS3SharedAppDataV2({ base, local, cloud, now: T2 });
+
+  assert.deepEqual(result.data.notes.notes, [note('note-1', 'base')]);
+  assert.deepEqual(result.data.notes.tombstones, []);
   assert.equal(result.conflictCount, 0);
 });
 
