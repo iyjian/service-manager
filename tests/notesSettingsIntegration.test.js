@@ -97,7 +97,8 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(html, /<label for="s3-access-key">Access Key ID<\/label>[\s\S]*?id="s3-access-key-visibility"[^>]*type="button"[^>]*aria-label="Show Access Key ID"[^>]*aria-controls="s3-access-key"[^>]*aria-pressed="false"/);
   assert.match(html, /<label for="s3-secret-key">Secret Access Key<\/label>[\s\S]*?id="s3-secret-key-visibility"[^>]*type="button"[^>]*aria-label="Show Secret Access Key"[^>]*aria-controls="s3-secret-key"[^>]*aria-pressed="false"/);
   assert.match(styles, /\.settings-password-control\{[^}]*position:relative/);
-  assert.match(styles, /\.settings-password-toggle\{[^}]*position:absolute/);
+  assert.match(styles, /\.settings-password-toggle\{[^}]*position:absolute[^}]*top:0[^}]*bottom:0[^}]*width:2\.25rem/);
+  assert.match(styles, /\.settings-password-toggle svg\{[^}]*display:block[^}]*height:1\.25rem[^}]*width:1\.25rem/);
   assert.match(styles, /\.settings-password-toggle\[aria-pressed=true\]/);
   assert.match(html, /id="settings-sync-btn"[^>]*>Sync Now<\/button>/);
 
