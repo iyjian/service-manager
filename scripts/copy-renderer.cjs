@@ -32,6 +32,7 @@ const tipTapSeedPackages = Object.freeze([
   '@tiptap/core',
   '@tiptap/starter-kit',
   '@tiptap/extension-image',
+  '@tiptap/extension-table',
   '@tiptap/pm',
 ]);
 const legacyModeSpecifiers = Object.freeze([

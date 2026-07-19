@@ -7,6 +7,7 @@ import {
   type NodeViewRendererProps,
 } from '@tiptap/core';
 import Image from '@tiptap/extension-image';
+import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import {
   EMPTY_RICH_TEXT_CONTENT,
@@ -26,6 +27,7 @@ import {
   calculateRichTextImageDisplayWidth,
   RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
 } from './notesRichTextImageResize.js';
+import { NotesRichTextTableControls } from './notesRichTextTable.js';
 
 export type RichTextToolbarCommand =
   | 'undo'
@@ -104,7 +106,8 @@ type EditorIconName =
   | 'numberedList'
   | 'quote'
   | 'code'
-  | 'image';
+  | 'image'
+  | 'table';
 
 interface RichTextBlockItem {
   name: string;
@@ -168,6 +171,12 @@ const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2
   quote: ['M3 5.5h3v3H4.25a2 2 0 0 1-2 2', 'M9.5 5.5h3v3h-1.75a2 2 0 0 1-2 2'],
   code: ['m5.25 4-3.5 4 3.5 4', 'm10.75 4 3.5 4-3.5 4', 'm9.5 2.75-3 10.5'],
   image: ['M2.5 3.25h11v9.5h-11z', 'm3.5 11 3-3 2.25 2.25L10.5 8.5l2 2', 'M5.25 6.25h.01'],
+  table: [
+    'M3.75 2.5h8.5c.69 0 1.25.56 1.25 1.25v8.5c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25v-8.5c0-.69.56-1.25 1.25-1.25z',
+    'M8 2.5v11',
+    'M2.5 6.25h11',
+    'M2.5 9.75h11',
+  ],
 };
 
 function createEditorIcon(name: EditorIconName): HTMLElement {
@@ -504,6 +513,16 @@ class NotesRichTextSlashMenu {
       {
         title: 'Code', description: 'Capture a code snippet.', searchTerms: ['codeblock'], icon: 'code',
         run: (editor, range) => { editor.chain().focus().deleteRange(range).toggleCodeBlock().run(); },
+      },
+      {
+        title: 'Table', description: 'Insert a table', searchTerms: ['grid', 'rows', 'columns'], icon: 'table',
+        run: (editor, range) => {
+          editor.chain().focus().deleteRange(range).insertTable({
+            rows: 3,
+            cols: 3,
+            withHeaderRow: true,
+          }).run();
+        },
       },
       {
         title: 'Image', description: 'Upload an image from your computer.', searchTerms: ['photo', 'picture', 'media'], icon: 'image',
@@ -1543,6 +1562,7 @@ export class NotesRichTextEditor {
   private readonly slashMenu!: NotesRichTextSlashMenu;
   private readonly bubbleMenu!: NotesRichTextBubbleMenu;
   private readonly imageBubbleMenu!: NotesRichTextImageBubbleMenu;
+  private readonly tableControls!: NotesRichTextTableControls;
   private readonly host: HTMLElement;
   private readonly overlayRoot: HTMLElement;
   private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT;
@@ -1577,6 +1597,12 @@ export class NotesRichTextEditor {
           shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
         },
       }),
+      TableKit.configure({
+        table: {
+          cellMinWidth: 96,
+          resizable: true,
+        },
+      }),
       createTextStyleExtension(),
       createHighlightExtension(),
       createMathExtension(),
@@ -1597,7 +1623,10 @@ export class NotesRichTextEditor {
           event.preventDefault();
           return true;
         },
-        handleKeyDown: (_view, event) => this.slashMenu?.handleKeyDown(event) ?? false,
+        handleKeyDown: (_view, event) => {
+          if (this.tableControls?.handleKeyDown(event)) return true;
+          return this.slashMenu?.handleKeyDown(event) ?? false;
+        },
         handlePaste: (view, event) => {
           const file = firstImageFile(event.clipboardData?.files);
           if (!file) return false;
@@ -1620,12 +1649,14 @@ export class NotesRichTextEditor {
         this.updateEmptyState();
         this.bubbleMenu?.sync();
         this.imageBubbleMenu?.sync();
+        this.tableControls?.sync();
         this.slashMenu?.sync();
       },
       onSelectionUpdate: () => {
         this.updateToolbarState();
         this.bubbleMenu?.sync();
         this.imageBubbleMenu?.sync();
+        this.tableControls?.sync();
         this.slashMenu?.sync();
       },
       onTransaction: () => {
@@ -1633,12 +1664,14 @@ export class NotesRichTextEditor {
         this.updateEmptyState();
         this.bubbleMenu?.sync();
         this.imageBubbleMenu?.sync();
+        this.tableControls?.sync();
         this.slashMenu?.sync();
       },
       onFocus: () => {
         this.updateToolbarState();
         this.bubbleMenu?.sync();
         this.imageBubbleMenu?.sync();
+        this.tableControls?.sync();
         this.slashMenu?.sync();
       },
       onBlur: () => {
@@ -1647,6 +1680,7 @@ export class NotesRichTextEditor {
           this.updateToolbarState();
           this.bubbleMenu?.sync();
           this.imageBubbleMenu?.sync();
+          this.tableControls?.sync();
           this.slashMenu?.sync();
         });
       },
@@ -1659,6 +1693,7 @@ export class NotesRichTextEditor {
       this.onError,
     );
     this.imageBubbleMenu = new NotesRichTextImageBubbleMenu(this.editor, this.overlayRoot);
+    this.tableControls = new NotesRichTextTableControls(this.editor, this.host, this.overlayRoot);
     this.toolbar.addEventListener('click', this.handleToolbarClick);
     this.host.addEventListener('scroll', this.handleViewportChange, { passive: true });
     window.addEventListener('resize', this.handleViewportChange);
@@ -1681,6 +1716,7 @@ export class NotesRichTextEditor {
       this.updateToolbarState();
       this.bubbleMenu.sync();
       this.imageBubbleMenu.sync();
+      this.tableControls.sync();
       this.slashMenu.sync();
     } catch (error) {
       safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be opened.');
@@ -1749,6 +1785,7 @@ export class NotesRichTextEditor {
     window.removeEventListener('resize', this.handleViewportChange);
     this.bubbleMenu.destroy();
     this.imageBubbleMenu.destroy();
+    this.tableControls.destroy();
     this.slashMenu.destroy();
     this.editor.destroy();
   }
@@ -1767,6 +1804,7 @@ export class NotesRichTextEditor {
   private readonly handleViewportChange = (): void => {
     this.bubbleMenu.sync();
     this.imageBubbleMenu.sync();
+    this.tableControls.sync();
     this.slashMenu.sync();
   };
 

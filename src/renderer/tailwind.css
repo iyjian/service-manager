@@ -665,6 +665,91 @@
     @apply cursor-text text-blue-600 underline decoration-blue-300 underline-offset-2;
   }
 
+  .notes-richtext-content .ProseMirror .tableWrapper {
+    @apply mb-6 mt-0 w-full max-w-full overflow-x-auto overflow-y-hidden;
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper table {
+    @apply !w-full border-collapse text-left;
+    table-layout: fixed;
+    overflow: hidden;
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper th,
+  .notes-richtext-content .ProseMirror .tableWrapper td {
+    @apply relative h-10 min-w-20 border border-zinc-200 px-3 py-2 align-top text-zinc-700;
+    border-style: solid;
+    box-sizing: border-box;
+    line-height: 1.5;
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper th {
+    @apply bg-zinc-50 font-semibold text-zinc-950;
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper th > p,
+  .notes-richtext-content .ProseMirror .tableWrapper td > p {
+    @apply m-0 min-h-6;
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper .selectedCell::after {
+    @apply pointer-events-none absolute inset-0 z-[2] bg-blue-500/15;
+    content: '';
+  }
+
+  .notes-richtext-content .ProseMirror .tableWrapper .column-resize-handle {
+    @apply pointer-events-none absolute -right-0.5 bottom-0 top-0 z-20 w-1 bg-blue-500;
+  }
+
+  .notes-richtext-content .ProseMirror.resize-cursor,
+  .notes-richtext-content .ProseMirror.resize-cursor * {
+    cursor: col-resize;
+  }
+
+  .notes-richtext-table-ui {
+    @apply pointer-events-none absolute inset-0 z-40;
+    font-family: var(--font-family-notes-richtext);
+  }
+
+  .notes-richtext-table-handle {
+    @apply pointer-events-auto absolute inline-flex h-6 cursor-pointer items-center justify-center rounded-sm border border-zinc-200 bg-white p-0 text-zinc-500 shadow-sm outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300;
+    border-style: solid;
+  }
+
+  .notes-richtext-table-row-handle,
+  .notes-richtext-table-table-handle {
+    @apply w-6;
+  }
+
+  .notes-richtext-table-column-handle {
+    @apply w-[30px];
+  }
+
+  .notes-richtext-table-table-handle svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .notes-richtext-table-row-grip {
+    @apply text-xs font-semibold leading-none tracking-normal;
+  }
+
+  .notes-richtext-table-column-grip {
+    @apply -translate-y-0.5 text-base font-semibold leading-none tracking-wider;
+  }
+
+  .notes-richtext-table-menu {
+    @apply pointer-events-auto absolute z-50 grid w-44 gap-0.5 rounded-md border border-zinc-200 bg-white p-1 shadow-xl;
+    border-style: solid;
+  }
+
+  .notes-richtext-table-menu-item {
+    @apply h-8 w-full cursor-pointer rounded-sm border-0 bg-transparent px-2 text-left text-[13px] text-zinc-700 outline-none hover:bg-zinc-100 focus-visible:bg-zinc-100;
+  }
+
+  .notes-richtext-table-menu-item[data-danger='true'] {
+    @apply text-red-600 hover:bg-red-50 focus-visible:bg-red-50;
+  }
+
   .notes-richtext-slash-menu {
     @apply absolute z-40 max-h-[330px] w-72 overflow-y-auto rounded-md border border-zinc-200 bg-white px-1 py-2 shadow-xl;
     font-family: var(--font-family-notes-richtext);
@@ -902,6 +987,32 @@
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror a {
     @apply text-blue-400 decoration-blue-700;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror .tableWrapper th,
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror .tableWrapper td {
+    @apply border-zinc-700 text-zinc-200;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror .tableWrapper th {
+    @apply bg-zinc-900 text-zinc-50;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-table-handle,
+  .notes-content[data-theme='dark'] .notes-richtext-table-menu {
+    @apply border-zinc-700 bg-zinc-900 text-zinc-300;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-table-handle {
+    @apply hover:bg-zinc-800 hover:text-zinc-50 focus-visible:ring-zinc-600;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-table-menu-item {
+    @apply text-zinc-300 hover:bg-zinc-800 focus-visible:bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-table-menu-item[data-danger='true'] {
+    @apply text-red-400 hover:bg-red-950 focus-visible:bg-red-950;
   }
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox'] {

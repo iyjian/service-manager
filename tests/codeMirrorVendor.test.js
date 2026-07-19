@@ -52,6 +52,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     '@tiptap/core',
     '@tiptap/starter-kit',
     '@tiptap/extension-image',
+    '@tiptap/extension-table',
   ];
   for (const specifier of requiredEntries) {
     assert.equal(typeof imports[specifier], 'string', `missing generated import-map entry for ${specifier}`);
@@ -80,6 +81,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     'prosemirror-commands',
     'prosemirror-model',
     'prosemirror-state',
+    'prosemirror-tables',
     'prosemirror-transform',
     'prosemirror-view',
     'orderedmap',

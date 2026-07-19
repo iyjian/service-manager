@@ -13,6 +13,7 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
   const source = await readEditorSource();
   assert.match(source, /import \{[\s\S]*?\bEditor,[\s\S]*?from '@tiptap\/core'/);
   assert.match(source, /import Image from '@tiptap\/extension-image'/);
+  assert.match(source, /import \{ TableKit \} from '@tiptap\/extension-table'/);
   assert.match(source, /import StarterKit from '@tiptap\/starter-kit'/);
   assert.match(source, /return Image\.extend\(\{\s*name: 's3Image'/);
 
@@ -140,6 +141,7 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
     'Numbered List',
     'Quote',
     'Code',
+    'Table',
     'Image',
   ];
   assert.deepEqual(

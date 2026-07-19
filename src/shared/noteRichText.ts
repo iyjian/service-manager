@@ -27,6 +27,9 @@ export const RICH_TEXT_LIMITS = Object.freeze({
   imageBytes: 10 * 1024 * 1024,
   imageDimension: 8_192,
   imagePixels: 40_000_000,
+  tableRows: 1_000,
+  tableColumns: 200,
+  tableCellWidth: 8_192,
 } as const);
 
 export interface RichTextMark {
@@ -64,6 +67,10 @@ const NODE_TYPES = new Set([
   'hardBreak',
   'math',
   's3Image',
+  'table',
+  'tableRow',
+  'tableHeader',
+  'tableCell',
 ]);
 const MARK_ORDER = new Map([
   ['link', 0],
@@ -86,6 +93,7 @@ const BLOCK_TYPES = new Set([
   'codeBlock',
   'horizontalRule',
   's3Image',
+  'table',
 ]);
 const INLINE_TYPES = new Set(['text', 'hardBreak', 'math']);
 const IMAGE_MIME_TYPES = new Set<NoteImageMimeType>([
@@ -422,7 +430,134 @@ function isAllowedChild(parentType: string, childType: string): boolean {
     return INLINE_TYPES.has(childType);
   }
   if (parentType === 'codeBlock') return childType === 'text';
+  if (parentType === 'table') return childType === 'tableRow';
+  if (parentType === 'tableRow') return childType === 'tableHeader' || childType === 'tableCell';
+  if (parentType === 'tableHeader' || parentType === 'tableCell') {
+    return BLOCK_TYPES.has(childType);
+  }
   return false;
+}
+
+function normalizeTableCellAttributes(value: unknown): Record<string, unknown> {
+  if (value !== undefined && !isRecord(value)) {
+    invalid('Rich text table cell attributes are invalid.');
+  }
+  const attributes = value ?? {};
+  if (!isRecord(attributes)) invalid('Rich text table cell attributes are invalid.');
+  assertAllowedKeys(
+    attributes,
+    new Set(['colspan', 'rowspan', 'colwidth', 'align']),
+    'A rich text table cell',
+  );
+
+  const colspan = attributes.colspan === undefined
+    ? 1
+    : boundedInteger(
+      attributes.colspan,
+      1,
+      RICH_TEXT_LIMITS.tableColumns,
+      'The rich text table cell column span',
+    );
+  const rowspan = attributes.rowspan === undefined
+    ? 1
+    : boundedInteger(
+      attributes.rowspan,
+      1,
+      RICH_TEXT_LIMITS.tableRows,
+      'The rich text table cell row span',
+    );
+
+  let colwidth: number[] | null = null;
+  if (attributes.colwidth !== undefined && attributes.colwidth !== null) {
+    if (!Array.isArray(attributes.colwidth) || attributes.colwidth.length !== colspan) {
+      invalid('The rich text table cell column widths are invalid.');
+    }
+    const widths = attributes.colwidth.map((width) => boundedInteger(
+      width,
+      0,
+      RICH_TEXT_LIMITS.tableCellWidth,
+      'A rich text table cell column width',
+    ));
+    // prosemirror-tables uses zero placeholders for the untouched columns of
+    // a spanning cell. An entirely unset vector is equivalent to null.
+    if (widths.some((width) => width > 0)) colwidth = widths;
+  }
+
+  let align: 'left' | 'center' | 'right' | null = null;
+  if (attributes.align !== undefined && attributes.align !== null) {
+    if (attributes.align !== 'left' && attributes.align !== 'center' && attributes.align !== 'right') {
+      invalid('The rich text table cell alignment is invalid.');
+    }
+    align = attributes.align;
+  }
+
+  return { colspan, rowspan, colwidth, align };
+}
+
+function tableCellSpans(node: RichTextNode): { colspan: number; rowspan: number } {
+  if (!isRecord(node.attrs)) invalid('Rich text table cell attributes are invalid.');
+  return {
+    colspan: boundedInteger(
+      node.attrs.colspan,
+      1,
+      RICH_TEXT_LIMITS.tableColumns,
+      'The rich text table cell column span',
+    ),
+    rowspan: boundedInteger(
+      node.attrs.rowspan,
+      1,
+      RICH_TEXT_LIMITS.tableRows,
+      'The rich text table cell row span',
+    ),
+  };
+}
+
+/** Rejects malformed span maps before ProseMirror's table plugins can allocate or repair them. */
+function validateTableGeometry(rows: RichTextNode[]): void {
+  const occupied = Array.from({ length: rows.length }, () => [] as boolean[]);
+  let tableWidth: number | undefined;
+
+  for (const [rowIndex, row] of rows.entries()) {
+    const cells = row.content ?? [];
+    let column = 0;
+    for (const cell of cells) {
+      while (occupied[rowIndex][column]) column += 1;
+      const { colspan, rowspan } = tableCellSpans(cell);
+      if (
+        column + colspan > RICH_TEXT_LIMITS.tableColumns
+        || rowIndex + rowspan > rows.length
+      ) {
+        invalid('Rich text table cell spans are outside the table.');
+      }
+      for (let targetRow = rowIndex; targetRow < rowIndex + rowspan; targetRow += 1) {
+        for (let targetColumn = column; targetColumn < column + colspan; targetColumn += 1) {
+          if (occupied[targetRow][targetColumn]) {
+            invalid('Rich text table cell spans overlap.');
+          }
+          occupied[targetRow][targetColumn] = true;
+        }
+      }
+      column += colspan;
+    }
+
+    const rowWidth = occupied[rowIndex].length;
+    let rowHasGap = false;
+    for (let occupiedColumn = 0; occupiedColumn < rowWidth; occupiedColumn += 1) {
+      if (!occupied[rowIndex][occupiedColumn]) {
+        rowHasGap = true;
+        break;
+      }
+    }
+    if (
+      rowWidth < 1
+      || rowWidth > RICH_TEXT_LIMITS.tableColumns
+      || rowHasGap
+    ) {
+      invalid('Rich text table rows must form a complete rectangle.');
+    }
+    if (tableWidth === undefined) tableWidth = rowWidth;
+    else if (rowWidth !== tableWidth) invalid('Rich text table rows must have the same width.');
+  }
 }
 
 function normalizeNode(
@@ -490,6 +625,41 @@ function normalizeNode(
       }
     }
     return { type, attrs };
+  }
+
+  if (type === 'table') {
+    assertAllowedKeys(value, new Set(['type', 'content']), 'A rich text table node');
+    if (
+      !Array.isArray(value.content)
+      || value.content.length < 1
+      || value.content.length > RICH_TEXT_LIMITS.tableRows
+    ) {
+      invalid('A rich text table must contain a bounded set of rows.');
+    }
+    const content = normalizeContentArray(value.content, type, depth + 1, state);
+    if (!content) invalid('A rich text table must contain a row.');
+    validateTableGeometry(content);
+    return { type, content };
+  }
+
+  if (type === 'tableRow') {
+    assertAllowedKeys(value, new Set(['type', 'content']), 'A rich text table row node');
+    if (
+      value.content !== undefined
+      && (!Array.isArray(value.content) || value.content.length > RICH_TEXT_LIMITS.tableColumns)
+    ) {
+      invalid('A rich text table row must contain a bounded set of cells.');
+    }
+    const content = normalizeContentArray(value.content, type, depth + 1, state);
+    return { type, ...(content ? { content } : {}) };
+  }
+
+  if (type === 'tableHeader' || type === 'tableCell') {
+    assertAllowedKeys(value, new Set(['type', 'attrs', 'content']), `A rich text ${type} node`);
+    const attrs = normalizeTableCellAttributes(value.attrs);
+    const content = normalizeContentArray(value.content, type, depth + 1, state);
+    if (!content) invalid('A rich text table cell must contain block content.');
+    return { type, attrs, content };
   }
 
   if (type === 'heading') {
@@ -629,6 +799,19 @@ function appendPlainText(node: RichTextNode, chunks: string[]): void {
   }
   if (node.type === 'horizontalRule') {
     chunks.push('\n');
+    return;
+  }
+  if (node.type === 'table') {
+    for (const row of node.content ?? []) {
+      const cells = row.content ?? [];
+      for (const [index, cell] of cells.entries()) {
+        const cellChunks: string[] = [];
+        for (const child of cell.content ?? []) appendPlainText(child, cellChunks);
+        chunks.push(cellChunks.join('').replace(/\n+$/g, ''));
+        if (index < cells.length - 1) chunks.push('\t');
+      }
+      chunks.push('\n');
+    }
     return;
   }
   for (const child of node.content ?? []) appendPlainText(child, chunks);

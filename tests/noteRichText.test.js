@@ -222,10 +222,11 @@ test('rich text safely canonicalizes the bounded Novel math and color model', ()
 });
 
 test('canonical rich text round-trips through the configured Tiptap schema without drift', async () => {
-  const [{ getSchema }, { default: StarterKit }, { default: Image }] = await Promise.all([
+  const [{ getSchema }, { default: StarterKit }, { default: Image }, { TableKit }] = await Promise.all([
     import('@tiptap/core'),
     import('@tiptap/starter-kit'),
     import('@tiptap/extension-image'),
+    import('@tiptap/extension-table'),
   ]);
   const S3Image = Image.extend({
     name: 's3Image',
@@ -245,7 +246,11 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
       };
     },
   });
-  const schema = getSchema([StarterKit, S3Image]);
+  const schema = getSchema([
+    StarterKit,
+    TableKit.configure({ table: { resizable: true } }),
+    S3Image,
+  ]);
   const canonical = normalizeRichTextContent({
     type: 'doc',
     content: [{
@@ -265,6 +270,28 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
     }, {
       type: 's3Image',
       attrs: { ...imageReference(), displayWidth: 360, alignment: 'center' },
+    }, {
+      type: 'table',
+      content: [{
+        type: 'tableRow',
+        content: [{
+          type: 'tableHeader',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Name' }] }],
+        }, {
+          type: 'tableHeader',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Status' }] }],
+        }],
+      }, {
+        type: 'tableRow',
+        content: [{
+          type: 'tableCell',
+          attrs: { colspan: 1, rowspan: 1, colwidth: [160], align: 'left' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'API' }] }],
+        }, {
+          type: 'tableCell',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready' }] }],
+        }],
+      }],
     }],
   });
 
@@ -278,6 +305,183 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
     }
   }
   assert.equal(normalizeRichTextContent(tiptapJson), canonical);
+});
+
+test('rich text tables retain strict Tiptap cell attributes and readable rows', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'table',
+      content: [{
+        type: 'tableRow',
+        content: [{
+          type: 'tableHeader',
+          attrs: { align: 'left' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Name' }] }],
+        }, {
+          type: 'tableHeader',
+          attrs: { colwidth: [144], align: 'center' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Status' }] }],
+        }, {
+          type: 'tableHeader',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Owner' }] }],
+        }],
+      }, {
+        type: 'tableRow',
+        content: [{
+          type: 'tableCell',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'API' }] }],
+        }, {
+          type: 'tableCell',
+          attrs: { colspan: 2, rowspan: 1, colwidth: [0, 180], align: 'right' },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready' }] }],
+        }],
+      }],
+    }],
+  });
+
+  const document = JSON.parse(normalized);
+  assert.deepEqual(document.content[0].content[0].content[0].attrs, {
+    colspan: 1,
+    rowspan: 1,
+    colwidth: null,
+    align: 'left',
+  });
+  assert.deepEqual(document.content[0].content[0].content[1].attrs, {
+    colspan: 1,
+    rowspan: 1,
+    colwidth: [144],
+    align: 'center',
+  });
+  assert.deepEqual(document.content[0].content[1].content[1].attrs, {
+    colspan: 2,
+    rowspan: 1,
+    colwidth: [0, 180],
+    align: 'right',
+  });
+  assert.equal(normalizeRichTextContent(normalized), normalized);
+  assert.equal(extractRichTextPlainText(normalized), 'Name\tStatus\tOwner\nAPI\tReady');
+});
+
+test('rich text tables accept bounded rectangular row and column spans', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'table',
+      content: [{
+        type: 'tableRow',
+        content: [{
+          type: 'tableHeader',
+          attrs: { rowspan: 2 },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Service' }] }],
+        }, {
+          type: 'tableHeader',
+          attrs: { colspan: 2 },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Health' }] }],
+        }],
+      }, {
+        type: 'tableRow',
+        content: [{
+          type: 'tableCell',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Ready' }] }],
+        }, {
+          type: 'tableCell',
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Stable' }] }],
+        }],
+      }],
+    }],
+  });
+  assert.equal(normalizeRichTextContent(normalized), normalized);
+});
+
+test('rich text tables accept an official empty row fully covered by a row span', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'table',
+      content: [{
+        type: 'tableRow',
+        content: [{
+          type: 'tableCell',
+          attrs: { rowspan: 2 },
+          content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Merged' }] }],
+        }],
+      }, {
+        type: 'tableRow',
+      }],
+    }],
+  });
+  assert.equal(normalizeRichTextContent(normalized), normalized);
+});
+
+test('rich text tables reject unsupported attributes, malformed cells, and invalid geometry', () => {
+  const paragraph = { type: 'paragraph' };
+  const cell = (attrs = undefined) => ({
+    type: 'tableCell',
+    ...(attrs === undefined ? {} : { attrs }),
+    content: [paragraph],
+  });
+  const table = (rows) => ({
+    type: 'doc',
+    content: [{
+      type: 'table',
+      content: rows.map((content) => ({ type: 'tableRow', content })),
+    }],
+  });
+
+  for (const attrs of [
+    { class: 'unsafe' },
+    { style: 'display:none' },
+    { colspan: 0 },
+    { colspan: 1.5 },
+    { colspan: RICH_TEXT_LIMITS.tableColumns + 1 },
+    { rowspan: 0 },
+    { rowspan: RICH_TEXT_LIMITS.tableRows + 1 },
+    { colwidth: [] },
+    { colwidth: [-1] },
+    { colwidth: [RICH_TEXT_LIMITS.tableCellWidth + 1] },
+    { colspan: 2, colwidth: [100] },
+    { align: 'justify' },
+  ]) {
+    assert.throws(() => normalizeRichTextContent(table([[cell(attrs)]])), /rich text table/i);
+  }
+
+  const zeroWidths = JSON.parse(normalizeRichTextContent(table([[
+    cell({ colspan: 2, colwidth: [0, 0] }),
+  ]])));
+  assert.equal(zeroWidths.content[0].content[0].content[0].attrs.colwidth, null);
+
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'table', content: [] }],
+  }), /table must contain/i);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'table', content: [{ type: 'tableRow', content: [] }] }],
+  }), /complete rectangle/i);
+  assert.throws(() => normalizeRichTextContent(table([[{
+    type: 'tableCell',
+    content: [],
+  }]])), /cell must contain/i);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'table',
+      content: [{ type: 'tableCell', content: [paragraph] }],
+    }],
+  }), /invalid location/i);
+  assert.throws(() => normalizeRichTextContent(table([[cell(), cell()], [cell()]])), /same width/i);
+  assert.throws(() => normalizeRichTextContent(table([[cell({ rowspan: 2 })]])), /outside the table/i);
+  assert.throws(() => normalizeRichTextContent(table([
+    [cell(), cell({ rowspan: 2 }), cell()],
+    [cell({ colspan: 2 }), cell()],
+  ])), /overlap/i);
+
+  const tooManyRows = Array.from(
+    { length: RICH_TEXT_LIMITS.tableRows + 1 },
+    () => [cell()],
+  );
+  assert.throws(() => normalizeRichTextContent(table(tooManyRows)), /bounded set of rows/i);
 });
 
 test('s3Image nodes retain only strict non-URL S3 asset references and searchable alt text', () => {
