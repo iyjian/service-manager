@@ -26,7 +26,17 @@ function bareModuleSpecifiers(source) {
   return specifiers;
 }
 
-test('CodeMirror browser vendor graph has generated import-map coverage for every bare dependency', async () => {
+function relativeModuleSpecifiers(source) {
+  const specifiers = new Set();
+  const declaration = /\b(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?['"](\.\.?\/[^'"]+)['"]/g;
+  const dynamicImport = /\bimport\s*\(\s*['"](\.\.?\/[^'"]+)['"]/g;
+  for (const expression of [declaration, dynamicImport]) {
+    for (const match of source.matchAll(expression)) specifiers.add(match[1]);
+  }
+  return specifiers;
+}
+
+test('renderer browser vendor graph has exact import-map coverage for CodeMirror and Tiptap', async () => {
   const html = await readFile(path.join(rendererRoot, 'index.html'), 'utf8');
   const imports = readImportMap(html).imports;
   const requiredEntries = [
@@ -39,6 +49,9 @@ test('CodeMirror browser vendor graph has generated import-map coverage for ever
     '@codemirror/state',
     '@codemirror/legacy-modes/mode/shell',
     '@codemirror/legacy-modes/mode/sql',
+    '@tiptap/core',
+    '@tiptap/starter-kit',
+    '@tiptap/extension-image',
   ];
   for (const specifier of requiredEntries) {
     assert.equal(typeof imports[specifier], 'string', `missing generated import-map entry for ${specifier}`);
@@ -49,6 +62,45 @@ test('CodeMirror browser vendor graph has generated import-map coverage for ever
   );
   assert.equal(imports['@codemirror/legacy-modes/mode/sql'], './vendor/codemirror-legacy-modes-sql.js');
 
+  const tipTapPmManifest = JSON.parse(
+    await readFile(path.join(__dirname, '..', 'node_modules', '@tiptap', 'pm', 'package.json'), 'utf8')
+  );
+  const tipTapPmSpecifiers = Object.keys(tipTapPmManifest.exports)
+    .filter((exportKey) => exportKey.startsWith('./') && !exportKey.includes('*'))
+    .map((exportKey) => `@tiptap/pm${exportKey.slice(1)}`)
+    .sort();
+  assert.equal(imports['@tiptap/pm'], undefined, '@tiptap/pm intentionally has no root export');
+  assert.deepEqual(
+    Object.keys(imports)
+      .filter((specifier) => specifier.startsWith('@tiptap/pm/'))
+      .sort(),
+    tipTapPmSpecifiers
+  );
+  for (const specifier of [
+    'prosemirror-commands',
+    'prosemirror-model',
+    'prosemirror-state',
+    'prosemirror-transform',
+    'prosemirror-view',
+    'orderedmap',
+    'rope-sequence',
+    'w3c-keyname',
+  ]) {
+    assert.equal(typeof imports[specifier], 'string', `missing recursive Tiptap dependency ${specifier}`);
+  }
+
+  assert.deepEqual(Object.keys(imports), Object.keys(imports).sort(), 'import-map entries must be stable');
+  assert.equal(
+    Object.keys(imports).some((specifier) => specifier.endsWith('/')),
+    false,
+    'import-map entries must map exact specifiers instead of package prefixes'
+  );
+  assert.equal(
+    new Set(Object.values(imports)).size,
+    Object.keys(imports).length,
+    'each exact import-map entry must own one vendor file'
+  );
+
   const vendorRoot = path.join(rendererRoot, 'vendor');
   const vendorFiles = (await readdir(vendorRoot)).filter((name) => name.endsWith('.js')).sort();
   assert.equal(vendorFiles.length, Object.keys(imports).length);
@@ -57,6 +109,21 @@ test('CodeMirror browser vendor graph has generated import-map coverage for ever
     assert.match(target, /^\.\/vendor\/[a-zA-Z0-9.-]+\.js$/);
     const targetPath = path.resolve(rendererRoot, target);
     assert.equal((await stat(targetPath)).isFile(), true, `${specifier} must map to a copied vendor file`);
+  }
+
+  const visitedModules = new Set();
+  async function verifyRelativeClosure(file) {
+    if (visitedModules.has(file)) return;
+    visitedModules.add(file);
+    const source = await readFile(file, 'utf8');
+    for (const specifier of relativeModuleSpecifiers(source)) {
+      const dependency = path.resolve(path.dirname(file), specifier);
+      assert.equal((await stat(dependency)).isFile(), true, `${file} must retain ${specifier}`);
+      await verifyRelativeClosure(dependency);
+    }
+  }
+  for (const target of Object.values(imports)) {
+    await verifyRelativeClosure(path.resolve(rendererRoot, target));
   }
 
   for (const file of vendorFiles) {

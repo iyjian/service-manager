@@ -9,6 +9,7 @@ import type {
   ProxyMode,
   ProxySettings,
 } from '../shared/types';
+import { normalizeRichTextContent } from '../shared/noteRichText';
 import { NOTE_LIMITS, NOTES_SCHEMA_VERSION, type NotesSnapshot } from './notesStore';
 import { normalizeProxyCustomRules } from './proxy/proxyExceptions';
 
@@ -283,7 +284,7 @@ function parseHosts(value: unknown): S3SharedAppDataV2['hosts'] {
 }
 
 const NOTE_LANGUAGES = new Set<Note['language']>([
-  'markdown', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text',
+  'markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text',
 ]);
 
 function parseNote(value: unknown, index: number): Note {
@@ -308,10 +309,18 @@ function parseNote(value: unknown, index: number): Note {
     tagKeys.add(key);
     return normalized;
   });
+  let content = value.content;
+  if (value.language === 'richtext') {
+    try {
+      content = normalizeRichTextContent(content);
+    } catch {
+      throw new Error(`Shared Note ${index + 1} rich text content is invalid.`);
+    }
+  }
   return {
     id: stableId(value.id, `Shared Note ${index + 1} ID`),
     name,
-    content: value.content,
+    content,
     language: value.language as Note['language'],
     tags,
     createdAt: isoTimestamp(value.createdAt, `Shared Note ${index + 1} created timestamp`),

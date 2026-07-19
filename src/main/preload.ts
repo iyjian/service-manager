@@ -96,6 +96,8 @@ const notesApi: NotesApi = {
   createNote: () => ipcRenderer.invoke('notes:create'),
   updateNote: (id: string, draft: NoteDraft) => ipcRenderer.invoke('notes:update', { id, draft }),
   deleteNote: (id: string) => ipcRenderer.invoke('notes:delete', id),
+  uploadImage: (input) => ipcRenderer.invoke('notes:image:upload', input),
+  loadImage: (reference) => ipcRenderer.invoke('notes:image:load', reference),
   onFlushRequested: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, requestId: unknown): void => {
       if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;

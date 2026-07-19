@@ -236,12 +236,16 @@
   }
 
   .notes-content {
-    @apply relative h-full min-h-0 w-full overflow-hidden bg-zinc-950;
+    @apply relative h-full min-h-0 w-full overflow-hidden;
   }
 
-  .notes-content[data-empty='true']::after {
+  .notes-content[data-mode='code'][data-empty='true']::after {
     content: 'Write Markdown or paste a code snippet\2026';
     @apply pointer-events-none absolute left-[52px] top-[13px] z-10 text-[13px] text-zinc-600;
+  }
+
+  .notes-code-content {
+    @apply h-full min-h-0 w-full overflow-hidden bg-zinc-950;
   }
 
   .notes-content .cm-editor {
@@ -286,6 +290,122 @@
 
   .notes-content .cm-cursor {
     @apply border-l-zinc-100;
+  }
+
+  .notes-richtext-editor {
+    @apply grid h-full min-h-0 min-w-0 bg-white;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .notes-richtext-toolbar {
+    @apply flex min-w-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-2 py-1;
+  }
+
+  .notes-richtext-tool {
+    @apply inline-flex h-7 min-w-7 shrink-0 cursor-pointer items-center justify-center rounded border border-transparent bg-transparent px-1.5 text-[12px] text-zinc-600 outline-none transition hover:border-zinc-200 hover:bg-white hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-35;
+  }
+
+  .notes-richtext-tool svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .notes-richtext-tool-text {
+    font-family: var(--font-family-notes-code);
+  }
+
+  .notes-richtext-tool[data-active='true'] {
+    @apply border-zinc-300 bg-white text-zinc-950 shadow-sm;
+  }
+
+  .notes-richtext-divider {
+    @apply mx-1 h-4 w-px shrink-0 bg-zinc-300;
+  }
+
+  .notes-richtext-content {
+    @apply min-h-0 overflow-auto bg-white;
+  }
+
+  .notes-richtext-content .ProseMirror {
+    @apply min-h-full px-5 py-4 text-zinc-800 outline-none;
+    font-family: var(--font-family-notes-ui);
+    font-size: var(--notes-editor-font-size);
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+  }
+
+  .notes-richtext-content .ProseMirror:focus {
+    @apply ring-2 ring-inset ring-zinc-300;
+  }
+
+  .notes-richtext-content .ProseMirror > *:first-child {
+    @apply mt-0;
+  }
+
+  .notes-richtext-content .ProseMirror > *:last-child {
+    @apply mb-0;
+  }
+
+  .notes-richtext-content .ProseMirror p {
+    @apply my-2;
+  }
+
+  .notes-richtext-content .ProseMirror h1,
+  .notes-richtext-content .ProseMirror h2,
+  .notes-richtext-content .ProseMirror h3 {
+    @apply mb-2 mt-4 font-bold leading-tight text-zinc-950;
+  }
+
+  .notes-richtext-content .ProseMirror h1 { @apply text-2xl; }
+  .notes-richtext-content .ProseMirror h2 { @apply text-xl; }
+  .notes-richtext-content .ProseMirror h3 { @apply text-lg; }
+
+  .notes-richtext-content .ProseMirror ul,
+  .notes-richtext-content .ProseMirror ol {
+    @apply my-2 pl-6;
+  }
+
+  .notes-richtext-content .ProseMirror ul { @apply list-disc; }
+  .notes-richtext-content .ProseMirror ol { @apply list-decimal; }
+
+  .notes-richtext-content .ProseMirror blockquote {
+    @apply my-3 border-l-2 border-zinc-300 pl-3 text-zinc-600;
+  }
+
+  .notes-richtext-content .ProseMirror code {
+    @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.9em] text-zinc-900;
+    font-family: var(--font-family-notes-code);
+  }
+
+  .notes-richtext-content .ProseMirror pre {
+    @apply my-3 overflow-x-auto rounded-lg bg-zinc-950 p-3 text-zinc-100;
+  }
+
+  .notes-richtext-content .ProseMirror pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+
+  .notes-richtext-content .ProseMirror hr {
+    @apply my-4 border-0 border-t border-zinc-300;
+  }
+
+  .notes-richtext-image {
+    @apply my-3 grid w-fit max-w-full gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1.5;
+  }
+
+  .notes-richtext-image img {
+    @apply block h-auto max-h-[520px] max-w-full rounded object-contain;
+  }
+
+  .notes-richtext-image-status {
+    @apply px-1 py-2 text-center text-[11px] text-zinc-500;
+  }
+
+  .notes-richtext-image[data-state='error'] {
+    @apply border-red-200 bg-red-50;
+  }
+
+  .notes-richtext-image[data-state='error'] .notes-richtext-image-status {
+    @apply text-red-600;
   }
 
   .host-dialog.settings-dialog {

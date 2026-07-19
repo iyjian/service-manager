@@ -116,6 +116,28 @@ test('S3 v3 encrypts and decrypts with a user-defined Sync Encryption Key', () =
   assert.throws(() => decryptS3NoteV3(encrypted, 'different key 2026!'), /could not be decrypted/);
 });
 
+test('S3 v3 Note objects canonicalize rich text and reject unsafe rich text payloads', () => {
+  const objectId = createS3V3ObjectId(deterministicBytes);
+  const object = createServiceManagerNoteObjectV3(note({
+    language: 'richtext',
+    content: JSON.stringify({
+      content: [{ type: 'paragraph', content: [{ text: 'Shared', type: 'text' }] }],
+      type: 'doc',
+    }, null, 2),
+  }), objectId);
+  assert.equal(
+    object.note.content,
+    '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Shared"}]}]}',
+  );
+  assert.throws(
+    () => createServiceManagerNoteObjectV3(note({
+      language: 'richtext',
+      content: JSON.stringify({ type: 'doc', content: [{ type: 'html', text: '<img src=x>' }] }),
+    }), objectId),
+    /rich text content is invalid/,
+  );
+});
+
 test('S3 v3 encrypts each Note independently and binds its type and opaque object identity', () => {
   const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 7));
   const object = createServiceManagerNoteObjectV3(note(), objectId);

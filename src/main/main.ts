@@ -94,6 +94,8 @@ const IPC_CHANNELS = {
   notesCreate: 'notes:create',
   notesUpdate: 'notes:update',
   notesDelete: 'notes:delete',
+  notesImageUpload: 'notes:image:upload',
+  notesImageLoad: 'notes:image:load',
   notesFlushRequest: 'notes:flush-request',
   notesFlushResult: 'notes:flush-result',
   uiPreferencesGet: 'settings:ui:get',
@@ -979,6 +981,12 @@ function registerIpcHandlers(): void {
     if (typeof id !== 'string') throw new Error('Note ID is invalid.');
     await mutateS3SharedData(() => getNotesStore().delete(id));
   });
+  ipcMain.handle(IPC_CHANNELS.notesImageUpload, async (_event, input: unknown) =>
+    getS3SyncRuntime().uploadNoteImage(input)
+  );
+  ipcMain.handle(IPC_CHANNELS.notesImageLoad, async (_event, reference: unknown) =>
+    getS3SyncRuntime().loadNoteImage(reference)
+  );
   ipcMain.on(IPC_CHANNELS.notesFlushResult, (event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.ok !== 'boolean') return;
     const pending = pendingRendererNotesFlushes.get(payload.requestId);

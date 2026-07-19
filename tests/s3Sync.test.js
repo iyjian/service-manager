@@ -113,6 +113,16 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function png(width = 320, height = 180) {
+  const bytes = Buffer.alloc(24);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes, 0);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write('IHDR', 12, 'ascii');
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  return bytes;
+}
+
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'service-manager-s3-sync-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -325,6 +335,62 @@ function generatedNoteFetch(s3, entries, missingObjectIds = new Set()) {
     },
   };
 }
+
+test('S3 runtime keeps Notes image upload and load on the configured private target', async (t) => {
+  const s3 = new MemoryS3();
+  const work = await createRuntime(t, {
+    clientId: 'notes-image-client',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+  });
+  const source = png(640, 360);
+  const uploaded = await work.runtime.uploadNoteImage({
+    bytes: new Uint8Array(source),
+    mimeType: 'image/png',
+    alt: 'Preview',
+  });
+  assert.equal(uploaded.status, 'uploaded');
+  assert.match(
+    s3.calls.at(-1).url,
+    /\/example-bucket\/service-manager\/v3\/images\/[A-Za-z0-9_-]{32}\.json$/,
+  );
+  assert.equal(s3.calls.at(-1).headers.get('if-none-match'), '*');
+  assert.doesNotMatch(JSON.stringify(uploaded), /AKIDEXAMPLE|EXAMPLEKEY|s3\.example/);
+
+  const loaded = await work.runtime.loadNoteImage(uploaded.reference);
+  assert.equal(loaded.status, 'loaded');
+  assert.equal(loaded.mimeType, 'image/png');
+  assert.deepEqual(Buffer.from(loaded.bytes), source);
+
+  const objectUrl = s3.calls.at(-1).url;
+  s3.objects.delete(objectUrl);
+  assert.deepEqual(await work.runtime.loadNoteImage(uploaded.reference), { status: 'missing' });
+  assert.deepEqual(
+    await work.runtime.loadNoteImage({ ...uploaded.reference, objectId: 'invalid' }),
+    { status: 'error' },
+  );
+});
+
+test('S3 runtime reports Notes image storage as unavailable until Endpoint, Bucket, AK, and SK are saved', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  let fetchCalls = 0;
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.20',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return new Response('', { status: 500 });
+    },
+  });
+  t.after(() => runtime.shutdown());
+  assert.deepEqual(
+    await runtime.uploadNoteImage({ bytes: new Uint8Array(png()), mimeType: 'image/png' }),
+    { status: 'not-configured' },
+  );
+  assert.equal(fetchCalls, 0);
+});
 
 test('S3 settings validation accepts a root endpoint and a separate bucket', () => {
   assert.deepEqual(validateS3SyncSettingsDraft(settingsDraft()), settingsDraft());

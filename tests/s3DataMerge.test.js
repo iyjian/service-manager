@@ -106,6 +106,24 @@ test('v2 shared projection strips device-only Host, Forward, Service, Proxy, and
   );
 });
 
+test('shared Notes projection canonicalizes rich text and rejects unsafe rich text', () => {
+  const shared = data([note('rich-note', JSON.stringify({
+    content: [{ type: 'paragraph', content: [{ text: 'Cloud rich text', type: 'text' }] }],
+    type: 'doc',
+  }, null, 2), T0, { language: 'richtext' })]);
+  assert.equal(
+    shared.notes.notes[0].content,
+    '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Cloud rich text"}]}]}',
+  );
+
+  const unsafe = structuredClone(shared);
+  unsafe.notes.notes[0].content = JSON.stringify({
+    type: 'doc',
+    content: [{ type: 'html', text: '<img src="data:image/png;base64,AA==">' }],
+  });
+  assert.throws(() => parseS3SharedAppDataV2(unsafe), /rich text content is invalid/);
+});
+
 test('strict v2 parsing rejects duplicate Note IDs and note/tombstone collisions', () => {
   const duplicate = data([note('note-1', 'base')]);
   duplicate.notes.notes.push(note('note-1', 'duplicate'));

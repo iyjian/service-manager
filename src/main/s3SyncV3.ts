@@ -5,6 +5,7 @@ import {
   hkdfSync,
   randomBytes,
 } from 'node:crypto';
+import { normalizeRichTextContent } from '../shared/noteRichText';
 import type { Note, NoteLanguage } from '../shared/types';
 import { NOTE_LIMITS } from './notesStore';
 import {
@@ -35,6 +36,7 @@ const ENCRYPTION_AAD_PREFIX = 'service-manager-s3-object-v3\0';
 const SYNC_ENCRYPTION_KEY_BYTES = 32;
 const NOTE_LANGUAGES = new Set<NoteLanguage>([
   'markdown',
+  'richtext',
   'bash',
   'javascript',
   'typescript',
@@ -282,10 +284,18 @@ function parseNote(value: unknown): Note {
     tagKeys.add(key);
     return tag;
   });
+  let content = value.content;
+  if (value.language === 'richtext') {
+    try {
+      content = normalizeRichTextContent(content);
+    } catch {
+      throw new Error('The S3 Note rich text content is invalid.');
+    }
+  }
   return {
     id,
     name: value.name.trim(),
-    content: value.content,
+    content,
     language: value.language as NoteLanguage,
     tags,
     createdAt: isoTimestamp(value.createdAt, 'The S3 Note created timestamp'),

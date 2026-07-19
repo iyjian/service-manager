@@ -51,6 +51,10 @@ test('runtime action buttons keep interactive and busy states explicit', async (
   assert.doesNotMatch(tailwind, /\.runtime-action-btn:not\(:disabled\):hover\s*\{[^}]*transform:/);
   assert.doesNotMatch(tailwind, /\.runtime-action-btn:not\(:disabled\):active\s*\{[^}]*transform:/);
   assert.doesNotMatch(tailwind, /\.runtime-row:hover/);
-  assert.doesNotMatch(tailwind, /hover:bg-white/);
+  const runtimeActionStyles = tailwind.slice(
+    tailwind.indexOf('  .runtime-action-btn {'),
+    tailwind.indexOf('  @keyframes runtime-spin'),
+  );
+  assert.doesNotMatch(runtimeActionStyles, /hover:bg-white/);
   assert.match(tailwind, /@keyframes runtime-spin/);
 });

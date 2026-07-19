@@ -623,7 +623,7 @@ export interface ProxyTraffic {
 
 export type ProxyDelayStatus = 'ready' | 'unavailable';
 
-export type NoteLanguage = 'markdown' | 'bash' | 'javascript' | 'typescript' | 'sql' | 'json' | 'yaml' | 'text';
+export type NoteLanguage = 'markdown' | 'richtext' | 'bash' | 'javascript' | 'typescript' | 'sql' | 'json' | 'yaml' | 'text';
 
 export interface Note {
   id: string;
@@ -642,11 +642,41 @@ export interface NoteDraft {
   tags: string[];
 }
 
+export type NoteImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
+
+export interface NoteImageReference {
+  objectId: string;
+  assetKey: string;
+  ciphertextSha256: string;
+  contentSha256: string;
+  mimeType: NoteImageMimeType;
+  byteLength: number;
+  width: number;
+  height: number;
+  alt?: string;
+}
+
+export interface NoteImageUploadInput {
+  bytes: Uint8Array;
+  mimeType?: string;
+  alt?: string;
+}
+
+export type NoteImageUploadResult =
+  | { status: 'uploaded'; reference: NoteImageReference }
+  | { status: 'not-configured' };
+
+export type NoteImageLoadResult =
+  | { status: 'loaded'; bytes: Uint8Array; mimeType: NoteImageMimeType }
+  | { status: 'not-configured' | 'missing' | 'error' };
+
 export interface NotesApi {
   listNotes: () => Promise<Note[]>;
   createNote: () => Promise<Note>;
   updateNote: (id: string, draft: NoteDraft) => Promise<Note>;
   deleteNote: (id: string) => Promise<void>;
+  uploadImage: (input: NoteImageUploadInput) => Promise<NoteImageUploadResult>;
+  loadImage: (reference: NoteImageReference) => Promise<NoteImageLoadResult>;
   onFlushRequested: (listener: () => void | Promise<void>) => () => void;
 }
 

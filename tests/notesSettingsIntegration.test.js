@@ -29,14 +29,15 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(html, /<main class="app-shell hidden" data-page="notes">/);
   assert.match(html, /id="notes-search"[^>]*type="search"/);
   assert.match(html, /id="note-name"/);
-  assert.match(html, /<div id="note-content" class="notes-content"[^>]*><\/div>/);
+  assert.match(html, /<div id="note-content" class="notes-content"[^>]*>[\s\S]*?id="note-code-content"[\s\S]*?id="note-richtext-editor"/);
+  assert.match(html, /id="note-richtext-toolbar"[\s\S]*?id="note-richtext-image-btn"/);
   assert.match(html, /id="note-tags"/);
   assert.match(html, /id="note-copy-btn"/);
   assert.match(html, /id="notes-new-btn"[\s\S]*?<svg[\s\S]*?<span>New Note<\/span>/);
   assert.match(html, /id="note-copy-btn"[\s\S]*?<svg[\s\S]*?id="note-copy-label">Copy<\/span>/);
   assert.doesNotMatch(html, /id="note-delete-btn"/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
-  for (const language of ['markdown', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
+  for (const language of ['markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
     assert.match(html, new RegExp(`<option value="${language}"`));
   }
 
@@ -44,11 +45,13 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(preload, /createNote:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:create'\)/);
   assert.match(preload, /updateNote:\s*\(id, draft\)\s*=>\s*[^\n]*invoke\('notes:update', \{ id, draft \}\)/);
   assert.match(preload, /deleteNote:\s*\(id\)\s*=>\s*[^\n]*invoke\('notes:delete', id\)/);
+  assert.match(preload, /uploadImage:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:image:upload', input\)/);
+  assert.match(preload, /loadImage:\s*\(reference\)\s*=>\s*[^\n]*invoke\('notes:image:load', reference\)/);
   assert.match(preload, /ipcRenderer\.on\('notes:flush-request', handler\)/);
   assert.match(preload, /ipcRenderer\.send\('notes:flush-result', \{ requestId, ok: true \}\)/);
   assert.match(preload, /exposeInMainWorld\('notesApi', notesApi\)/);
 
-  for (const handler of ['notesList', 'notesCreate', 'notesUpdate', 'notesDelete']) {
+  for (const handler of ['notesList', 'notesCreate', 'notesUpdate', 'notesDelete', 'notesImageUpload', 'notesImageLoad']) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
   const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
@@ -63,10 +66,30 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(notesPage, /import \{ basicSetup, EditorView \} from 'codemirror'/);
   assert.match(notesPage, /new EditorView\(\{/);
   assert.match(notesPage, /window\.notesApi\.updateNote\(id, draft\)/);
-  assert.match(notesPage, /window\.serviceApi\.writeClipboardText\(note\.content\)/);
+  assert.match(notesPage, /window\.serviceApi\.writeClipboardText\(content\)/);
+  assert.match(notesPage, /new NotesRichTextEditor\(\{/);
+  assert.match(html, /"@tiptap\/core": "\.\/vendor\/tiptap-core\.js"/);
   assert.match(notesPage, /window\.notesApi\.deleteNote\(note\.id\)/);
   assert.match(notesPage, /className = 'notes-list-remove'/);
   assert.match(codeMirrorVendor, /const basicSetup/);
+});
+
+test('rich text validation has distinct CommonJS main and ESM renderer artifacts', async () => {
+  const [sharedRuntime, mainRuntime, rendererRuntime, notesPage, packageManifest] = await Promise.all([
+    readFile(path.join(distRoot, 'shared', 'noteRichText.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'noteRichText.cjs'), 'utf8'),
+    readFile(path.join(rendererRoot, 'noteRichText.js'), 'utf8'),
+    readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8'),
+    readFile(path.join(projectRoot, 'package.json'), 'utf8'),
+  ]);
+
+  assert.match(sharedRuntime, /["']use strict["']/);
+  assert.match(mainRuntime, /["']use strict["']/);
+  assert.doesNotMatch(sharedRuntime, /^export\s/m);
+  assert.doesNotMatch(mainRuntime, /^export\s/m);
+  assert.match(rendererRuntime, /^export\s/m);
+  assert.match(notesPage, /from '\.\/noteRichText\.js'/);
+  assert.match(packageManifest, /"build:main": "tsc -p tsconfig\.main\.json && node scripts\/copy-main-runtime\.cjs"/);
 });
 
 test('Notes uses the full available width with a bounded responsive sidebar and independent scrolling', async () => {

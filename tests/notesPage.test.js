@@ -262,7 +262,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.notesApi\.createNote\(\)/);
   assert.match(source, /window\.notesApi\.updateNote\(id, draft\)/);
   assert.match(source, /window\.notesApi\.deleteNote\(note\.id\)/);
-  assert.match(source, /window\.serviceApi\.writeClipboardText\(note\.content\)/);
+  assert.match(source, /note\.language === 'richtext'[\s\S]*?extractRichTextPlainText\(note\.content\)[\s\S]*?window\.serviceApi\.writeClipboardText\(content\)/);
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
@@ -297,9 +297,26 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
   assert.match(source, /this\.codeEditor\.setState\(this\.createEditorState\(note\.content, note\.language\)\)/);
   assert.match(source, /this\.replaceEditorDocument\(note\.content\)/);
   assert.match(source, /note\.content = this\.codeEditor\.state\.doc\.toString\(\)/);
+  assert.match(source, /new NotesRichTextEditor\(\{/);
+  assert.match(source, /this\.replaceRichTextDocument\(note\.content\)/);
+  assert.match(source, /note\.content = content/);
   assert.match(source, /this\.languageCompartment\.of\(noteLanguageExtension\(language\)\)/);
   assert.match(source, /this\.languageCompartment\.reconfigure\(noteLanguageExtension\(language\)\)/);
-  assert.match(source, /this\.setEditorLanguage\(language\)/);
+  assert.match(source, /this\.setEditorLanguage\(note\.language\)/);
   assert.match(source, /this\.codeEditor\.dispatch\(\{/);
   assert.match(source, /note\.tags = normalizeTags\(this\.tagsInput\.value\)/);
+});
+
+test('Notes rich text mode searches readable content, confirms lossy changes, and uploads images through narrow IPC', async () => {
+  const { rankNotes, plainTextToRichTextContent } = await loadNoteLanguageModules();
+  const richContent = plainTextToRichTextContent('Alpha rich body');
+  const richNote = note({ id: 'rich', language: 'richtext', content: richContent });
+  assert.deepEqual(rankNotes([richNote], 'rich body').map(({ id }) => id), ['rich']);
+
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  assert.match(source, /title: leavingRichText \? 'Leave Rich Text\?' : 'Switch to Rich Text\?'/);
+  assert.match(source, /window\.notesApi\.uploadImage\(\{/);
+  assert.match(source, /Configure S3 in Settings before adding images\./);
+  assert.match(source, /NOTE_IMAGE_MAX_BYTES = 10 \* 1024 \* 1024/);
+  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference\)/);
 });

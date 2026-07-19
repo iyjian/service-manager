@@ -7,7 +7,7 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "pnpm run clean && pnpm run build:main && pnpm run build:renderer && pnpm run copy:renderer && pnpm run build:css",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:main": "tsc -p tsconfig.main.json && node scripts/copy-main-runtime.cjs",
     "build:renderer": "tsc -p tsconfig.renderer.json",
     "copy:renderer": "node scripts/copy-renderer.cjs",
     "build:css": "node scripts/build-tailwind.cjs",

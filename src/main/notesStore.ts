@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { normalizeRichTextContent } from '../shared/noteRichText';
 import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
 
 export const NOTES_SCHEMA_VERSION = 1 as const;
@@ -48,6 +49,7 @@ const MAX_REPLACEMENT_COMPLETE_BYTES = 8 * 1024 * 1024;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
 const NOTE_LANGUAGES = new Set<NoteLanguage>([
   'markdown',
+  'richtext',
   'bash',
   'javascript',
   'typescript',
@@ -104,6 +106,11 @@ function normalizeContent(value: unknown): string {
   return value;
 }
 
+function normalizeContentForLanguage(value: unknown, language: NoteLanguage): string {
+  const content = normalizeContent(value);
+  return language === 'richtext' ? normalizeRichTextContent(content) : content;
+}
+
 function normalizeLanguage(value: unknown): NoteLanguage {
   if (typeof value !== 'string' || !NOTE_LANGUAGES.has(value as NoteLanguage)) {
     throw new Error('Note language is not supported.');
@@ -147,10 +154,11 @@ function normalizeDraft(value: unknown): NoteDraft {
   if (!isRecord(value)) {
     throw new Error('Note data is invalid.');
   }
+  const language = normalizeLanguage(value.language);
   return {
     name: normalizeName(value.name),
-    content: normalizeContent(value.content),
-    language: normalizeLanguage(value.language),
+    content: normalizeContentForLanguage(value.content, language),
+    language,
     tags: normalizeTags(value.tags),
   };
 }

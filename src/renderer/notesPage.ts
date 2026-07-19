@@ -1,4 +1,4 @@
-import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
+import type { Note, NoteDraft, NoteImageReference, NoteLanguage } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
 import { javascript, javascriptLanguage, typescriptLanguage } from '@codemirror/lang-javascript';
 import { json, jsonLanguage } from '@codemirror/lang-json';
@@ -15,9 +15,17 @@ import {
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { standardSQL } from '@codemirror/legacy-modes/mode/sql';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
+import {
+  EMPTY_RICH_TEXT_CONTENT,
+  extractRichTextPlainText,
+  normalizeRichTextContent,
+  parseRichTextContent,
+} from './noteRichText.js';
 import { registerPage } from './nav.js';
+import { NotesRichTextEditor } from './notesRichTextEditor.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
+const NOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 const bashLanguage = StreamLanguage.define(shell);
 const sqlLanguage = StreamLanguage.define(standardSQL);
@@ -43,6 +51,7 @@ const noteLanguageExtensions: Readonly<Record<NoteLanguage, Extension>> = {
     base: markdownLanguage,
     codeLanguages: (info) => markdownFenceLanguages[info.trim().split(/\s+/, 1)[0]?.toLocaleLowerCase() ?? ''] ?? null,
   }),
+  richtext: [],
   bash: bashLanguage,
   javascript: javascript(),
   typescript: javascript({ typescript: true }),
@@ -122,7 +131,54 @@ function noteSearchScore(note: Note, query: string): number {
   if (language === query) return 400;
   if (language.includes(query)) return 350;
 
-  return note.content.toLocaleLowerCase().includes(query) ? 200 : 0;
+  return searchableNoteContent(note).toLocaleLowerCase().includes(query) ? 200 : 0;
+}
+
+const richTextPlainTextCache = new WeakMap<Note, { content: string; text: string }>();
+
+function searchableNoteContent(note: Note): string {
+  if (note.language !== 'richtext') return note.content;
+  const cached = richTextPlainTextCache.get(note);
+  if (cached?.content === note.content) return cached.text;
+  let text = '';
+  try {
+    text = extractRichTextPlainText(note.content);
+  } catch {
+    // Main-process validation normally prevents this. A damaged note remains
+    // visible by name and metadata without letting search parse arbitrary HTML.
+  }
+  richTextPlainTextCache.set(note, { content: note.content, text });
+  return text;
+}
+
+/** Converts plain note text into safe, canonical Tiptap JSON. */
+export function plainTextToRichTextContent(value: string): string {
+  if (!value) return EMPTY_RICH_TEXT_CONTENT;
+  const inlineContent: Array<{ type: 'text'; text: string } | { type: 'hardBreak' }> = [];
+  const lines = value.split('\n');
+  lines.forEach((line, index) => {
+    if (line) inlineContent.push({ type: 'text', text: line });
+    if (index < lines.length - 1) inlineContent.push({ type: 'hardBreak' });
+  });
+  return normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      ...(inlineContent.length > 0 ? { content: inlineContent } : {}),
+    }],
+  });
+}
+
+function appendImageToRichTextContent(content: string, reference: NoteImageReference): string {
+  const document = parseRichTextContent(content);
+  return normalizeRichTextContent({
+    ...document,
+    content: [...(document.content ?? []), { type: 's3Image', attrs: reference }],
+  });
+}
+
+function setMessage(text: string, level: 'default' | 'success' | 'error' = 'default'): void {
+  window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text, level } }));
 }
 
 /**
@@ -154,8 +210,8 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === 'string' ? error : String(error);
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 }
 
 function normalizeTags(value: string): string[] {
@@ -198,11 +254,18 @@ class NotesPage {
   private readonly languageSelect = requireElement<HTMLSelectElement>('#note-language');
   private readonly tagsInput = requireElement<HTMLInputElement>('#note-tags');
   private readonly contentHost = requireElement<HTMLElement>('#note-content');
+  private readonly codeContentHost = requireElement<HTMLElement>('#note-code-content');
+  private readonly richTextShell = requireElement<HTMLElement>('#note-richtext-editor');
+  private readonly richTextHost = requireElement<HTMLElement>('#note-richtext-content');
+  private readonly richTextToolbar = requireElement<HTMLElement>('#note-richtext-toolbar');
+  private readonly imageButton = requireElement<HTMLButtonElement>('#note-richtext-image-btn');
+  private readonly imageInput = requireElement<HTMLInputElement>('#note-richtext-image-input');
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
   private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
   private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
   private readonly languageCompartment = new Compartment();
   private readonly codeEditor: EditorView;
+  private readonly richTextEditor: NotesRichTextEditor;
 
   private notes: Note[] = [];
   private selectedId: string | undefined;
@@ -219,21 +282,31 @@ class NotesPage {
   private editorLanguage: NoteLanguage = 'markdown';
   private editorNoteId: string | undefined;
   private replacingEditorDocument = false;
+  private switchingLanguage = false;
+  private uploadingImage = false;
 
   constructor() {
     this.codeEditor = new EditorView({
       state: this.createEditorState('', 'markdown'),
-      parent: this.contentHost,
+      parent: this.codeContentHost,
+    });
+    this.richTextEditor = new NotesRichTextEditor({
+      host: this.richTextHost,
+      toolbar: this.richTextToolbar,
+      onUpdate: (content) => this.updateSelectedRichTextContent(content),
+      onError: (message) => setMessage(message, 'error'),
     });
     this.updateEditorEmptyState();
     this.newButton.addEventListener('click', () => void this.createNote());
     this.searchInput.addEventListener('input', () => this.renderList());
     this.list.addEventListener('keydown', (event) => this.handleListKeydown(event));
 
-    this.nameInput.addEventListener('input', () => this.updateSelectedFromEditor());
-    this.languageSelect.addEventListener('change', () => this.updateSelectedFromEditor());
-    this.tagsInput.addEventListener('input', () => this.updateSelectedFromEditor());
+    this.nameInput.addEventListener('input', () => this.updateSelectedMetadata());
+    this.languageSelect.addEventListener('change', () => void this.changeSelectedLanguage());
+    this.tagsInput.addEventListener('input', () => this.updateSelectedMetadata());
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
+    this.imageButton.addEventListener('click', () => this.imageInput.click());
+    this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
   }
 
   show(): void {
@@ -250,6 +323,7 @@ class NotesPage {
 
   requestEditorMeasure(): void {
     this.codeEditor.requestMeasure();
+    this.richTextEditor.requestMeasure();
   }
 
   async reload(): Promise<void> {
@@ -367,6 +441,8 @@ class NotesPage {
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
       this.editorNoteId = undefined;
+      this.showEditorMode('markdown');
+      this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
       this.emptyState.textContent = this.loadError ?? (this.loaded ? 'Create or select a note.' : 'Loading notes…');
       this.emptyState.dataset.state = this.loadError ? 'error' : this.loaded ? 'empty' : 'loading';
       return;
@@ -375,15 +451,24 @@ class NotesPage {
     this.nameInput.value = note.name;
     this.languageSelect.value = note.language;
     this.tagsInput.value = note.tags.join(', ');
-    if (this.editorNoteId !== note.id) {
+    const noteChanged = this.editorNoteId !== note.id;
+    if (noteChanged) {
       this.editorNoteId = note.id;
-      this.codeEditor.setState(this.createEditorState(note.content, note.language));
-      this.updateEditorEmptyState();
+      if (note.language === 'richtext') {
+        this.replaceRichTextDocument(note.content);
+      } else {
+        this.codeEditor.setState(this.createEditorState(note.content, note.language));
+      }
     } else {
-      this.setEditorLanguage(note.language);
-      this.replaceEditorDocument(note.content);
+      if (note.language === 'richtext') {
+        this.replaceRichTextDocument(note.content);
+      } else {
+        this.setEditorLanguage(note.language);
+        this.replaceEditorDocument(note.content);
+      }
     }
-    this.contentHost.dataset.language = note.language;
+    this.showEditorMode(note.language);
+    this.updateEditorEmptyState();
   }
 
   private selectedNote(): Note | undefined {
@@ -399,23 +484,162 @@ class NotesPage {
     this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
   }
 
-  private updateSelectedFromEditor(): void {
+  private updateSelectedMetadata(): void {
     const note = this.selectedNote();
     if (!note) return;
 
-    const language = this.languageSelect.value as NoteLanguage;
     note.name = this.nameInput.value;
-    note.language = language;
     note.tags = normalizeTags(this.tagsInput.value);
+    this.markNoteEdited(note, document.activeElement === this.nameInput || Boolean(this.searchInput.value.trim()));
+  }
+
+  private updateSelectedCodeContent(): void {
+    if (this.replacingEditorDocument) return;
+    const note = this.selectedNote();
+    if (!note || note.language === 'richtext') return;
     note.content = this.codeEditor.state.doc.toString();
-    this.setEditorLanguage(language);
-    this.contentHost.dataset.language = language;
+    this.updateEditorEmptyState();
+    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
+  }
+
+  private updateSelectedRichTextContent(content: string): void {
+    if (this.replacingEditorDocument) return;
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    note.content = content;
+    this.updateEditorEmptyState();
+    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
+  }
+
+  private markNoteEdited(note: Note, refreshList: boolean): void {
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     this.setSaveStatus('Saving…', 'saving');
-    if (document.activeElement === this.nameInput || this.searchInput.value.trim()) {
-      this.renderList();
-    }
+    if (refreshList) this.renderList();
     this.scheduleSave(note.id);
+  }
+
+  private async changeSelectedLanguage(): Promise<void> {
+    if (this.switchingLanguage) return;
+    const note = this.selectedNote();
+    if (!note) return;
+    const sourceLanguage = note.language;
+    const targetLanguage = this.languageSelect.value as NoteLanguage;
+    if (!(targetLanguage in noteLanguageExtensions) || targetLanguage === sourceLanguage) {
+      this.languageSelect.value = sourceLanguage;
+      return;
+    }
+
+    const crossesRichTextBoundary = sourceLanguage === 'richtext' || targetLanguage === 'richtext';
+    let hasContent = note.content.length > 0;
+    if (sourceLanguage === 'richtext') {
+      try {
+        const document = parseRichTextContent(note.content);
+        hasContent = (document.content ?? []).some((node) =>
+          node.type !== 'paragraph' || Boolean(node.content?.length)
+        );
+      } catch {
+        hasContent = true;
+      }
+    }
+
+    this.switchingLanguage = true;
+    this.languageSelect.disabled = true;
+    try {
+      if (crossesRichTextBoundary && hasContent) {
+        const leavingRichText = sourceLanguage === 'richtext';
+        const confirmed = await window.serviceApi.confirmAction({
+          title: leavingRichText ? 'Leave Rich Text?' : 'Switch to Rich Text?',
+          message: leavingRichText
+            ? 'Switching to a code mode removes rich text formatting and embedded images.'
+            : 'The current plain text will be converted to a rich text document.',
+          detail: leavingRichText
+            ? 'Only the readable text will be kept.'
+            : 'Switching back later may discard rich text formatting.',
+          kind: 'warning',
+          confirmLabel: 'Switch',
+          cancelLabel: 'Cancel',
+        });
+        if (!confirmed) {
+          this.languageSelect.value = sourceLanguage;
+          return;
+        }
+      }
+
+      const current = this.selectedNote();
+      if (!current || current.id !== note.id || current.language !== sourceLanguage) return;
+      if (targetLanguage === 'richtext') {
+        current.content = plainTextToRichTextContent(current.content);
+      } else if (sourceLanguage === 'richtext') {
+        current.content = extractRichTextPlainText(current.content);
+      }
+      current.language = targetLanguage;
+      this.markNoteEdited(current, Boolean(this.searchInput.value.trim()));
+      this.renderEditor();
+      if (targetLanguage === 'richtext') this.richTextEditor.focus();
+      else this.codeEditor.focus();
+    } catch (error) {
+      this.languageSelect.value = sourceLanguage;
+      this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.switchingLanguage = false;
+      this.languageSelect.disabled = false;
+    }
+  }
+
+  private async uploadSelectedImage(): Promise<void> {
+    const file = this.imageInput.files?.[0];
+    this.imageInput.value = '';
+    if (!file || this.uploadingImage) return;
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setMessage('Only PNG, JPEG, and WebP images are supported.', 'error');
+      return;
+    }
+    if (file.size < 1 || file.size > NOTE_IMAGE_MAX_BYTES) {
+      setMessage('A Notes image must not exceed 10 MiB.', 'error');
+      return;
+    }
+
+    this.uploadingImage = true;
+    this.imageButton.disabled = true;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const alt = file.name
+        .replace(/\.(?:png|jpe?g|webp)$/i, '')
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .trim()
+        .slice(0, 500);
+      const result = await window.notesApi.uploadImage({
+        bytes,
+        mimeType: file.type,
+        ...(alt ? { alt } : {}),
+      });
+      if (result.status === 'not-configured') {
+        setMessage('Configure S3 in Settings before adding images.', 'error');
+        return;
+      }
+
+      const destination = this.notes.find((candidate) => candidate.id === note.id);
+      if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
+        setMessage('The image was uploaded, but its Note is no longer available.', 'error');
+        return;
+      }
+      if (this.selectedId === destination.id) {
+        if (!this.richTextEditor.insertImage(result.reference)) {
+          throw new Error('The uploaded image could not be inserted.');
+        }
+      } else {
+        destination.content = appendImageToRichTextContent(destination.content, result.reference);
+        this.markNoteEdited(destination, Boolean(this.searchInput.value.trim()));
+      }
+      setMessage('Image added.', 'success');
+    } catch (error) {
+      setMessage(`Unable to add image: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.uploadingImage = false;
+      this.imageButton.disabled = this.selectedNote()?.language !== 'richtext';
+    }
   }
 
   private scheduleSave(id: string): void {
@@ -524,7 +748,10 @@ class NotesPage {
     const note = this.selectedNote();
     if (!note) return;
     try {
-      await window.serviceApi.writeClipboardText(note.content);
+      const content = note.language === 'richtext'
+        ? extractRichTextPlainText(note.content)
+        : note.content;
+      await window.serviceApi.writeClipboardText(content);
       this.copyLabel.textContent = 'Copied';
       this.copyButton.dataset.copied = 'true';
       window.setTimeout(() => {
@@ -630,14 +857,14 @@ class NotesPage {
         }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged || this.replacingEditorDocument) return;
-          this.updateSelectedFromEditor();
-          this.updateEditorEmptyState();
+          this.updateSelectedCodeContent();
         }),
       ],
     });
   }
 
   private setEditorLanguage(language: NoteLanguage): void {
+    if (language === 'richtext') return;
     if (language === this.editorLanguage) return;
     this.editorLanguage = language;
     this.codeEditor.dispatch({
@@ -646,7 +873,45 @@ class NotesPage {
   }
 
   private updateEditorEmptyState(): void {
-    this.contentHost.dataset.empty = String(this.codeEditor.state.doc.length === 0);
+    const note = this.selectedNote();
+    if (!note) {
+      this.contentHost.dataset.empty = 'true';
+      return;
+    }
+    if (note.language !== 'richtext') {
+      this.contentHost.dataset.empty = String(this.codeEditor.state.doc.length === 0);
+      return;
+    }
+    try {
+      const document = parseRichTextContent(note.content);
+      const hasContent = (document.content ?? []).some((node) =>
+        node.type !== 'paragraph' || Boolean(node.content?.length)
+      );
+      this.contentHost.dataset.empty = String(!hasContent);
+    } catch {
+      this.contentHost.dataset.empty = 'false';
+    }
+  }
+
+  private replaceRichTextDocument(content: string): void {
+    const normalized = normalizeRichTextContent(content || EMPTY_RICH_TEXT_CONTENT);
+    if (this.richTextEditor.getContent() === normalized) return;
+    this.replacingEditorDocument = true;
+    try {
+      this.richTextEditor.setContent(normalized);
+    } finally {
+      this.replacingEditorDocument = false;
+    }
+  }
+
+  private showEditorMode(language: NoteLanguage): void {
+    const richText = language === 'richtext';
+    this.codeContentHost.classList.toggle('hidden', richText);
+    this.richTextShell.classList.toggle('hidden', !richText);
+    this.contentHost.dataset.mode = richText ? 'richtext' : 'code';
+    this.contentHost.dataset.language = language;
+    this.imageButton.disabled = !richText || this.uploadingImage;
+    if (!richText) this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {

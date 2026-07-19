@@ -12,6 +12,10 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   Note,
+  NoteImageLoadResult,
+  NoteImageReference,
+  NoteImageUploadInput,
+  NoteImageUploadResult,
   S3ConnectionTestDraft,
   S3CredentialValues,
   S3SyncResult,
@@ -49,6 +53,8 @@ import {
   parseS3SharedAppDataV2,
   type S3SharedAppDataV2,
 } from './s3DataMerge';
+import { NOTES_IMAGE_LIMITS, NotesImageS3Store } from './notesImageS3';
+import { parseNoteImageReference } from '../shared/noteRichText';
 
 const SETTINGS_SCHEMA_VERSION = 5;
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -845,6 +851,7 @@ export class S3SyncRuntime {
   private syncPromise?: Promise<S3SyncResult>;
   private activeAbortController?: AbortController;
   private readonly activeConnectionTests = new Map<AbortController, Promise<void>>();
+  private readonly activeNotesImageStores = new Set<NotesImageS3Store>();
   private debounceTimer?: NodeJS.Timeout;
   private intervalTimer?: NodeJS.Timeout;
   private dirtyGeneration = 0;
@@ -1110,6 +1117,58 @@ export class S3SyncRuntime {
     return this.requestSync(true);
   }
 
+  public async uploadNoteImage(value: unknown): Promise<NoteImageUploadResult> {
+    if (this.shuttingDown) throw new Error('Notes image upload was cancelled.');
+    const input = this.validateNoteImageUploadInput(value);
+    const settings = await this.ensureSettings();
+    if (this.shuttingDown) throw new Error('Notes image upload was cancelled.');
+    const store = this.createNotesImageStore(settings);
+    if (!store) return { status: 'not-configured' };
+    const target = `${settings.endpoint}\0${settings.bucket}`;
+    this.activeNotesImageStores.add(store);
+    try {
+      const reference = await store.uploadImage(input.bytes, input.mimeType, input.alt);
+      const current = await this.ensureSettings();
+      if (`${current.endpoint}\0${current.bucket}` !== target) {
+        throw new Error('S3 settings changed during the Notes image upload. Add the image again.');
+      }
+      return { status: 'uploaded', reference };
+    } finally {
+      await store.shutdown();
+      this.activeNotesImageStores.delete(store);
+    }
+  }
+
+  public async loadNoteImage(value: unknown): Promise<NoteImageLoadResult> {
+    if (this.shuttingDown) return { status: 'error' };
+    let reference: NoteImageReference;
+    try {
+      reference = parseNoteImageReference(value);
+    } catch {
+      return { status: 'error' };
+    }
+    const settings = await this.ensureSettings();
+    if (this.shuttingDown) return { status: 'error' };
+    const store = this.createNotesImageStore(settings);
+    if (!store) return { status: 'not-configured' };
+    this.activeNotesImageStores.add(store);
+    try {
+      const bytes = await store.downloadImage(reference);
+      return {
+        status: 'loaded',
+        bytes: new Uint8Array(bytes),
+        mimeType: reference.mimeType,
+      };
+    } catch (error) {
+      return error instanceof Error && error.message === 'The S3 Notes image is unavailable.'
+        ? { status: 'missing' }
+        : { status: 'error' };
+    } finally {
+      await store.shutdown();
+      this.activeNotesImageStores.delete(store);
+    }
+  }
+
   public async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
@@ -1118,6 +1177,7 @@ export class S3SyncRuntime {
     this.intervalTimer = undefined;
     this.activeAbortController?.abort();
     for (const controller of this.activeConnectionTests.keys()) controller.abort();
+    const imageShutdowns = [...this.activeNotesImageStores].map((store) => store.shutdown());
     try {
       await this.syncPromise;
     } catch {
@@ -1126,6 +1186,52 @@ export class S3SyncRuntime {
     await this.operationQueue;
     await this.settingsMutationQueue;
     await Promise.allSettled(this.activeConnectionTests.values());
+    await Promise.allSettled(imageShutdowns);
+  }
+
+  private validateNoteImageUploadInput(value: unknown): NoteImageUploadInput {
+    if (!isRecord(value) || !(value.bytes instanceof Uint8Array)) {
+      throw new Error('The Notes image upload is invalid.');
+    }
+    if (Object.keys(value).some((key) => !['bytes', 'mimeType', 'alt'].includes(key))) {
+      throw new Error('The Notes image upload is invalid.');
+    }
+    if (value.bytes.byteLength < 1 || value.bytes.byteLength > NOTES_IMAGE_LIMITS.bytes) {
+      throw new Error(`A Notes image must not exceed ${NOTES_IMAGE_LIMITS.bytes / (1024 * 1024)} MiB.`);
+    }
+    if (value.mimeType !== undefined && (typeof value.mimeType !== 'string' || value.mimeType.length > 128)) {
+      throw new Error('The Notes image type is invalid.');
+    }
+    if (value.alt !== undefined && (typeof value.alt !== 'string' || value.alt.length > 500)) {
+      throw new Error('The Notes image alternative text is invalid.');
+    }
+    return {
+      bytes: value.bytes,
+      ...(value.mimeType !== undefined ? { mimeType: value.mimeType } : {}),
+      ...(value.alt !== undefined ? { alt: value.alt } : {}),
+    };
+  }
+
+  private createNotesImageStore(settings: PersistedS3SyncSettings): NotesImageS3Store | undefined {
+    if (
+      !settings.endpoint
+      || !settings.bucket
+      || !settings.encryptedAccessKeyId
+      || !settings.encryptedSecretAccessKey
+    ) {
+      return undefined;
+    }
+    const credentials = this.credentials(settings);
+    return new NotesImageS3Store({
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
+      region: settings.region,
+      ...credentials,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      createRandomBytes: this.createRandomBytes,
+      timeoutMs: this.timeoutMs,
+    });
   }
 
   private updateState(next: S3SyncState): void {

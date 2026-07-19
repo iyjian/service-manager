@@ -146,6 +146,31 @@ test('NotesStore updates only the target envelope, normalizes fields, and return
   assert.deepEqual(durable.tags, ['production', 'Release']);
 });
 
+test('NotesStore canonicalizes rich text and rejects unsafe rich text nodes before persistence', async (t) => {
+  const { notesDirectory, store } = await createStore(t);
+  const note = await store.create();
+  const input = JSON.stringify({
+    content: [{
+      content: [{ marks: [{ type: 'italic' }, { type: 'bold' }], text: 'Hello', type: 'text' }],
+      type: 'paragraph',
+    }],
+    type: 'doc',
+  }, null, 2);
+  const updated = await store.update(note.id, draft({ language: 'richtext', content: input }));
+
+  assert.equal(updated.language, 'richtext');
+  assert.equal(updated.content, '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","marks":[{"type":"bold"},{"type":"italic"}],"text":"Hello"}]}]}');
+  assert.equal((await readEnvelope(notesDirectory, note.id)).note.content, updated.content);
+  await assert.rejects(
+    store.update(note.id, draft({
+      language: 'richtext',
+      content: JSON.stringify({ type: 'doc', content: [{ type: 'html', text: '<script />' }] }),
+    })),
+    /node is not supported/,
+  );
+  assert.equal((await readEnvelope(notesDirectory, note.id)).note.content, updated.content);
+});
+
 test('NotesStore loads independent envelopes in deterministic Note-ID order and normalizes stored fields', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-notes-order-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
