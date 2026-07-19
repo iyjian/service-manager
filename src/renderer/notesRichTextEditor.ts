@@ -4,6 +4,7 @@ import StarterKit from '@tiptap/starter-kit';
 import {
   EMPTY_RICH_TEXT_CONTENT,
   extractRichTextPlainText,
+  isAllowedRichTextLinkHref,
   normalizeRichTextContent,
   parseNoteImageReference,
   parseRichTextContent,
@@ -67,6 +68,35 @@ function safelyReport(onError: (message: string) => void, message: string): void
   } catch {
     // An error presentation callback must not break the editor or a NodeView.
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Tiptap's Link schema always serializes its built-in `class: null` default.
+ * It is not part of the durable canonical model. Strip only that exact schema
+ * artifact; a non-null class or any other foreign attribute must reach and be
+ * rejected by normalizeRichTextContent.
+ */
+function stripTiptapLinkDefaults(value: unknown, depth = 0): unknown {
+  if (depth > 70 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => stripTiptapLinkDefaults(item, depth + 1));
+
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    result[key] = stripTiptapLinkDefaults(item, depth + 1);
+  }
+  if (result.type === 'link' && isRecord(result.attrs) && result.attrs.class === null) {
+    const { class: _class, ...attrs } = result.attrs;
+    result.attrs = attrs;
+  }
+  return result;
+}
+
+function normalizeEditorContent(value: unknown): string {
+  return normalizeRichTextContent(stripTiptapLinkDefaults(value));
 }
 
 function loadNoteImage(reference: NoteImageReference): Promise<NotesImageLoadResult> {
@@ -266,6 +296,8 @@ export class NotesRichTextEditor {
   private readonly toolbar: HTMLElement;
   private readonly onUpdate: (content: string) => void;
   private readonly onError: (message: string) => void;
+  private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT;
+  private restoringCanonicalContent = false;
 
   public constructor(options: NotesRichTextEditorOptions) {
     this.toolbar = options.toolbar;
@@ -274,12 +306,37 @@ export class NotesRichTextEditor {
     this.editor = new Editor({
       element: options.host,
       content: parseRichTextContent(EMPTY_RICH_TEXT_CONTENT),
-      extensions: [StarterKit, createS3ImageExtension(this.onError)],
+      extensions: [StarterKit.configure({
+        link: {
+          openOnClick: false,
+          enableClickSelection: false,
+          autolink: true,
+          linkOnPaste: true,
+          protocols: [],
+          defaultProtocol: 'https',
+          HTMLAttributes: {
+            target: '_blank',
+            rel: 'nofollow noopener noreferrer',
+          },
+          // HTML paste, plain-text paste, and autolink all share the exact
+          // absolute http/https-only policy enforced by canonical persistence.
+          isAllowedUri: (url) => isAllowedRichTextLinkHref(url),
+          shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
+        },
+      }), createS3ImageExtension(this.onError)],
       injectCSS: false,
       editorProps: {
         attributes: {
           class: 'notes-richtext-editor-content',
           spellcheck: 'true',
+        },
+        handleClick: (_view, _position, event) => {
+          const source = event.target;
+          if (!(source instanceof Element)) return false;
+          const link = source.closest('a[href]');
+          if (!link || !options.host.contains(link)) return false;
+          event.preventDefault();
+          return true;
         },
       },
       onUpdate: () => this.emitUpdate(),
@@ -297,10 +354,12 @@ export class NotesRichTextEditor {
       const normalized = normalizeRichTextContent(
         value === undefined || value === null ? EMPTY_RICH_TEXT_CONTENT : value,
       );
-      this.editor.commands.setContent(parseRichTextContent(normalized), {
+      const replaced = this.editor.commands.setContent(parseRichTextContent(normalized), {
         emitUpdate: false,
         errorOnInvalidContent: true,
       });
+      if (!replaced) throw new Error('Rich text content could not be opened.');
+      this.lastCanonicalContent = normalized;
       this.updateToolbarState();
     } catch (error) {
       safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be opened.');
@@ -309,11 +368,11 @@ export class NotesRichTextEditor {
   }
 
   public getContent(): string {
-    return normalizeRichTextContent(this.editor.getJSON());
+    return normalizeEditorContent(this.editor.getJSON());
   }
 
   public getPlainText(): string {
-    return extractRichTextPlainText(this.editor.getJSON());
+    return extractRichTextPlainText(this.getContent());
   }
 
   public focus(): void {
@@ -432,10 +491,34 @@ export class NotesRichTextEditor {
   }
 
   private emitUpdate(): void {
+    if (this.restoringCanonicalContent) return;
     try {
-      this.onUpdate(this.getContent());
+      const content = this.getContent();
+      this.onUpdate(content);
+      this.lastCanonicalContent = content;
     } catch (error) {
+      this.restoreLastCanonicalContent();
       safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be saved.');
+    }
+  }
+
+  private restoreLastCanonicalContent(): void {
+    if (this.editor.isDestroyed || this.restoringCanonicalContent) return;
+    this.restoringCanonicalContent = true;
+    try {
+      const restored = this.editor.commands.setContent(
+        parseRichTextContent(this.lastCanonicalContent),
+        { emitUpdate: false, errorOnInvalidContent: true },
+      );
+      if (!restored) throw new Error('The last saved rich text content could not be restored.');
+      this.updateToolbarState();
+    } catch (error) {
+      safelyReport(
+        this.onError,
+        error instanceof Error ? error.message : 'The last saved rich text content could not be restored.',
+      );
+    } finally {
+      this.restoringCanonicalContent = false;
     }
   }
 }

@@ -23,7 +23,7 @@ async function readIntegrationFiles() {
   return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main };
 }
 
-test('compiled Notes page and bridge expose CodeMirror and the complete local CRUD flow', async () => {
+test('compiled Notes page and bridge expose the hierarchical local workspace flow', async () => {
   const { html, renderer, notesPage, codeMirrorVendor, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<main class="app-shell hidden" data-page="notes">/);
@@ -33,7 +33,9 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(html, /id="note-richtext-toolbar"[\s\S]*?id="note-richtext-image-btn"/);
   assert.match(html, /id="note-tags"/);
   assert.match(html, /id="note-copy-btn"/);
-  assert.match(html, /id="notes-new-btn"[\s\S]*?<svg[\s\S]*?<span>New Note<\/span>/);
+  assert.match(html, /id="notes-new-root-btn"[^>]*class="notes-tree-root-add"[^>]*aria-label="New root Note"[\s\S]*?<svg/);
+  assert.match(html, /id="notes-list"[^>]*aria-label="Notes tree"/);
+  assert.doesNotMatch(html, /Notes\s+Local snippets\s+New Note/);
   assert.match(html, /id="note-copy-btn"[\s\S]*?<svg[\s\S]*?id="note-copy-label">Copy<\/span>/);
   assert.doesNotMatch(html, /id="note-delete-btn"/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
@@ -42,35 +44,78 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   }
 
   assert.match(preload, /listNotes:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:list'\)/);
-  assert.match(preload, /createNote:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:create'\)/);
-  assert.match(preload, /updateNote:\s*\(id, draft\)\s*=>\s*[^\n]*invoke\('notes:update', \{ id, draft \}\)/);
-  assert.match(preload, /deleteNote:\s*\(id\)\s*=>\s*[^\n]*invoke\('notes:delete', id\)/);
+  assert.match(preload, /getWorkspace:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:workspace'\)/);
+  assert.match(preload, /createNote:\s*\(placement\)\s*=>\s*[^\n]*invoke\('notes:create', placement\)/);
+  assert.match(preload, /updateNote:\s*\(id, draft, expectedNote\)\s*=>[\s\S]*?invoke\('notes:update', \{ id, draft, expectedNote \}\)/);
+  assert.match(preload, /moveNote:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:move', input\)/);
+  assert.match(preload, /setTreeExpanded:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:tree-expanded', input\)/);
+  assert.match(preload, /deleteNote:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:delete', input\)/);
+  assert.match(preload, /recoverDrafts:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:recover-drafts', input\)/);
   assert.match(preload, /uploadImage:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:image:upload', input\)/);
   assert.match(preload, /loadImage:\s*\(reference\)\s*=>\s*[^\n]*invoke\('notes:image:load', reference\)/);
   assert.match(preload, /ipcRenderer\.on\('notes:flush-request', handler\)/);
   assert.match(preload, /ipcRenderer\.send\('notes:flush-result', \{ requestId, ok: true \}\)/);
   assert.match(preload, /exposeInMainWorld\('notesApi', notesApi\)/);
 
-  for (const handler of ['notesList', 'notesCreate', 'notesUpdate', 'notesDelete', 'notesImageUpload', 'notesImageLoad']) {
+  for (const handler of [
+    'notesList',
+    'notesWorkspace',
+    'notesCreate',
+    'notesUpdate',
+    'notesMove',
+    'notesTreeExpanded',
+    'notesDelete',
+    'notesRecoverDrafts',
+    'notesImageUpload',
+    'notesImageLoad',
+  ]) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
   const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
   const notesStoreInitialization = main.indexOf('new notesStore_1.NotesStore');
   assert.ok(singleInstanceLock >= 0 && notesStoreInitialization > singleInstanceLock);
   assert.match(main, /app\.on\('second-instance'/);
-  assert.match(main, /new notesStore_1\.NotesStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes'\)\)/);
+  assert.match(main, /new notesStore_1\.NotesStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-v4'\)\)/);
+  assert.match(main, /new notesTreeStore_1\.NotesTreeStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-tree\.json'\)\)/);
+  assert.match(main, /new notesTreeViewStore_1\.NotesTreeViewStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-tree-view\.json'\)\)/);
   assert.match(main, /noteTombstones: activeNotesStore\.exportTombstones\(\)/);
+  assert.match(main, /notesTree: getNotesTreeStore\(\)\.snapshot\(\)/);
   assert.match(main, /replaceSnapshot\(staged\.notes, staged\.noteTombstones\)/);
+  assert.match(main, /getNotesTreeStore\(\)\.replaceSnapshot\(staged\.notesTree, activeNoteIds\)/);
+  assert.match(main, /getNotesTreeViewStore\(\)\.replaceActiveIds\(activeNoteIds\)/);
   assert.match(renderer, /registerNotesPage\(\)/);
   assert.match(notesPage, /id:\s*'notes'/);
   assert.match(notesPage, /import \{ basicSetup, EditorView \} from 'codemirror'/);
   assert.match(notesPage, /new EditorView\(\{/);
-  assert.match(notesPage, /window\.notesApi\.updateNote\(id, draft\)/);
+  assert.match(notesPage, /window\.notesApi\.updateNote\(id, draft, cloneNote\(expectedNote\)\)/);
   assert.match(notesPage, /window\.serviceApi\.writeClipboardText\(content\)/);
   assert.match(notesPage, /new NotesRichTextEditor\(\{/);
   assert.match(html, /"@tiptap\/core": "\.\/vendor\/tiptap-core\.js"/);
-  assert.match(notesPage, /window\.notesApi\.deleteNote\(note\.id\)/);
+  assert.match(notesPage, /window\.notesApi\.deleteNote\(\{ id: note\.id, expectedIds: subtreeIds \}\)/);
+  assert.match(notesPage, /window\.notesApi\.recoverDrafts\(pending\)/);
+  assert.match(notesPage, /expectedNote: cloneNote\(expectedNote\)/);
+  assert.match(notesPage, /window\.notesApi\.getWorkspace\(\)/);
+  assert.match(notesPage, /window\.notesApi\.createNote\(\{ parentId \}\)/);
+  assert.match(notesPage, /window\.notesApi\.moveNote\(\{/);
+  assert.match(notesPage, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
+  assert.match(notesPage, /export function visibleNoteTreeRows\(/);
+  assert.match(notesPage, /export function noteTreeBreadcrumb\(/);
+  assert.match(notesPage, /export function resolveNoteTreeDropPlacement\(/);
+  assert.match(notesPage, /await this\.flushAllPendingSaves\(\);[\s\S]*?const editVersionBaseline = new Map\(this\.editVersions\)[\s\S]*?this\.applyWorkspace\(workspace, editVersionBaseline\)/);
+  assert.match(notesPage, /This will permanently delete \$\{subtreeIds\.length\} Notes in this subtree\./);
+  assert.match(main, /await flushRendererNotes\(\);\s*return runS3SharedDataMutation/);
+  assert.match(main, /sameNoteIds\(deletedIds, input\.expectedIds\)/);
+  assert.match(main, /The Notes tree changed after confirmation/);
+  assert.match(main, /isDeepStrictEqual\)\(current, expectedNote\)/);
+  assert.match(main, /This Note changed after the editor loaded it/);
+  assert.match(main, /classifyNoteDraftRecovery\)\(current, recovery\.expectedNote, recovery\.draft\)/);
+  assert.match(main, /decision === 'already-saved'/);
+  assert.match(main, /decision === 'update'/);
+  assert.match(main, /runS3SharedDataMutation\(async \(\) => notesWorkspaceSnapshot\(\)\)/);
   assert.match(notesPage, /className = 'notes-list-remove'/);
+  assert.match(notesPage, /className = 'notes-tree-add'/);
+  assert.match(notesPage, /row\.draggable = true/);
+  assert.match(notesPage, /handleListKeydown\(event\)/);
   assert.match(codeMirrorVendor, /const basicSetup/);
 });
 
@@ -92,7 +137,7 @@ test('rich text validation has distinct CommonJS main and ESM renderer artifacts
   assert.match(packageManifest, /"build:main": "tsc -p tsconfig\.main\.json && node scripts\/copy-main-runtime\.cjs"/);
 });
 
-test('Notes uses the full available width with a bounded responsive sidebar and independent scrolling', async () => {
+test('Notes uses full width with a responsive tree, independent scrolling, and shared editor themes', async () => {
   const { html, styles, baseStyles, notesPage } = await readIntegrationFiles();
 
   assert.match(html, /<section class="notes-page"[^>]*>[\s\S]*?<aside class="notes-sidebar">[\s\S]*?<section class="notes-workspace"/);
@@ -101,15 +146,19 @@ test('Notes uses the full available width with a bounded responsive sidebar and 
   assert.match(styles, /\.notes-page,\.notes-sidebar\{[^}]*display:grid[^}]*min-height:0[^}]*min-width:0/);
   assert.match(styles, /\.notes-sidebar\{[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
   assert.match(styles, /\.notes-list\{[^}]*min-height:0[^}]*overflow-y:auto/);
-  assert.match(styles, /\.notes-list-row\{[^}]*grid-template-columns:minmax\(0,1fr\) 28px/);
-  assert.match(styles, /\.notes-list-remove\{[^}]*height:1\.5rem[^}]*width:1\.5rem/);
+  assert.match(styles, /\.notes-list-row\{[^}]*grid-template-columns:22px minmax\(0,1fr\) 52px/);
+  assert.match(styles, /\.notes-list-row\{padding-left:calc\(var\(--notes-tree-depth, 0\)\*14px\)\}/);
+  assert.match(styles, /\.notes-tree-root-add[^}]*\{[^}]*height:2rem[^}]*width:2rem/);
+  assert.match(styles, /\.notes-tree-actions\{[^}]*opacity:0/);
+  assert.match(styles, /\.notes-tree-row\[data-drop-position=inside\]/);
+  assert.match(styles, /\.notes-tree-root-drop/);
   assert.match(styles, /\.notes-empty\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-editor\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-editor\{[^}]*min-width:0[^}]*grid-template-rows:auto auto minmax\(0,1fr\)/);
   assert.match(styles, /\.notes-content\{[^}]*height:100%[^}]*min-height:0[^}]*overflow:hidden/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*min-height:0[^}]*overflow:auto/);
-  assert.match(styles, /\.notes-editor-toolbar \.notes-language-select\{[^}]*width:8rem[^}]*flex-shrink:0/);
+  assert.match(styles, /\.notes-editor-toolbar \.notes-language-select\{[^}]*width:8rem/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
   assert.match(styles, /@media \(max-width:640px\)\{\.notes-page\{[^}]*grid-template-columns:minmax\(190px,220px\) minmax\(280px,1fr\)[^}]*overflow-x:auto/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
@@ -120,38 +169,50 @@ test('Notes uses the full available width with a bounded responsive sidebar and 
   assert.match(styles, /\.app-shell\[data-page=notes\][^{]*\{[^}]*font-family:var\(--font-family-notes-ui\)/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*font-variant-ligatures:none/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
+  assert.match(styles, /\.notes-content\[data-theme=dark\] \.notes-code-content/);
+  assert.match(styles, /\.notes-content\[data-theme=dark\] \.notes-richtext-content/);
   assert.match(notesPage, /function applyNotesFontSize\(fontSize\)[\s\S]*?style\.setProperty\('--notes-editor-font-size', `\$\{normalized\}px`\)[\s\S]*?requestAnimationFrame\(\(\) => page\?\.requestEditorMeasure\(\)\)/);
+  assert.match(notesPage, /function applyNotesEditorTheme\(theme\)[\s\S]*?theme === 'dark' \? 'dark' : 'light'[\s\S]*?dataset\.notesEditorTheme = normalized[\s\S]*?page\?\.applyEditorTheme\(normalized\)/);
 });
 
 test('Notes local UI and code fonts are packaged with their licenses', async () => {
   const fontRoot = path.join(projectRoot, 'assets', 'fonts');
-  const [uiFont, codeFont, uiLicense, codeLicense, packageJson] = await Promise.all([
+  const [uiFont, codeFont, uiLicense, codeLicense, packageJson, baseStyles] = await Promise.all([
     stat(path.join(fontRoot, 'notes-ui-variable.woff2')),
     stat(path.join(fontRoot, 'notes-code-variable.woff2')),
     readFile(path.join(fontRoot, 'OFL-NotoSansCJK.txt'), 'utf8'),
     readFile(path.join(fontRoot, 'OFL-JetBrainsMono.txt'), 'utf8'),
     readFile(path.join(projectRoot, 'package.json'), 'utf8').then(JSON.parse),
+    readFile(path.join(projectRoot, 'src', 'renderer', 'styles.css'), 'utf8'),
   ]);
+  const declaredFontPaths = [...baseStyles.matchAll(/url\(['"]?(\.\.\/\.\.\/assets\/fonts\/[^)'"\s]+)['"]?\)/g)]
+    .map((match) => path.resolve(projectRoot, 'src', 'renderer', match[1]));
+  const declaredFonts = await Promise.all(declaredFontPaths.map((fontPath) => stat(fontPath)));
 
   assert.ok(uiFont.size > 1_000_000);
   assert.ok(codeFont.size > 50_000);
+  assert.equal(declaredFonts.length, 5);
+  assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
   assert.match(uiLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.match(codeLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 
-test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
+test('Settings is fixed-height and shares Save across S3, Notes, and local LLM tabs', async () => {
   const { html, styles, renderer, notesPage, settingsDialog, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
   assert.match(html, /id="nav-settings-btn"[^>]*aria-label="Settings"/);
   assert.match(styles, /\.nav-settings-button\{margin-top:auto;order:99\}/);
   assert.match(styles, /\.host-dialog\.settings-dialog\{width:min\(540px,calc\(100vw - 32px\)\)/);
+  assert.match(styles, /\.dialog-panel\.settings-panel\{[^}]*height:min\(600px,calc\(100dvh - 32px\)\)[^}]*max-height:min\(600px,calc\(100dvh - 32px\)\)[^}]*grid-template-rows:auto auto minmax\(0,1fr\) auto/);
+  assert.match(styles, /\.settings-tab-panel\{[^}]*min-height:0[^}]*overflow-y:auto/);
   assert.match(html, /id="settings-dialog"/);
   assert.match(html, /class="settings-head-actions"[\s\S]*?id="settings-save-btn"[^>]*type="submit"[^>]*>Save<\/button>[\s\S]*?id="settings-close-btn"/);
-  assert.match(html, /class="settings-tabs"[^>]*role="tablist"[\s\S]*?id="settings-s3-tab"[^>]*aria-selected="true"[\s\S]*?id="settings-notes-tab"[^>]*aria-selected="false"/);
+  assert.match(html, /class="settings-tabs"[^>]*role="tablist"[\s\S]*?id="settings-s3-tab"[^>]*aria-selected="true"[\s\S]*?id="settings-notes-tab"[^>]*aria-selected="false"[\s\S]*?id="settings-llm-tab"[^>]*aria-selected="false"/);
   assert.match(html, /id="settings-s3-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-s3-tab"/);
   assert.match(html, /id="settings-notes-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-notes-tab"[^>]*hidden/);
+  assert.match(html, /id="settings-llm-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-llm-tab"[^>]*hidden/);
   assert.match(styles, /\.settings-tab-panel\[hidden\]\{display:none\}/);
   assert.match(html, /id="s3-endpoint"[^>]*placeholder="https:\/\/s3\.example\.com"/);
   assert.match(html, /id="s3-bucket"[^>]*placeholder="service-manager"/);
@@ -170,6 +231,13 @@ test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
   assert.match(styles, /\.settings-password-toggle\[aria-pressed=true\]/);
   assert.match(html, /id="settings-s3-panel"[\s\S]*?id="settings-test-btn"[^>]*>Test<\/button>[\s\S]*?id="settings-sync-btn"[^>]*>Sync Now<\/button>[\s\S]*?<\/section>/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="14"/);
+  assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-editor-theme"[\s\S]*?<option value="light">Light<\/option>[\s\S]*?<option value="dark">Dark<\/option>/);
+  assert.doesNotMatch(html, /Adjust the snippet editor text size|Use one theme for code and rich text editors/);
+  assert.match(styles, /\.settings-notes-card\{[^}]*display:grid[^}]*grid-template-columns:minmax\(0,1fr\) auto/);
+  assert.match(styles, /\.settings-notes-card \.settings-theme-select\{[^}]*width:7rem/);
+  assert.match(html, /id="settings-llm-panel"[\s\S]*?id="llm-endpoint"[^>]*type="url"[^>]*placeholder="https:\/\/api\.example\.com\/v1"/);
+  assert.match(html, /id="settings-llm-panel"[\s\S]*?id="llm-token"[^>]*type="password"[\s\S]*?id="llm-token-visibility"[^>]*aria-label="Show LLM Token"/);
+  assert.match(html, /id="settings-llm-panel"[\s\S]*?id="llm-http-warning"[\s\S]*?id="llm-model"[\s\S]*?id="settings-llm-load-models-btn"[^>]*>Load Models<\/button>/);
   assert.match(html, /id="settings-sync-btn"[^>]*>Sync Now<\/button>/);
   assert.doesNotMatch(html, /settings-clear-credentials-btn|Clear Credentials/);
 
@@ -180,6 +248,10 @@ test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
   assert.match(preload, /testS3Connection:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:test', draft\)/);
   assert.match(preload, /revealS3SyncCredentials:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:reveal-credentials'\)/);
   assert.match(preload, /syncAllDataToS3:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:sync'\)/);
+  assert.match(preload, /getLlmSettings:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:llm:get'\)/);
+  assert.match(preload, /saveLlmSettings:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:llm:save', draft\)/);
+  assert.match(preload, /revealLlmToken:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:llm:reveal-token'\)/);
+  assert.match(preload, /listLlmModels:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:llm:list-models', draft\)/);
   assert.match(preload, /onS3SyncStateChanged:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('settings:s3:state', wrapped\)[\s\S]*?removeListener\('settings:s3:state', wrapped\)/);
   assert.match(preload, /onPersistentDataReloaded:\s*\(listener\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('app:persistent-data-reloaded', wrapped\)[\s\S]*?removeListener\('app:persistent-data-reloaded', wrapped\)/);
   assert.match(preload, /exposeInMainWorld\('settingsApi', settingsApi\)/);
@@ -191,6 +263,10 @@ test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
     's3SettingsTest',
     's3SettingsReveal',
     's3Sync',
+    'llmSettingsGet',
+    'llmSettingsSave',
+    'llmSettingsReveal',
+    'llmModelsList',
   ]) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
@@ -203,18 +279,39 @@ test('Settings uses shared Save with separate S3 and Notes tabs', async () => {
   assert.match(settingsDialog, /bucketInput\.value = settings\.bucket/);
   assert.match(settingsDialog, /bucket:\s*bucketInput\.value\.trim\(\)/);
   assert.match(settingsDialog, /await flushNotesPage\(\);[\s\S]*?saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)/);
-  assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?closeSettingsDialog\(\)/);
+  assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?saveLlmSettings\(llmDraft\)[\s\S]*?closeSettingsDialog\(\)/);
   assert.match(settingsDialog, /function shouldSaveS3Draft\(draft\)[\s\S]*?draft\.endpoint[\s\S]*?hasCredentials[\s\S]*?hasSyncEncryptionKey/);
+  assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'llm'\]/);
   assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?panel\.hidden = !selected/);
   assert.match(settingsDialog, /event\.key === 'ArrowRight'[\s\S]*?event\.key === 'ArrowLeft'[\s\S]*?activateTab/);
   assert.doesNotMatch(settingsDialog, /clearCredentials|Clear Credentials/);
+  assert.match(settingsDialog, /notesEditorTheme !== 'light' && notesEditorTheme !== 'dark'/);
+  assert.match(settingsDialog, /return \{ notesFontSize, notesEditorTheme \}/);
+  assert.match(settingsDialog, /applyNotesEditorTheme\(preferences\.notesEditorTheme\)/);
+  assert.match(settingsDialog, /window\.settingsApi\.listLlmModels\(\{/);
+  assert.match(settingsDialog, /\.\.\.\(!token && hasLlmToken && !shouldClearLlmToken\(\) \? \{ useSavedToken: true \} : \{\}\)/);
+  assert.match(settingsDialog, /function shouldClearLlmToken\(\)[\s\S]*?llmTokenClearRequested[\s\S]*?!llmTokenInput\.value && llmTokenEdited && llmSavedTokenHydrated/);
+  assert.match(settingsDialog, /\.\.\.\(shouldClearLlmToken\(\) \? \{ clearToken: true \} : \{\}\)/);
+  assert.match(settingsDialog, /token && llmTokenEdited \? \{ token \} : \{\}/);
+  assert.match(settingsDialog, /renderLlmModelOptions\(models, selectedModel\)/);
+  assert.match(settingsDialog, /const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && llmSettingsLoaded/);
+  assert.match(settingsDialog, /id="llm-token-remove"|llmTokenRemoveButton/);
+  assert.ok(settingsDialog.includes("!hasToken || !/^http:\\/\\//i.test(llmEndpointInput.value.trim())"));
+  assert.match(settingsDialog, /Promise\.allSettled\(\[[\s\S]*?getS3SyncSettings\(\)[\s\S]*?getUiPreferences\(\)[\s\S]*?getLlmSettings\(\)/);
   assert.match(notesPage, /await Promise\.all\([\s\S]*?if \(this\.notes\.some\([\s\S]*?throw new Error\('Some notes could not be saved\./);
-  assert.match(settingsDialog, /for \(const input of s3Inputs\)\s*input\.disabled = locked/);
+  assert.match(settingsDialog, /for \(const input of s3Inputs\)\s*input\.disabled = locked \|\| !s3SettingsLoaded/);
   assert.match(settingsDialog, /\.\.\.\(accessKeyId \? \{ accessKeyId \} : \{\}\)/);
   assert.match(settingsDialog, /\.\.\.\(secretAccessKey \? \{ secretAccessKey \} : \{\}\)/);
+
+  assert.match(main, /new llmSettingsStore_1\.LlmSettingsStore\(\{[\s\S]*?join\([^\n]*getPath\('userData'\), 'llm-settings\.json'\)/);
+  const sharedSnapshotStart = main.indexOf('async function collectS3SharedAppDataUnlocked()');
+  const sharedSnapshotEnd = main.indexOf('async function collectS3SharedAppData()', sharedSnapshotStart);
+  assert.ok(sharedSnapshotStart >= 0 && sharedSnapshotEnd > sharedSnapshotStart);
+  const sharedSnapshot = main.slice(sharedSnapshotStart, sharedSnapshotEnd);
+  assert.doesNotMatch(sharedSnapshot, /llm|model|token/i);
 });
 
-test('Settings hydrates saved credentials as masked values and reveals only the selected field', async () => {
+test('Settings hydrates saved S3 and LLM credentials masked and reveals only one selected field', async () => {
   const { settingsDialog } = await readIntegrationFiles();
   const renderStart = settingsDialog.indexOf('function renderSettings(');
   const renderEnd = settingsDialog.indexOf('function currentDraft', renderStart);
@@ -242,6 +339,15 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   assert.match(settingsDialog, /closeButton\.disabled = locked/);
   assert.match(settingsDialog, /settingsResult\.value\.hasCredentials && \(!accessKeyInput\.value \|\| !secretKeyInput\.value\)[\s\S]*?settingsResult\.value\.hasSyncEncryptionKey && !syncEncryptionKeyInput\.value[\s\S]*?await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /syncEncryptionKeyInput\.value = credentials\.syncEncryptionKey/);
+  assert.match(settingsDialog, /async function revealSavedLlmToken\(\)[\s\S]*?window\.settingsApi\.revealLlmToken\(\)[\s\S]*?llmTokenInput\.value = token[\s\S]*?maskCredentials\(\)/);
+  assert.match(settingsDialog, /llmTokenInput\.value = token[\s\S]*?llmSavedTokenHydrated = Boolean\(token\)/);
+  assert.match(settingsDialog, /hasLlmToken = settings\.hasToken/);
+  assert.match(settingsDialog, /if \(!settings\.hasToken && !llmTokenEdited\)[\s\S]*?llmTokenInput\.value = ''/);
+  assert.match(settingsDialog, /llmTokenInput\.addEventListener\('input',[\s\S]*?llmTokenEdited = true[\s\S]*?updateControls\(\)/);
+  assert.match(settingsDialog, /function prepareSettingsDialogClose\(\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = false/);
+  assert.match(settingsDialog, /async function openSettings\(\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = false[\s\S]*?clearCredentialInputs\(\)/);
+  assert.match(settingsDialog, /saveLlmSettings\(llmDraft\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = Boolean\(savedLlmSettings\.hasToken && llmTokenInput\.value\)[\s\S]*?renderLlmSettings\(savedLlmSettings\)/);
+  assert.doesNotMatch(settingsDialog, /llmTokenInput\.value\s*=\s*settings\.(?:token|credentials)/);
   assert.match(settingsDialog, /const syncEncryptionKey = syncEncryptionKeyInput\.value\.trim\(\)[\s\S]*?\{ syncEncryptionKey \}/);
   assert.match(settingsDialog, /writeClipboardText\(syncEncryptionKeyInput\.value\)/);
   assert.match(settingsDialog, /function renderSettingsWithAuthoritativeSyncKey[\s\S]*?syncEncryptionKeyInput\.value = ''[\s\S]*?renderSettings\(settings\)[\s\S]*?await revealSavedCredentials\(\)/);
@@ -251,13 +357,15 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   assert.match(settingsDialog, /function prepareSettingsDialogClose\(\)[\s\S]*?settingsOpenGeneration \+= 1[\s\S]*?clearCredentialInputs\(\)[\s\S]*?maskCredentials\(\)/);
   assert.match(settingsDialog, /function closeSettingsDialog\(\)[\s\S]*?prepareSettingsDialogClose\(\)[\s\S]*?dialog\.close\(\)/);
   assert.match(settingsDialog, /async function openSettings\(\)[\s\S]*?clearCredentialInputs\(\)[\s\S]*?getS3SyncSettings\(\)/);
+  assert.match(settingsDialog, /getLlmSettings\(\)[\s\S]*?llmResult\.value\.hasToken[\s\S]*?revealSavedLlmToken\(\)/);
+  assert.match(settingsDialog, /control\.source === 'llm' \? await revealSavedLlmToken\(\) : await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /if \(!dialog\.open \|\| openGeneration !== settingsOpenGeneration\)\s*return/);
   assert.match(settingsDialog, /dialog\.addEventListener\('cancel',[\s\S]*?prepareSettingsDialogClose\(\)/);
   assert.match(settingsDialog, /dialog\.addEventListener\('close',[\s\S]*?if \(dialog\.open\)\s*return[\s\S]*?clearCredentialInputs\(\)[\s\S]*?maskCredentials\(\)/);
   assert.doesNotMatch(settingsDialog, /clearCredentials|Clear Credentials/);
 });
 
-test('normal and signal shutdown flush Notes and stop S3 sync through the shared coordinator', async () => {
+test('normal and signal shutdown flush the complete Notes/Settings state and stop active work', async () => {
   const { main } = await readIntegrationFiles();
   const shutdownStart = main.indexOf('async function shutdownRuntimesForQuit()');
   const shutdownEnd = main.indexOf('function requestQuitAfterRuntimeShutdown', shutdownStart);
@@ -265,7 +373,11 @@ test('normal and signal shutdown flush Notes and stop S3 sync through the shared
   const shutdown = main.slice(shutdownStart, shutdownEnd);
 
   assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => notesStore\?\.flush\(\)\)/);
+  assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => notesTreeStore\?\.flush\(\)\)/);
+  assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => notesTreeViewStore\?\.flush\(\)\)/);
   assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => uiPreferencesStore\?\.flush\(\)\)/);
+  assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => llmSettingsStore\?\.flush\(\)\)/);
+  assert.match(shutdown, /for \(const controller of activeLlmModelRequests\)\s*controller\.abort\(\)/);
   assert.match(shutdown, /await flushRendererNotes\(\);[\s\S]*?notesStore\?\.flush\(\)/);
   assert.match(shutdown, /Promise\.resolve\(\)\.then\(\(\) => s3SyncRuntime\?\.shutdown\(\)\)/);
   assert.match(main, /window\.on\('close',[\s\S]*?event\.preventDefault\(\)[\s\S]*?requestQuitAfterRuntimeShutdown\(\)/);

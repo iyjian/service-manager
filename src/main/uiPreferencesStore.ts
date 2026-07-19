@@ -4,7 +4,7 @@ import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import type { UiPreferences, UiPreferencesDraft } from '../shared/types';
 
-export const UI_PREFERENCES_SCHEMA_VERSION = 1 as const;
+export const UI_PREFERENCES_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_NOTES_FONT_SIZE = 14;
 export const MIN_NOTES_FONT_SIZE = 12;
 export const MAX_NOTES_FONT_SIZE = 24;
@@ -15,6 +15,7 @@ interface PersistedUiPreferences {
   schemaVersion: typeof UI_PREFERENCES_SCHEMA_VERSION;
   notes: {
     fontSize: number;
+    editorTheme: 'light' | 'dark';
   };
 }
 
@@ -23,7 +24,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function defaultPreferences(): UiPreferences {
-  return { notesFontSize: DEFAULT_NOTES_FONT_SIZE };
+  return { notesFontSize: DEFAULT_NOTES_FONT_SIZE, notesEditorTheme: 'light' };
 }
 
 export function normalizeUiPreferencesDraft(value: unknown): UiPreferencesDraft {
@@ -31,27 +32,32 @@ export function normalizeUiPreferencesDraft(value: unknown): UiPreferencesDraft 
     || typeof value.notesFontSize !== 'number'
     || !Number.isInteger(value.notesFontSize)
     || value.notesFontSize < MIN_NOTES_FONT_SIZE
-    || value.notesFontSize > MAX_NOTES_FONT_SIZE) {
-    throw new Error(
-      `Notes font size must be a whole number from ${MIN_NOTES_FONT_SIZE} to ${MAX_NOTES_FONT_SIZE}.`,
-    );
+    || value.notesFontSize > MAX_NOTES_FONT_SIZE
+    || (value.notesEditorTheme !== 'light' && value.notesEditorTheme !== 'dark')) {
+    throw new Error('Notes preferences are invalid.');
   }
-  return { notesFontSize: value.notesFontSize };
+  return { notesFontSize: value.notesFontSize, notesEditorTheme: value.notesEditorTheme };
 }
 
 function parsePersistedPreferences(value: unknown): UiPreferences {
   if (!isRecord(value)
-    || value.schemaVersion !== UI_PREFERENCES_SCHEMA_VERSION
+    || (value.schemaVersion !== 1 && value.schemaVersion !== UI_PREFERENCES_SCHEMA_VERSION)
     || !isRecord(value.notes)) {
     throw new Error('UI preferences are invalid.');
   }
-  return normalizeUiPreferencesDraft({ notesFontSize: value.notes.fontSize });
+  return normalizeUiPreferencesDraft({
+    notesFontSize: value.notes.fontSize,
+    notesEditorTheme: value.schemaVersion === 1 ? 'light' : value.notes.editorTheme,
+  });
 }
 
 function toPersistedPreferences(value: UiPreferences): PersistedUiPreferences {
   return {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
-    notes: { fontSize: value.notesFontSize },
+    notes: {
+      fontSize: value.notesFontSize,
+      editorTheme: value.notesEditorTheme,
+    },
   };
 }
 
@@ -100,7 +106,9 @@ export class UiPreferencesStore {
     const normalized = normalizeUiPreferencesDraft(value);
     return this.enqueue(async () => {
       const next = { ...normalized };
-      if (!this.hasPersistedPreferences || next.notesFontSize !== this.preferences.notesFontSize) {
+      if (!this.hasPersistedPreferences
+        || next.notesFontSize !== this.preferences.notesFontSize
+        || next.notesEditorTheme !== this.preferences.notesEditorTheme) {
         await this.persist(next);
         this.preferences = next;
         this.hasPersistedPreferences = true;

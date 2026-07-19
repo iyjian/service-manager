@@ -3,13 +3,21 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import type {
   ConfigTransferResult,
   ConfirmDialogOptions,
   ForwardState,
   HostConfig,
   HostDraft,
+  NoteDeleteInput,
   NoteDraft,
+  NoteDraftRecoveryInput,
+  NotePlacementInput,
+  NoteMoveInput,
+  NoteTreeExpansionInput,
+  NotesWorkspaceSnapshot,
+  LlmModelsDraft,
   PrivateKeyImportResult,
   ServiceRefreshOptions,
   ServiceLogsResult,
@@ -56,8 +64,20 @@ import { KubernetesRuntime } from './kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from './kubernetes/contextPreference';
 import { validateKubernetesTerminalInput } from './kubernetes/terminalInput';
 import { AppQuitCoordinator } from './quitCoordinator';
-import { NotesStore } from './notesStore';
+import {
+  NOTE_LIMITS,
+  NotesStore,
+  classifyNoteDraftRecovery,
+  normalizeNoteDraft,
+  normalizeNoteSnapshot,
+  type NoteTombstone,
+  type NotesSnapshot,
+} from './notesStore';
+import { NotesTreeStore } from './notesTreeStore';
+import { NotesTreeViewStore } from './notesTreeViewStore';
 import { UiPreferencesStore } from './uiPreferencesStore';
+import { LlmSettingsStore } from './llmSettingsStore';
+import { fetchLlmModels } from './llmModels';
 import { S3SyncRuntime } from './s3Sync';
 import {
   createS3SharedAppDataV2,
@@ -91,9 +111,13 @@ const IPC_CHANNELS = {
   updateState: 'updater:state',
   appMemoryUsage: 'app:memory-usage',
   notesList: 'notes:list',
+  notesWorkspace: 'notes:workspace',
   notesCreate: 'notes:create',
   notesUpdate: 'notes:update',
+  notesMove: 'notes:move',
+  notesTreeExpanded: 'notes:tree-expanded',
   notesDelete: 'notes:delete',
+  notesRecoverDrafts: 'notes:recover-drafts',
   notesImageUpload: 'notes:image:upload',
   notesImageLoad: 'notes:image:load',
   notesFlushRequest: 'notes:flush-request',
@@ -101,6 +125,10 @@ const IPC_CHANNELS = {
   uiPreferencesGet: 'settings:ui:get',
   uiPreferencesSave: 'settings:ui:save',
   uiPreferencesChanged: 'settings:ui:changed',
+  llmSettingsGet: 'settings:llm:get',
+  llmSettingsSave: 'settings:llm:save',
+  llmSettingsReveal: 'settings:llm:reveal-token',
+  llmModelsList: 'settings:llm:list-models',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
   s3SettingsTest: 'settings:s3:test',
@@ -169,13 +197,17 @@ const IPC_CHANNELS = {
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
 let notesStore: NotesStore | null = null;
+let notesTreeStore: NotesTreeStore | null = null;
+let notesTreeViewStore: NotesTreeViewStore | null = null;
 let uiPreferencesStore: UiPreferencesStore | null = null;
+let llmSettingsStore: LlmSettingsStore | null = null;
 let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
 let persistentDataGeneration = 0;
 let s3SharedDataMutationQueue: Promise<void> = Promise.resolve();
+let notesWorkspaceUnsafe = false;
 const RENDERER_NOTES_FLUSH_TIMEOUT_MS = 2_000;
 const pendingRendererNotesFlushes = new Map<string, {
   senderId: number;
@@ -183,6 +215,7 @@ const pendingRendererNotesFlushes = new Map<string, {
   resolve: () => void;
   reject: (error: Error) => void;
 }>();
+const activeLlmModelRequests = new Set<AbortController>();
 const autoStartAbortController = new AbortController();
 const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
@@ -213,11 +246,26 @@ function getNotesStore(): NotesStore {
   return notesStore;
 }
 
+function getNotesTreeStore(): NotesTreeStore {
+  if (!notesTreeStore) throw new Error('Notes tree is not initialized.');
+  return notesTreeStore;
+}
+
+function getNotesTreeViewStore(): NotesTreeViewStore {
+  if (!notesTreeViewStore) throw new Error('Notes tree view is not initialized.');
+  return notesTreeViewStore;
+}
+
 function getUiPreferencesStore(): UiPreferencesStore {
   if (!uiPreferencesStore) {
     throw new Error('UI preferences are not initialized.');
   }
   return uiPreferencesStore;
+}
+
+function getLlmSettingsStore(): LlmSettingsStore {
+  if (!llmSettingsStore) throw new Error('LLM settings are not initialized.');
+  return llmSettingsStore;
 }
 
 function getS3SyncRuntime(): S3SyncRuntime {
@@ -244,6 +292,154 @@ function mutateS3SharedData<T>(operation: () => Promise<T>): Promise<T> {
     s3SyncRuntime?.markLocalChange();
     return result;
   });
+}
+
+function assertNotesWorkspaceSafe(): void {
+  if (notesWorkspaceUnsafe) {
+    throw new Error('The Notes workspace could not be restored completely. Restart the application before editing Notes.');
+  }
+}
+
+function mutateNotesSharedData<T>(operation: () => Promise<T>): Promise<T> {
+  return mutateS3SharedData(async () => {
+    assertNotesWorkspaceSafe();
+    return operation();
+  });
+}
+
+function notesWorkspaceSnapshot(): NotesWorkspaceSnapshot {
+  assertNotesWorkspaceSafe();
+  return {
+    notes: getNotesStore().list(),
+    tree: getNotesTreeStore().snapshot(),
+    expandedNoteIds: getNotesTreeViewStore().snapshot().expandedNoteIds,
+  };
+}
+
+function validateNotePlacement(value: unknown, allowUndefined = false): NotePlacementInput {
+  if (value === undefined && allowUndefined) return { parentId: null };
+  if (!isRecord(value) || (value.parentId !== null && typeof value.parentId !== 'string')) {
+    throw new Error('Note placement is invalid.');
+  }
+  if (value.beforeNoteId !== undefined && typeof value.beforeNoteId !== 'string') {
+    throw new Error('Note placement is invalid.');
+  }
+  return {
+    parentId: value.parentId as string | null,
+    ...(typeof value.beforeNoteId === 'string' ? { beforeNoteId: value.beforeNoteId } : {}),
+  };
+}
+
+function validateNoteMove(value: unknown): NoteMoveInput {
+  const placement = validateNotePlacement(value);
+  if (!isRecord(value) || typeof value.noteId !== 'string') throw new Error('Note move is invalid.');
+  return { noteId: value.noteId, ...placement };
+}
+
+function validateNoteTreeExpansion(value: unknown): NoteTreeExpansionInput {
+  if (!isRecord(value) || typeof value.noteId !== 'string' || typeof value.expanded !== 'boolean') {
+    throw new Error('Note tree expansion is invalid.');
+  }
+  return { noteId: value.noteId, expanded: value.expanded };
+}
+
+function validateNoteId(value: unknown, label = 'Note ID'): string {
+  if (typeof value !== 'string'
+    || value.length === 0
+    || value.length > NOTE_LIMITS.idCharacters
+    || value.trim() !== value
+    || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return value;
+}
+
+function validateNoteDelete(value: unknown): NoteDeleteInput {
+  if (!isRecord(value) || !Array.isArray(value.expectedIds)
+    || value.expectedIds.length === 0
+    || value.expectedIds.length > NOTE_LIMITS.notes) {
+    throw new Error('Note deletion is invalid.');
+  }
+  const id = validateNoteId(value.id);
+  const expectedIds = value.expectedIds.map((candidate, index) => (
+    validateNoteId(candidate, `Expected Note ${index + 1} ID`)
+  ));
+  if (new Set(expectedIds).size !== expectedIds.length || !expectedIds.includes(id)) {
+    throw new Error('Note deletion is invalid.');
+  }
+  return { id, expectedIds };
+}
+
+function validateNoteDraftRecoveries(value: unknown): NoteDraftRecoveryInput[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > NOTE_LIMITS.notes) {
+    throw new Error('Note recovery is invalid.');
+  }
+  const originalIds = new Set<string>();
+  return value.map((candidate, index) => {
+    if (!isRecord(candidate)) throw new Error('Note recovery is invalid.');
+    const originalId = validateNoteId(candidate.originalId, `Recovery Note ${index + 1} ID`);
+    if (originalIds.has(originalId)) throw new Error('Note recovery contains a duplicate Note ID.');
+    originalIds.add(originalId);
+    const expectedNote = normalizeNoteSnapshot(candidate.expectedNote);
+    if (expectedNote.id !== originalId) throw new Error('Note recovery base is invalid.');
+    return { originalId, draft: normalizeNoteDraft(candidate.draft), expectedNote };
+  });
+}
+
+function conflictRecoveryDraft(draft: NoteDraft): NoteDraft {
+  const suffix = ' (Conflict)';
+  const normalizedName = draft.name.trim() || 'Untitled note';
+  const available = Math.max(1, NOTE_LIMITS.nameCharacters - suffix.length);
+  const baseName = normalizedName.endsWith(suffix)
+    ? normalizedName.slice(0, NOTE_LIMITS.nameCharacters)
+    : `${normalizedName.slice(0, available).trimEnd()}${suffix}`;
+  const hasConflictTag = draft.tags.some((tag) => tag.trim().toLocaleLowerCase() === 'conflict');
+  const tags = hasConflictTag
+    ? [...draft.tags]
+    : [...draft.tags.slice(0, Math.max(0, NOTE_LIMITS.tags - 1)), 'Conflict'];
+  return { ...draft, name: baseName, tags };
+}
+
+function noteSubtreeIds(rootId: string): string[] {
+  const tree = getNotesTreeStore().snapshot();
+  if (!tree.nodes.some((node) => node.noteId === rootId)) return [];
+  const children = new Map<string, string[]>();
+  for (const node of tree.nodes) {
+    if (node.parentId === null) continue;
+    const group = children.get(node.parentId) ?? [];
+    group.push(node.noteId);
+    children.set(node.parentId, group);
+  }
+  const result: string[] = [];
+  const visit = (noteId: string): void => {
+    result.push(noteId);
+    for (const childId of children.get(noteId) ?? []) visit(childId);
+  };
+  visit(rootId);
+  return result;
+}
+
+function sameNoteIds(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(left);
+  return expected.size === left.length && right.every((id) => expected.has(id));
+}
+
+async function restoreNotesWorkspace(
+  notes: NotesSnapshot,
+  tombstones: NoteTombstone[],
+  tree: ReturnType<NotesTreeStore['snapshot']>,
+  expandedNoteIds: string[],
+): Promise<void> {
+  const activeIds = notes.notes.map((note) => note.id);
+  const rollbackErrors: unknown[] = [];
+  await getNotesStore().replaceSnapshot(notes, tombstones).catch((error) => rollbackErrors.push(error));
+  await getNotesTreeStore().replaceSnapshot(tree, activeIds).catch((error) => rollbackErrors.push(error));
+  await getNotesTreeViewStore().save(expandedNoteIds, activeIds).catch((error) => rollbackErrors.push(error));
+  if (rollbackErrors.length > 0) {
+    notesWorkspaceUnsafe = true;
+    throw new Error('The Notes workspace rollback was incomplete. Restart the application before editing Notes.');
+  }
 }
 
 function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
@@ -488,6 +684,7 @@ function validateKubernetesRelatedResourceRequest(value: unknown): KubernetesRel
 }
 
 function createWindow(): BrowserWindow {
+  const rendererUrl = pathToFileURL(path.join(__dirname, '..', 'renderer', 'index.html')).toString();
   const window = new BrowserWindow({
     width: 1230,
     height: 820,
@@ -500,6 +697,13 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
     },
   });
+
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const preventRemoteNavigation = (event: Electron.Event, url: string): void => {
+    if (url !== rendererUrl) event.preventDefault();
+  };
+  window.webContents.on('will-navigate', preventRemoteNavigation);
+  window.webContents.on('will-redirect', preventRemoteNavigation);
 
   window.on('unresponsive', () => {
     logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
@@ -541,7 +745,7 @@ function createWindow(): BrowserWindow {
     });
   });
 
-  void window.loadFile(path.join(__dirname, '..', 'renderer', 'index.html')).catch((error) => {
+  void window.loadURL(rendererUrl).catch((error) => {
     logRuntimeError('window:load-file', error);
   });
   return window;
@@ -689,9 +893,14 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     logRuntimeError('app:shutdown', error, { operation: 'renderer-notes-flush' });
   }
 
+  for (const controller of activeLlmModelRequests) controller.abort();
+
   const shutdownResults = await Promise.allSettled([
     Promise.resolve().then(() => notesStore?.flush()),
+    Promise.resolve().then(() => notesTreeStore?.flush()),
+    Promise.resolve().then(() => notesTreeViewStore?.flush()),
     Promise.resolve().then(() => uiPreferencesStore?.flush()),
+    Promise.resolve().then(() => llmSettingsStore?.flush()),
     Promise.resolve().then(() => s3SharedDataMutationQueue),
     Promise.resolve().then(() => s3SyncRuntime?.shutdown()),
     Promise.resolve().then(() => portForwardManager.shutdown()),
@@ -850,6 +1059,7 @@ async function hostsForS3Snapshot(hosts: HostConfig[]): Promise<HostConfig[]> {
 }
 
 async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
+  assertNotesWorkspaceSafe();
   const activeNotesStore = getNotesStore();
   await activeNotesStore.flush();
   const [proxy, snapshotHosts] = await Promise.all([
@@ -859,6 +1069,7 @@ async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
   return createS3SharedAppDataV2({
     hosts: snapshotHosts,
     notes: activeNotesStore.exportSnapshot(),
+    notesTree: getNotesTreeStore().snapshot(),
     noteTombstones: activeNotesStore.exportTombstones(),
     proxy,
   });
@@ -908,6 +1119,10 @@ async function applyS3SharedAppData(
   data: S3SharedAppDataV2,
   expectedLocal?: S3SharedAppDataV2,
 ): Promise<boolean> {
+  // The network reconciliation can finish while a renderer draft is still in
+  // its short debounce window. Force that draft through the ordinary Notes
+  // mutation queue before the final expected-local check and cloud apply.
+  await flushRendererNotes();
   return runS3SharedDataMutation(async () => {
     if (expectedLocal) {
       const currentShared = await collectS3SharedAppDataUnlocked();
@@ -917,6 +1132,8 @@ async function applyS3SharedAppData(
     const currentHosts = getStore().listHosts();
     const currentNotes = getNotesStore().exportSnapshot();
     const currentNoteTombstones = getNotesStore().exportTombstones();
+    const currentNotesTree = getNotesTreeStore().snapshot();
+    const currentExpandedNoteIds = getNotesTreeViewStore().snapshot().expandedNoteIds;
     const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
     const staged = stageS3SharedAppDataForLocalApply(data, {
       hosts: currentHosts,
@@ -926,19 +1143,42 @@ async function applyS3SharedAppData(
     const hostsChanged = !isDeepStrictEqual(currentHosts, nextHosts);
     const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes)
       || !isDeepStrictEqual(currentNoteTombstones, staged.noteTombstones);
+    const notesTreeChanged = !isDeepStrictEqual(currentNotesTree, staged.notesTree);
     const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
-    if (!hostsChanged && !notesChanged && !proxyChanged) return true;
+    if (!hostsChanged && !notesChanged && !notesTreeChanged && !proxyChanged) return true;
 
     if (hostsChanged) await stopAndClearHostRuntime(currentHosts);
     try {
       if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes, staged.noteTombstones);
+      if (notesChanged || notesTreeChanged) {
+        const activeNoteIds = staged.notes.notes.map((note) => note.id);
+        await getNotesTreeStore().replaceSnapshot(staged.notesTree, activeNoteIds);
+        await getNotesTreeViewStore().replaceActiveIds(activeNoteIds);
+      }
       if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
       if (hostsChanged) await getStore().replaceHosts(nextHosts);
     } catch (error) {
       const rollbackErrors: unknown[] = [];
+      let notesRollbackIncomplete = false;
       if (notesChanged) {
         await getNotesStore().replaceSnapshot(currentNotes, currentNoteTombstones)
-          .catch((rollback) => rollbackErrors.push(rollback));
+          .catch((rollback) => {
+            notesRollbackIncomplete = true;
+            rollbackErrors.push(rollback);
+          });
+      }
+      if (notesChanged || notesTreeChanged) {
+        const activeNoteIds = currentNotes.notes.map((note) => note.id);
+        await getNotesTreeStore().replaceSnapshot(currentNotesTree, activeNoteIds)
+          .catch((rollback) => {
+            notesRollbackIncomplete = true;
+            rollbackErrors.push(rollback);
+          });
+        await getNotesTreeViewStore().save(currentExpandedNoteIds, activeNoteIds)
+          .catch((rollback) => {
+            notesRollbackIncomplete = true;
+            rollbackErrors.push(rollback);
+          });
       }
       if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(currentProxy).catch((rollback) => rollbackErrors.push(rollback));
       if (hostsChanged) await getStore().replaceHosts(currentHosts).catch((rollback) => rollbackErrors.push(rollback));
@@ -947,6 +1187,7 @@ async function applyS3SharedAppData(
         for (const host of currentHosts) await autoStartHostRules(host);
       }
       if (rollbackErrors.length > 0) {
+        if (notesRollbackIncomplete) notesWorkspaceUnsafe = true;
         throw new Error('Cloud data could not be applied and the local rollback was incomplete. Restart the application before editing data.');
       }
       throw error;
@@ -967,19 +1208,151 @@ function registerIpcHandlers(): void {
     return toView(hosts);
   });
 
-  ipcMain.handle(IPC_CHANNELS.notesList, async () => getNotesStore().list());
-  ipcMain.handle(IPC_CHANNELS.notesCreate, async () =>
-    mutateS3SharedData(() => getNotesStore().create())
-  );
+  ipcMain.handle(IPC_CHANNELS.notesList, async () => runS3SharedDataMutation(async () => {
+    assertNotesWorkspaceSafe();
+    return getNotesStore().list();
+  }));
+  ipcMain.handle(IPC_CHANNELS.notesWorkspace, async () => (
+    runS3SharedDataMutation(async () => notesWorkspaceSnapshot())
+  ));
+  ipcMain.handle(IPC_CHANNELS.notesCreate, async (_event, placementValue: unknown) => {
+    const placement = validateNotePlacement(placementValue, true);
+    return mutateNotesSharedData(async () => {
+      const previousNotes = getNotesStore().exportSnapshot();
+      const previousTombstones = getNotesStore().exportTombstones();
+      const previousTree = getNotesTreeStore().snapshot();
+      const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      try {
+        const note = await getNotesStore().create();
+        await getNotesTreeStore().insert(note.id, placement.parentId, placement.beforeNoteId);
+        if (placement.parentId !== null) {
+          await getNotesTreeViewStore().set(
+            placement.parentId,
+            true,
+            getNotesStore().list().map((candidate) => candidate.id),
+          );
+        }
+        return notesWorkspaceSnapshot();
+      } catch (error) {
+        await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
+        throw error;
+      }
+    });
+  });
   ipcMain.handle(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
-    if (!isRecord(payload) || typeof payload.id !== 'string') {
+    if (!isRecord(payload)) {
       throw new Error('Note update is invalid.');
     }
-    return mutateS3SharedData(() => getNotesStore().update(payload.id as string, payload.draft as NoteDraft));
+    const id = validateNoteId(payload.id);
+    const draft = normalizeNoteDraft(payload.draft);
+    const expectedNote = normalizeNoteSnapshot(payload.expectedNote);
+    if (expectedNote.id !== id) throw new Error('Note update base is invalid.');
+    return mutateNotesSharedData(async () => {
+      const current = getNotesStore().list().find((note) => note.id === id);
+      if (!current || !isDeepStrictEqual(current, expectedNote)) {
+        throw new Error('This Note changed after the editor loaded it. Reload Notes to preserve both versions.');
+      }
+      return getNotesStore().update(id, draft);
+    });
   });
-  ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Note ID is invalid.');
-    await mutateS3SharedData(() => getNotesStore().delete(id));
+  ipcMain.handle(IPC_CHANNELS.notesMove, async (_event, inputValue: unknown) => {
+    const input = validateNoteMove(inputValue);
+    return mutateNotesSharedData(async () => {
+      const previousNotes = getNotesStore().exportSnapshot();
+      const previousTombstones = getNotesStore().exportTombstones();
+      const activeIds = getNotesStore().list().map((candidate) => candidate.id);
+      const previousTree = getNotesTreeStore().snapshot();
+      const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      try {
+        await getNotesTreeStore().move(input.noteId, input.parentId, input.beforeNoteId);
+        if (input.parentId !== null) {
+          await getNotesTreeViewStore().set(input.parentId, true, activeIds);
+        }
+        return notesWorkspaceSnapshot();
+      } catch (error) {
+        await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
+        throw error;
+      }
+    });
+  });
+  ipcMain.handle(IPC_CHANNELS.notesTreeExpanded, async (_event, inputValue: unknown) => {
+    const input = validateNoteTreeExpansion(inputValue);
+    return runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
+      return (await getNotesTreeViewStore().set(
+        input.noteId,
+        input.expanded,
+        getNotesStore().list().map((candidate) => candidate.id),
+      )).expandedNoteIds;
+    });
+  });
+  ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, inputValue: unknown) => {
+    const input = validateNoteDelete(inputValue);
+    return mutateNotesSharedData(async () => {
+      const deletedIds = noteSubtreeIds(input.id);
+      if (!sameNoteIds(deletedIds, input.expectedIds)) {
+        throw new Error('The Notes tree changed after confirmation. Review the subtree and try again.');
+      }
+      if (deletedIds.length === 0) return { deletedIds, workspace: notesWorkspaceSnapshot() };
+      const previousNotes = getNotesStore().exportSnapshot();
+      const previousTombstones = getNotesStore().exportTombstones();
+      const previousTree = getNotesTreeStore().snapshot();
+      const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      const deleted = new Set(deletedIds);
+      const deletedAt = new Date().toISOString();
+      const replacementNotes: NotesSnapshot = {
+        schemaVersion: previousNotes.schemaVersion,
+        notes: previousNotes.notes.filter((note) => !deleted.has(note.id)),
+      };
+      const replacementTombstones: NoteTombstone[] = [
+        ...previousTombstones.filter((tombstone) => !deleted.has(tombstone.id)),
+        ...deletedIds.map((noteId) => ({ id: noteId, deletedAt })),
+      ];
+      try {
+        await getNotesStore().replaceSnapshot(replacementNotes, replacementTombstones);
+        await getNotesTreeStore().removeIds(deletedIds);
+        await getNotesTreeViewStore().replaceActiveIds(replacementNotes.notes.map((note) => note.id));
+        return { deletedIds, workspace: notesWorkspaceSnapshot() };
+      } catch (error) {
+        await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
+        throw error;
+      }
+    });
+  });
+  ipcMain.handle(IPC_CHANNELS.notesRecoverDrafts, async (_event, inputValue: unknown) => {
+    const recoveries = validateNoteDraftRecoveries(inputValue);
+    return mutateNotesSharedData(async () => {
+      const previousNotes = getNotesStore().exportSnapshot();
+      const previousTombstones = getNotesStore().exportTombstones();
+      const previousTree = getNotesTreeStore().snapshot();
+      const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      const recovered: Array<{ originalId: string; noteId: string; conflict: boolean }> = [];
+      const activeIds = new Set(previousNotes.notes.map((note) => note.id));
+      try {
+        for (const recovery of recoveries) {
+          const current = getNotesStore().list().find((note) => note.id === recovery.originalId);
+          const decision = classifyNoteDraftRecovery(current, recovery.expectedNote, recovery.draft);
+          if (decision === 'already-saved' && current) {
+            recovered.push({ originalId: recovery.originalId, noteId: current.id, conflict: false });
+            continue;
+          }
+          if (decision === 'update') {
+            const note = await getNotesStore().update(recovery.originalId, recovery.draft);
+            recovered.push({ originalId: recovery.originalId, noteId: note.id, conflict: false });
+            continue;
+          }
+          const created = await getNotesStore().create();
+          const note = await getNotesStore().update(created.id, conflictRecoveryDraft(recovery.draft));
+          await getNotesTreeStore().insert(note.id, null);
+          activeIds.add(note.id);
+          recovered.push({ originalId: recovery.originalId, noteId: note.id, conflict: true });
+        }
+        return { recovered, workspace: notesWorkspaceSnapshot() };
+      } catch (error) {
+        await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
+        throw error;
+      }
+    });
   });
   ipcMain.handle(IPC_CHANNELS.notesImageUpload, async (_event, input: unknown) =>
     getS3SyncRuntime().uploadNoteImage(input)
@@ -1004,6 +1377,29 @@ function registerIpcHandlers(): void {
     const preferences = await getUiPreferencesStore().save(draft);
     broadcast(IPC_CHANNELS.uiPreferencesChanged, preferences);
     return preferences;
+  });
+  ipcMain.handle(IPC_CHANNELS.llmSettingsGet, async () => getLlmSettingsStore().get());
+  ipcMain.handle(IPC_CHANNELS.llmSettingsSave, async (_event, draft: unknown) =>
+    getLlmSettingsStore().save(draft)
+  );
+  ipcMain.handle(IPC_CHANNELS.llmSettingsReveal, async () => getLlmSettingsStore().revealToken());
+  ipcMain.handle(IPC_CHANNELS.llmModelsList, async (_event, draftValue: unknown) => {
+    if (!isRecord(draftValue)
+      || typeof draftValue.endpoint !== 'string'
+      || (draftValue.token !== undefined && typeof draftValue.token !== 'string')
+      || (draftValue.useSavedToken !== undefined && typeof draftValue.useSavedToken !== 'boolean')) {
+      throw new Error('The LLM model request is invalid.');
+    }
+    const draft = draftValue as unknown as LlmModelsDraft;
+    let token = draft.token;
+    if (!token && draft.useSavedToken) token = await getLlmSettingsStore().revealToken();
+    const controller = new AbortController();
+    activeLlmModelRequests.add(controller);
+    try {
+      return await fetchLlmModels({ endpoint: draft.endpoint, ...(token ? { token } : {}), signal: controller.signal });
+    } finally {
+      activeLlmModelRequests.delete(controller);
+    }
   });
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
@@ -1771,11 +2167,30 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
-    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes'));
+    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes-v4'));
     await notesStore.load();
+
+    notesTreeStore = new NotesTreeStore(path.join(app.getPath('userData'), 'notes-tree.json'));
+    await notesTreeStore.load(notesStore.list().map((note) => note.id));
+    notesTreeViewStore = new NotesTreeViewStore(path.join(app.getPath('userData'), 'notes-tree-view.json'));
+    await notesTreeViewStore.load(notesStore.list().map((note) => note.id));
 
     uiPreferencesStore = new UiPreferencesStore(path.join(app.getPath('userData'), 'ui-preferences.json'));
     await uiPreferencesStore.load();
+
+    const credentialProtector = {
+      isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+      encryptString: (value: string) => safeStorage.encryptString(value),
+      decryptString: (value: Buffer) => safeStorage.decryptString(value),
+      getSelectedStorageBackend: () => process.platform === 'linux'
+        ? safeStorage.getSelectedStorageBackend()
+        : 'unknown',
+    };
+    llmSettingsStore = new LlmSettingsStore({
+      filePath: path.join(app.getPath('userData'), 'llm-settings.json'),
+      credentialProtector,
+    });
+    await llmSettingsStore.load();
 
     const userDataPath = app.getPath('userData');
     const initializedProxyRuntime = new ProxyRuntime(path.join(userDataPath, 'proxy'));
@@ -1796,14 +2211,7 @@ app.whenReady()
     s3SyncRuntime = new S3SyncRuntime({
       userDataPath,
       appVersion: app.getVersion(),
-      credentialProtector: {
-        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-        encryptString: (value) => safeStorage.encryptString(value),
-        decryptString: (value) => safeStorage.decryptString(value),
-        getSelectedStorageBackend: () => process.platform === 'linux'
-          ? safeStorage.getSelectedStorageBackend()
-          : 'unknown',
-      },
+      credentialProtector,
       snapshotProvider: collectS3SharedAppData,
       snapshotApplier: applyS3SharedAppData,
       onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),

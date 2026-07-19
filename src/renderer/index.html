@@ -305,35 +305,18 @@
     </main>
 
     <main class="app-shell hidden" data-page="notes">
-      <header class="page-head">
-        <div class="page-head-main">
-          <div class="page-brand">
-            <div class="page-brand-copy">
-              <div class="page-title-row">
-                <h1 class="page-title">Notes</h1>
-                <span class="page-stats">Local snippets</span>
-              </div>
-            </div>
-          </div>
-          <div class="page-actions">
-            <button id="notes-new-btn" type="button" class="btn btn-primary btn-sm notes-action-btn">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 2.5h6l2 2v9H4z"></path>
-                <path d="M10 2.5v2h2M8 7v4M6 9h4"></path>
-              </svg>
-              <span>New Note</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
       <section class="notes-page" aria-label="Notes">
         <aside class="notes-sidebar">
-          <label class="notes-search-wrap">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
-            <input id="notes-search" type="search" placeholder="Search notes" aria-label="Search notes" spellcheck="false" />
-          </label>
-          <nav id="notes-list" class="notes-list" aria-label="Notes"></nav>
+          <div class="notes-sidebar-tools">
+            <label class="notes-search-wrap">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+              <input id="notes-search" type="search" placeholder="Search notes" aria-label="Search notes" spellcheck="false" />
+            </label>
+            <button id="notes-new-root-btn" type="button" class="notes-tree-root-add" aria-label="New root Note" title="New root Note">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg>
+            </button>
+          </div>
+          <nav id="notes-list" class="notes-list" aria-label="Notes tree"></nav>
         </aside>
 
         <section class="notes-workspace" aria-label="Note editor">
@@ -431,6 +414,7 @@
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button id="settings-s3-tab" type="button" class="settings-tab" role="tab" aria-selected="true" aria-controls="settings-s3-panel" tabindex="0" data-settings-tab="s3">S3</button>
           <button id="settings-notes-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-notes-panel" tabindex="-1" data-settings-tab="notes">Notes</button>
+          <button id="settings-llm-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-llm-panel" tabindex="-1" data-settings-tab="llm">LLM</button>
         </div>
 
         <section id="settings-s3-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-s3-tab" data-settings-panel="s3">
@@ -492,14 +476,48 @@
 
         <section id="settings-notes-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-notes-tab" data-settings-panel="notes" hidden>
           <div class="settings-notes-card">
-            <div>
-              <label class="settings-notes-title" for="notes-font-size">Editor font size</label>
-              <p class="settings-notes-description">Adjust the snippet editor text size.</p>
-            </div>
+            <label class="settings-notes-title" for="notes-font-size">Editor font size</label>
             <div class="settings-number-control">
               <input id="notes-font-size" class="input" type="number" min="12" max="24" step="1" value="14" inputmode="numeric" aria-describedby="notes-font-size-unit" />
               <span id="notes-font-size-unit">px</span>
             </div>
+          </div>
+          <div class="settings-notes-card">
+            <label class="settings-notes-title" for="notes-editor-theme">Editor theme</label>
+            <select id="notes-editor-theme" class="input settings-theme-select" aria-label="Notes editor theme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+        </section>
+
+        <section id="settings-llm-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-llm-tab" data-settings-panel="llm" hidden>
+          <label class="field field-xs">
+            Endpoint
+            <input id="llm-endpoint" class="input" type="url" placeholder="https://api.example.com/v1" spellcheck="false" autocomplete="off" />
+          </label>
+          <div class="field field-xs">
+            <label for="llm-token">Token</label>
+            <div class="settings-password-control">
+              <input id="llm-token" class="input" type="password" placeholder="Optional Bearer token" autocomplete="off" />
+              <button id="llm-token-visibility" type="button" class="settings-password-toggle" aria-label="Show LLM Token" aria-controls="llm-token" aria-pressed="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+              </button>
+            </div>
+            <div class="settings-token-actions">
+              <button id="llm-token-remove" type="button" class="btn btn-secondary btn-sm hidden">Remove saved Token</button>
+            </div>
+          </div>
+          <p id="llm-http-warning" class="settings-inline-warning hidden">This HTTP endpoint will transmit the Token without transport encryption.</p>
+          <div class="field field-xs">
+            <label for="llm-model">Model</label>
+            <select id="llm-model" class="input" aria-describedby="llm-model-status">
+              <option value="">Load models to select</option>
+            </select>
+          </div>
+          <p id="llm-model-status" class="settings-status" role="status" aria-live="polite">Configure an API base, then load its models.</p>
+          <div class="form-actions settings-actions">
+            <button id="settings-llm-load-models-btn" type="button" class="btn btn-secondary">Load Models</button>
           </div>
         </section>
 

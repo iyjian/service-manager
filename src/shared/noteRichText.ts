@@ -82,7 +82,7 @@ const OBJECT_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 // carries four data bits, so its unused low two bits must be zero.
 const ASSET_KEY_PATTERN = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const CODE_LANGUAGE_PATTERN = /^[A-Za-z0-9_+.#-]{1,64}$/;
-const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const SAFE_LINK_PROTOCOLS = new Set(['http:', 'https:']);
 
 interface ValidationState {
   nodes: number;
@@ -188,6 +188,8 @@ function normalizeSafeLink(value: unknown): string {
     || !value.trim()
     || value.length > RICH_TEXT_LIMITS.linkCharacters
     || /[\u0000-\u0020\u007f]/.test(value)
+    || value.includes('\\')
+    || !/^https?:\/\//i.test(value)
   ) {
     invalid('The rich text link is invalid.');
   }
@@ -201,23 +203,29 @@ function normalizeSafeLink(value: unknown): string {
   if (!SAFE_LINK_PROTOCOLS.has(parsed.protocol.toLocaleLowerCase())) {
     invalid('The rich text link protocol is not supported.');
   }
-  if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && (!parsed.hostname || parsed.username || parsed.password)) {
+  if (!parsed.hostname || parsed.username || parsed.password) {
     invalid('The rich text link is invalid.');
   }
-  if (parsed.protocol === 'mailto:' && !parsed.pathname) invalid('The rich text link is invalid.');
   return href;
+}
+
+/** Matches the exact absolute-link policy used by the renderer's Tiptap Link extension. */
+export function isAllowedRichTextLinkHref(value: unknown): value is string {
+  try {
+    normalizeSafeLink(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeLinkMark(value: Record<string, unknown>): RichTextMark {
   if (!isRecord(value.attrs)) invalid('The rich text link attributes are invalid.');
-  assertAllowedKeys(value.attrs, new Set(['href', 'target', 'rel', 'class', 'title']), 'The rich text link');
-  if (value.attrs.class !== undefined && value.attrs.class !== null) {
-    invalid('The rich text link class is not supported.');
-  }
+  assertAllowedKeys(value.attrs, new Set(['href', 'target', 'rel', 'title']), 'The rich text link');
   const href = normalizeSafeLink(value.attrs.href);
   let target = '_blank';
   if (value.attrs.target !== undefined && value.attrs.target !== null) {
-    if (value.attrs.target !== '_blank' && value.attrs.target !== '_self') {
+    if (value.attrs.target !== '_blank') {
       invalid('The rich text link target is invalid.');
     }
     target = value.attrs.target;

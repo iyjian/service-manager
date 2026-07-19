@@ -5,7 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { NOTE_LIMITS, NOTES_SCHEMA_VERSION, NotesStore } = require('../dist/main/notesStore');
+const {
+  NOTE_LIMITS,
+  NOTES_SCHEMA_VERSION,
+  NotesStore,
+  classifyNoteDraftRecovery,
+} = require('../dist/main/notesStore');
 
 function noteFileName(id) {
   return `${createHash('sha256').update(id, 'utf8').digest('hex')}.json`;
@@ -33,6 +38,23 @@ function draft(overrides = {}) {
     ...overrides,
   };
 }
+
+test('late Note draft recovery updates only an unchanged base and preserves cloud divergence', () => {
+  const base = {
+    id: 'note-1',
+    ...draft({ content: 'base' }),
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const lateDraft = draft({ content: 'late local edit' });
+  const alreadySaved = { ...base, ...lateDraft, updatedAt: '2026-01-01T00:00:01.000Z' };
+  const cloud = { ...base, content: 'cloud edit', updatedAt: '2026-01-01T00:00:02.000Z' };
+
+  assert.equal(classifyNoteDraftRecovery(base, base, lateDraft), 'update');
+  assert.equal(classifyNoteDraftRecovery(alreadySaved, base, lateDraft), 'already-saved');
+  assert.equal(classifyNoteDraftRecovery(cloud, base, lateDraft), 'conflict');
+  assert.equal(classifyNoteDraftRecovery(undefined, base, lateDraft), 'conflict');
+});
 
 function storedNote(overrides = {}) {
   return {

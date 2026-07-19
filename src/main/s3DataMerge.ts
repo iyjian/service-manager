@@ -5,12 +5,19 @@ import type {
   HostConfig,
   JumpHostConfig,
   Note,
+  NotesTreeNode,
+  NotesTreeSnapshot,
   ProxyCustomRule,
   ProxyMode,
   ProxySettings,
 } from '../shared/types';
 import { normalizeRichTextContent } from '../shared/noteRichText';
 import { NOTE_LIMITS, NOTES_SCHEMA_VERSION, type NotesSnapshot } from './notesStore';
+import {
+  NOTES_TREE_MAX_DEPTH,
+  NOTES_TREE_MAX_NODES,
+  NOTES_TREE_SCHEMA_VERSION,
+} from './notesTreeStore';
 import { normalizeProxyCustomRules } from './proxy/proxyExceptions';
 
 export const S3_SHARED_DATA_SCHEMA_VERSION = 2 as const;
@@ -30,6 +37,7 @@ const MAX_PROXY_RULES = 10_000;
 const CONFLICT_TAG = 'Conflict';
 const CONFLICT_SUFFIX = ' (Conflict)';
 const PROXY_MODES = new Set<ProxyMode>(['direct', 'rule', 'global']);
+const NOTES_TREE_ORDER_STEP = 1_024;
 
 export interface S3SharedForwardRule {
   id: string;
@@ -86,6 +94,7 @@ export interface S3SharedAppDataV2 {
     schemaVersion: typeof S3_SHARED_NOTES_SCHEMA_VERSION;
     notes: Note[];
     tombstones: S3NoteTombstone[];
+    tree: NotesTreeSnapshot;
   };
   proxy: {
     schemaVersion: 1;
@@ -97,6 +106,7 @@ export interface S3SharedAppDataV2 {
 export interface S3SharedDataSource {
   hosts: HostConfig[];
   notes: NotesSnapshot;
+  notesTree: NotesTreeSnapshot;
   noteTombstones?: S3NoteTombstone[];
   proxy: {
     settings: ProxySettings;
@@ -119,6 +129,7 @@ export interface S3SharedDataMergeResult {
 export interface S3LocalApplyStage {
   hosts: HostConfig[];
   notes: NotesSnapshot;
+  notesTree: NotesTreeSnapshot;
   noteTombstones: S3NoteTombstone[];
   proxy: {
     settings: ProxySettings;
@@ -336,6 +347,147 @@ function parseTombstone(value: unknown, index: number): S3NoteTombstone {
   };
 }
 
+function compareTreeNodes(left: NotesTreeNode, right: NotesTreeNode): number {
+  if (left.order !== right.order) return left.order < right.order ? -1 : 1;
+  return left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0;
+}
+
+function cloneTreeNode(node: NotesTreeNode): NotesTreeNode {
+  return { noteId: node.noteId, parentId: node.parentId, order: node.order };
+}
+
+function treeNodeMap(nodes: readonly NotesTreeNode[]): Map<string, NotesTreeNode> {
+  return new Map(nodes.map((node) => [node.noteId, node]));
+}
+
+function repairTreeCycles(nodes: readonly NotesTreeNode[]): void {
+  const byId = treeNodeMap(nodes);
+  const complete = new Set<string>();
+  for (const startId of [...byId.keys()].sort()) {
+    if (complete.has(startId)) continue;
+    const path: string[] = [];
+    const positions = new Map<string, number>();
+    let currentId: string | null = startId;
+    while (currentId !== null && !complete.has(currentId)) {
+      const cycleStart = positions.get(currentId);
+      if (cycleStart !== undefined) {
+        for (const cycleId of path.slice(cycleStart)) {
+          const node = byId.get(cycleId);
+          if (node) node.parentId = null;
+        }
+        break;
+      }
+      positions.set(currentId, path.length);
+      path.push(currentId);
+      currentId = byId.get(currentId)?.parentId ?? null;
+    }
+    for (const noteId of path) complete.add(noteId);
+  }
+}
+
+function repairTreeDepth(nodes: readonly NotesTreeNode[]): void {
+  const byId = treeNodeMap(nodes);
+  for (const noteId of [...byId.keys()].sort()) {
+    const node = byId.get(noteId) as NotesTreeNode;
+    let parentId = node.parentId;
+    let depth = 0;
+    while (parentId !== null) {
+      depth += 1;
+      if (depth > NOTES_TREE_MAX_DEPTH) {
+        node.parentId = null;
+        break;
+      }
+      parentId = byId.get(parentId)?.parentId ?? null;
+    }
+  }
+}
+
+function canonicalTreeNodes(nodes: readonly NotesTreeNode[]): NotesTreeNode[] {
+  const groups = new Map<string | null, NotesTreeNode[]>();
+  for (const node of nodes) {
+    const group = groups.get(node.parentId) ?? [];
+    group.push(cloneTreeNode(node));
+    groups.set(node.parentId, group);
+  }
+  for (const group of groups.values()) {
+    group.sort(compareTreeNodes);
+    let previousOrder = -1;
+    const needsRebalance = group.some((node) => {
+      const duplicateOrRegressing = node.order <= previousOrder;
+      previousOrder = node.order;
+      return duplicateOrRegressing;
+    });
+    if (needsRebalance) {
+      group.forEach((node, index) => { node.order = (index + 1) * NOTES_TREE_ORDER_STEP; });
+    }
+  }
+  const result: NotesTreeNode[] = [];
+  const append = (parentId: string | null): void => {
+    for (const node of groups.get(parentId) ?? []) {
+      result.push(cloneTreeNode(node));
+      append(node.noteId);
+    }
+  };
+  append(null);
+  return result;
+}
+
+/**
+ * Validates and deterministically repairs the shared Note hierarchy against
+ * the exact active Note set. Stale nodes are removed, missing/orphaned nodes
+ * move to the root, and cycles/depth/order anomalies cannot survive.
+ */
+export function normalizeS3NotesTreeSnapshot(
+  value: unknown,
+  activeNoteIdsValue: readonly string[],
+): NotesTreeSnapshot {
+  if (!isRecord(value)
+    || value.schemaVersion !== NOTES_TREE_SCHEMA_VERSION
+    || !Array.isArray(value.nodes)
+    || value.nodes.length > NOTES_TREE_MAX_NODES
+    || activeNoteIdsValue.length > NOTES_TREE_MAX_NODES) {
+    throw new Error('Shared Notes tree is invalid.');
+  }
+  const activeNoteIds = activeNoteIdsValue.map((id, index) => stableId(id, `Active Note ${index + 1} ID`));
+  const active = new Set(activeNoteIds);
+  if (active.size !== activeNoteIds.length) throw new Error('Shared Notes tree active IDs contain a duplicate.');
+
+  const seen = new Set<string>();
+  const nodes: NotesTreeNode[] = [];
+  for (const [index, candidate] of value.nodes.entries()) {
+    if (!isRecord(candidate)
+      || !Number.isSafeInteger(candidate.order)
+      || Number(candidate.order) < 0
+      || (candidate.parentId !== null && typeof candidate.parentId !== 'string')) {
+      throw new Error('Shared Notes tree is invalid.');
+    }
+    const noteId = stableId(candidate.noteId, `Shared Notes tree node ${index + 1} ID`);
+    const parentId = candidate.parentId === null
+      ? null
+      : stableId(candidate.parentId, `Shared Notes tree node ${index + 1} parent ID`);
+    if (seen.has(noteId)) throw new Error('Shared Notes tree contains a duplicate Note ID.');
+    seen.add(noteId);
+    if (!active.has(noteId)) continue;
+    nodes.push({ noteId, parentId, order: Number(candidate.order) });
+  }
+
+  const selected = new Set(nodes.map((node) => node.noteId));
+  for (const node of nodes) {
+    if (node.parentId !== null && !active.has(node.parentId)) node.parentId = null;
+  }
+  for (const noteId of [...active].sort()) {
+    if (!selected.has(noteId)) {
+      nodes.push({ noteId, parentId: null, order: Number.MAX_SAFE_INTEGER });
+    }
+  }
+  repairTreeCycles(nodes);
+  repairTreeDepth(nodes);
+  return {
+    schemaVersion: NOTES_TREE_SCHEMA_VERSION,
+    nodes: canonicalTreeNodes(nodes),
+  };
+}
+
 function parseNotes(value: unknown): S3SharedAppDataV2['notes'] {
   if (!isRecord(value) || value.schemaVersion !== S3_SHARED_NOTES_SCHEMA_VERSION) {
     throw new Error('Shared Notes data is invalid.');
@@ -346,7 +498,8 @@ function parseNotes(value: unknown): S3SharedAppDataV2['notes'] {
   const tombstones = boundedArray(value.tombstones, 'Shared Notes tombstones', MAX_TOMBSTONES)
     .map(parseTombstone);
   tombstones.forEach((tombstone) => assertUniqueId(ids, tombstone.id, 'Shared Notes data'));
-  return { schemaVersion: S3_SHARED_NOTES_SCHEMA_VERSION, notes, tombstones };
+  const tree = normalizeS3NotesTreeSnapshot(value.tree, notes.map((note) => note.id));
+  return { schemaVersion: S3_SHARED_NOTES_SCHEMA_VERSION, notes, tombstones, tree };
 }
 
 function parseSelectedProxies(value: unknown): Record<string, string> | undefined {
@@ -470,6 +623,7 @@ export function createS3SharedAppDataV2(source: S3SharedDataSource): S3SharedApp
       schemaVersion: S3_SHARED_NOTES_SCHEMA_VERSION,
       notes: source.notes.notes.map((note) => ({ ...note, tags: [...note.tags] })),
       tombstones: (source.noteTombstones ?? []).map((tombstone) => ({ ...tombstone })),
+      tree: source.notesTree,
     },
     proxy: {
       schemaVersion: 1,
@@ -601,6 +755,73 @@ function sectionChoice<T>(
   return cloud;
 }
 
+function treePlacementsEquivalent(left: NotesTreeNode | undefined, right: NotesTreeNode | undefined): boolean {
+  if (!left || !right) return left === right;
+  return left.noteId === right.noteId
+    && left.parentId === right.parentId
+    && left.order === right.order;
+}
+
+export function mergeS3NotesTreeSnapshots(options: {
+  base?: NotesTreeSnapshot;
+  local: NotesTreeSnapshot;
+  cloud: NotesTreeSnapshot;
+  activeNoteIds: readonly string[];
+  conflicts?: readonly S3NoteConflict[];
+}): NotesTreeSnapshot {
+  const normalizeBranch = (tree: NotesTreeSnapshot): NotesTreeSnapshot =>
+    normalizeS3NotesTreeSnapshot(tree, tree.nodes.map((node) => node.noteId));
+  const base = options.base ? normalizeBranch(options.base) : undefined;
+  const local = normalizeBranch(options.local);
+  const cloud = normalizeBranch(options.cloud);
+  const baseNodes = new Map((base?.nodes ?? []).map((node) => [node.noteId, node]));
+  const localNodes = new Map(local.nodes.map((node) => [node.noteId, node]));
+  const cloudNodes = new Map(cloud.nodes.map((node) => [node.noteId, node]));
+  const selected: NotesTreeNode[] = [];
+
+  for (const noteId of options.activeNoteIds) {
+    const baseNode = baseNodes.get(noteId);
+    const localNode = localNodes.get(noteId);
+    const cloudNode = cloudNodes.get(noteId);
+    let chosen: NotesTreeNode | undefined;
+    if (localNode && cloudNode) {
+      if (!baseNode) chosen = cloudNode;
+      else {
+        const localChanged = !treePlacementsEquivalent(localNode, baseNode);
+        const cloudChanged = !treePlacementsEquivalent(cloudNode, baseNode);
+        if (!localChanged) chosen = cloudNode;
+        else if (!cloudChanged) chosen = localNode;
+        else if (treePlacementsEquivalent(localNode, cloudNode)) chosen = cloudNode;
+        else chosen = cloudNode;
+      }
+    } else {
+      chosen = cloudNode ?? localNode ?? baseNode;
+    }
+    if (chosen) selected.push(cloneTreeNode(chosen));
+  }
+
+  const conflictMap = new Map((options.conflicts ?? []).map((conflict) => [
+    conflict.sourceNoteId,
+    conflict.conflictNoteId,
+  ]));
+  for (const conflict of options.conflicts ?? []) {
+    const source = localNodes.get(conflict.sourceNoteId);
+    if (!source) continue;
+    selected.push({
+      noteId: conflict.conflictNoteId,
+      parentId: source.parentId === null
+        ? null
+        : conflictMap.get(source.parentId) ?? source.parentId,
+      order: source.order,
+    });
+  }
+
+  return normalizeS3NotesTreeSnapshot({
+    schemaVersion: NOTES_TREE_SCHEMA_VERSION,
+    nodes: selected,
+  }, options.activeNoteIds);
+}
+
 /**
  * Three-way merge for a CAS retry. Cloud wins true conflicts; independent Note
  * IDs merge, and a divergent local Note becomes a visible conflict copy.
@@ -683,6 +904,13 @@ export function mergeS3SharedAppDataV2(options: {
   if (mergedNotes.length > NOTE_LIMITS.notes) throw new Error('The merged Notes exceed the supported limit.');
   if (mergedTombstones.length > MAX_TOMBSTONES) throw new Error('The merged Note tombstones exceed the supported limit.');
 
+  const mergedTree = mergeS3NotesTreeSnapshots({
+    ...(base ? { base: base.notes.tree } : {}),
+    local: local.notes.tree,
+    cloud: cloud.notes.tree,
+    activeNoteIds: mergedNotes.map((note) => note.id),
+    conflicts: noteConflicts,
+  });
   const data = parseS3SharedAppDataV2({
     schemaVersion: S3_SHARED_DATA_SCHEMA_VERSION,
     hosts: sectionChoice('hosts', base?.hosts, local.hosts, cloud.hosts, discardedLocalSections),
@@ -690,6 +918,7 @@ export function mergeS3SharedAppDataV2(options: {
       schemaVersion: S3_SHARED_NOTES_SCHEMA_VERSION,
       notes: mergedNotes,
       tombstones: mergedTombstones,
+      tree: mergedTree,
     },
     proxy: sectionChoice('proxy', base?.proxy, local.proxy, cloud.proxy, discardedLocalSections),
   });
@@ -759,6 +988,10 @@ export function stageS3SharedAppDataForLocalApply(
       schemaVersion: NOTES_SCHEMA_VERSION,
       notes: cloud.notes.notes.map((note) => ({ ...note, tags: [...note.tags] })),
     },
+    notesTree: normalizeS3NotesTreeSnapshot(
+      cloud.notes.tree,
+      cloud.notes.notes.map((note) => note.id),
+    ),
     noteTombstones: cloud.notes.tombstones.map((tombstone) => ({ ...tombstone })),
     proxy: {
       settings,

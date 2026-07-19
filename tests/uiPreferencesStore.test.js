@@ -21,23 +21,29 @@ async function createStore(t) {
   return { directory, filePath, store };
 }
 
-test('UI preferences use a stable 14px Notes default when the file is missing', async (t) => {
+test('UI preferences use stable Notes defaults when the file is missing', async (t) => {
   const { filePath, store } = await createStore(t);
   await store.load();
 
-  assert.deepEqual(store.get(), { notesFontSize: DEFAULT_NOTES_FONT_SIZE });
+  assert.deepEqual(store.get(), {
+    notesFontSize: DEFAULT_NOTES_FONT_SIZE,
+    notesEditorTheme: 'light',
+  });
   await assert.rejects(fs.stat(filePath), { code: 'ENOENT' });
 });
 
 test('UI preferences persist atomically with a versioned private JSON shape', async (t) => {
   const { directory, filePath, store } = await createStore(t);
   await store.load();
-  assert.deepEqual(await store.save({ notesFontSize: 17 }), { notesFontSize: 17 });
+  assert.deepEqual(
+    await store.save({ notesFontSize: 17, notesEditorTheme: 'dark' }),
+    { notesFontSize: 17, notesEditorTheme: 'dark' },
+  );
   await store.flush();
 
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
-    notes: { fontSize: 17 },
+    notes: { fontSize: 17, editorTheme: 'dark' },
   });
   if (process.platform !== 'win32') {
     assert.equal((await fs.stat(filePath)).mode & 0o777, 0o600);
@@ -49,39 +55,59 @@ test('UI preferences persist atomically with a versioned private JSON shape', as
 
   const reloaded = new UiPreferencesStore(filePath);
   await reloaded.load();
-  assert.deepEqual(reloaded.get(), { notesFontSize: 17 });
+  assert.deepEqual(reloaded.get(), { notesFontSize: 17, notesEditorTheme: 'dark' });
 });
 
 test('damaged UI preferences safely fall back and a default Save repairs the file', async (t) => {
   const { filePath, store } = await createStore(t);
   await fs.writeFile(filePath, '{not-json', 'utf8');
   await store.load();
-  assert.deepEqual(store.get(), { notesFontSize: DEFAULT_NOTES_FONT_SIZE });
+  assert.deepEqual(store.get(), {
+    notesFontSize: DEFAULT_NOTES_FONT_SIZE,
+    notesEditorTheme: 'light',
+  });
 
-  await store.save({ notesFontSize: DEFAULT_NOTES_FONT_SIZE });
+  await store.save({ notesFontSize: DEFAULT_NOTES_FONT_SIZE, notesEditorTheme: 'light' });
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
-    notes: { fontSize: DEFAULT_NOTES_FONT_SIZE },
+    notes: { fontSize: DEFAULT_NOTES_FONT_SIZE, editorTheme: 'light' },
   });
+});
+
+test('schema 1 UI preferences migrate to the default light Notes editor theme', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await fs.writeFile(filePath, JSON.stringify({
+    schemaVersion: 1,
+    notes: { fontSize: 18 },
+  }), 'utf8');
+
+  await store.load();
+  assert.deepEqual(store.get(), { notesFontSize: 18, notesEditorTheme: 'light' });
 });
 
 test('Notes font size validation accepts only bounded whole pixels', () => {
   assert.deepEqual(
-    normalizeUiPreferencesDraft({ notesFontSize: MIN_NOTES_FONT_SIZE }),
-    { notesFontSize: MIN_NOTES_FONT_SIZE },
+    normalizeUiPreferencesDraft({ notesFontSize: MIN_NOTES_FONT_SIZE, notesEditorTheme: 'light' }),
+    { notesFontSize: MIN_NOTES_FONT_SIZE, notesEditorTheme: 'light' },
   );
   assert.deepEqual(
-    normalizeUiPreferencesDraft({ notesFontSize: MAX_NOTES_FONT_SIZE }),
-    { notesFontSize: MAX_NOTES_FONT_SIZE },
+    normalizeUiPreferencesDraft({ notesFontSize: MAX_NOTES_FONT_SIZE, notesEditorTheme: 'dark' }),
+    { notesFontSize: MAX_NOTES_FONT_SIZE, notesEditorTheme: 'dark' },
   );
 
   for (const notesFontSize of [11, 12.5, 25, Number.NaN, '14', undefined]) {
     assert.throws(
-      () => normalizeUiPreferencesDraft({ notesFontSize }),
-      /Notes font size must be a whole number from 12 to 24\./,
+      () => normalizeUiPreferencesDraft({ notesFontSize, notesEditorTheme: 'light' }),
+      /Notes preferences are invalid\./,
     );
   }
-  assert.throws(() => normalizeUiPreferencesDraft(null), /Notes font size/);
+  for (const notesEditorTheme of ['', 'system', undefined]) {
+    assert.throws(
+      () => normalizeUiPreferencesDraft({ notesFontSize: 14, notesEditorTheme }),
+      /Notes preferences are invalid\./,
+    );
+  }
+  assert.throws(() => normalizeUiPreferencesDraft(null), /Notes preferences/);
 });
 
 test('concurrent UI preference saves remain serialized in invocation order', async (t) => {
@@ -89,18 +115,18 @@ test('concurrent UI preference saves remain serialized in invocation order', asy
   await store.load();
 
   const results = await Promise.all([
-    store.save({ notesFontSize: 16 }),
-    store.save({ notesFontSize: 18 }),
-    store.save({ notesFontSize: 20 }),
+    store.save({ notesFontSize: 16, notesEditorTheme: 'light' }),
+    store.save({ notesFontSize: 18, notesEditorTheme: 'dark' }),
+    store.save({ notesFontSize: 20, notesEditorTheme: 'light' }),
   ]);
 
   assert.deepEqual(results, [
-    { notesFontSize: 16 },
-    { notesFontSize: 18 },
-    { notesFontSize: 20 },
+    { notesFontSize: 16, notesEditorTheme: 'light' },
+    { notesFontSize: 18, notesEditorTheme: 'dark' },
+    { notesFontSize: 20, notesEditorTheme: 'light' },
   ]);
-  assert.deepEqual(store.get(), { notesFontSize: 20 });
+  assert.deepEqual(store.get(), { notesFontSize: 20, notesEditorTheme: 'light' });
   const reloaded = new UiPreferencesStore(filePath);
   await reloaded.load();
-  assert.deepEqual(reloaded.get(), { notesFontSize: 20 });
+  assert.deepEqual(reloaded.get(), { notesFontSize: 20, notesEditorTheme: 'light' });
 });

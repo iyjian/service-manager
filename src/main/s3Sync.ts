@@ -16,6 +16,7 @@ import type {
   NoteImageReference,
   NoteImageUploadInput,
   NoteImageUploadResult,
+  NotesTreeSnapshot,
   S3ConnectionTestDraft,
   S3CredentialValues,
   S3SyncResult,
@@ -37,15 +38,20 @@ import {
   createS3SyncHeadV3,
   createS3SyncEncryptionKey,
   createServiceManagerNoteObjectV3,
+  createServiceManagerNotesTreeObjectV3,
   createServiceManagerSyncManifestV3,
   createS3V3ObjectId,
   hashS3V3NoteContent,
+  hashS3V3NotesTreeContent,
   getS3SyncEncryptionKeyId,
   normalizeS3SyncEncryptionKey,
   parseS3V3ManifestData,
+  parseS3V3NotesTreePayload,
   testS3V3Connection,
   type S3V3ManifestData,
   type S3V3NoteReference,
+  type S3V3NotesTreePayload,
+  type S3V3NotesTreeReference,
   type ServiceManagerSyncManifestV3,
 } from './s3SyncV3';
 import {
@@ -56,7 +62,7 @@ import {
 import { NOTES_IMAGE_LIMITS, NotesImageS3Store } from './notesImageS3';
 import { parseNoteImageReference } from '../shared/noteRichText';
 
-const SETTINGS_SCHEMA_VERSION = 5;
+const SETTINGS_SCHEMA_VERSION = 6;
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const SYNC_VERSION = 1 as const;
 const OBJECT_LAYOUT_VERSION = 1 as const;
@@ -105,7 +111,7 @@ export interface S3SyncRuntimeOptions {
 }
 
 interface PersistedS3SyncSettings {
-  schemaVersion: 5;
+  schemaVersion: 6;
   endpoint: string;
   bucket: string;
   region: string;
@@ -677,12 +683,14 @@ function parsePersistedSettings(
       && value.schemaVersion !== 2
       && value.schemaVersion !== 3
       && value.schemaVersion !== 4
-      && value.schemaVersion !== 5)) {
+      && value.schemaVersion !== 5
+      && value.schemaVersion !== 6)) {
     throw new Error('S3 sync settings are invalid.');
   }
   const legacyV1 = value.schemaVersion === 1;
   const legacyV2 = value.schemaVersion === 2;
-  const legacyCloudLayout = value.schemaVersion !== SETTINGS_SCHEMA_VERSION;
+  const currentCloudLayout = value.schemaVersion === SETTINGS_SCHEMA_VERSION;
+  const hasIndependentSyncKey = value.schemaVersion === 5 || currentCloudLayout;
   if (legacyV1 && value.syncVersion !== 1) throw new Error('S3 sync settings are invalid.');
 
   let endpoint: string;
@@ -697,8 +705,12 @@ function parsePersistedSettings(
 
   const encryptedAccessKeyId = protectedCredential(value.encryptedAccessKeyId);
   const encryptedSecretAccessKey = protectedCredential(value.encryptedSecretAccessKey);
-  const encryptedSyncEncryptionKey = protectedCredential(value.encryptedSyncEncryptionKey);
-  const encryptedPreviousSyncEncryptionKey = protectedCredential(value.encryptedPreviousSyncEncryptionKey);
+  const encryptedSyncEncryptionKey = hasIndependentSyncKey
+    ? protectedCredential(value.encryptedSyncEncryptionKey)
+    : undefined;
+  const encryptedPreviousSyncEncryptionKey = currentCloudLayout
+    ? protectedCredential(value.encryptedPreviousSyncEncryptionKey)
+    : undefined;
   if ((encryptedAccessKeyId === undefined) !== (encryptedSecretAccessKey === undefined)) {
     throw new Error('S3 sync settings are invalid.');
   }
@@ -709,15 +721,15 @@ function parsePersistedSettings(
     region: normalizedRegion(value.region),
     clientId: legacyV1 ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
     ...(encryptedAccessKeyId ? { encryptedAccessKeyId, encryptedSecretAccessKey } : {}),
-    ...(!legacyCloudLayout && encryptedSyncEncryptionKey ? { encryptedSyncEncryptionKey } : {}),
-    ...(!legacyCloudLayout && encryptedPreviousSyncEncryptionKey ? { encryptedPreviousSyncEncryptionKey } : {}),
-    ...(!legacyCloudLayout && isValidIsoTimestamp(value.lastSyncedAt)
+    ...(hasIndependentSyncKey && encryptedSyncEncryptionKey ? { encryptedSyncEncryptionKey } : {}),
+    ...(currentCloudLayout && encryptedPreviousSyncEncryptionKey ? { encryptedPreviousSyncEncryptionKey } : {}),
+    ...(currentCloudLayout && isValidIsoTimestamp(value.lastSyncedAt)
       ? { lastSyncedAt: value.lastSyncedAt }
       : {}),
-    ...(!legacyCloudLayout && typeof value.lastRevision === 'string'
+    ...(currentCloudLayout && typeof value.lastRevision === 'string'
       ? { lastRevision: normalizedRevision(value.lastRevision) }
       : {}),
-    ...(!legacyCloudLayout && isValidIsoTimestamp(value.pendingSince)
+    ...(currentCloudLayout && isValidIsoTimestamp(value.pendingSince)
       ? { pendingSince: value.pendingSince }
       : {}),
   };
@@ -735,6 +747,13 @@ function cloneNoteValue(note: Note): Note {
   return { ...note, tags: [...note.tags] };
 }
 
+function cloneNotesTreeValue(tree: NotesTreeSnapshot): NotesTreeSnapshot {
+  return {
+    schemaVersion: 1,
+    nodes: tree.nodes.map((node) => ({ ...node })),
+  };
+}
+
 function noteContentKey(id: string, contentHash: string): string {
   return `${id}\u0000${contentHash}`;
 }
@@ -747,6 +766,42 @@ function noteReferenceKey(reference: S3V3NoteReference): string {
     reference.contentHash,
     reference.encryptionKeyId,
   ].join('\u0000');
+}
+
+function notesTreeReferenceKey(reference: S3V3NotesTreeReference): string {
+  return [
+    reference.objectId,
+    reference.sha256,
+    reference.contentHash,
+    reference.encryptionKeyId,
+  ].join('\u0000');
+}
+
+function notesTreePayloadFromSnapshot(tree: NotesTreeSnapshot): S3V3NotesTreePayload {
+  const nodes = [...tree.nodes];
+  const root = nodes
+    .filter((node) => node.parentId === null)
+    .sort((left, right) => left.order - right.order || (left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0))
+    .map((node) => node.noteId);
+  const sorted = nodes.sort((left, right) => left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0);
+  return parseS3V3NotesTreePayload({
+    schemaVersion: 1,
+    root,
+    order: Object.fromEntries(sorted.map((node) => [node.noteId, node.order])),
+    parent: Object.fromEntries(sorted.map((node) => [node.noteId, node.parentId])),
+  });
+}
+
+function notesTreeSnapshotFromPayload(tree: S3V3NotesTreePayload): NotesTreeSnapshot {
+  const parsed = parseS3V3NotesTreePayload(tree);
+  return {
+    schemaVersion: 1,
+    nodes: Object.keys(parsed.order).map((noteId) => ({
+      noteId,
+      parentId: parsed.parent[noteId],
+      order: parsed.order[noteId],
+    })),
+  };
 }
 
 function compareStableIds(left: { id: string }, right: { id: string }): number {
@@ -792,6 +847,7 @@ async function mapWithConcurrency<T, R>(
 function sharedDataFromManifest(
   data: S3V3ManifestData,
   notes: Note[],
+  notesTree: NotesTreeSnapshot,
 ): S3SharedAppDataV2 {
   const parsed = parseS3SharedAppDataV2({
     schemaVersion: 2,
@@ -800,6 +856,7 @@ function sharedDataFromManifest(
       schemaVersion: 2,
       notes: [...notes].sort(compareStableIds),
       tombstones: [...data.notes.tombstones].sort(compareStableIds),
+      tree: notesTree,
     },
     proxy: data.proxy,
   });
@@ -810,14 +867,16 @@ function sharedDataFromManifest(
 function manifestDataFromShared(
   data: S3SharedAppDataV2,
   noteReferences: S3V3NoteReference[],
+  notesTreeReference: S3V3NotesTreeReference,
 ): S3V3ManifestData {
   return parseS3V3ManifestData({
-    schemaVersion: 3,
+    schemaVersion: 4,
     hosts: data.hosts,
     notes: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [...noteReferences].sort(compareStableIds),
       tombstones: [...data.notes.tombstones].sort(compareStableIds),
+      tree: notesTreeReference,
     },
     proxy: data.proxy,
   });
@@ -1531,14 +1590,46 @@ export class S3SyncRuntime {
     manifestEncryptionKeyId: string,
     knownNotes: Map<string, Note>,
     objectCache: Map<string, Note>,
+    knownTrees: Map<string, NotesTreeSnapshot>,
+    treeObjectCache: Map<string, NotesTreeSnapshot>,
   ): Promise<S3SharedAppDataV2> {
     if (manifest.data.notes.items.some((reference) =>
       reference.encryptionKeyId !== manifestEncryptionKeyId
     )) {
       throw new Error('The S3 manifest mixes Note objects encrypted with a different key.');
     }
-    const dataWithoutActiveNotes = sharedDataFromManifest(manifest.data, []);
-    let materializedSnapshotBytes = measureBoundedJsonBytes(dataWithoutActiveNotes);
+    if (manifest.data.notes.tree.encryptionKeyId !== manifestEncryptionKeyId) {
+      throw new Error('The S3 manifest references a Notes tree encrypted with a different key.');
+    }
+    const treeReference = manifest.data.notes.tree;
+    let notesTree = knownTrees.get(treeReference.contentHash);
+    if (notesTree) {
+      notesTree = cloneNotesTreeValue(notesTree);
+    } else {
+      const referenceKey = notesTreeReferenceKey(treeReference);
+      notesTree = treeObjectCache.get(referenceKey);
+      if (notesTree) {
+        notesTree = cloneNotesTreeValue(notesTree);
+      } else {
+        const result = await objectStore.getNotesTree(treeReference);
+        if (result.status === 'missing') {
+          throw new Error('The S3 sync manifest points to a missing Notes tree object.');
+        }
+        notesTree = notesTreeSnapshotFromPayload(result.object.tree);
+        treeObjectCache.set(referenceKey, cloneNotesTreeValue(notesTree));
+      }
+      knownTrees.set(treeReference.contentHash, cloneNotesTreeValue(notesTree));
+    }
+
+    const dataWithoutActiveNotes = sharedDataFromManifest(manifest.data, [], {
+      schemaVersion: 1,
+      nodes: [],
+    });
+    let materializedSnapshotBytes = measureBoundedJsonBytes(dataWithoutActiveNotes)
+      + Buffer.byteLength(JSON.stringify(notesTree), 'utf8');
+    if (materializedSnapshotBytes > MAX_SNAPSHOT_BYTES) {
+      throw new Error('The application data snapshot is too large to sync.');
+    }
     let materializedNoteCount = 0;
     const retain = (note: Note): Note => {
       materializedSnapshotBytes += Buffer.byteLength(JSON.stringify(note), 'utf8')
@@ -1574,7 +1665,7 @@ export class S3SyncRuntime {
         return retain(note);
       },
     );
-    return sharedDataFromManifest(manifest.data, notes);
+    return sharedDataFromManifest(manifest.data, notes, notesTree);
   }
 
   private async publishRevision(
@@ -1584,8 +1675,13 @@ export class S3SyncRuntime {
     parentRevision: string | undefined,
     expectedHeadEtag: string | undefined,
     reusableReferences: readonly S3V3NoteReference[],
+    reusableTreeReferences: readonly S3V3NotesTreeReference[],
   ): Promise<
-    | { status: 'conflict'; noteReferences: S3V3NoteReference[] }
+    | {
+      status: 'conflict';
+      noteReferences: S3V3NoteReference[];
+      notesTreeReference: S3V3NotesTreeReference;
+    }
     | {
       status: 'written';
       manifest: ServiceManagerSyncManifestV3;
@@ -1599,6 +1695,12 @@ export class S3SyncRuntime {
     for (const reference of reusableReferences) {
       if (reference.encryptionKeyId === currentEncryptionKeyId) {
         reusable.set(noteContentKey(reference.id, reference.contentHash), { ...reference });
+      }
+    }
+    const reusableTrees = new Map<string, S3V3NotesTreeReference>();
+    for (const reference of reusableTreeReferences) {
+      if (reference.encryptionKeyId === currentEncryptionKeyId) {
+        reusableTrees.set(reference.contentHash, { ...reference });
       }
     }
 
@@ -1621,6 +1723,18 @@ export class S3SyncRuntime {
         object: createServiceManagerNoteObjectV3(note, this.createObjectId()),
       };
     });
+    const notesTreePayload = notesTreePayloadFromSnapshot(data.notes.tree);
+    const notesTreeContentHash = hashS3V3NotesTreeContent(notesTreePayload);
+    const existingTreeReference = reusableTrees.get(notesTreeContentHash);
+    const plannedNotesTree:
+      | { kind: 'reference'; reference: S3V3NotesTreeReference }
+      | { kind: 'object'; object: ReturnType<typeof createServiceManagerNotesTreeObjectV3> }
+      = existingTreeReference
+        ? { kind: 'reference', reference: { ...existingTreeReference } }
+        : {
+          kind: 'object',
+          object: createServiceManagerNotesTreeObjectV3(notesTreePayload, this.createObjectId()),
+        };
 
     // Validate every local Note, generated identity, revision, and the complete
     // manifest shape before the first immutable object is uploaded. The digest
@@ -1636,8 +1750,16 @@ export class S3SyncRuntime {
           encryptionKeyId: currentEncryptionKeyId,
         }
     ));
+    const placeholderTreeReference: S3V3NotesTreeReference = plannedNotesTree.kind === 'reference'
+      ? { ...plannedNotesTree.reference }
+      : {
+        objectId: plannedNotesTree.object.objectId,
+        sha256: '0'.repeat(64),
+        contentHash: notesTreeContentHash,
+        encryptionKeyId: currentEncryptionKeyId,
+      };
     createServiceManagerSyncManifestV3(
-      manifestDataFromShared(data, placeholderReferences),
+      manifestDataFromShared(data, placeholderReferences, placeholderTreeReference),
       {
         appVersion: this.options.appVersion,
         revision,
@@ -1667,8 +1789,27 @@ export class S3SyncRuntime {
       },
     );
 
+    let notesTreeReference: S3V3NotesTreeReference;
+    if (plannedNotesTree.kind === 'reference') {
+      notesTreeReference = { ...plannedNotesTree.reference };
+    } else {
+      let writtenReference: S3V3NotesTreeReference | undefined;
+      for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+        const object = attempt === 0
+          ? plannedNotesTree.object
+          : createServiceManagerNotesTreeObjectV3(notesTreePayload, this.createObjectId());
+        const writtenTree = await objectStore.putNotesTree(object);
+        if (writtenTree.status === 'conflict') continue;
+        byteLength += writtenTree.byteLength;
+        writtenReference = { ...writtenTree.reference };
+        break;
+      }
+      if (!writtenReference) throw new Error('A unique S3 Notes tree object could not be created. Try again.');
+      notesTreeReference = writtenReference;
+    }
+
     const manifest = createServiceManagerSyncManifestV3(
-      manifestDataFromShared(data, noteReferences),
+      manifestDataFromShared(data, noteReferences, notesTreeReference),
       {
         appVersion: this.options.appVersion,
         revision,
@@ -1678,7 +1819,9 @@ export class S3SyncRuntime {
       },
     );
     const written = await objectStore.putManifest(manifest);
-    if (written.status === 'conflict') return { status: 'conflict', noteReferences };
+    if (written.status === 'conflict') {
+      return { status: 'conflict', noteReferences, notesTreeReference };
+    }
     byteLength += written.byteLength;
     const head = createS3SyncHeadV3(
       manifest,
@@ -1686,7 +1829,9 @@ export class S3SyncRuntime {
       currentEncryptionKeyId,
     );
     const headResult = await objectStore.putHead(head, expectedHeadEtag);
-    if (headResult.status === 'conflict') return { status: 'conflict', noteReferences };
+    if (headResult.status === 'conflict') {
+      return { status: 'conflict', noteReferences, notesTreeReference };
+    }
     return {
       status: 'written',
       manifest,
@@ -1722,6 +1867,7 @@ export class S3SyncRuntime {
     });
     let recoveredLocal: S3SharedAppDataV2 | undefined;
     const retainedUploadReferences = new Map<string, S3V3NoteReference>();
+    const retainedUploadTreeReferences = new Map<string, S3V3NotesTreeReference>();
     const retainUploadedReferences = (references: readonly S3V3NoteReference[]): void => {
       for (const reference of references) {
         retainedUploadReferences.set(
@@ -1729,6 +1875,9 @@ export class S3SyncRuntime {
           { ...reference },
         );
       }
+    };
+    const retainUploadedTreeReference = (reference: S3V3NotesTreeReference): void => {
+      retainedUploadTreeReferences.set(reference.contentHash, { ...reference });
     };
 
     for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
@@ -1745,9 +1894,11 @@ export class S3SyncRuntime {
           undefined,
           undefined,
           [...retainedUploadReferences.values()],
+          [...retainedUploadTreeReferences.values()],
         );
         if (published.status === 'conflict') {
           retainUploadedReferences(published.noteReferences);
+          retainUploadedTreeReference(published.notesTreeReference);
           continue;
         }
         const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
@@ -1803,12 +1954,18 @@ export class S3SyncRuntime {
         knownNotes.set(noteContentKey(note.id, hashS3V3NoteContent(note)), cloneNoteValue(note));
       }
       const objectCache = new Map<string, Note>();
+      const knownTrees = new Map<string, NotesTreeSnapshot>();
+      const localTreePayload = notesTreePayloadFromSnapshot(local.notes.tree);
+      knownTrees.set(hashS3V3NotesTreeContent(localTreePayload), cloneNotesTreeValue(local.notes.tree));
+      const treeObjectCache = new Map<string, NotesTreeSnapshot>();
       const cloud = await this.materializeManifest(
         objectStore,
         remoteResult.manifest,
         remoteResult.encryptionKeyId,
         knownNotes,
         objectCache,
+        knownTrees,
+        treeObjectCache,
       );
       const base = baseManifest
         ? await this.materializeManifest(
@@ -1817,6 +1974,8 @@ export class S3SyncRuntime {
           baseEncryptionKeyId as string,
           knownNotes,
           objectCache,
+          knownTrees,
+          treeObjectCache,
         )
         : undefined;
 
@@ -1851,6 +2010,13 @@ export class S3SyncRuntime {
         ...retainedUploadReferences.values(),
         ...(!requiresEncryptionMigration ? remoteResult.manifest.data.notes.items : []),
       ];
+      const reusableTreeReferences = [
+        ...(!requiresEncryptionMigration && baseManifest && baseReferencesUseCurrentEncryption
+          ? [baseManifest.data.notes.tree]
+          : []),
+        ...retainedUploadTreeReferences.values(),
+        ...(!requiresEncryptionMigration ? [remoteResult.manifest.data.notes.tree] : []),
+      ];
       const published = await this.publishRevision(
         objectStore,
         settings,
@@ -1858,9 +2024,11 @@ export class S3SyncRuntime {
         headResult.head.revision,
         headResult.etag,
         reusableReferences,
+        reusableTreeReferences,
       );
       if (published.status === 'conflict') {
         retainUploadedReferences(published.noteReferences);
+        retainUploadedTreeReference(published.notesTreeReference);
         continue;
       }
       if (applyRequired

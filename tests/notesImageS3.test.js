@@ -166,11 +166,11 @@ test('Notes image reference parsing is exact and cannot carry credentials, URLs,
   }
 });
 
-test('Notes image object URL has the fixed opaque v3 path', () => {
+test('Notes image object URL has the fixed opaque v4 path', () => {
   const objectId = Buffer.alloc(24, 0xab).toString('base64url');
   assert.equal(
     buildNotesImageS3ObjectUrl('https://s3.example.com', 'notes-bucket', objectId),
-    `https://s3.example.com/notes-bucket/service-manager/v3/images/${objectId}.json`,
+    `https://s3.example.com/notes-bucket/service-manager/v4/images/${objectId}.json`,
   );
   assert.throws(
     () => buildNotesImageS3ObjectUrl('https://s3.example.com', 'notes-bucket', '../secret'),
@@ -196,7 +196,7 @@ test('Notes image S3 store signs immutable PUT and private GET without exposing 
 
   assert.deepEqual(loaded, source);
   assert.equal(calls.length, 2);
-  assert.match(calls[0].url, /\/notes-bucket\/service-manager\/v3\/images\/[A-Za-z0-9_-]{32}\.json$/);
+  assert.match(calls[0].url, /\/notes-bucket\/service-manager\/v4\/images\/[A-Za-z0-9_-]{32}\.json$/);
   assert.equal(calls[0].init.method, 'PUT');
   assert.equal(calls[0].init.redirect, 'manual');
   assert.equal(calls[0].init.headers['if-none-match'], '*');

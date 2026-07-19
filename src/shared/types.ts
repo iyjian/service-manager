@@ -642,6 +642,60 @@ export interface NoteDraft {
   tags: string[];
 }
 
+export interface NotesTreeNode {
+  noteId: string;
+  parentId: string | null;
+  order: number;
+}
+
+export interface NotesTreeSnapshot {
+  schemaVersion: 1;
+  nodes: NotesTreeNode[];
+}
+
+export interface NotesWorkspaceSnapshot {
+  notes: Note[];
+  tree: NotesTreeSnapshot;
+  expandedNoteIds: string[];
+}
+
+export interface NotePlacementInput {
+  parentId: string | null;
+  beforeNoteId?: string;
+}
+
+export interface NoteMoveInput extends NotePlacementInput {
+  noteId: string;
+}
+
+export interface NoteTreeExpansionInput {
+  noteId: string;
+  expanded: boolean;
+}
+
+export interface NoteDeleteInput {
+  id: string;
+  /** Exact subtree IDs shown in the renderer confirmation. */
+  expectedIds: string[];
+}
+
+export interface NoteDeleteResult {
+  deletedIds: string[];
+  workspace: NotesWorkspaceSnapshot;
+}
+
+export interface NoteDraftRecoveryInput {
+  originalId: string;
+  draft: NoteDraft;
+  /** Last Note value successfully persisted by this renderer. */
+  expectedNote: Note;
+}
+
+export interface NoteDraftRecoveryResult {
+  recovered: Array<{ originalId: string; noteId: string; conflict: boolean }>;
+  workspace: NotesWorkspaceSnapshot;
+}
+
 export type NoteImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
 
 export interface NoteImageReference {
@@ -672,9 +726,13 @@ export type NoteImageLoadResult =
 
 export interface NotesApi {
   listNotes: () => Promise<Note[]>;
-  createNote: () => Promise<Note>;
-  updateNote: (id: string, draft: NoteDraft) => Promise<Note>;
-  deleteNote: (id: string) => Promise<void>;
+  getWorkspace: () => Promise<NotesWorkspaceSnapshot>;
+  createNote: (placement?: NotePlacementInput) => Promise<NotesWorkspaceSnapshot>;
+  updateNote: (id: string, draft: NoteDraft, expectedNote: Note) => Promise<Note>;
+  moveNote: (input: NoteMoveInput) => Promise<NotesWorkspaceSnapshot>;
+  setTreeExpanded: (input: NoteTreeExpansionInput) => Promise<string[]>;
+  deleteNote: (input: NoteDeleteInput) => Promise<NoteDeleteResult>;
+  recoverDrafts: (input: NoteDraftRecoveryInput[]) => Promise<NoteDraftRecoveryResult>;
   uploadImage: (input: NoteImageUploadInput) => Promise<NoteImageUploadResult>;
   loadImage: (reference: NoteImageReference) => Promise<NoteImageLoadResult>;
   onFlushRequested: (listener: () => void | Promise<void>) => () => void;
@@ -682,9 +740,29 @@ export interface NotesApi {
 
 export interface UiPreferences {
   notesFontSize: number;
+  notesEditorTheme: 'light' | 'dark';
 }
 
 export type UiPreferencesDraft = UiPreferences;
+
+export interface LlmSettingsView {
+  endpoint: string;
+  selectedModel: string;
+  hasToken: boolean;
+}
+
+export interface LlmSettingsDraft {
+  endpoint: string;
+  selectedModel: string;
+  token?: string;
+  clearToken?: boolean;
+}
+
+export interface LlmModelsDraft {
+  endpoint: string;
+  token?: string;
+  useSavedToken?: boolean;
+}
 
 export interface S3SyncSettingsView {
   endpoint: string;
@@ -765,6 +843,10 @@ export interface SettingsApi {
   onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => () => void;
   onUiPreferencesChanged: (listener: (preferences: UiPreferences) => void) => () => void;
   onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => () => void;
+  getLlmSettings: () => Promise<LlmSettingsView>;
+  saveLlmSettings: (draft: LlmSettingsDraft) => Promise<LlmSettingsView>;
+  revealLlmToken: () => Promise<string>;
+  listLlmModels: (draft: LlmModelsDraft) => Promise<string[]>;
 }
 
 export interface ProxyDelayResult {

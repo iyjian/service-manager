@@ -5,6 +5,7 @@ const {
   EMPTY_RICH_TEXT_CONTENT,
   RICH_TEXT_LIMITS,
   extractRichTextPlainText,
+  isAllowedRichTextLinkHref,
   normalizeRichTextContent,
   parseNoteImageReference,
   parseRichTextContent,
@@ -31,7 +32,6 @@ test('rich text content is normalized to one bounded canonical Tiptap JSON repre
           { type: 'bold', attrs: {} },
           {
             attrs: {
-              class: null,
               rel: 'noreferrer noopener noreferrer',
               target: '_blank',
               href: 'https://example.test/docs?q=1',
@@ -146,6 +146,14 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
   });
 
   const tiptapJson = schema.nodeFromJSON(JSON.parse(canonical)).toJSON();
+  assert.throws(() => normalizeRichTextContent(tiptapJson), /unsupported field/);
+  for (const block of tiptapJson.content ?? []) {
+    for (const inline of block.content ?? []) {
+      for (const mark of inline.marks ?? []) {
+        if (mark.type === 'link' && mark.attrs?.class === null) delete mark.attrs.class;
+      }
+    }
+  }
   assert.equal(normalizeRichTextContent(tiptapJson), canonical);
 });
 
@@ -188,7 +196,81 @@ test('s3Image nodes retain only strict non-URL S3 asset references and searchabl
   );
 });
 
-test('rich text rejects HTML, unsafe links, foreign attributes, invalid structure, and excessive depth', () => {
+test('rich text allows only absolute http/https links with canonical safe attributes', () => {
+  assert.equal(isAllowedRichTextLinkHref('https://example.test/docs?q=1#part'), true);
+  assert.equal(isAllowedRichTextLinkHref('http://127.0.0.1:8080/path'), true);
+  for (const href of [
+    'mailto:user@example.test',
+    'ftp://example.test/file',
+    'tel:+123456789',
+    '/relative/path',
+    './relative/path',
+    'example.test/no-protocol',
+    'http:example.test/no-slashes',
+    'https://example.test\\backslash',
+    'https://user:secret@example.test/private',
+  ]) {
+    assert.equal(isAllowedRichTextLinkHref(href), false);
+    assert.throws(() => normalizeRichTextContent({
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: 'unsafe',
+          marks: [{ type: 'link', attrs: { href } }],
+        }],
+      }],
+    }), /rich text link/i);
+  }
+
+  const safeLinkDocument = {
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'safe',
+        marks: [{
+          type: 'link',
+          attrs: {
+            href: 'https://example.test/docs',
+            target: '_blank',
+            rel: 'noreferrer',
+            title: 'Documentation',
+          },
+        }],
+      }],
+    }],
+  };
+  assert.match(normalizeRichTextContent(safeLinkDocument), /"target":"_blank","rel":"noopener noreferrer"/);
+  assert.throws(() => normalizeRichTextContent({
+    ...safeLinkDocument,
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'text',
+        text: 'same window',
+        marks: [{ type: 'link', attrs: { href: 'https://example.test', target: '_self' } }],
+      }],
+    }],
+  }), /link target is invalid/);
+  for (const attrs of [
+    { href: 'https://example.test', class: null },
+    { href: 'https://example.test', onclick: 'window.open()' },
+    { href: 'https://example.test', download: 'secret' },
+  ]) {
+    assert.throws(() => normalizeRichTextContent({
+      type: 'doc',
+      content: [{
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'foreign', marks: [{ type: 'link', attrs }] }],
+      }],
+    }), /unsupported field/);
+  }
+});
+
+test('rich text rejects HTML, unsafe links, invalid structure, and excessive depth', () => {
   for (const href of [
     'javascript:alert(1)',
     'data:text/html,unsafe',
@@ -205,7 +287,7 @@ test('rich text rejects HTML, unsafe links, foreign attributes, invalid structur
           marks: [{ type: 'link', attrs: { href } }],
         }],
       }],
-    }), /link protocol is not supported/);
+    }), /rich text link/i);
   }
 
   assert.throws(

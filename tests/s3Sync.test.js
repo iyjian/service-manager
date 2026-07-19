@@ -22,14 +22,18 @@ const {
 const {
   createS3SyncHeadV3,
   createServiceManagerNoteObjectV3,
+  createServiceManagerNotesTreeObjectV3,
   createServiceManagerSyncManifestV3,
   buildS3V3HeadObjectUrl,
   buildS3V3ManifestObjectUrl,
   buildS3V3NoteObjectUrl,
+  buildS3V3NotesTreeObjectUrl,
   encryptS3ManifestV3,
   encryptS3NoteV3,
+  encryptS3NotesTreeV3,
   getS3SyncEncryptionKeyId,
   hashS3V3NoteContent,
+  hashS3V3NotesTreeContent,
   hashS3V3Object,
   serializeEncryptedS3ObjectV3,
 } = require('../dist/main/s3SyncV3');
@@ -80,10 +84,18 @@ function note(id, content, updatedAt = T0, overrides = {}) {
   };
 }
 
-function sharedData(notes = [], hosts = [], noteTombstones = []) {
+function sharedData(notes = [], hosts = [], noteTombstones = [], notesTree) {
   return createS3SharedAppDataV2({
     hosts,
     notes: { schemaVersion: 1, notes },
+    notesTree: notesTree ?? {
+      schemaVersion: 1,
+      nodes: notes.map((item, index) => ({
+        noteId: item.id,
+        parentId: null,
+        order: (index + 1) * 1024,
+      })),
+    },
     noteTombstones,
     proxy: {
       settings: {
@@ -132,7 +144,7 @@ async function temporaryDirectory(t) {
 async function writeConfiguredSettings(directory, clientId, overrides = {}) {
   const protector = fakeProtector();
   await writeFile(path.join(directory, 's3-sync.json'), JSON.stringify({
-    schemaVersion: 5,
+    schemaVersion: 6,
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -269,6 +281,32 @@ function serializedRemoteNote(entry) {
   ));
 }
 
+function seedRemoteNotesTree(s3, noteIds, objectId, syncKey = SYNC_KEY) {
+  const tree = {
+    schemaVersion: 1,
+    root: [...noteIds],
+    order: Object.fromEntries(noteIds.map((noteId, index) => [noteId, (index + 1) * 1024])),
+    parent: Object.fromEntries(noteIds.map((noteId) => [noteId, null])),
+  };
+  const object = createServiceManagerNotesTreeObjectV3(tree, objectId);
+  const body = serializeEncryptedS3ObjectV3(encryptS3NotesTreeV3(
+    object,
+    syncKey,
+    (size) => Buffer.alloc(size, size),
+  ));
+  const reference = {
+    objectId,
+    sha256: hashS3V3Object(body),
+    contentHash: hashS3V3NotesTreeContent(tree),
+    encryptionKeyId: getS3SyncEncryptionKeyId(syncKey),
+  };
+  s3.objects.set(buildS3V3NotesTreeObjectUrl(ENDPOINT, BUCKET, objectId), {
+    body,
+    etag: '"seed-tree"',
+  });
+  return reference;
+}
+
 function seedGeneratedV3Manifest(s3, entries, revision = 'remote-revision-1') {
   const references = entries.map((entry) => {
     const body = serializedRemoteNote(entry);
@@ -280,10 +318,15 @@ function seedGeneratedV3Manifest(s3, entries, revision = 'remote-revision-1') {
       encryptionKeyId: getS3SyncEncryptionKeyId(SYNC_KEY),
     };
   });
+  const tree = seedRemoteNotesTree(
+    s3,
+    entries.map((entry) => entry.note.id),
+    `${revision}-tree`,
+  );
   const manifest = createServiceManagerSyncManifestV3({
-    schemaVersion: 3,
+    schemaVersion: 4,
     hosts: { schemaVersion: 1, items: [] },
-    notes: { schemaVersion: 3, items: references, tombstones: [] },
+    notes: { schemaVersion: 4, items: references, tombstones: [], tree },
     proxy: { schemaVersion: 1, settings: { mode: 'rule', customRules: [] } },
   }, {
     appVersion: '0.3.19',
@@ -352,7 +395,7 @@ test('S3 runtime keeps Notes image upload and load on the configured private tar
   assert.equal(uploaded.status, 'uploaded');
   assert.match(
     s3.calls.at(-1).url,
-    /\/example-bucket\/service-manager\/v3\/images\/[A-Za-z0-9_-]{32}\.json$/,
+    /\/example-bucket\/service-manager\/v4\/images\/[A-Za-z0-9_-]{32}\.json$/,
   );
   assert.equal(s3.calls.at(-1).headers.get('if-none-match'), '*');
   assert.doesNotMatch(JSON.stringify(uploaded), /AKIDEXAMPLE|EXAMPLEKEY|s3\.example/);
@@ -558,7 +601,7 @@ test('S3SyncRuntime stores Endpoint and Bucket separately with protected credent
   const settingsPath = path.join(userDataPath, 's3-sync.json');
   const persistedText = await readFile(settingsPath, 'utf8');
   const persisted = JSON.parse(persistedText);
-  assert.equal(persisted.schemaVersion, 5);
+  assert.equal(persisted.schemaVersion, 6);
   assert.equal(persisted.endpoint, ENDPOINT);
   assert.equal(persisted.bucket, BUCKET);
   assert.equal(persisted.clientId, 'client-1');
@@ -596,7 +639,7 @@ test('S3SyncRuntime lets Settings replace a corrupt local settings file', async 
   await runtime.shutdown();
 
   const persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
-  assert.equal(persisted.schemaVersion, 5);
+  assert.equal(persisted.schemaVersion, 6);
   assert.equal(persisted.clientId, 'recovered-client');
   assert.equal(persisted.endpoint, ENDPOINT);
   assert.equal(persisted.bucket, BUCKET);
@@ -877,7 +920,7 @@ test('S3SyncRuntime migrates schema 1 through 4 settings without retaining an ol
       assert.equal(view.hasSyncEncryptionKey, true);
       assert.equal(view.lastRevision, undefined, 'older cloud-layout state is not a v3 manifest base');
       const migrated = JSON.parse(await readFile(settingsPath, 'utf8'));
-      assert.equal(migrated.schemaVersion, 5);
+      assert.equal(migrated.schemaVersion, 6);
       assert.equal(migrated.endpoint, ENDPOINT);
       assert.equal(migrated.bucket, BUCKET);
       assert.equal(migrated.clientId, migration.expectedClientId);
@@ -892,6 +935,49 @@ test('S3SyncRuntime migrates schema 1 through 4 settings without retaining an ol
       await runtime.shutdown();
     });
   }
+});
+
+test('schema 5 migration keeps credentials and the independent Sync Key but clears every v3 merge marker', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  const protector = fakeProtector();
+  const settingsPath = path.join(userDataPath, 's3-sync.json');
+  await writeFile(settingsPath, JSON.stringify({
+    schemaVersion: 5,
+    endpoint: ENDPOINT,
+    bucket: BUCKET,
+    region: 'us-east-1',
+    clientId: 'v3-client',
+    encryptedAccessKeyId: protector.encryptString(ACCESS_KEY).toString('base64'),
+    encryptedSecretAccessKey: protector.encryptString(SECRET_KEY).toString('base64'),
+    encryptedSyncEncryptionKey: protector.encryptString(SYNC_KEY).toString('base64'),
+    encryptedPreviousSyncEncryptionKey: 'retired-v3-state-is-not-validated',
+    lastSyncedAt: T0,
+    lastRevision: 'v3-merge-base',
+    pendingSince: T1,
+  }));
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: protector,
+    snapshotProvider: async () => sharedData(),
+    createClientId: () => { throw new Error('the stable client ID must be retained'); },
+  });
+
+  const view = await runtime.getSettings();
+  assert.equal(view.hasCredentials, true);
+  assert.equal(view.hasSyncEncryptionKey, true);
+  assert.equal(view.lastSyncedAt, undefined);
+  assert.equal(view.lastRevision, undefined);
+  const revealed = await runtime.revealS3SyncCredentials();
+  assert.equal(revealed.syncEncryptionKey, SYNC_KEY);
+  const migrated = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.clientId, 'v3-client');
+  assert.equal('encryptedPreviousSyncEncryptionKey' in migrated, false);
+  assert.equal('lastSyncedAt' in migrated, false);
+  assert.equal('lastRevision' in migrated, false);
+  assert.equal('pendingSince' in migrated, false);
+  await runtime.shutdown();
 });
 
 test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) => {
@@ -918,7 +1004,7 @@ test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) =
   await runtime.shutdown();
 });
 
-test('v3 reconcile uploads each Note independently before its manifest and conditional head', async (t) => {
+test('v4 reconcile uploads each Note and the tree independently before its manifest and conditional head', async (t) => {
   const s3 = new MemoryS3();
   const data = sharedData([note('note-1', '# deploy')]);
   const { runtime, userDataPath } = await createRuntime(t, {
@@ -934,11 +1020,12 @@ test('v3 reconcile uploads each Note independently before its manifest and condi
   assert.ok(s3.objects.has(buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, 'home-note-1')));
   assert.ok(s3.objects.has(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, result.revision)));
   assert.ok(s3.objects.has(buildS3V3HeadObjectUrl(ENDPOINT, BUCKET)));
-  assert.equal(s3.calls.filter((call) => call.method === 'PUT').length, 3);
+  assert.ok(s3.objects.has(buildS3V3NotesTreeObjectUrl(ENDPOINT, BUCKET, 'home-note-2')));
+  assert.equal(s3.calls.filter((call) => call.method === 'PUT').length, 4);
   assert.equal(s3.calls.find((call) => call.url.endsWith('/notes/home-note-1.json')).headers.get('if-none-match'), '*');
   assert.equal(s3.calls.find((call) => call.url.endsWith('/manifests/home-revision-1.json')).headers.get('if-none-match'), '*');
   assert.equal(s3.calls.find((call) => call.url.endsWith('/head.json') && call.method === 'PUT').headers.get('if-none-match'), '*');
-  assert.equal(s3.calls.some((call) => /\/service-manager\/v[12]\//.test(call.url)), false);
+  assert.equal(s3.calls.some((call) => /\/service-manager\/v[123]\//.test(call.url)), false);
   assert.doesNotMatch([...s3.objects.values()].map((value) => value.body).join('\n'), /# deploy/);
 
   const persisted = await readFile(path.join(userDataPath, 's3-sync.json'), 'utf8');
@@ -949,7 +1036,7 @@ test('v3 reconcile uploads each Note independently before its manifest and condi
   assert.equal(view.syncState.pending, false);
 });
 
-test('v3 reconciliation reuses unchanged Note references and transfers only the edited Note object', async (t) => {
+test('v4 reconciliation reuses unchanged Note and tree references and transfers only the edited Note object', async (t) => {
   const s3 = new MemoryS3();
   const client = await createRuntime(t, {
     clientId: 'home',
@@ -962,7 +1049,7 @@ test('v3 reconciliation reuses unchanged Note references and transfers only the 
   await client.runtime.syncAllDataToS3();
 
   const initialNotePuts = s3.calls.filter((call) =>
-    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
   );
   assert.equal(initialNotePuts.length, 2);
 
@@ -974,18 +1061,51 @@ test('v3 reconciliation reuses unchanged Note references and transfers only the 
   assert.equal(result.action, 'pushed');
 
   const notePuts = s3.calls.filter((call) =>
-    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
   );
   assert.equal(notePuts.length, 3, 'only one new immutable Note object should be uploaded');
-  assert.match(notePuts.at(-1).url, /\/notes\/home-note-3\.json$/);
+  assert.match(notePuts.at(-1).url, /\/notes\/home-note-4\.json$/);
   assert.equal(
-    s3.calls.filter((call) => call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')).length,
+    s3.calls.filter((call) => call.method === 'GET' && call.url.includes('/service-manager/v4/notes/')).length,
     1,
     'only the edited Note needs its previous cloud body for the three-way merge',
   );
 });
 
-test('v3 pull downloads only the one remotely changed Note object', async (t) => {
+test('v4 uploads a changed Notes tree without rewriting unchanged Note objects', async (t) => {
+  const s3 = new MemoryS3();
+  const notes = [note('parent', 'Parent'), note('child', 'Child')];
+  const client = await createRuntime(t, {
+    clientId: 'tree-client',
+    data: sharedData(notes),
+    fetchImpl: s3.fetch,
+  });
+  await client.runtime.syncAllDataToS3();
+  const notePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length;
+  const treePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length;
+
+  client.state.data = sharedData(notes, [], [], {
+    schemaVersion: 1,
+    nodes: [
+      { noteId: 'parent', parentId: null, order: 1024 },
+      { noteId: 'child', parentId: 'parent', order: 1024 },
+    ],
+  });
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length, notePutsBefore);
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length, treePutsBefore + 1);
+});
+
+test('v4 pull downloads only the one remotely changed Note object', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([
     note('note-a', 'A base'),
@@ -1004,12 +1124,12 @@ test('v3 pull downloads only the one remotely changed Note object', async (t) =>
   ]);
   await home.runtime.syncAllDataToS3();
   const getsBeforePull = s3.calls.filter((call) =>
-    call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'GET' && call.url.includes('/service-manager/v4/notes/')
   ).length;
 
   const result = await work.runtime.syncAllDataToS3();
   const pullNoteGets = s3.calls.filter((call) =>
-    call.method === 'GET' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'GET' && call.url.includes('/service-manager/v4/notes/')
   ).length - getsBeforePull;
   assert.equal(result.action, 'pulled');
   assert.equal(pullNoteGets, 1, 'unchanged local Note bodies must satisfy their immutable cloud references');
@@ -1019,7 +1139,7 @@ test('v3 pull downloads only the one remotely changed Note object', async (t) =>
   );
 });
 
-test('v3 materialization stops before downloading all Notes after the 50 MiB aggregate budget is exceeded', async (t) => {
+test('v4 materialization stops before downloading all Notes after the 50 MiB aggregate budget is exceeded', async (t) => {
   const s3 = new MemoryS3();
   // NUL occupies one JavaScript character but six JSON bytes ("\\u0000").
   // Every Note shares the same string allocation; encrypted bodies are
@@ -1053,7 +1173,7 @@ test('v3 materialization stops before downloading all Notes after the 50 MiB agg
   assert.ok(generated.stats.noteGets < entries.length, 'the remaining manifest references must not be fetched');
 });
 
-test('v3 materialization stops dispatching work after the first missing Note object', async (t) => {
+test('v4 materialization stops dispatching work after the first missing Note object', async (t) => {
   const s3 = new MemoryS3();
   const entries = Array.from({ length: 24 }, (_, index) => ({
     objectId: `missing-batch-object-${index}`,
@@ -1078,21 +1198,22 @@ test('v3 materialization stops dispatching work after the first missing Note obj
   );
 });
 
-test('v3 reconciliation leaves legacy v1 and v2 cloud objects untouched and unread', async (t) => {
+test('v4 reconciliation leaves legacy v1, v2, and v3 cloud objects untouched and unread', async (t) => {
   const s3 = new MemoryS3();
   const legacyObjects = new Map([
     [`${BUCKET_URL}/service-manager/v1/clients/old/revision.json`, { body: 'legacy-v1', etag: '"v1"' }],
     [`${BUCKET_URL}/service-manager/v2/head.json`, { body: 'legacy-v2', etag: '"v2"' }],
+    [`${BUCKET_URL}/service-manager/v3/head.json`, { body: 'legacy-v3', etag: '"v3"' }],
   ]);
   for (const [url, value] of legacyObjects) s3.objects.set(url, { ...value });
   const client = await createRuntime(t, {
     clientId: 'current',
-    data: sharedData([note('current-note', 'v3 only')]),
+    data: sharedData([note('current-note', 'v4 only')]),
     fetchImpl: s3.fetch,
   });
 
   assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
-  assert.equal(s3.calls.some((call) => /\/service-manager\/v[12]\//.test(call.url)), false);
+  assert.equal(s3.calls.some((call) => /\/service-manager\/v[123]\//.test(call.url)), false);
   for (const [url, value] of legacyObjects) assert.deepEqual(s3.objects.get(url), value);
 });
 
@@ -1118,12 +1239,13 @@ test('a second independent client automatically pulls the shared cloud head', as
   );
 
   assert.deepEqual(work.state.data.notes.notes, cloudData.notes.notes);
+  assert.deepEqual(work.state.data.notes.tree, cloudData.notes.tree);
   assert.equal(work.runtime.getSyncState().status, 'synced');
   assert.equal(work.runtime.getSyncState().lastRevision, 'home-revision-1');
   assert.equal(
     s3.calls.filter((call) => call.url.includes('/service-manager/v1/clients/')).length,
     0,
-    'v3 clients must coordinate through one shared head without reading v1 objects',
+    'v4 clients must coordinate through one shared head without reading v1 objects',
   );
 });
 
@@ -1276,11 +1398,12 @@ test('a manifest cannot mix Note references encrypted under another key identity
     body: noteBody,
     etag: '"mixed-note"',
   });
+  const tree = seedRemoteNotesTree(s3, [mixedNote.id], 'mixed-notes-tree');
   const manifest = createServiceManagerSyncManifestV3({
-    schemaVersion: 3,
+    schemaVersion: 4,
     hosts: { schemaVersion: 1, items: [] },
     notes: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [{
         id: mixedNote.id,
         objectId,
@@ -1289,6 +1412,7 @@ test('a manifest cannot mix Note references encrypted under another key identity
         encryptionKeyId: getS3SyncEncryptionKeyId(Buffer.alloc(32, 0x7e).toString('base64url')),
       }],
       tombstones: [],
+      tree,
     },
     proxy: { schemaVersion: 1, settings: { mode: 'rule', customRules: [] } },
   }, {
@@ -1326,6 +1450,51 @@ test('a manifest cannot mix Note references encrypted under another key identity
     0,
     'reference identity validation must run even when the local Note body matches',
   );
+});
+
+test('a manifest cannot reference a Notes tree encrypted under another key identity', async (t) => {
+  const s3 = new MemoryS3();
+  const wrongKey = Buffer.alloc(32, 0x7d).toString('base64url');
+  const tree = seedRemoteNotesTree(s3, [], 'mixed-key-tree', wrongKey);
+  const manifest = createServiceManagerSyncManifestV3({
+    schemaVersion: 4,
+    hosts: { schemaVersion: 1, items: [] },
+    notes: { schemaVersion: 4, items: [], tombstones: [], tree },
+    proxy: { schemaVersion: 1, settings: { mode: 'rule', customRules: [] } },
+  }, {
+    appVersion: '0.3.19',
+    revision: 'mixed-tree-encryption-revision',
+    clientId: 'malformed-tree-client',
+    createdAt: T0,
+  });
+  const manifestBody = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(
+    manifest,
+    SYNC_KEY,
+    (size) => Buffer.alloc(size, size),
+  ));
+  s3.objects.set(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, manifest.revision), {
+    body: manifestBody,
+    etag: '"mixed-tree-manifest"',
+  });
+  s3.objects.set(buildS3V3HeadObjectUrl(ENDPOINT, BUCKET), {
+    body: JSON.stringify(createS3SyncHeadV3(
+      manifest,
+      hashS3V3Object(manifestBody),
+      getS3SyncEncryptionKeyId(SYNC_KEY),
+    )),
+    etag: '"mixed-tree-head"',
+  });
+  const client = await createRuntime(t, {
+    clientId: 'mixed-tree-reader',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+  });
+
+  await assert.rejects(
+    client.runtime.syncAllDataToS3(),
+    /Notes tree encrypted with a different key/,
+  );
+  assert.equal(s3.calls.filter((call) => call.url.includes('/notes-trees/')).length, 0);
 });
 
 test('a late local edit fences cloud apply and is reconciled before advancing the local base', async (t) => {
@@ -1373,7 +1542,7 @@ test('a late local edit fences cloud apply and is reconciled before advancing th
   assert.equal(runtime.getSyncState().lastRevision, result.revision);
 });
 
-test('v3 reconcile automatically merges edits to different Notes from two clients', async (t) => {
+test('v4 reconcile automatically merges edits to different Notes from two clients', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([
     note('note-a', 'A base'),
@@ -1405,7 +1574,7 @@ test('v3 reconcile automatically merges edits to different Notes from two client
   assert.deepEqual(home.state.data.notes.notes, work.state.data.notes.notes);
 });
 
-test('v3 CAS retry reuses the immutable Note object uploaded by the losing head writer', async (t) => {
+test('v4 CAS retry reuses immutable Note and tree objects uploaded by the losing head writer', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([
     note('note-a', 'A base'),
@@ -1425,7 +1594,7 @@ test('v3 CAS retry reuses the immutable Note object uploaded by the losing head 
     note('note-b', 'B changed at work', T1),
   ]);
   const putsBeforeRace = s3.calls.filter((call) =>
-    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
   ).length;
   s3.raceNextConditionalHeadWrites(2);
   const results = await Promise.all([
@@ -1435,7 +1604,7 @@ test('v3 CAS retry reuses the immutable Note object uploaded by the losing head 
 
   assert.deepEqual(results.map((result) => result.action), ['pushed', 'pushed']);
   const racedNotePuts = s3.calls.filter((call) =>
-    call.method === 'PUT' && call.url.includes('/service-manager/v3/notes/')
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
   ).slice(putsBeforeRace);
   assert.equal(
     racedNotePuts.length,
@@ -1619,7 +1788,7 @@ test('S3SyncRuntime does not recreate its auto-sync interval after shutdown star
   await new Promise((resolve) => setImmediate(resolve));
   await runtime.shutdown();
   releaseSettings({
-    schemaVersion: 5,
+    schemaVersion: 6,
     endpoint: '',
     bucket: '',
     region: 'us-east-1',

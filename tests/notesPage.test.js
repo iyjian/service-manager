@@ -97,6 +97,73 @@ test('Notes ranking keeps one hundred list entries available for the scrolling s
   assert.equal(ranked[99].id, 'note-0');
 });
 
+test('Notes tree renders arbitrary expanded levels and search breadcrumbs keep the complete ancestor path', async () => {
+  const {
+    noteTreeBreadcrumb,
+    noteTreeSubtreeIds,
+    visibleNoteTreeRows,
+  } = await import(path.join(distRenderer, 'notesPage.js'));
+  const notes = [
+    note({ id: 'root', name: 'Root' }),
+    note({ id: 'child', name: 'Child' }),
+    note({ id: 'grandchild', name: 'Grandchild' }),
+    note({ id: 'second-child', name: 'Second child' }),
+    note({ id: 'sibling', name: 'Sibling' }),
+  ];
+  const nodes = [
+    { noteId: 'root', parentId: null, order: 10 },
+    { noteId: 'child', parentId: 'root', order: 10 },
+    { noteId: 'grandchild', parentId: 'child', order: 10 },
+    { noteId: 'second-child', parentId: 'root', order: 20 },
+    { noteId: 'sibling', parentId: null, order: 20 },
+  ];
+
+  assert.deepEqual(
+    visibleNoteTreeRows(notes, nodes, new Set(['root', 'child']))
+      .map(({ note: item, depth }) => [item.id, depth]),
+    [['root', 0], ['child', 1], ['grandchild', 2], ['second-child', 1], ['sibling', 0]],
+  );
+  assert.deepEqual(
+    visibleNoteTreeRows(notes, nodes, new Set(['root']))
+      .map(({ note: item, depth }) => [item.id, depth]),
+    [['root', 0], ['child', 1], ['second-child', 1], ['sibling', 0]],
+  );
+  assert.equal(noteTreeBreadcrumb('grandchild', notes, nodes), 'Root / Child');
+  assert.deepEqual(noteTreeSubtreeIds('root', nodes), ['root', 'child', 'grandchild', 'second-child']);
+  assert.deepEqual(noteTreeSubtreeIds('missing', nodes), []);
+});
+
+test('Notes tree resolves before, inside, and after drops while rejecting self-descendant moves', async () => {
+  const {
+    isValidNoteTreeParent,
+    resolveNoteTreeDropPlacement,
+  } = await import(path.join(distRenderer, 'notesPage.js'));
+  const nodes = [
+    { noteId: 'root', parentId: null, order: 10 },
+    { noteId: 'child', parentId: 'root', order: 10 },
+    { noteId: 'grandchild', parentId: 'child', order: 10 },
+    { noteId: 'second-child', parentId: 'root', order: 20 },
+    { noteId: 'sibling', parentId: null, order: 20 },
+  ];
+
+  assert.deepEqual(resolveNoteTreeDropPlacement(nodes, 'sibling', 'root', 'inside'), { parentId: 'root' });
+  assert.deepEqual(resolveNoteTreeDropPlacement(nodes, 'second-child', 'child', 'before'), {
+    parentId: 'root',
+    beforeNoteId: 'child',
+  });
+  assert.deepEqual(resolveNoteTreeDropPlacement(nodes, 'child', 'second-child', 'after'), { parentId: 'root' });
+  assert.deepEqual(resolveNoteTreeDropPlacement(nodes, 'grandchild', 'sibling', 'before'), {
+    parentId: null,
+    beforeNoteId: 'sibling',
+  });
+  assert.equal(resolveNoteTreeDropPlacement(nodes, 'root', 'child', 'inside'), undefined);
+  assert.equal(resolveNoteTreeDropPlacement(nodes, 'root', 'grandchild', 'before'), undefined);
+  assert.equal(resolveNoteTreeDropPlacement(nodes, 'child', 'child', 'after'), undefined);
+  assert.equal(isValidNoteTreeParent(nodes, 'root', 'grandchild'), false);
+  assert.equal(isValidNoteTreeParent(nodes, 'root', null), true);
+  assert.equal(isValidNoteTreeParent(nodes, 'missing', null), false);
+});
+
 test('Notes maps every language choice to the intended CodeMirror parser', async () => {
   const { EditorState, language, noteLanguageExtension } = await loadNoteLanguageModules();
   const expectedLanguages = new Map([
@@ -258,16 +325,18 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /registerPage\(\{\s*id: 'notes'/);
-  assert.match(source, /window\.notesApi\.listNotes\(\)/);
-  assert.match(source, /window\.notesApi\.createNote\(\)/);
-  assert.match(source, /window\.notesApi\.updateNote\(id, draft\)/);
-  assert.match(source, /window\.notesApi\.deleteNote\(note\.id\)/);
+  assert.match(source, /window\.notesApi\.getWorkspace\(\)/);
+  assert.match(source, /window\.notesApi\.createNote\(\{ parentId \}\)/);
+  assert.match(source, /window\.notesApi\.updateNote\(id, draft, cloneNote\(expectedNote\)\)/);
+  assert.match(source, /window\.notesApi\.deleteNote\(\{ id: note\.id, expectedIds: subtreeIds \}\)/);
   assert.match(source, /note\.language === 'richtext'[\s\S]*?extractRichTextPlainText\(note\.content\)[\s\S]*?window\.serviceApi\.writeClipboardText\(content\)/);
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
   assert.match(source, /hide\(\): void \{\s*void this\.flushAllPendingSaves\(\)\.catch\(\(\) => undefined\);/);
-  assert.match(source, /if \(this\.selectedId\) void this\.flushNote\(this\.selectedId\);/);
+  assert.match(source, /private async selectNote\(id: string\): Promise<void>/);
+  assert.match(source, /await this\.flushNote\(previousId\);\s*if \(this\.isDirty\(previousId\)\)/);
+  assert.ok((source.match(/await this\.flushAllPendingSaves\(\)/g) ?? []).length >= 3);
   assert.match(source, /this\.notes\.some\(\(note\) => !this\.deletedIds\.has\(note\.id\) && this\.isDirty\(note\.id\)\)/);
   assert.match(source, /throw new Error\('Some notes could not be saved\. Fix the save error before syncing\.'\)/);
   assert.match(source, /const restoreFocusId = focusId \?\? activeItem\?\.dataset\.noteId/);
@@ -276,9 +345,30 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /name\.textContent = note\.name \|\| 'Untitled'/);
   assert.match(source, /this\.saveStatus\.textContent = text/);
   assert.match(source, /private async deleteNote\(id: string\)/);
+  assert.match(source, /const subtreeIds = noteTreeSubtreeIds\(id, this\.treeNodes\)/);
+  assert.match(source, /this\.pageRoot\.inert = true/);
+  assert.match(source, /window\.notesApi\.recoverDrafts\(pending\)/);
+  assert.match(source, /expectedNote: cloneNote\(expectedNote\)/);
+  assert.match(source, /private readonly persistedNotes = new Map<string, Note>\(\)/);
+  assert.match(source, /if \(saveGeneration !== this\.saveGeneration \|\| this\.deletedIds\.has\(id\)\) return/);
+  assert.match(source, /preserved as Conflict/);
   assert.match(source, /remove\.setAttribute\('aria-label', `Remove \$\{note\.name \|\| 'Untitled'\}`\)/);
-  assert.match(source, /remove\.addEventListener\('click', \(\) => void this\.deleteNote\(note\.id\)\)/);
+  assert.match(source, /remove\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*void this\.deleteNote\(note\.id\);/);
   assert.doesNotMatch(source, /\.innerHTML\s*=/);
+});
+
+test('Notes tree workspace mutations flush first, fence request-time edits, persist expansion, and expose keyboard navigation', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(note\.id\)[\s\S]*?> baselineVersion/);
+  assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
+  assert.match(source, /this\.applyWorkspace\(result\.workspace, editVersionBaseline\)/);
+  assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
+  assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);
+  assert.match(source, /if \(!isValidNoteTreeParent\(this\.treeNodes, noteId, parentId\)\)/);
+  assert.match(source, /event\.key === 'ArrowRight' \|\| event\.key === 'ArrowLeft'/);
+  assert.match(source, /if \(!this\.expandedNoteIds\.has\(noteId\)\) void this\.toggleTreeExpanded\(noteId\)/);
+  assert.match(source, /else if \(node\?\.parentId\) items\.find\(\(candidate\) => candidate\.dataset\.noteId === node\.parentId\)\?\.focus\(\)/);
 });
 
 test('Notes page keeps user content in form values and reconfigurable CodeMirror state created through DOM APIs', async () => {

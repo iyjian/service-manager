@@ -20,7 +20,7 @@ import { signS3V3Request } from './s3SyncV3';
 
 const NOTES_IMAGE_SCHEMA_VERSION = 1 as const;
 const NOTES_IMAGE_OBJECT_TYPE = 'notes-image' as const;
-const NOTES_IMAGE_PATH_PREFIX = 'service-manager/v3/images';
+const NOTES_IMAGE_PATH_PREFIX = 'service-manager/v4/images';
 const NOTES_IMAGE_AAD_PREFIX = 'service-manager-notes-image-v1\0';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_ERROR_BYTES = 8 * 1024;

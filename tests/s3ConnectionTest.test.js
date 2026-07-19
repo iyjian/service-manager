@@ -90,7 +90,7 @@ test('S3 connection draft validation ignores Sync Encryption Key and requires dr
   );
 });
 
-test('S3 connection probe signs exactly one canonical v3 head GET and accepts 200', async () => {
+test('S3 connection probe signs exactly one canonical v4 head GET and accepts 200', async () => {
   let request;
   await testS3V3Connection(probeOptions(async (url, options) => {
     request = { url, options };

@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   createS3SharedAppDataV2,
   mergeS3SharedAppDataV2,
+  normalizeS3NotesTreeSnapshot,
   parseS3SharedAppDataV2,
   stageS3SharedAppDataForLocalApply,
 } = require('../dist/main/s3DataMerge');
@@ -73,10 +74,22 @@ function proxy(overrides = {}) {
   };
 }
 
+function notesTree(notes, placements = {}) {
+  return {
+    schemaVersion: 1,
+    nodes: notes.map((item, index) => ({
+      noteId: item.id,
+      parentId: placements[item.id]?.parentId ?? null,
+      order: placements[item.id]?.order ?? (index + 1) * 1024,
+    })),
+  };
+}
+
 function data(notes, overrides = {}) {
   return createS3SharedAppDataV2({
     hosts: [host()],
     notes: { schemaVersion: 1, notes },
+    notesTree: notesTree(notes),
     proxy: proxy(),
     ...overrides,
   });
@@ -86,6 +99,7 @@ test('v2 shared projection strips device-only Host, Forward, Service, Proxy, and
   const shared = createS3SharedAppDataV2({
     hosts: [host()],
     notes: { schemaVersion: 1, notes: [note('note-1', '# deploy')] },
+    notesTree: notesTree([note('note-1', '# deploy')]),
     proxy: proxy(),
     kubernetes: { selectedContext: 'must-not-sync' },
   });
@@ -99,6 +113,7 @@ test('v2 shared projection strips device-only Host, Forward, Service, Proxy, and
   assert.equal(shared.proxy.settings.tunEnabled, undefined);
   assert.equal(shared.proxy.settings.systemProxyEnabled, undefined);
   assert.equal(shared.kubernetes, undefined);
+  assert.deepEqual(shared.notes.tree, notesTree([note('note-1', '# deploy')]));
   assert.match(JSON.stringify(shared), /PRIVATE KEY/);
   assert.doesNotMatch(
     JSON.stringify(shared),
@@ -174,6 +189,76 @@ test('same-Note divergence keeps cloud canonical and creates a tagged local conf
     createdAt: T2,
     updatedAt: T2,
   });
+});
+
+test('Notes tree merges independent moves and lets cloud win a same-node placement conflict', () => {
+  const notes = [note('a', 'A'), note('b', 'B'), note('c', 'C')];
+  const base = data(notes);
+  const local = data(notes, {
+    notesTree: notesTree(notes, { b: { parentId: 'a', order: 1024 } }),
+  });
+  const cloud = data(notes, {
+    notesTree: notesTree(notes, { c: { parentId: 'a', order: 1024 } }),
+  });
+  const merged = mergeS3SharedAppDataV2({ base, local, cloud, now: T2 });
+  assert.deepEqual(merged.data.notes.tree.nodes.map(({ noteId, parentId }) => [noteId, parentId]), [
+    ['a', null],
+    ['b', 'a'],
+    ['c', 'a'],
+  ]);
+
+  const localConflict = data(notes, {
+    notesTree: notesTree(notes, { b: { parentId: 'a', order: 1024 } }),
+  });
+  const cloudConflict = data(notes, {
+    notesTree: notesTree(notes, { b: { parentId: 'c', order: 1024 } }),
+  });
+  const conflicted = mergeS3SharedAppDataV2({ base, local: localConflict, cloud: cloudConflict, now: T2 });
+  assert.equal(conflicted.data.notes.tree.nodes.find((node) => node.noteId === 'b').parentId, 'c');
+});
+
+test('Notes tree repair roots orphans and cycles, restores missing active nodes, and normalizes order', () => {
+  const repaired = normalizeS3NotesTreeSnapshot({
+    schemaVersion: 1,
+    nodes: [
+      { noteId: 'a', parentId: 'b', order: 9 },
+      { noteId: 'b', parentId: 'a', order: 9 },
+      { noteId: 'c', parentId: 'missing', order: Number.MAX_SAFE_INTEGER },
+      { noteId: 'stale', parentId: null, order: 1 },
+    ],
+  }, ['a', 'b', 'c', 'd']);
+
+  assert.deepEqual(repaired.nodes, [
+    { noteId: 'a', parentId: null, order: 1024 },
+    { noteId: 'b', parentId: null, order: 2048 },
+    { noteId: 'c', parentId: null, order: 3072 },
+    { noteId: 'd', parentId: null, order: 4096 },
+  ]);
+});
+
+test('conflict Note copies preserve the corresponding local tree hierarchy', () => {
+  const baseNotes = [note('parent', 'base parent'), note('child', 'base child')];
+  const base = data(baseNotes, {
+    notesTree: notesTree(baseNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const localNotes = [note('parent', 'local parent', T1), note('child', 'local child', T1)];
+  const local = data(localNotes, {
+    notesTree: notesTree(localNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const cloudNotes = [note('parent', 'cloud parent', T1), note('child', 'cloud child', T1)];
+  const cloud = data(cloudNotes, {
+    notesTree: notesTree(cloudNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const ids = ['conflict-parent', 'conflict-child'];
+  const merged = mergeS3SharedAppDataV2({
+    base,
+    local,
+    cloud,
+    now: T2,
+    createId: () => ids.shift(),
+  });
+  const treeById = new Map(merged.data.notes.tree.nodes.map((node) => [node.noteId, node]));
+  assert.equal(treeById.get('conflict-child').parentId, 'conflict-parent');
 });
 
 test('cloud deletion wins over a local edit while preserving that edit as a conflict Note', () => {
@@ -308,9 +393,12 @@ test('staged local apply overlays device-only values and never accepts them from
   assert.equal(stage.proxy.settings.tunEnabled, true);
   assert.equal(stage.proxy.settings.systemProxyEnabled, true);
   assert.equal(stage.proxy.settings.mode, 'rule');
+  assert.deepEqual(stage.notesTree, cloud.notes.tree);
 
   stage.hosts[0].name = 'mutated';
   stage.notes.notes[0].tags.push('mutated');
+  stage.notesTree.nodes[0].order = 999;
   assert.equal(cloud.hosts.items[0].name, 'Development');
   assert.deepEqual(cloud.notes.notes[0].tags, ['shared']);
+  assert.equal(cloud.notes.tree.nodes[0].order, 1024);
 });

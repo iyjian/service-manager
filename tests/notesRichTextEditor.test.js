@@ -86,9 +86,9 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
 
   assert.match(source, /normalizeRichTextContent\(\s*value === undefined \|\| value === null \? EMPTY_RICH_TEXT_CONTENT : value/);
   assert.match(source, /setContent\(parseRichTextContent\(normalized\), \{/);
-  assert.match(source, /normalizeRichTextContent\(this\.editor\.getJSON\(\)\)/);
-  assert.match(source, /extractRichTextPlainText\(this\.editor\.getJSON\(\)\)/);
-  assert.match(source, /this\.onUpdate\(this\.getContent\(\)\)/);
+  assert.match(source, /normalizeRichTextContent\(stripTiptapLinkDefaults\(value\)\)/);
+  assert.match(source, /return normalizeEditorContent\(this\.editor\.getJSON\(\)\)/);
+  assert.match(source, /extractRichTextPlainText\(this\.getContent\(\)\)/);
   assert.match(source, /type: 's3Image',\s*attrs: reference/);
 
   const expectedCommands = [
@@ -112,4 +112,37 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
   assert.match(source, /delete control\.dataset\.active/);
   assert.match(source, /control\.setAttribute\('aria-pressed', String\(active\)\)/);
   assert.match(source, /control\.disabled = disabled/);
+});
+
+test('Tiptap Link uses the canonical absolute-http policy and never opens a browser window', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /StarterKit\.configure\(\{[\s\S]*?link:\s*\{[\s\S]*?openOnClick:\s*false/);
+  assert.match(source, /enableClickSelection:\s*false/);
+  assert.match(source, /protocols:\s*\[\]/);
+  assert.match(source, /defaultProtocol:\s*'https'/);
+  assert.match(source, /isAllowedUri:\s*\(url\)\s*=>\s*isAllowedRichTextLinkHref\(url\)/);
+  assert.match(source, /shouldAutoLink:\s*\(url\)\s*=>\s*isAllowedRichTextLinkHref\(url\)/);
+  assert.doesNotMatch(source, /window\.open\s*\(/);
+  assert.match(source, /handleClick:\s*\(_view, _position, event\)\s*=>\s*\{[\s\S]*?source\.closest\('a\[href\]'\)[\s\S]*?event\.preventDefault\(\);[\s\S]*?return true/);
+
+  const stripStart = source.indexOf('function stripTiptapLinkDefaults(');
+  const stripEnd = source.indexOf('function normalizeEditorContent(', stripStart);
+  assert.notEqual(stripStart, -1);
+  assert.notEqual(stripEnd, -1);
+  const strip = source.slice(stripStart, stripEnd);
+  assert.match(strip, /result\.attrs\.class === null/);
+  assert.match(strip, /const \{ class: _class, \.\.\.attrs \} = result\.attrs/);
+  assert.doesNotMatch(strip, /delete\s+result\.attrs\.(?:target|rel|href)/);
+});
+
+test('invalid editor updates roll back to the latest successfully emitted canonical content', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT/);
+  assert.match(source, /private restoringCanonicalContent = false/);
+  assert.match(source, /this\.lastCanonicalContent = normalized/);
+  assert.match(source, /if \(this\.restoringCanonicalContent\) return/);
+  assert.match(source, /const content = this\.getContent\(\);[\s\S]*?this\.onUpdate\(content\);[\s\S]*?this\.lastCanonicalContent = content/);
+  assert.match(source, /catch \(error\) \{[\s\S]*?this\.restoreLastCanonicalContent\(\);[\s\S]*?safelyReport/);
+  assert.match(source, /private restoreLastCanonicalContent\(\): void \{[\s\S]*?parseRichTextContent\(this\.lastCanonicalContent\)[\s\S]*?emitUpdate: false[\s\S]*?errorOnInvalidContent: true/);
+  assert.match(source, /finally \{\s*this\.restoringCanonicalContent = false/);
 });

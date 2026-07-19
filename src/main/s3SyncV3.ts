@@ -16,9 +16,12 @@ import {
   type S3V2SigningInput,
 } from './s3SyncV2';
 
-const SYNC_VERSION = 3 as const;
-const SCHEMA_VERSION = 3 as const;
-const LAYOUT_PREFIX = 'service-manager/v3';
+// Keep the historical V3 TypeScript export names until every caller has moved,
+// but make the wire contract deliberately incompatible with all prior layouts.
+const SYNC_VERSION = 4 as const;
+const SCHEMA_VERSION = 4 as const;
+const LAYOUT_VERSION = 4 as const;
+const LAYOUT_PREFIX = 'service-manager/v4';
 const MAX_MANIFEST_BYTES = 50 * 1024 * 1024;
 const MAX_MANIFEST_OBJECT_BYTES = 72 * 1024 * 1024;
 // A locally valid Note may contain 1,048,576 UTF-16 code units. JSON escaping
@@ -26,13 +29,18 @@ const MAX_MANIFEST_OBJECT_BYTES = 72 * 1024 * 1024;
 // encrypted object bounds must cover that legitimate worst case plus metadata.
 const MAX_NOTE_BYTES = 7 * 1024 * 1024;
 const MAX_NOTE_OBJECT_BYTES = 10 * 1024 * 1024;
+const NOTES_TREE_SCHEMA_VERSION = 1 as const;
+const MAX_NOTES_TREE_DEPTH = 32;
+const MAX_NOTES_TREE_BYTES = 8 * 1024 * 1024;
+const MAX_NOTES_TREE_OBJECT_BYTES = 12 * 1024 * 1024;
 const MAX_HEAD_OBJECT_BYTES = 16 * 1024;
 const MAX_ERROR_BYTES = 8 * 1024;
 const MAX_TOMBSTONES = 50_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MANIFEST_ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v3-manifest', 'utf8');
-const NOTE_ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v3-note', 'utf8');
-const ENCRYPTION_AAD_PREFIX = 'service-manager-s3-object-v3\0';
+const MANIFEST_ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v4-manifest', 'utf8');
+const NOTE_ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v4-note', 'utf8');
+const NOTES_TREE_ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v4-notes-tree', 'utf8');
+const ENCRYPTION_AAD_PREFIX = 'service-manager-s3-object-v4\0';
 const SYNC_ENCRYPTION_KEY_BYTES = 32;
 const NOTE_LANGUAGES = new Set<NoteLanguage>([
   'markdown',
@@ -59,20 +67,36 @@ export interface S3V3NoteTombstone {
   deletedAt: string;
 }
 
+export interface S3V3NotesTreePayload {
+  schemaVersion: 1;
+  root: string[];
+  order: Record<string, number>;
+  parent: Record<string, string | null>;
+}
+
+export interface S3V3NotesTreeReference {
+  objectId: string;
+  sha256: string;
+  contentHash: string;
+  encryptionKeyId: string;
+}
+
 export interface S3V3ManifestData {
-  schemaVersion: 3;
+  schemaVersion: 4;
   hosts: Record<string, unknown>;
   notes: {
-    schemaVersion: 3;
+    schemaVersion: 4;
     items: S3V3NoteReference[];
     tombstones: S3V3NoteTombstone[];
+    tree: S3V3NotesTreeReference;
   };
   proxy: Record<string, unknown>;
 }
 
 export interface ServiceManagerSyncManifestV3 {
-  schemaVersion: 3;
-  syncVersion: 3;
+  schemaVersion: 4;
+  syncVersion: 4;
+  layoutVersion: 4;
   app: 'service-manager';
   appVersion: string;
   revision: string;
@@ -83,19 +107,31 @@ export interface ServiceManagerSyncManifestV3 {
 }
 
 export interface ServiceManagerNoteObjectV3 {
-  schemaVersion: 3;
-  syncVersion: 3;
+  schemaVersion: 4;
+  syncVersion: 4;
+  layoutVersion: 4;
   app: 'service-manager';
   objectType: 'note';
   objectId: string;
   note: Note;
 }
 
-export type S3V3ObjectType = 'manifest' | 'note';
+export interface ServiceManagerNotesTreeObjectV3 {
+  schemaVersion: 4;
+  syncVersion: 4;
+  layoutVersion: 4;
+  app: 'service-manager';
+  objectType: 'notes-tree';
+  objectId: string;
+  tree: S3V3NotesTreePayload;
+}
+
+export type S3V3ObjectType = 'manifest' | 'note' | 'notes-tree';
 
 export interface EncryptedS3ObjectV3 {
-  schemaVersion: 3;
-  syncVersion: 3;
+  schemaVersion: 4;
+  syncVersion: 4;
+  layoutVersion: 4;
   objectType: S3V3ObjectType;
   objectId: string;
   encryption: {
@@ -111,8 +147,9 @@ export interface EncryptedS3ObjectV3 {
 }
 
 export interface S3SyncHeadV3 {
-  schemaVersion: 3;
-  syncVersion: 3;
+  schemaVersion: 4;
+  syncVersion: 4;
+  layoutVersion: 4;
   app: 'service-manager';
   revision: string;
   parentRevision?: string;
@@ -172,6 +209,16 @@ export type S3V3NoteReadResult =
     encryptionKeyId: string;
   };
 
+export type S3V3NotesTreeReadResult =
+  | { status: 'missing' }
+  | {
+    status: 'found';
+    object: ServiceManagerNotesTreeObjectV3;
+    encrypted: EncryptedS3ObjectV3;
+    reference: S3V3NotesTreeReference;
+    encryptionKeyId: string;
+  };
+
 export type S3V3ConditionalWriteResult =
   | { status: 'written'; etag?: string }
   | { status: 'conflict' };
@@ -189,6 +236,15 @@ export type S3V3NoteWriteResult =
   | {
     status: 'written';
     reference: S3V3NoteReference;
+    byteLength: number;
+    etag?: string;
+  }
+  | { status: 'conflict' };
+
+export type S3V3NotesTreeWriteResult =
+  | {
+    status: 'written';
+    reference: S3V3NotesTreeReference;
     byteLength: number;
     etag?: string;
   }
@@ -322,6 +378,135 @@ function parseTombstone(value: unknown): S3V3NoteTombstone {
   };
 }
 
+function treeNoteId(value: unknown, label: string): string {
+  const parsed = stableNoteId(value, label);
+  if (parsed !== value) throw new Error(`${label} is invalid.`);
+  return parsed;
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function parseS3V3NotesTreePayload(value: unknown): S3V3NotesTreePayload {
+  if (!isRecord(value) || value.schemaVersion !== NOTES_TREE_SCHEMA_VERSION) {
+    throw new Error('The S3 Notes tree is invalid.');
+  }
+  try {
+    measureBoundedJsonBytes(value, MAX_NOTES_TREE_BYTES, 'The S3 Notes tree is too large to sync.');
+  } catch (error) {
+    if (error instanceof Error && /too large to sync/.test(error.message)) throw error;
+    throw new Error('The S3 Notes tree is invalid.');
+  }
+  if (
+    !Array.isArray(value.root)
+    || value.root.length > NOTE_LIMITS.notes
+    || !isRecord(value.order)
+    || !isRecord(value.parent)
+  ) {
+    throw new Error('The S3 Notes tree is invalid.');
+  }
+
+  const orderEntries = Object.entries(value.order);
+  const parentEntries = Object.entries(value.parent);
+  if (orderEntries.length > NOTE_LIMITS.notes || parentEntries.length !== orderEntries.length) {
+    throw new Error('The S3 Notes tree is invalid.');
+  }
+
+  const order = new Map<string, number>();
+  for (const [rawNoteId, rawOrder] of orderEntries) {
+    const noteId = treeNoteId(rawNoteId, 'The S3 Notes tree Note ID');
+    if (!Number.isSafeInteger(rawOrder) || (rawOrder as number) < 0) {
+      throw new Error('The S3 Notes tree order is invalid.');
+    }
+    order.set(noteId, rawOrder as number);
+  }
+
+  const parent = new Map<string, string | null>();
+  for (const [rawNoteId, rawParentId] of parentEntries) {
+    const noteId = treeNoteId(rawNoteId, 'The S3 Notes tree Note ID');
+    if (!order.has(noteId)) throw new Error('The S3 Notes tree key sets do not match.');
+    const parentId = rawParentId === null
+      ? null
+      : treeNoteId(rawParentId, 'The S3 Notes tree parent Note ID');
+    if (parentId === noteId || (parentId !== null && !order.has(parentId))) {
+      throw new Error('The S3 Notes tree parent is invalid.');
+    }
+    parent.set(noteId, parentId);
+  }
+  if (parent.size !== order.size) throw new Error('The S3 Notes tree key sets do not match.');
+
+  const roots: string[] = [];
+  const rootSet = new Set<string>();
+  for (const candidate of value.root) {
+    const noteId = treeNoteId(candidate, 'The S3 Notes tree root Note ID');
+    if (rootSet.has(noteId)) throw new Error('The S3 Notes tree roots contain a duplicate.');
+    if (!order.has(noteId) || parent.get(noteId) !== null) {
+      throw new Error('The S3 Notes tree roots are invalid.');
+    }
+    rootSet.add(noteId);
+    roots.push(noteId);
+  }
+  const expectedRoots = [...parent.entries()]
+    .filter(([, parentId]) => parentId === null)
+    .map(([noteId]) => noteId)
+    .sort((left, right) => (order.get(left) as number) - (order.get(right) as number) || compareText(left, right));
+  if (expectedRoots.length !== roots.length || expectedRoots.some((noteId, index) => roots[index] !== noteId)) {
+    throw new Error('The S3 Notes tree roots are invalid.');
+  }
+
+  const siblingOrders = new Map<string | null, Set<number>>();
+  for (const [noteId, parentId] of parent) {
+    const orders = siblingOrders.get(parentId) ?? new Set<number>();
+    const noteOrder = order.get(noteId) as number;
+    if (orders.has(noteOrder)) throw new Error('The S3 Notes tree sibling order is invalid.');
+    orders.add(noteOrder);
+    siblingOrders.set(parentId, orders);
+  }
+
+  const depths = new Map<string, number>();
+  for (const startId of order.keys()) {
+    if (depths.has(startId)) continue;
+    const path: string[] = [];
+    const positions = new Set<string>();
+    let currentId: string | null = startId;
+    while (currentId !== null && !depths.has(currentId)) {
+      if (positions.has(currentId)) throw new Error('The S3 Notes tree contains a cycle.');
+      positions.add(currentId);
+      path.push(currentId);
+      currentId = parent.get(currentId) as string | null;
+    }
+    let depth = currentId === null ? -1 : (depths.get(currentId) as number);
+    for (let index = path.length - 1; index >= 0; index -= 1) {
+      depth += 1;
+      if (depth > MAX_NOTES_TREE_DEPTH) {
+        throw new Error(`The S3 Notes tree exceeds the maximum depth of ${MAX_NOTES_TREE_DEPTH}.`);
+      }
+      depths.set(path[index], depth);
+    }
+  }
+
+  const sortedIds = [...order.keys()].sort(compareText);
+  const parsed: S3V3NotesTreePayload = {
+    schemaVersion: NOTES_TREE_SCHEMA_VERSION,
+    root: [...roots],
+    order: Object.fromEntries(sortedIds.map((noteId) => [noteId, order.get(noteId) as number])),
+    parent: Object.fromEntries(sortedIds.map((noteId) => [noteId, parent.get(noteId) as string | null])),
+  };
+  measureBoundedJsonBytes(parsed, MAX_NOTES_TREE_BYTES, 'The S3 Notes tree is too large to sync.');
+  return parsed;
+}
+
+export function parseS3V3NotesTreeReference(value: unknown): S3V3NotesTreeReference {
+  if (!isRecord(value)) throw new Error('The S3 Notes tree reference is invalid.');
+  return {
+    objectId: normalizedIdentifier(value.objectId, 'Notes tree object identity', 128),
+    sha256: digest(value.sha256, 'The S3 Notes tree object digest'),
+    contentHash: digest(value.contentHash, 'The S3 Notes tree content digest'),
+    encryptionKeyId: digest(value.encryptionKeyId, 'The Sync Encryption Key identity'),
+  };
+}
+
 export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
   if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION || !isRecord(value.notes)) {
     throw new Error('The S3 manifest data is invalid.');
@@ -337,6 +522,7 @@ export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
   }
   const items = value.notes.items.map(parseNoteReference);
   const tombstones = value.notes.tombstones.map(parseTombstone);
+  const tree = parseS3V3NotesTreeReference(value.notes.tree);
   const noteIds = new Set<string>();
   const objectIds = new Set<string>();
   for (const item of items) {
@@ -359,6 +545,7 @@ export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
       schemaVersion: SCHEMA_VERSION,
       items,
       tombstones,
+      tree,
     },
     proxy: cloneJsonRecord(value.proxy, 'The S3 manifest Proxy data'),
   };
@@ -379,6 +566,7 @@ export function createServiceManagerSyncManifestV3(
   return parseServiceManagerSyncManifestV3({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     appVersion: options.appVersion,
     revision: options.revision,
@@ -394,6 +582,7 @@ export function parseServiceManagerSyncManifestV3(value: unknown): ServiceManage
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
     || value.syncVersion !== SYNC_VERSION
+    || value.layoutVersion !== LAYOUT_VERSION
     || value.app !== 'service-manager'
     || typeof value.appVersion !== 'string'
     || !value.appVersion
@@ -409,6 +598,7 @@ export function parseServiceManagerSyncManifestV3(value: unknown): ServiceManage
   const parsed: ServiceManagerSyncManifestV3 = {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     appVersion: value.appVersion,
     revision,
@@ -428,6 +618,7 @@ export function createServiceManagerNoteObjectV3(
   return parseServiceManagerNoteObjectV3({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     objectType: 'note',
     objectId,
@@ -440,6 +631,7 @@ export function parseServiceManagerNoteObjectV3(value: unknown): ServiceManagerN
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
     || value.syncVersion !== SYNC_VERSION
+    || value.layoutVersion !== LAYOUT_VERSION
     || value.app !== 'service-manager'
     || value.objectType !== 'note'
   ) {
@@ -448,12 +640,52 @@ export function parseServiceManagerNoteObjectV3(value: unknown): ServiceManagerN
   const parsed: ServiceManagerNoteObjectV3 = {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     objectType: 'note',
     objectId: normalizedIdentifier(value.objectId, 'Note object identity', 128),
     note: parseNote(value.note),
   };
   measureBoundedJsonBytes(parsed, MAX_NOTE_BYTES, 'The S3 Note is too large to sync.');
+  return parsed;
+}
+
+export function createServiceManagerNotesTreeObjectV3(
+  tree: S3V3NotesTreePayload,
+  objectId: string,
+): ServiceManagerNotesTreeObjectV3 {
+  return parseServiceManagerNotesTreeObjectV3({
+    schemaVersion: SCHEMA_VERSION,
+    syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
+    app: 'service-manager',
+    objectType: 'notes-tree',
+    objectId,
+    tree,
+  });
+}
+
+export function parseServiceManagerNotesTreeObjectV3(value: unknown): ServiceManagerNotesTreeObjectV3 {
+  if (
+    !isRecord(value)
+    || value.schemaVersion !== SCHEMA_VERSION
+    || value.syncVersion !== SYNC_VERSION
+    || value.layoutVersion !== LAYOUT_VERSION
+    || value.app !== 'service-manager'
+    || value.objectType !== 'notes-tree'
+  ) {
+    throw new Error('The S3 Notes tree object is invalid.');
+  }
+  const parsed: ServiceManagerNotesTreeObjectV3 = {
+    schemaVersion: SCHEMA_VERSION,
+    syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
+    app: 'service-manager',
+    objectType: 'notes-tree',
+    objectId: normalizedIdentifier(value.objectId, 'Notes tree object identity', 128),
+    tree: parseS3V3NotesTreePayload(value.tree),
+  };
+  measureBoundedJsonBytes(parsed, MAX_NOTES_TREE_BYTES, 'The S3 Notes tree is too large to sync.');
   return parsed;
 }
 
@@ -516,20 +748,35 @@ export function hashS3V3NoteContent(value: Note | ServiceManagerNoteObjectV3): s
   return sha256Hex(JSON.stringify(note));
 }
 
+export function hashS3V3NotesTreeContent(
+  value: S3V3NotesTreePayload | ServiceManagerNotesTreeObjectV3,
+): string {
+  const tree = isRecord(value) && value.objectType === 'notes-tree'
+    ? parseServiceManagerNotesTreeObjectV3(value).tree
+    : parseS3V3NotesTreePayload(value);
+  return sha256Hex(JSON.stringify(tree));
+}
+
 function encryptionInfo(objectType: S3V3ObjectType): Buffer {
-  return objectType === 'manifest' ? MANIFEST_ENCRYPTION_INFO : NOTE_ENCRYPTION_INFO;
+  if (objectType === 'manifest') return MANIFEST_ENCRYPTION_INFO;
+  if (objectType === 'note') return NOTE_ENCRYPTION_INFO;
+  return NOTES_TREE_ENCRYPTION_INFO;
 }
 
 function objectPlaintextLimit(objectType: S3V3ObjectType): number {
-  return objectType === 'manifest' ? MAX_MANIFEST_BYTES : MAX_NOTE_BYTES;
+  if (objectType === 'manifest') return MAX_MANIFEST_BYTES;
+  if (objectType === 'note') return MAX_NOTE_BYTES;
+  return MAX_NOTES_TREE_BYTES;
 }
 
 function objectCiphertextLimit(objectType: S3V3ObjectType): number {
-  return objectType === 'manifest' ? MAX_MANIFEST_BYTES : MAX_NOTE_BYTES;
+  return objectPlaintextLimit(objectType);
 }
 
 function objectResponseLimit(objectType: S3V3ObjectType): number {
-  return objectType === 'manifest' ? MAX_MANIFEST_OBJECT_BYTES : MAX_NOTE_OBJECT_BYTES;
+  if (objectType === 'manifest') return MAX_MANIFEST_OBJECT_BYTES;
+  if (objectType === 'note') return MAX_NOTE_OBJECT_BYTES;
+  return MAX_NOTES_TREE_OBJECT_BYTES;
 }
 
 function deriveObjectKey(
@@ -586,7 +833,8 @@ export function parseEncryptedS3ObjectV3(value: unknown): EncryptedS3ObjectV3 {
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
     || value.syncVersion !== SYNC_VERSION
-    || (value.objectType !== 'manifest' && value.objectType !== 'note')
+    || value.layoutVersion !== LAYOUT_VERSION
+    || (value.objectType !== 'manifest' && value.objectType !== 'note' && value.objectType !== 'notes-tree')
     || !isRecord(value.encryption)
     || value.encryption.algorithm !== 'AES-256-GCM'
     || value.encryption.kdf !== 'HKDF-SHA256'
@@ -616,8 +864,9 @@ export function parseEncryptedS3ObjectV3(value: unknown): EncryptedS3ObjectV3 {
   return {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     objectType,
-    objectId: normalizedIdentifier(value.objectId, `${objectType} object identity`, objectType === 'note' ? 128 : 256),
+    objectId: normalizedIdentifier(value.objectId, `${objectType} object identity`, objectType === 'manifest' ? 256 : 128),
     encryption: {
       algorithm: 'AES-256-GCM',
       kdf: 'HKDF-SHA256',
@@ -632,7 +881,7 @@ export function parseEncryptedS3ObjectV3(value: unknown): EncryptedS3ObjectV3 {
 }
 
 function encryptS3ObjectV3(
-  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3,
+  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
   syncEncryptionKey: string,
   createBytes: (size: number) => Buffer,
 ): EncryptedS3ObjectV3 {
@@ -646,20 +895,22 @@ function encryptS3ObjectV3(
 }
 
 function encryptS3ObjectV3WithKeyMaterial(
-  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3,
+  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
   keyMaterial: Buffer,
   createBytes: (size: number) => Buffer,
   keyId: string,
 ): EncryptedS3ObjectV3 {
-  const objectType: S3V3ObjectType = 'objectType' in value && value.objectType === 'note'
-    ? 'note'
+  const objectType: S3V3ObjectType = 'objectType' in value
+    ? value.objectType
     : 'manifest';
-  const parsed = objectType === 'note'
-    ? parseServiceManagerNoteObjectV3(value)
-    : parseServiceManagerSyncManifestV3(value);
-  const objectId = objectType === 'note'
-    ? (parsed as ServiceManagerNoteObjectV3).objectId
-    : (parsed as ServiceManagerSyncManifestV3).revision;
+  const parsed = objectType === 'manifest'
+    ? parseServiceManagerSyncManifestV3(value)
+    : objectType === 'note'
+      ? parseServiceManagerNoteObjectV3(value)
+      : parseServiceManagerNotesTreeObjectV3(value);
+  const objectId = objectType === 'manifest'
+    ? (parsed as ServiceManagerSyncManifestV3).revision
+    : (parsed as ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3).objectId;
   const plaintext = Buffer.from(JSON.stringify(parsed), 'utf8');
   if (plaintext.byteLength > objectPlaintextLimit(objectType)) {
     throw new Error(`The S3 ${objectType} is too large to sync.`);
@@ -675,6 +926,7 @@ function encryptS3ObjectV3WithKeyMaterial(
   return {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     objectType,
     objectId,
     encryption: {
@@ -694,7 +946,7 @@ function decryptS3ObjectV3(
   value: unknown,
   encryptionKey: string,
   expectedType: S3V3ObjectType,
-): ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 {
+): ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3 {
   try {
     if (!encryptionKey) throw new Error('missing key');
     const envelope = parseEncryptedS3ObjectV3(value);
@@ -723,9 +975,14 @@ function decryptS3ObjectV3(
       if (manifest.revision !== envelope.objectId) throw new Error('object identity mismatch');
       return manifest;
     }
-    const noteObject = parseServiceManagerNoteObjectV3(raw);
-    if (noteObject.objectId !== envelope.objectId) throw new Error('object identity mismatch');
-    return noteObject;
+    if (expectedType === 'note') {
+      const noteObject = parseServiceManagerNoteObjectV3(raw);
+      if (noteObject.objectId !== envelope.objectId) throw new Error('object identity mismatch');
+      return noteObject;
+    }
+    const treeObject = parseServiceManagerNotesTreeObjectV3(raw);
+    if (treeObject.objectId !== envelope.objectId) throw new Error('object identity mismatch');
+    return treeObject;
   } catch {
     throw new Error(`The encrypted S3 ${expectedType} could not be decrypted.`);
   }
@@ -761,6 +1018,21 @@ export function decryptS3NoteV3(
   return decryptS3ObjectV3(value, encryptionKey, 'note') as ServiceManagerNoteObjectV3;
 }
 
+export function encryptS3NotesTreeV3(
+  value: ServiceManagerNotesTreeObjectV3,
+  syncEncryptionKey: string,
+  createBytes: (size: number) => Buffer = randomBytes,
+): EncryptedS3ObjectV3 {
+  return encryptS3ObjectV3(value, syncEncryptionKey, createBytes);
+}
+
+export function decryptS3NotesTreeV3(
+  value: unknown,
+  encryptionKey: string,
+): ServiceManagerNotesTreeObjectV3 {
+  return decryptS3ObjectV3(value, encryptionKey, 'notes-tree') as ServiceManagerNotesTreeObjectV3;
+}
+
 export function serializeEncryptedS3ObjectV3(value: EncryptedS3ObjectV3): string {
   return JSON.stringify(parseEncryptedS3ObjectV3(value));
 }
@@ -790,6 +1062,16 @@ export function buildS3V3NoteObjectUrl(
   return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/notes/${id}.json`;
 }
 
+export function buildS3V3NotesTreeObjectUrl(
+  endpoint: unknown,
+  bucket: unknown,
+  objectId: unknown,
+): string {
+  const normalized = normalizeS3EndpointBucket(endpoint, bucket);
+  const id = normalizedIdentifier(objectId, 'Notes tree object identity', 128);
+  return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/notes-trees/${id}.json`;
+}
+
 export function createS3SyncHeadV3(
   manifest: ServiceManagerSyncManifestV3,
   manifestSha256: string,
@@ -799,6 +1081,7 @@ export function createS3SyncHeadV3(
   return parseS3SyncHeadV3({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     revision: parsed.revision,
     ...(parsed.parentRevision ? { parentRevision: parsed.parentRevision } : {}),
@@ -814,24 +1097,26 @@ export function parseS3SyncHeadV3(value: unknown): S3SyncHeadV3 {
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
     || value.syncVersion !== SYNC_VERSION
+    || value.layoutVersion !== LAYOUT_VERSION
     || value.app !== 'service-manager'
   ) {
-    throw new Error('The S3 v3 sync head is invalid.');
+    throw new Error('The S3 v4 sync head is invalid.');
   }
   const revision = normalizedIdentifier(value.revision, 'manifest revision', 256);
   const parentRevision = value.parentRevision === undefined
     ? undefined
     : normalizedIdentifier(value.parentRevision, 'parent manifest revision', 256);
-  if (parentRevision === revision) throw new Error('The S3 v3 sync head is invalid.');
+  if (parentRevision === revision) throw new Error('The S3 v4 sync head is invalid.');
   const encryptionKeyId = digest(value.encryptionKeyId, 'The Sync Encryption Key identity');
   return {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
+    layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     revision,
     ...(parentRevision ? { parentRevision } : {}),
     clientId: normalizedIdentifier(value.clientId, 'client identity', 128),
-    createdAt: isoTimestamp(value.createdAt, 'The S3 v3 head timestamp'),
+    createdAt: isoTimestamp(value.createdAt, 'The S3 v4 head timestamp'),
     manifestSha256: digest(value.manifestSha256, 'The S3 manifest digest'),
     encryptionKeyId,
   };
@@ -918,7 +1203,7 @@ async function readBoundedBody(
 }
 
 /**
- * Sends one signed GET for the canonical v3 head. A missing object is a
+ * Sends one signed GET for the canonical v4 head. A missing object is a
  * successful connectivity result because a newly configured bucket has no
  * head yet; a missing bucket remains an error. Existing head content is
  * deliberately neither parsed nor decrypted.
@@ -1037,7 +1322,7 @@ export class S3V3ObjectStore {
     this.requireSuccess(result);
     return {
       status: 'found',
-      head: parseS3SyncHeadV3(parseJsonBody(result.body, 'v3 head')),
+      head: parseS3SyncHeadV3(parseJsonBody(result.body, 'v4 head')),
       etag: responseEtag(result.headers, true) as string,
     };
   }
@@ -1159,6 +1444,69 @@ export class S3V3ObjectStore {
     };
   }
 
+  public async getNotesTree(referenceValue: S3V3NotesTreeReference): Promise<S3V3NotesTreeReadResult> {
+    const reference = parseS3V3NotesTreeReference(referenceValue);
+    const result = await this.request(
+      'GET',
+      buildS3V3NotesTreeObjectUrl(this.endpoint, this.bucket, reference.objectId),
+      undefined,
+      {},
+      objectResponseLimit('notes-tree'),
+    );
+    if (result.status === 404) return { status: 'missing' };
+    this.requireSuccess(result);
+    if (hashS3V3Object(result.body) !== reference.sha256) {
+      throw new Error('The S3 Notes tree object digest does not match its manifest reference.');
+    }
+    const encrypted = parseEncryptedS3ObjectV3(parseJsonBody(result.body, 'Notes tree object'));
+    if (encrypted.objectType !== 'notes-tree' || encrypted.objectId !== reference.objectId) {
+      throw new Error('The S3 Notes tree object is invalid.');
+    }
+    if (reference.encryptionKeyId !== encrypted.encryption.keyId) {
+      throw new Error('The S3 Notes tree encryption identity does not match its manifest reference.');
+    }
+    const object = this.decryptNotesTree(encrypted);
+    if (hashS3V3NotesTreeContent(object) !== reference.contentHash) {
+      throw new Error('The S3 Notes tree object does not match its manifest reference.');
+    }
+    return {
+      status: 'found',
+      object,
+      encrypted,
+      reference,
+      encryptionKeyId: encrypted.encryption.keyId,
+    };
+  }
+
+  public async putNotesTree(
+    objectValue: ServiceManagerNotesTreeObjectV3,
+  ): Promise<S3V3NotesTreeWriteResult> {
+    const object = parseServiceManagerNotesTreeObjectV3(objectValue);
+    const encrypted = encryptS3NotesTreeV3(object, this.syncEncryptionKey, this.createRandomBytes);
+    const body = serializeEncryptedS3ObjectV3(encrypted);
+    const reference: S3V3NotesTreeReference = {
+      objectId: object.objectId,
+      sha256: hashS3V3Object(body),
+      contentHash: hashS3V3NotesTreeContent(object),
+      encryptionKeyId: this.syncEncryptionKeyId,
+    };
+    const result = await this.request(
+      'PUT',
+      buildS3V3NotesTreeObjectUrl(this.endpoint, this.bucket, object.objectId),
+      body,
+      { ifNoneMatch: '*' },
+    );
+    if (result.status === 409 || result.status === 412) return { status: 'conflict' };
+    this.requireSuccess(result);
+    const etag = responseEtag(result.headers, false);
+    return {
+      status: 'written',
+      reference,
+      byteLength: Buffer.byteLength(body, 'utf8'),
+      ...(etag ? { etag } : {}),
+    };
+  }
+
   public async putHead(headValue: S3SyncHeadV3, expectedEtag?: string): Promise<S3V3ConditionalWriteResult> {
     const head = parseS3SyncHeadV3(headValue);
     if (head.encryptionKeyId !== this.syncEncryptionKeyId) {
@@ -1195,6 +1543,13 @@ export class S3V3ObjectStore {
     return this.decryptWithAvailableKeys(
       encrypted,
       (key) => decryptS3NoteV3(encrypted, key),
+    );
+  }
+
+  private decryptNotesTree(encrypted: EncryptedS3ObjectV3): ServiceManagerNotesTreeObjectV3 {
+    return this.decryptWithAvailableKeys(
+      encrypted,
+      (key) => decryptS3NotesTreeV3(encrypted, key),
     );
   }
 

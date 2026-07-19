@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   HostDraft,
+  Note,
   NoteDraft,
   NotesApi,
   KubernetesApi,
@@ -93,9 +94,14 @@ const api: ServiceApi = {
 
 const notesApi: NotesApi = {
   listNotes: () => ipcRenderer.invoke('notes:list'),
-  createNote: () => ipcRenderer.invoke('notes:create'),
-  updateNote: (id: string, draft: NoteDraft) => ipcRenderer.invoke('notes:update', { id, draft }),
-  deleteNote: (id: string) => ipcRenderer.invoke('notes:delete', id),
+  getWorkspace: () => ipcRenderer.invoke('notes:workspace'),
+  createNote: (placement) => ipcRenderer.invoke('notes:create', placement),
+  updateNote: (id: string, draft: NoteDraft, expectedNote: Note) =>
+    ipcRenderer.invoke('notes:update', { id, draft, expectedNote }),
+  moveNote: (input) => ipcRenderer.invoke('notes:move', input),
+  setTreeExpanded: (input) => ipcRenderer.invoke('notes:tree-expanded', input),
+  deleteNote: (input) => ipcRenderer.invoke('notes:delete', input),
+  recoverDrafts: (input) => ipcRenderer.invoke('notes:recover-drafts', input),
   uploadImage: (input) => ipcRenderer.invoke('notes:image:upload', input),
   loadImage: (reference) => ipcRenderer.invoke('notes:image:load', reference),
   onFlushRequested: (listener) => {
@@ -121,6 +127,10 @@ const settingsApi: SettingsApi = {
   testS3Connection: (draft: S3ConnectionTestDraft) => ipcRenderer.invoke('settings:s3:test', draft),
   revealS3SyncCredentials: () => ipcRenderer.invoke('settings:s3:reveal-credentials'),
   syncAllDataToS3: () => ipcRenderer.invoke('settings:s3:sync'),
+  getLlmSettings: () => ipcRenderer.invoke('settings:llm:get'),
+  saveLlmSettings: (draft) => ipcRenderer.invoke('settings:llm:save', draft),
+  revealLlmToken: () => ipcRenderer.invoke('settings:llm:reveal-token'),
+  listLlmModels: (draft) => ipcRenderer.invoke('settings:llm:list-models', draft),
   onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, state: S3SyncState): void => listener(state);
     ipcRenderer.on('settings:s3:state', wrapped);

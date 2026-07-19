@@ -28,6 +28,23 @@ export interface NoteTombstone {
   deletedAt: string;
 }
 
+export type NoteDraftRecoveryDecision = 'already-saved' | 'update' | 'conflict';
+
+export function classifyNoteDraftRecovery(
+  current: Note | undefined,
+  expected: Note,
+  draft: NoteDraft,
+): NoteDraftRecoveryDecision {
+  if (current
+    && current.name === draft.name
+    && current.content === draft.content
+    && current.language === draft.language
+    && isDeepStrictEqual(current.tags, draft.tags)) {
+    return 'already-saved';
+  }
+  return current && isDeepStrictEqual(current, expected) ? 'update' : 'conflict';
+}
+
 type StoredNoteEnvelope = {
   schemaVersion: typeof NOTES_SCHEMA_VERSION;
   note: Note;
@@ -150,7 +167,7 @@ function normalizeTags(value: unknown): string[] {
   return tags;
 }
 
-function normalizeDraft(value: unknown): NoteDraft {
+export function normalizeNoteDraft(value: unknown): NoteDraft {
   if (!isRecord(value)) {
     throw new Error('Note data is invalid.');
   }
@@ -186,7 +203,7 @@ function normalizeStoredNote(value: unknown): Note | null {
     return null;
   }
   try {
-    const draft = normalizeDraft(value);
+    const draft = normalizeNoteDraft(value);
     return {
       id: normalizeId(value.id),
       ...draft,
@@ -196,6 +213,12 @@ function normalizeStoredNote(value: unknown): Note | null {
   } catch {
     return null;
   }
+}
+
+export function normalizeNoteSnapshot(value: unknown): Note {
+  const note = normalizeStoredNote(value);
+  if (!note) throw new Error('Note data is invalid.');
+  return cloneNote(note);
 }
 
 function normalizeTombstone(value: unknown): NoteTombstone | null {
@@ -337,7 +360,7 @@ export class NotesStore {
 
   async update(id: string, draft: NoteDraft): Promise<Note> {
     const normalizedId = normalizeId(id);
-    const normalizedDraft = normalizeDraft(draft);
+    const normalizedDraft = normalizeNoteDraft(draft);
     return this.enqueue(async () => {
       const index = this.notes.findIndex((note) => note.id === normalizedId);
       if (index < 0) throw new Error('Note not found.');

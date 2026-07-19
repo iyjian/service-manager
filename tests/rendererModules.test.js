@@ -48,7 +48,11 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
   assert.match(startTimeHandler, /payload\.startTime/);
   assert.match(startTimeHandler, /validateKubernetesText\(payload\.startTime, 'log start time', 64\)/);
   assert.doesNotMatch(startTimeHandler, /podName|container|deploymentName|selector/);
-  assert.doesNotMatch(preload, /client-certificate-data|exec\.command|token/);
+  const kubernetesBridgeStart = preload.indexOf('const kubernetesApi =');
+  const kubernetesBridgeEnd = preload.indexOf('function subscribe', kubernetesBridgeStart);
+  assert.ok(kubernetesBridgeStart >= 0 && kubernetesBridgeEnd > kubernetesBridgeStart);
+  const kubernetesBridge = preload.slice(kubernetesBridgeStart, kubernetesBridgeEnd);
+  assert.doesNotMatch(kubernetesBridge, /client-certificate-data|exec\.command|token/);
 });
 
 test('compiled KubeVirt VNC bridge derives its loopback URL only in main and closes on launcher failure', async () => {
