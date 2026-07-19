@@ -427,7 +427,21 @@
             </div>
           </div>
         </div>
-        <p class="settings-hint">Cloud data is authoritative while online. Changes sync automatically; concurrent edits are version-checked and recoverable conflicts are kept as Notes copies.</p>
+        <div class="field field-xs">
+          <div class="settings-key-label-row">
+            <label for="s3-sync-encryption-key">Sync Encryption Key</label>
+            <span>Use the same key on every client</span>
+          </div>
+          <div class="settings-password-control settings-sync-key-control">
+            <input id="s3-sync-encryption-key" class="input" type="password" placeholder="Generated automatically on first save" autocomplete="off" spellcheck="false" />
+            <button id="s3-sync-encryption-key-visibility" type="button" class="settings-password-toggle" aria-label="Show Sync Encryption Key" aria-controls="s3-sync-encryption-key" aria-pressed="false">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 8s2.2-3.5 6.25-3.5S14.25 8 14.25 8 12.05 11.5 8 11.5 1.75 8 1.75 8Z"></path><circle cx="8" cy="8" r="1.75"></circle></svg>
+            </button>
+            <button id="s3-sync-encryption-key-copy" type="button" class="settings-password-copy" aria-label="Copy Sync Encryption Key" title="Copy Sync Encryption Key">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect><path d="M10.5 5.25v-1.5a1 1 0 0 0-1-1H3.75a1 1 0 0 0-1 1V9.5a1 1 0 0 0 1 1h1.5"></path></svg>
+            </button>
+          </div>
+        </div>
         <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
         <div class="form-actions settings-actions">
           <button id="settings-save-btn" type="submit" class="btn btn-secondary">Save</button>

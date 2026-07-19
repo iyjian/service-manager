@@ -82,15 +82,24 @@
   }
 
   .app-shell[data-page='notes'] {
+    @apply mx-0 max-w-none px-3 py-3;
     height: 100dvh;
     max-height: 100dvh;
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
+    font-family: var(--font-family-notes-ui);
+  }
+
+  .app-shell[data-page='notes'] input,
+  .app-shell[data-page='notes'] button,
+  .app-shell[data-page='notes'] select,
+  .app-shell[data-page='notes'] textarea {
+    font-family: var(--font-family-notes-ui);
   }
 
   .notes-page {
     @apply grid min-h-0 min-w-0 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm;
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-columns: clamp(240px, 22vw, 360px) minmax(0, 1fr);
   }
 
   .notes-sidebar {
@@ -148,7 +157,7 @@
   }
 
   .notes-list-meta {
-    @apply flex min-w-0 items-center gap-1.5 overflow-hidden font-mono text-[10.5px] text-zinc-400;
+    @apply flex min-w-0 items-center gap-1.5 overflow-hidden text-[10.5px] text-zinc-400;
   }
 
   .notes-list-language {
@@ -215,7 +224,7 @@
   }
 
   .notes-save-status {
-    @apply shrink-0 font-mono text-[11px] text-zinc-400;
+    @apply shrink-0 text-[11px] text-zinc-400;
   }
 
   .notes-save-status[data-state='saving'] {
@@ -236,7 +245,9 @@
   }
 
   .notes-content .cm-editor {
-    @apply h-full min-h-0 bg-zinc-950 font-mono text-[13px] text-zinc-100 outline-none;
+    @apply h-full min-h-0 bg-zinc-950 text-[14px] text-zinc-100 outline-none;
+    font-family: var(--font-family-notes-code);
+    font-variant-ligatures: none;
   }
 
   .notes-content .cm-editor.cm-focused {
@@ -244,7 +255,8 @@
   }
 
   .notes-content .cm-scroller {
-    @apply min-h-0 overflow-auto font-mono leading-6;
+    @apply min-h-0 overflow-auto leading-6;
+    font-family: var(--font-family-notes-code);
   }
 
   .notes-content .cm-content {
@@ -311,13 +323,36 @@
     @apply bg-blue-50 text-blue-600;
   }
 
-  .settings-hint,
-  .settings-status {
-    @apply m-0 rounded-md px-2.5 py-2 text-[12px];
+  .settings-key-label-row {
+    @apply flex items-center justify-between gap-3;
   }
 
-  .settings-hint {
-    @apply bg-zinc-50 text-zinc-500;
+  .settings-key-label-row span {
+    @apply text-[11px] font-normal text-zinc-400;
+  }
+
+  .settings-sync-key-control .input {
+    @apply pr-[76px] font-mono text-[12.5px];
+  }
+
+  .settings-sync-key-control .settings-password-toggle {
+    right: 36px;
+  }
+
+  .settings-password-copy {
+    @apply absolute inset-y-0 right-0 flex w-9 cursor-pointer items-center justify-center rounded border-0 border-l border-zinc-200 bg-transparent p-0 text-zinc-400 outline-none transition hover:bg-zinc-100 hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-blue-400 disabled:cursor-default disabled:opacity-30;
+  }
+
+  .settings-password-copy svg {
+    @apply h-4 w-4;
+  }
+
+  .settings-password-copy[data-copied='true'] {
+    @apply bg-emerald-50 text-emerald-700;
+  }
+
+  .settings-status {
+    @apply m-0 rounded-md px-2.5 py-2 text-[12px];
   }
 
   .settings-status {

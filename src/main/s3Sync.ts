@@ -30,10 +30,13 @@ import {
   S3V3ObjectStore,
   assertS3SyncHeadMatchesManifestV3,
   createS3SyncHeadV3,
+  createS3SyncEncryptionKey,
   createServiceManagerNoteObjectV3,
   createServiceManagerSyncManifestV3,
   createS3V3ObjectId,
   hashS3V3NoteContent,
+  getS3SyncEncryptionKeyId,
+  normalizeS3SyncEncryptionKey,
   parseS3V3ManifestData,
   type S3V3ManifestData,
   type S3V3NoteReference,
@@ -45,7 +48,7 @@ import {
   type S3SharedAppDataV2,
 } from './s3DataMerge';
 
-const SETTINGS_SCHEMA_VERSION = 4;
+const SETTINGS_SCHEMA_VERSION = 5;
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const SYNC_VERSION = 1 as const;
 const OBJECT_LAYOUT_VERSION = 1 as const;
@@ -94,14 +97,16 @@ export interface S3SyncRuntimeOptions {
 }
 
 interface PersistedS3SyncSettings {
-  schemaVersion: 4;
+  schemaVersion: 5;
   endpoint: string;
   bucket: string;
   region: string;
   clientId: string;
   encryptedAccessKeyId?: string;
   encryptedSecretAccessKey?: string;
-  encryptedSecretKeyFingerprint?: string;
+  encryptedSyncEncryptionKey?: string;
+  /** Retained only until an intentional Sync Encryption Key rotation succeeds. */
+  encryptedPreviousSyncEncryptionKey?: string;
   lastSyncedAt?: string;
   lastRevision?: string;
   pendingSince?: string;
@@ -263,6 +268,9 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
 
   const accessKeyId = optionalCredential(value.accessKeyId, 'The S3 access key ID', MAX_ACCESS_KEY_LENGTH, true);
   const secretAccessKey = optionalCredential(value.secretAccessKey, 'The S3 secret access key', MAX_SECRET_KEY_LENGTH, false);
+  const syncEncryptionKey = value.syncEncryptionKey === undefined
+    ? undefined
+    : normalizeS3SyncEncryptionKey(value.syncEncryptionKey);
   const clearCredentials = value.clearCredentials === true;
   if ((accessKeyId === undefined) !== (secretAccessKey === undefined)) {
     throw new Error('Both the S3 access key ID and secret access key are required.');
@@ -276,6 +284,7 @@ export function validateS3SyncSettingsDraft(value: unknown): S3SyncSettingsDraft
     bucket: normalizeS3Bucket(value.bucket),
     region: normalizedRegion(value.region),
     ...(accessKeyId !== undefined ? { accessKeyId, secretAccessKey } : {}),
+    ...(syncEncryptionKey !== undefined ? { syncEncryptionKey } : {}),
     ...(clearCredentials ? { clearCredentials: true } : {}),
   };
 }
@@ -598,7 +607,8 @@ function isConfigured(settings: PersistedS3SyncSettings): boolean {
     settings.endpoint
     && settings.bucket
     && settings.encryptedAccessKeyId
-    && settings.encryptedSecretAccessKey,
+    && settings.encryptedSecretAccessKey
+    && settings.encryptedSyncEncryptionKey,
   );
 }
 
@@ -612,6 +622,7 @@ function settingsView(settings: PersistedS3SyncSettings, state: S3SyncState): S3
     bucket: settings.bucket,
     region: settings.region,
     hasCredentials: Boolean(settings.encryptedAccessKeyId && settings.encryptedSecretAccessKey),
+    hasSyncEncryptionKey: Boolean(settings.encryptedSyncEncryptionKey),
     ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
     ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
     syncState: cloneSyncState(state),
@@ -639,7 +650,8 @@ function parsePersistedSettings(
     || (value.schemaVersion !== 1
       && value.schemaVersion !== 2
       && value.schemaVersion !== 3
-      && value.schemaVersion !== 4)) {
+      && value.schemaVersion !== 4
+      && value.schemaVersion !== 5)) {
     throw new Error('S3 sync settings are invalid.');
   }
   const legacyV1 = value.schemaVersion === 1;
@@ -659,7 +671,8 @@ function parsePersistedSettings(
 
   const encryptedAccessKeyId = protectedCredential(value.encryptedAccessKeyId);
   const encryptedSecretAccessKey = protectedCredential(value.encryptedSecretAccessKey);
-  const encryptedSecretKeyFingerprint = protectedCredential(value.encryptedSecretKeyFingerprint);
+  const encryptedSyncEncryptionKey = protectedCredential(value.encryptedSyncEncryptionKey);
+  const encryptedPreviousSyncEncryptionKey = protectedCredential(value.encryptedPreviousSyncEncryptionKey);
   if ((encryptedAccessKeyId === undefined) !== (encryptedSecretAccessKey === undefined)) {
     throw new Error('S3 sync settings are invalid.');
   }
@@ -670,9 +683,8 @@ function parsePersistedSettings(
     region: normalizedRegion(value.region),
     clientId: legacyV1 ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
     ...(encryptedAccessKeyId ? { encryptedAccessKeyId, encryptedSecretAccessKey } : {}),
-    ...(!legacyCloudLayout && encryptedSecretKeyFingerprint
-      ? { encryptedSecretKeyFingerprint }
-      : {}),
+    ...(!legacyCloudLayout && encryptedSyncEncryptionKey ? { encryptedSyncEncryptionKey } : {}),
+    ...(!legacyCloudLayout && encryptedPreviousSyncEncryptionKey ? { encryptedPreviousSyncEncryptionKey } : {}),
     ...(!legacyCloudLayout && isValidIsoTimestamp(value.lastSyncedAt)
       ? { lastSyncedAt: value.lastSyncedAt }
       : {}),
@@ -683,7 +695,7 @@ function parsePersistedSettings(
       ? { pendingSince: value.pendingSince }
       : {}),
   };
-  return { settings, migrated: legacyCloudLayout };
+  return { settings, migrated: value.schemaVersion !== SETTINGS_SCHEMA_VERSION };
 }
 
 function isOfflineSyncError(error: unknown): boolean {
@@ -702,7 +714,13 @@ function noteContentKey(id: string, contentHash: string): string {
 }
 
 function noteReferenceKey(reference: S3V3NoteReference): string {
-  return [reference.id, reference.objectId, reference.sha256, reference.contentHash].join('\u0000');
+  return [
+    reference.id,
+    reference.objectId,
+    reference.sha256,
+    reference.contentHash,
+    reference.encryptionKeyId,
+  ].join('\u0000');
 }
 
 function compareStableIds(left: { id: string }, right: { id: string }): number {
@@ -893,7 +911,19 @@ export class S3SyncRuntime {
   }
 
   public revealS3SyncCredentials(): Promise<S3CredentialValues> {
-    return this.enqueue(async () => ({ ...this.credentials(await this.ensureSettings()) }));
+    return this.enqueue(async () => {
+      const settings = await this.ensureSettings();
+      const result: S3CredentialValues = {};
+      if (settings.encryptedAccessKeyId && settings.encryptedSecretAccessKey) {
+        Object.assign(result, this.credentials(settings));
+      }
+      const syncEncryptionKey = this.syncEncryptionKey(settings, false);
+      if (syncEncryptionKey) result.syncEncryptionKey = syncEncryptionKey;
+      if (!result.accessKeyId && !result.syncEncryptionKey) {
+        throw new Error('S3 credentials and Sync Encryption Key are unavailable.');
+      }
+      return result;
+    });
   }
 
   public saveSettings(value: unknown): Promise<S3SyncSettingsView> {
@@ -904,49 +934,96 @@ export class S3SyncRuntime {
         const current = await this.ensureSettings();
         let encryptedAccessKeyId = current.encryptedAccessKeyId;
         let encryptedSecretAccessKey = current.encryptedSecretAccessKey;
-        let encryptedSecretKeyFingerprint = current.encryptedSecretKeyFingerprint;
-        let secretKeyChanged = false;
-        let currentSecretKeyFingerprint: string | undefined;
-        try {
-          currentSecretKeyFingerprint = this.secretKeyFingerprint(current);
-        } catch {
-          // A missing/unreadable verifier is handled conservatively below.
-        }
+        const sameS3Target = current.endpoint === draft.endpoint && current.bucket === draft.bucket;
 
         if (draft.clearCredentials) {
-          if (!encryptedSecretKeyFingerprint && currentSecretKeyFingerprint) {
-            try {
-              encryptedSecretKeyFingerprint = this.protectSecretKeyFingerprint(currentSecretKeyFingerprint);
-            } catch {
-              // Clearing credentials must remain possible if safeStorage became
-              // unavailable. A later replacement key will then reset the base.
-            }
-          }
           encryptedAccessKeyId = undefined;
           encryptedSecretAccessKey = undefined;
         } else if (draft.accessKeyId !== undefined && draft.secretAccessKey !== undefined) {
-          const nextSecretKeyFingerprint = sha256Hex(draft.secretAccessKey);
-          secretKeyChanged = currentSecretKeyFingerprint === undefined
-            ? Boolean(current.lastRevision)
-            : currentSecretKeyFingerprint !== nextSecretKeyFingerprint;
           if (!this.hasSecureCredentialStorage()) throw new Error('Secure credential storage is unavailable.');
           try {
             encryptedAccessKeyId = this.options.credentialProtector.encryptString(draft.accessKeyId).toString('base64');
             encryptedSecretAccessKey = this.options.credentialProtector.encryptString(draft.secretAccessKey).toString('base64');
-            encryptedSecretKeyFingerprint = this.protectSecretKeyFingerprint(nextSecretKeyFingerprint);
           } catch {
             throw new Error('S3 credentials could not be stored securely.');
           }
         }
 
-        const sameTarget = current.endpoint === draft.endpoint
-          && current.bucket === draft.bucket
-          && !secretKeyChanged;
+        let encryptedSyncEncryptionKey = sameS3Target ? current.encryptedSyncEncryptionKey : undefined;
+        let encryptedPreviousSyncEncryptionKey = sameS3Target
+          ? current.encryptedPreviousSyncEncryptionKey
+          : undefined;
+        let currentSyncEncryptionKey: string | undefined;
+        let currentSyncEncryptionKeyUnreadable = false;
+        let previousSyncEncryptionKey: string | undefined;
+        if (draft.syncEncryptionKey !== undefined && current.encryptedSyncEncryptionKey) {
+          try {
+            currentSyncEncryptionKey = this.syncEncryptionKey(current, false);
+          } catch {
+            currentSyncEncryptionKeyUnreadable = true;
+          }
+        }
+        if (draft.syncEncryptionKey !== undefined && sameS3Target && encryptedPreviousSyncEncryptionKey) {
+          try {
+            previousSyncEncryptionKey = normalizeS3SyncEncryptionKey(
+              this.optionalProtectedValue(
+                encryptedPreviousSyncEncryptionKey,
+                'The previous Sync Encryption Key',
+              ),
+            );
+          } catch {
+            // A damaged fallback must not permanently block Settings repair.
+            encryptedPreviousSyncEncryptionKey = undefined;
+          }
+        }
+        let nextSyncEncryptionKey = draft.syncEncryptionKey;
+        if (!sameS3Target && nextSyncEncryptionKey === currentSyncEncryptionKey) {
+          // Settings hydrates saved secrets into masked inputs. Carrying that
+          // unchanged value to a different target is not an explicit key
+          // choice, so target changes receive fresh encryption material.
+          nextSyncEncryptionKey = undefined;
+        }
+        if (!nextSyncEncryptionKey && !sameS3Target && encryptedAccessKeyId && encryptedSecretAccessKey) {
+          nextSyncEncryptionKey = createS3SyncEncryptionKey(this.createRandomBytes);
+        } else if (!nextSyncEncryptionKey && !encryptedSyncEncryptionKey && encryptedAccessKeyId && encryptedSecretAccessKey) {
+          nextSyncEncryptionKey = createS3SyncEncryptionKey(this.createRandomBytes);
+        }
+        if (nextSyncEncryptionKey) {
+          const normalizedKey = normalizeS3SyncEncryptionKey(nextSyncEncryptionKey);
+          if (currentSyncEncryptionKeyUnreadable) {
+            if (!this.hasSecureCredentialStorage()) throw new Error('Secure credential storage is unavailable.');
+            try {
+              encryptedSyncEncryptionKey = this.protectValue(normalizedKey);
+              if (previousSyncEncryptionKey === normalizedKey) {
+                encryptedPreviousSyncEncryptionKey = undefined;
+              }
+            } catch {
+              throw new Error('The Sync Encryption Key could not be stored securely.');
+            }
+          } else if (currentSyncEncryptionKey !== normalizedKey) {
+            if (sameS3Target && encryptedPreviousSyncEncryptionKey) {
+              throw new Error('Finish the pending Sync Encryption Key migration before changing it again.');
+            }
+            if (!this.hasSecureCredentialStorage()) throw new Error('Secure credential storage is unavailable.');
+            try {
+              if (sameS3Target && currentSyncEncryptionKey) {
+                encryptedPreviousSyncEncryptionKey = current.encryptedSyncEncryptionKey;
+              } else {
+                encryptedPreviousSyncEncryptionKey = undefined;
+              }
+              encryptedSyncEncryptionKey = this.protectValue(normalizedKey);
+            } catch {
+              throw new Error('The Sync Encryption Key could not be stored securely.');
+            }
+          }
+        }
+
         const configured = Boolean(
           draft.endpoint
           && draft.bucket
           && encryptedAccessKeyId
-          && encryptedSecretAccessKey,
+          && encryptedSecretAccessKey
+          && encryptedSyncEncryptionKey,
         );
         const pendingSince = configured
           ? (current.pendingSince ?? this.now().toISOString())
@@ -960,9 +1037,10 @@ export class S3SyncRuntime {
           ...(encryptedAccessKeyId && encryptedSecretAccessKey
             ? { encryptedAccessKeyId, encryptedSecretAccessKey }
             : {}),
-          ...(encryptedSecretKeyFingerprint ? { encryptedSecretKeyFingerprint } : {}),
-          ...(sameTarget && current.lastSyncedAt ? { lastSyncedAt: current.lastSyncedAt } : {}),
-          ...(sameTarget && current.lastRevision ? { lastRevision: current.lastRevision } : {}),
+          ...(encryptedSyncEncryptionKey ? { encryptedSyncEncryptionKey } : {}),
+          ...(encryptedPreviousSyncEncryptionKey ? { encryptedPreviousSyncEncryptionKey } : {}),
+          ...(sameS3Target && current.lastSyncedAt ? { lastSyncedAt: current.lastSyncedAt } : {}),
+          ...(sameS3Target && current.lastRevision ? { lastRevision: current.lastRevision } : {}),
           ...(pendingSince ? { pendingSince } : {}),
         };
         await this.persist(next);
@@ -1101,7 +1179,21 @@ export class S3SyncRuntime {
   private async loadSettings(): Promise<PersistedS3SyncSettings> {
     try {
       const parsed = parsePersistedSettings(JSON.parse(await fs.readFile(this.settingsPath, 'utf8')), this.createClientId);
-      if (parsed.migrated) await this.persist(parsed.settings);
+      let generatedSyncEncryptionKey = false;
+      if (
+        !parsed.settings.encryptedSyncEncryptionKey
+        && this.hasSecureCredentialStorage()
+        && (parsed.migrated || (
+          parsed.settings.encryptedAccessKeyId
+          && parsed.settings.encryptedSecretAccessKey
+        ))
+      ) {
+        parsed.settings.encryptedSyncEncryptionKey = this.protectValue(
+          createS3SyncEncryptionKey(this.createRandomBytes),
+        );
+        generatedSyncEncryptionKey = true;
+      }
+      if (parsed.migrated || generatedSyncEncryptionKey) await this.persist(parsed.settings);
       return parsed.settings;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultSettings(this.createClientId());
@@ -1138,24 +1230,37 @@ export class S3SyncRuntime {
     }
   }
 
-  private protectSecretKeyFingerprint(fingerprint: string): string {
-    if (!/^[a-f0-9]{64}$/.test(fingerprint) || !this.hasSecureCredentialStorage()) {
-      throw new Error('Secure credential storage is unavailable.');
-    }
-    return this.options.credentialProtector.encryptString(fingerprint).toString('base64');
+  private protectValue(value: string): string {
+    if (!value || !this.hasSecureCredentialStorage()) throw new Error('Secure credential storage is unavailable.');
+    return this.options.credentialProtector.encryptString(value).toString('base64');
   }
 
-  private secretKeyFingerprint(settings: PersistedS3SyncSettings): string | undefined {
-    if (settings.encryptedSecretKeyFingerprint) {
-      if (!this.hasSecureCredentialStorage()) throw new Error('S3 credentials are unavailable. Save them again.');
-      const fingerprint = this.options.credentialProtector.decryptString(
-        Buffer.from(settings.encryptedSecretKeyFingerprint, 'base64'),
-      );
-      if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('S3 credentials are unavailable. Save them again.');
-      return fingerprint;
+  private unprotectValue(value: string, label: string): string {
+    if (!this.hasSecureCredentialStorage()) throw new Error(`${label} is unavailable. Save it again.`);
+    try {
+      return this.options.credentialProtector.decryptString(Buffer.from(value, 'base64'));
+    } catch {
+      throw new Error(`${label} is unavailable. Save it again.`);
     }
-    if (!settings.encryptedSecretAccessKey) return undefined;
-    return sha256Hex(this.credentials(settings).secretAccessKey);
+  }
+
+  private syncEncryptionKey(settings: PersistedS3SyncSettings, required = true): string | undefined {
+    if (!settings.encryptedSyncEncryptionKey) {
+      if (required) throw new Error('A Sync Encryption Key is required.');
+      return undefined;
+    }
+    try {
+      return normalizeS3SyncEncryptionKey(
+        this.unprotectValue(settings.encryptedSyncEncryptionKey, 'The Sync Encryption Key'),
+      );
+    } catch (error) {
+      if (!required && !settings.encryptedSyncEncryptionKey) return undefined;
+      throw error;
+    }
+  }
+
+  private optionalProtectedValue(value: string | undefined, label: string): string | undefined {
+    return value ? this.unprotectValue(value, label) : undefined;
   }
 
   private clearPendingIntent(expectedGeneration: number): Promise<PersistedS3SyncSettings> {
@@ -1225,7 +1330,11 @@ export class S3SyncRuntime {
     return this.enqueueSettingsMutation(async () => {
       const current = await this.ensureSettings();
       const syncedAt = this.now().toISOString();
-      const next: PersistedS3SyncSettings = { ...current, lastSyncedAt: syncedAt, lastRevision: revision };
+      const {
+        encryptedPreviousSyncEncryptionKey: _previousKey,
+        ...retained
+      } = current;
+      const next: PersistedS3SyncSettings = { ...retained, lastSyncedAt: syncedAt, lastRevision: revision };
       await this.persist(next);
       this.settings = next;
       return { settings: next, syncedAt };
@@ -1235,7 +1344,7 @@ export class S3SyncRuntime {
   private async persistLocalRecovery(
     settings: PersistedS3SyncSettings,
     data: S3SharedAppDataV2,
-    secretAccessKey: string,
+    syncEncryptionKey: string,
   ): Promise<void> {
     const recoveryId = randomUUID();
     const revision = createServiceManagerSyncRevisionV2({ ...data }, {
@@ -1245,7 +1354,7 @@ export class S3SyncRuntime {
       createdAt: this.now().toISOString(),
     });
     const body = serializeEncryptedS3RevisionV2(
-      encryptS3RevisionV2(revision, secretAccessKey, this.createRandomBytes),
+      encryptS3RevisionV2(revision, syncEncryptionKey, this.createRandomBytes),
     );
     const filename = `${String(this.now().getTime()).padStart(16, '0')}-${recoveryId}.json`;
     const target = path.join(this.recoveryDirectory, filename);
@@ -1271,9 +1380,15 @@ export class S3SyncRuntime {
   private async materializeManifest(
     objectStore: S3V3ObjectStore,
     manifest: ServiceManagerSyncManifestV3,
+    manifestEncryptionKeyId: string,
     knownNotes: Map<string, Note>,
     objectCache: Map<string, Note>,
   ): Promise<S3SharedAppDataV2> {
+    if (manifest.data.notes.items.some((reference) =>
+      reference.encryptionKeyId !== manifestEncryptionKeyId
+    )) {
+      throw new Error('The S3 manifest mixes Note objects encrypted with a different key.');
+    }
     const dataWithoutActiveNotes = sharedDataFromManifest(manifest.data, []);
     let materializedSnapshotBytes = measureBoundedJsonBytes(dataWithoutActiveNotes);
     let materializedNoteCount = 0;
@@ -1331,9 +1446,12 @@ export class S3SyncRuntime {
     }
   > {
     measureBoundedJsonBytes(data);
+    const currentEncryptionKeyId = getS3SyncEncryptionKeyId(this.syncEncryptionKey(settings) as string);
     const reusable = new Map<string, S3V3NoteReference>();
     for (const reference of reusableReferences) {
-      reusable.set(noteContentKey(reference.id, reference.contentHash), { ...reference });
+      if (reference.encryptionKeyId === currentEncryptionKeyId) {
+        reusable.set(noteContentKey(reference.id, reference.contentHash), { ...reference });
+      }
     }
 
     const revision = normalizedRevision(this.createRevision());
@@ -1367,6 +1485,7 @@ export class S3SyncRuntime {
           objectId: planned.object.objectId,
           sha256: '0'.repeat(64),
           contentHash: planned.contentHash,
+          encryptionKeyId: currentEncryptionKeyId,
         }
     ));
     createServiceManagerSyncManifestV3(
@@ -1413,7 +1532,11 @@ export class S3SyncRuntime {
     const written = await objectStore.putManifest(manifest);
     if (written.status === 'conflict') return { status: 'conflict', noteReferences };
     byteLength += written.byteLength;
-    const head = createS3SyncHeadV3(manifest, written.manifestSha256);
+    const head = createS3SyncHeadV3(
+      manifest,
+      written.manifestSha256,
+      currentEncryptionKeyId,
+    );
     const headResult = await objectStore.putHead(head, expectedHeadEtag);
     if (headResult.status === 'conflict') return { status: 'conflict', noteReferences };
     return {
@@ -1429,12 +1552,20 @@ export class S3SyncRuntime {
     signal: AbortSignal,
   ): Promise<S3SyncResult> {
     const { accessKeyId, secretAccessKey } = this.credentials(settings);
+    const syncEncryptionKey = this.syncEncryptionKey(settings) as string;
+    const previousSyncEncryptionKey = this.optionalProtectedValue(
+      settings.encryptedPreviousSyncEncryptionKey,
+      'The previous Sync Encryption Key',
+    );
+    if (previousSyncEncryptionKey) normalizeS3SyncEncryptionKey(previousSyncEncryptionKey);
     const objectStore = new S3V3ObjectStore({
       endpoint: settings.endpoint,
       bucket: settings.bucket,
       region: settings.region,
       accessKeyId,
       secretAccessKey,
+      syncEncryptionKey,
+      ...(previousSyncEncryptionKey ? { previousSyncEncryptionKey } : {}),
       fetchImpl: this.fetchImpl,
       now: this.now,
       createRandomBytes: this.createRandomBytes,
@@ -1493,16 +1624,27 @@ export class S3SyncRuntime {
         remoteResult.manifest,
         remoteResult.manifestSha256,
       );
+      if (headResult.head.encryptionKeyId !== remoteResult.encryptionKeyId) {
+        throw new Error('The S3 sync head has an invalid Sync Encryption Key identity.');
+      }
+      const requiresEncryptionMigration = remoteResult.encryptionKeyId
+        !== getS3SyncEncryptionKeyId(syncEncryptionKey);
 
       let baseManifest: ServiceManagerSyncManifestV3 | undefined;
+      let baseReferencesUseCurrentEncryption = true;
+      let baseEncryptionKeyId: string | undefined;
       if (settings.lastRevision === headResult.head.revision) {
         baseManifest = remoteResult.manifest;
+        baseEncryptionKeyId = remoteResult.encryptionKeyId;
       } else if (settings.lastRevision) {
         const baseResult = await objectStore.getManifest(settings.lastRevision);
         if (baseResult.status === 'missing') {
           throw new Error('The previous S3 sync manifest is missing. Local changes were not merged.');
         }
         baseManifest = baseResult.manifest;
+        baseEncryptionKeyId = baseResult.encryptionKeyId;
+        baseReferencesUseCurrentEncryption = baseResult.encryptionKeyId
+          === getS3SyncEncryptionKeyId(syncEncryptionKey);
       }
 
       const local = await this.collectLocalData();
@@ -1516,11 +1658,18 @@ export class S3SyncRuntime {
       const cloud = await this.materializeManifest(
         objectStore,
         remoteResult.manifest,
+        remoteResult.encryptionKeyId,
         knownNotes,
         objectCache,
       );
       const base = baseManifest
-        ? await this.materializeManifest(objectStore, baseManifest, knownNotes, objectCache)
+        ? await this.materializeManifest(
+          objectStore,
+          baseManifest,
+          baseEncryptionKeyId as string,
+          knownNotes,
+          objectCache,
+        )
         : undefined;
 
       const merged = mergeS3SharedAppDataV2({ base, local, cloud, now: this.now().toISOString() });
@@ -1528,12 +1677,12 @@ export class S3SyncRuntime {
       measureBoundedJsonBytes(mergedData);
       if (merged.discardedLocalSections.length > 0
         && (!recoveredLocal || !isDeepStrictEqual(recoveredLocal, local))) {
-        await this.persistLocalRecovery(settings, local, secretAccessKey);
+        await this.persistLocalRecovery(settings, local, syncEncryptionKey);
         recoveredLocal = local;
       }
       const conflictCount = merged.conflictCount + merged.discardedLocalSections.length;
       const applyRequired = !isDeepStrictEqual(local, mergedData);
-      if (isDeepStrictEqual(mergedData, cloud)) {
+      if (isDeepStrictEqual(mergedData, cloud) && !requiresEncryptionMigration) {
         if (applyRequired
           && !await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) {
           continue;
@@ -1548,9 +1697,11 @@ export class S3SyncRuntime {
       }
 
       const reusableReferences = [
-        ...(baseManifest ? baseManifest.data.notes.items : []),
+        ...(!requiresEncryptionMigration && baseManifest && baseReferencesUseCurrentEncryption
+          ? baseManifest.data.notes.items
+          : []),
         ...retainedUploadReferences.values(),
-        ...remoteResult.manifest.data.notes.items,
+        ...(!requiresEncryptionMigration ? remoteResult.manifest.data.notes.items : []),
       ];
       const published = await this.publishRevision(
         objectStore,

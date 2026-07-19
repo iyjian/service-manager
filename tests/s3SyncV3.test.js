@@ -8,6 +8,7 @@ const {
   buildS3V3ManifestObjectUrl,
   buildS3V3NoteObjectUrl,
   createS3SyncHeadV3,
+  createS3SyncEncryptionKey,
   createS3V3ObjectId,
   createServiceManagerNoteObjectV3,
   createServiceManagerSyncManifestV3,
@@ -17,6 +18,8 @@ const {
   encryptS3NoteV3,
   hashS3V3NoteContent,
   hashS3V3Object,
+  getS3SyncEncryptionKeyId,
+  normalizeS3SyncEncryptionKey,
   parseS3V3ManifestData,
   serializeEncryptedS3ObjectV3,
   signS3V3Request,
@@ -27,6 +30,7 @@ const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'service-manager';
 const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
+const SYNC_KEY = Buffer.alloc(32, 0x5a).toString('base64url');
 const NOW = new Date('2026-07-19T04:05:06.000Z');
 
 function note(overrides = {}) {
@@ -85,13 +89,35 @@ test('S3 v3 uses an isolated head, immutable manifest paths, and opaque Note obj
   assert.throws(() => buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, '../revision'), /revision is invalid/);
 });
 
+test('Sync Encryption Keys are canonical copyable 256-bit values with stable non-secret identities', () => {
+  const generated = createS3SyncEncryptionKey((size) => Buffer.alloc(size, 0xa5));
+  assert.equal(generated, Buffer.alloc(32, 0xa5).toString('base64url'));
+  assert.equal(normalizeS3SyncEncryptionKey(generated), generated);
+  assert.equal(getS3SyncEncryptionKeyId(generated), getS3SyncEncryptionKeyId(generated));
+  assert.equal(getS3SyncEncryptionKeyId(generated).length, 64);
+  for (const invalid of ['', SECRET_KEY, `${generated}=`, generated.slice(1), 'A'.repeat(42)]) {
+    assert.throws(() => normalizeS3SyncEncryptionKey(invalid), /256-bit base64url key/);
+  }
+  assert.throws(
+    () => createS3SyncEncryptionKey(() => Buffer.alloc(31)),
+    /randomness is unavailable/,
+  );
+});
+
 test('S3 v3 encrypts each Note independently and binds its type and opaque object identity', () => {
   const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 7));
   const object = createServiceManagerNoteObjectV3(note(), objectId);
-  const encrypted = encryptS3NoteV3(object, SECRET_KEY, deterministicBytes);
+  const encrypted = encryptS3NoteV3(object, SYNC_KEY, deterministicBytes);
   const serialized = serializeEncryptedS3ObjectV3(encrypted);
 
-  assert.deepEqual(decryptS3NoteV3(encrypted, SECRET_KEY), object);
+  assert.deepEqual(decryptS3NoteV3(encrypted, SYNC_KEY), object);
+  assert.equal(encrypted.encryption.keySource, 'sync-key-v1');
+  assert.equal(encrypted.encryption.keyId, getS3SyncEncryptionKeyId(SYNC_KEY));
+  const { keySource: _keySource, keyId: _keyId, ...oldEncryption } = encrypted.encryption;
+  assert.throws(
+    () => decryptS3NoteV3({ ...encrypted, encryption: oldEncryption }, SYNC_KEY),
+    /could not be decrypted/,
+  );
   assert.equal(hashS3V3NoteContent(object), hashS3V3NoteContent(note()));
   assert.equal(hashS3V3NoteContent(object).length, 64);
   assert.doesNotMatch(serialized, /Deploy production|highly-sensitive-command|note-private-stable-id/);
@@ -100,7 +126,7 @@ test('S3 v3 encrypts each Note independently and binds its type and opaque objec
     /could not be decrypted/,
   );
   assert.throws(() => decryptS3NoteV3(encrypted, 'different-secret'), /could not be decrypted/);
-  assert.throws(() => decryptS3ManifestV3(encrypted, SECRET_KEY), /manifest could not be decrypted/);
+  assert.throws(() => decryptS3ManifestV3(encrypted, SYNC_KEY), /manifest could not be decrypted/);
 });
 
 test('S3 v3 round-trips a maximum-length Note when JSON escaping expands every character', async () => {
@@ -123,6 +149,7 @@ test('S3 v3 round-trips a maximum-length Note when JSON escaping expands every c
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     fetchImpl,
     now: () => NOW,
     createRandomBytes: deterministicBytes,
@@ -146,23 +173,28 @@ test('S3 v3 round-trips a maximum-length Note when JSON escaping expands every c
 test('S3 v3 manifest contains only Note references and tombstones and is bound to its head digest', () => {
   const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 9));
   const noteObject = createServiceManagerNoteObjectV3(note(), objectId);
-  const encryptedNote = encryptS3NoteV3(noteObject, SECRET_KEY, deterministicBytes);
+  const encryptedNote = encryptS3NoteV3(noteObject, SYNC_KEY, deterministicBytes);
   const noteBody = serializeEncryptedS3ObjectV3(encryptedNote);
   const reference = {
     id: noteObject.note.id,
     objectId,
     sha256: hashS3V3Object(noteBody),
     contentHash: hashS3V3NoteContent(noteObject),
+    encryptionKeyId: getS3SyncEncryptionKeyId(SYNC_KEY),
   };
   const value = manifest(manifestData([reference], [{ id: 'deleted-note', deletedAt: NOW.toISOString() }]));
-  const encrypted = encryptS3ManifestV3(value, SECRET_KEY, deterministicBytes);
+  const encrypted = encryptS3ManifestV3(value, SYNC_KEY, deterministicBytes);
   const serialized = serializeEncryptedS3ObjectV3(encrypted);
   const sha256 = hashS3V3Object(serialized);
-  const head = createS3SyncHeadV3(value, sha256);
+  const head = createS3SyncHeadV3(value, sha256, getS3SyncEncryptionKeyId(SYNC_KEY));
 
-  assert.deepEqual(decryptS3ManifestV3(encrypted, SECRET_KEY), value);
+  assert.deepEqual(decryptS3ManifestV3(encrypted, SYNC_KEY), value);
   assert.doesNotMatch(serialized, /Deploy production|highly-sensitive-command|deleted-note/);
   assert.doesNotThrow(() => assertS3SyncHeadMatchesManifestV3(head, value, sha256));
+  assert.throws(
+    () => assertS3SyncHeadMatchesManifestV3({ ...head, encryptionKeyId: undefined }, value, sha256),
+    /Key identity is invalid/,
+  );
   assert.throws(
     () => assertS3SyncHeadMatchesManifestV3({ ...head, manifestSha256: '0'.repeat(64) }, value, sha256),
     /does not match the shared head/,
@@ -175,6 +207,11 @@ test('S3 v3 manifest contains only Note references and tombstones and is bound t
     () => parseS3V3ManifestData(manifestData([reference, { ...reference }])),
     /duplicate identities/,
   );
+  const { encryptionKeyId: _referenceKeyId, ...oldReference } = reference;
+  assert.throws(
+    () => parseS3V3ManifestData(manifestData([oldReference])),
+    /Key identity is invalid/,
+  );
 });
 
 test('S3 v3 SigV4 signs only v3 object paths and conditional writes', () => {
@@ -184,6 +221,7 @@ test('S3 v3 SigV4 signs only v3 object paths and conditional writes', () => {
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     payload: '{"revision":"manifest-revision-2"}',
     ifMatch: '"head-etag"',
     now: NOW,
@@ -230,6 +268,7 @@ test('S3 v3 object store writes immutable Notes and manifests then CAS-publishes
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     fetchImpl,
     now: () => NOW,
     createRandomBytes: deterministicBytes,
@@ -240,7 +279,10 @@ test('S3 v3 object store writes immutable Notes and manifests then CAS-publishes
   const noteObject = createServiceManagerNoteObjectV3(note(), objectId);
   const noteWrite = await store.putNote(noteObject);
   assert.equal(noteWrite.status, 'written');
-  assert.deepEqual(Object.keys(noteWrite.reference), ['id', 'objectId', 'sha256', 'contentHash']);
+  assert.deepEqual(
+    Object.keys(noteWrite.reference),
+    ['id', 'objectId', 'sha256', 'contentHash', 'encryptionKeyId'],
+  );
   assert.equal(calls.at(-1).options.headers['if-none-match'], '*');
   assert.equal((await store.putNote(noteObject)).status, 'conflict');
 
@@ -250,7 +292,11 @@ test('S3 v3 object store writes immutable Notes and manifests then CAS-publishes
   assert.equal(calls.at(-1).options.headers['if-none-match'], '*');
   assert.equal((await store.putManifest(manifestValue)).status, 'conflict');
 
-  const head = createS3SyncHeadV3(manifestValue, manifestWrite.manifestSha256);
+  const head = createS3SyncHeadV3(
+    manifestValue,
+    manifestWrite.manifestSha256,
+    getS3SyncEncryptionKeyId(SYNC_KEY),
+  );
   assert.deepEqual(await store.putHead(head), { status: 'written', etag: '"head-1"' });
   assert.deepEqual(await store.putHead(head, '"stale"'), { status: 'conflict' });
   assert.deepEqual(await store.putHead(head, '"head-1"'), { status: 'written', etag: '"head-2"' });
@@ -279,13 +325,14 @@ test('S3 v3 object store writes immutable Notes and manifests then CAS-publishes
 
 test('S3 v3 object store validates manifest digests and bounds response bodies', async () => {
   const value = manifest(manifestData());
-  const body = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(value, SECRET_KEY, deterministicBytes));
+  const body = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(value, SYNC_KEY, deterministicBytes));
   const digestStore = new S3V3ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     fetchImpl: async () => new Response(body, { status: 200 }),
   });
   await assert.rejects(
@@ -299,6 +346,7 @@ test('S3 v3 object store validates manifest digests and bounds response bodies',
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     fetchImpl: async () => new Response('{}', {
       status: 200,
       headers: { 'content-length': String(73 * 1024 * 1024) },
@@ -317,6 +365,7 @@ test('S3 v3 object store cancels owned requests and enforces its timeout', async
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     signal: owner.signal,
     fetchImpl: async (_url, options) => {
       requestStarted();
@@ -336,6 +385,7 @@ test('S3 v3 object store cancels owned requests and enforces its timeout', async
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
+    syncEncryptionKey: SYNC_KEY,
     timeoutMs: 10,
     fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new Error('timed out')), { once: true });

@@ -16,8 +16,11 @@ const bucketInput = requireElement<HTMLInputElement>('#s3-bucket');
 const regionInput = requireElement<HTMLInputElement>('#s3-region');
 const accessKeyInput = requireElement<HTMLInputElement>('#s3-access-key');
 const secretKeyInput = requireElement<HTMLInputElement>('#s3-secret-key');
+const syncEncryptionKeyInput = requireElement<HTMLInputElement>('#s3-sync-encryption-key');
 const accessKeyVisibilityButton = requireElement<HTMLButtonElement>('#s3-access-key-visibility');
 const secretKeyVisibilityButton = requireElement<HTMLButtonElement>('#s3-secret-key-visibility');
+const syncEncryptionKeyVisibilityButton = requireElement<HTMLButtonElement>('#s3-sync-encryption-key-visibility');
+const syncEncryptionKeyCopyButton = requireElement<HTMLButtonElement>('#s3-sync-encryption-key-copy');
 const saveButton = requireElement<HTMLButtonElement>('#settings-save-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
 const clearCredentialsButton = requireElement<HTMLButtonElement>('#settings-clear-credentials-btn');
@@ -26,25 +29,35 @@ const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
 let busy = false;
 let hasCredentials = false;
+let hasSyncEncryptionKey = false;
 let credentialRevealPending = false;
 
 interface CredentialControl {
   input: HTMLInputElement;
   button: HTMLButtonElement;
   label: string;
+  hasSavedValue: () => boolean;
 }
 
 const accessKeyControl: CredentialControl = {
   input: accessKeyInput,
   button: accessKeyVisibilityButton,
   label: 'Access Key ID',
+  hasSavedValue: () => hasCredentials,
 };
 const secretKeyControl: CredentialControl = {
   input: secretKeyInput,
   button: secretKeyVisibilityButton,
   label: 'Secret Access Key',
+  hasSavedValue: () => hasCredentials,
 };
-const credentialControls = [accessKeyControl, secretKeyControl];
+const syncEncryptionKeyControl: CredentialControl = {
+  input: syncEncryptionKeyInput,
+  button: syncEncryptionKeyVisibilityButton,
+  label: 'Sync Encryption Key',
+  hasSavedValue: () => hasSyncEncryptionKey,
+};
+const credentialControls = [accessKeyControl, secretKeyControl, syncEncryptionKeyControl];
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
@@ -72,18 +85,21 @@ function updateCredentialControls(): void {
   regionInput.disabled = locked;
   accessKeyInput.disabled = locked;
   secretKeyInput.disabled = locked;
+  syncEncryptionKeyInput.disabled = locked;
+  syncEncryptionKeyCopyButton.disabled = locked
+    || (!syncEncryptionKeyInput.value && !hasSyncEncryptionKey);
   closeButton.disabled = locked;
   for (const control of credentialControls) {
-    control.input.placeholder = hasCredentials && !control.input.value
+    control.input.placeholder = control.hasSavedValue() && !control.input.value
       ? 'Saved locally — use the eye to view'
       : control.label;
-    control.button.disabled = locked || (!control.input.value && !hasCredentials);
+    control.button.disabled = locked || (!control.input.value && !control.hasSavedValue());
   }
 }
 
 async function toggleCredentialVisibility(control: CredentialControl): Promise<void> {
   const show = control.input.type === 'password';
-  if (show && !control.input.value && hasCredentials) {
+  if (show && !control.input.value && control.hasSavedValue()) {
     if (!await revealSavedCredentials()) return;
   }
   if (!control.input.value) return;
@@ -100,8 +116,11 @@ async function revealSavedCredentials(): Promise<boolean> {
   updateCredentialControls();
   try {
     const credentials = await window.settingsApi.revealS3SyncCredentials();
-    if (!accessKeyInput.value) accessKeyInput.value = credentials.accessKeyId;
-    if (!secretKeyInput.value) secretKeyInput.value = credentials.secretAccessKey;
+    if (!accessKeyInput.value && credentials.accessKeyId) accessKeyInput.value = credentials.accessKeyId;
+    if (!secretKeyInput.value && credentials.secretAccessKey) secretKeyInput.value = credentials.secretAccessKey;
+    if (!syncEncryptionKeyInput.value && credentials.syncEncryptionKey) {
+      syncEncryptionKeyInput.value = credentials.syncEncryptionKey;
+    }
     maskCredentials();
     return true;
   } catch (error) {
@@ -124,6 +143,8 @@ function setBusy(next: boolean, action: 'save' | 'sync' | 'clear' = 'save'): voi
   regionInput.disabled = next;
   accessKeyInput.disabled = next;
   secretKeyInput.disabled = next;
+  syncEncryptionKeyInput.disabled = next;
+  syncEncryptionKeyCopyButton.disabled = next;
   closeButton.disabled = next;
   saveButton.textContent = next && action === 'save' ? 'Saving…' : 'Save';
   syncButton.textContent = next && action === 'sync' ? 'Syncing…' : 'Sync Now';
@@ -181,6 +202,7 @@ function renderSyncState(state: S3SyncState): void {
 
 function renderSettings(settings: S3SyncSettingsView, clearCredentialInputs = false): void {
   hasCredentials = settings.hasCredentials;
+  hasSyncEncryptionKey = settings.hasSyncEncryptionKey;
   endpointInput.value = settings.endpoint;
   bucketInput.value = settings.bucket;
   regionInput.value = settings.region;
@@ -188,29 +210,51 @@ function renderSettings(settings: S3SyncSettingsView, clearCredentialInputs = fa
     accessKeyInput.value = '';
     secretKeyInput.value = '';
   }
+  if (!settings.hasSyncEncryptionKey) syncEncryptionKeyInput.value = '';
   clearCredentialsButton.disabled = busy || !hasCredentials;
   updateCredentialControls();
   renderSyncState(settings.syncState);
 }
 
-function currentDraft(clearCredentials = false): S3SyncSettingsDraft {
+async function renderSettingsWithAuthoritativeSyncKey(
+  settings: S3SyncSettingsView,
+  clearCredentialInputs = false,
+): Promise<void> {
+  // A target change may cause main to generate a new key, while Clear
+  // Credentials deliberately ignores an unsaved key draft. Never leave either
+  // stale draft in the field or on the Copy action after the mutation returns.
+  syncEncryptionKeyInput.value = '';
+  renderSettings(settings, clearCredentialInputs);
+  if (settings.hasSyncEncryptionKey) await revealSavedCredentials();
+}
+
+function currentDraft(): S3SyncSettingsDraft {
   const accessKeyId = accessKeyInput.value.trim();
   const secretAccessKey = secretKeyInput.value;
+  const syncEncryptionKey = syncEncryptionKeyInput.value.trim();
   return {
     endpoint: endpointInput.value.trim(),
     bucket: bucketInput.value.trim(),
     region: regionInput.value.trim() || 'us-east-1',
-    ...(!clearCredentials && accessKeyId ? { accessKeyId } : {}),
-    ...(!clearCredentials && secretAccessKey ? { secretAccessKey } : {}),
-    ...(clearCredentials ? { clearCredentials: true } : {}),
+    ...(accessKeyId ? { accessKeyId } : {}),
+    ...(secretAccessKey ? { secretAccessKey } : {}),
+    ...(syncEncryptionKey ? { syncEncryptionKey } : {}),
   };
 }
 
 async function saveSettings(action: 'save' | 'sync' | 'clear' = 'save'): Promise<S3SyncSettingsView> {
   setBusy(true, action);
   try {
-    const settings = await window.settingsApi.saveS3SyncSettings(currentDraft(action === 'clear'));
-    renderSettings(settings, action === 'clear');
+    const draft = action === 'clear'
+      ? await window.settingsApi.getS3SyncSettings().then((saved) => ({
+          endpoint: saved.endpoint,
+          bucket: saved.bucket,
+          region: saved.region,
+          clearCredentials: true as const,
+        }))
+      : currentDraft();
+    const settings = await window.settingsApi.saveS3SyncSettings(draft);
+    await renderSettingsWithAuthoritativeSyncKey(settings, action === 'clear');
     return settings;
   } finally {
     setBusy(false, action);
@@ -224,7 +268,8 @@ async function openSettings(): Promise<void> {
   try {
     const settings = await window.settingsApi.getS3SyncSettings();
     renderSettings(settings);
-    if (settings.hasCredentials && (!accessKeyInput.value || !secretKeyInput.value)) {
+    if ((settings.hasCredentials && (!accessKeyInput.value || !secretKeyInput.value))
+      || (settings.hasSyncEncryptionKey && !syncEncryptionKeyInput.value)) {
       await revealSavedCredentials();
     }
     endpointInput.focus();
@@ -240,9 +285,24 @@ export function registerSettingsDialog(): void {
   closeButton.addEventListener('click', () => { if (!busy && !credentialRevealPending) dialog.close(); });
   accessKeyInput.addEventListener('input', updateCredentialControls);
   secretKeyInput.addEventListener('input', updateCredentialControls);
+  syncEncryptionKeyInput.addEventListener('input', updateCredentialControls);
   window.settingsApi.onS3SyncStateChanged(renderSyncState);
   accessKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(accessKeyControl); });
   secretKeyVisibilityButton.addEventListener('click', () => { void toggleCredentialVisibility(secretKeyControl); });
+  syncEncryptionKeyVisibilityButton.addEventListener('click', () => {
+    void toggleCredentialVisibility(syncEncryptionKeyControl);
+  });
+  syncEncryptionKeyCopyButton.addEventListener('click', () => {
+    if (busy || credentialRevealPending) return;
+    void (async () => {
+      if (!syncEncryptionKeyInput.value && hasSyncEncryptionKey && !await revealSavedCredentials()) return;
+      if (!syncEncryptionKeyInput.value) return;
+      await window.serviceApi.writeClipboardText(syncEncryptionKeyInput.value);
+      syncEncryptionKeyCopyButton.dataset.copied = 'true';
+      setStatus('Sync Encryption Key copied. Keep it private.', 'success');
+      window.setTimeout(() => { delete syncEncryptionKeyCopyButton.dataset.copied; }, 1_500);
+    })().catch((error) => setStatus(`Unable to copy Sync Encryption Key: ${toErrorMessage(error)}`, 'error'));
+  });
   dialog.addEventListener('click', (event) => {
     if (!busy && !credentialRevealPending && event.target === dialog) dialog.close();
   });
@@ -261,9 +321,11 @@ export function registerSettingsDialog(): void {
       setBusy(true, 'sync');
       try {
         await flushNotesPage();
-        renderSettings(await window.settingsApi.saveS3SyncSettings(currentDraft()));
+        await renderSettingsWithAuthoritativeSyncKey(
+          await window.settingsApi.saveS3SyncSettings(currentDraft()),
+        );
         const result = await window.settingsApi.syncAllDataToS3();
-        renderSettings(await window.settingsApi.getS3SyncSettings());
+        await renderSettingsWithAuthoritativeSyncKey(await window.settingsApi.getS3SyncSettings());
         const actionMessage = result.action === 'pulled'
           ? 'Cloud changes downloaded.'
           : result.action === 'pushed'
@@ -284,7 +346,7 @@ export function registerSettingsDialog(): void {
     void window.serviceApi.confirmAction({
       title: 'Clear S3 credentials?',
       message: 'Remove the saved Access Key ID and Secret Access Key?',
-      detail: 'The Endpoint, Bucket, and cloud revisions remain unchanged.',
+      detail: 'The Endpoint, Bucket, Sync Encryption Key, and cloud revisions remain unchanged.',
       kind: 'warning',
       confirmLabel: 'Clear Credentials',
     }).then((confirmed) => {

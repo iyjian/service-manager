@@ -655,6 +655,7 @@ export interface S3SyncSettingsView {
   bucket: string;
   region: string;
   hasCredentials: boolean;
+  hasSyncEncryptionKey: boolean;
   lastSyncedAt?: string;
   lastRevision?: string;
   syncState: S3SyncState;
@@ -666,12 +667,14 @@ export interface S3SyncSettingsDraft {
   region: string;
   accessKeyId?: string;
   secretAccessKey?: string;
+  syncEncryptionKey?: string;
   clearCredentials?: boolean;
 }
 
 export interface S3CredentialValues {
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  syncEncryptionKey?: string;
 }
 
 export interface S3SyncResult {

@@ -28,6 +28,7 @@ const {
   buildS3V3NoteObjectUrl,
   encryptS3ManifestV3,
   encryptS3NoteV3,
+  getS3SyncEncryptionKeyId,
   hashS3V3NoteContent,
   hashS3V3Object,
   serializeEncryptedS3ObjectV3,
@@ -35,6 +36,7 @@ const {
 
 const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
+const SYNC_KEY = Buffer.alloc(32, 0x5a).toString('base64url');
 const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'example-bucket';
 const BUCKET_URL = `${ENDPOINT}/${BUCKET}`;
@@ -120,13 +122,14 @@ async function temporaryDirectory(t) {
 async function writeConfiguredSettings(directory, clientId, overrides = {}) {
   const protector = fakeProtector();
   await writeFile(path.join(directory, 's3-sync.json'), JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
     clientId,
     encryptedAccessKeyId: protector.encryptString(ACCESS_KEY).toString('base64'),
     encryptedSecretAccessKey: protector.encryptString(SECRET_KEY).toString('base64'),
+    encryptedSyncEncryptionKey: protector.encryptString(SYNC_KEY).toString('base64'),
     ...overrides,
   }));
 }
@@ -251,7 +254,7 @@ class MemoryS3 {
 function serializedRemoteNote(entry) {
   return serializeEncryptedS3ObjectV3(encryptS3NoteV3(
     createServiceManagerNoteObjectV3(entry.note, entry.objectId),
-    SECRET_KEY,
+    SYNC_KEY,
     (size) => Buffer.alloc(size, size),
   ));
 }
@@ -264,6 +267,7 @@ function seedGeneratedV3Manifest(s3, entries, revision = 'remote-revision-1') {
       objectId: entry.objectId,
       sha256: hashS3V3Object(body),
       contentHash: hashS3V3NoteContent(entry.note),
+      encryptionKeyId: getS3SyncEncryptionKeyId(SYNC_KEY),
     };
   });
   const manifest = createServiceManagerSyncManifestV3({
@@ -279,10 +283,14 @@ function seedGeneratedV3Manifest(s3, entries, revision = 'remote-revision-1') {
   });
   const manifestBody = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(
     manifest,
-    SECRET_KEY,
+    SYNC_KEY,
     (size) => Buffer.alloc(size, size),
   ));
-  const head = createS3SyncHeadV3(manifest, hashS3V3Object(manifestBody));
+  const head = createS3SyncHeadV3(
+    manifest,
+    hashS3V3Object(manifestBody),
+    getS3SyncEncryptionKeyId(SYNC_KEY),
+  );
   s3.objects.set(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, revision), {
     body: manifestBody,
     etag: '"seed-manifest"',
@@ -323,6 +331,14 @@ test('S3 settings validation accepts a root endpoint and a separate bucket', () 
   assert.equal(
     validateS3SyncSettingsDraft(settingsDraft({ endpoint: `${ENDPOINT}/` })).endpoint,
     ENDPOINT,
+  );
+  assert.deepEqual(
+    validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: SYNC_KEY })),
+    settingsDraft({ syncEncryptionKey: SYNC_KEY }),
+  );
+  assert.throws(
+    () => validateS3SyncSettingsDraft(settingsDraft({ syncEncryptionKey: SECRET_KEY })),
+    /256-bit base64url key/,
   );
   assert.deepEqual(
     validateS3SyncSettingsDraft(settingsDraft({
@@ -464,25 +480,28 @@ test('S3SyncRuntime stores Endpoint and Bucket separately with protected credent
   assert.equal(saved.bucket, BUCKET);
   assert.equal(saved.region, 'us-east-1');
   assert.equal(saved.hasCredentials, true);
+  assert.equal(saved.hasSyncEncryptionKey, true);
   assert.equal(saved.syncState.status, 'pending');
   assert.doesNotMatch(JSON.stringify(saved), /AKIDEXAMPLE|wJalr|encrypted/i);
-  assert.deepEqual(await runtime.revealS3SyncCredentials(), {
-    accessKeyId: ACCESS_KEY,
-    secretAccessKey: SECRET_KEY,
-  });
+  const revealed = await runtime.revealS3SyncCredentials();
+  assert.equal(revealed.accessKeyId, ACCESS_KEY);
+  assert.equal(revealed.secretAccessKey, SECRET_KEY);
+  assert.match(revealed.syncEncryptionKey, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(saved.syncEncryptionKey, undefined);
 
   const settingsPath = path.join(userDataPath, 's3-sync.json');
   const persistedText = await readFile(settingsPath, 'utf8');
   const persisted = JSON.parse(persistedText);
-  assert.equal(persisted.schemaVersion, 4);
+  assert.equal(persisted.schemaVersion, 5);
   assert.equal(persisted.endpoint, ENDPOINT);
   assert.equal(persisted.bucket, BUCKET);
   assert.equal(persisted.clientId, 'client-1');
-  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+  assert.equal(typeof persisted.encryptedSyncEncryptionKey, 'string');
   assert.equal(typeof persisted.pendingSince, 'string');
   assert.equal('bucketUrl' in persisted, false);
   assert.equal('syncVersion' in persisted, false);
   assert.doesNotMatch(persistedText, /AKIDEXAMPLE|wJalr/);
+  assert.doesNotMatch(persistedText, new RegExp(revealed.syncEncryptionKey));
   if (process.platform !== 'win32') assert.equal((await stat(settingsPath)).mode & 0o777, 0o600);
   await runtime.shutdown();
 });
@@ -511,7 +530,7 @@ test('S3SyncRuntime lets Settings replace a corrupt local settings file', async 
   await runtime.shutdown();
 
   const persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
-  assert.equal(persisted.schemaVersion, 4);
+  assert.equal(persisted.schemaVersion, 5);
   assert.equal(persisted.clientId, 'recovered-client');
   assert.equal(persisted.endpoint, ENDPOINT);
   assert.equal(persisted.bucket, BUCKET);
@@ -541,7 +560,7 @@ test('S3SyncRuntime preserves its merge base across AK, Region, and temporary cr
   let persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
   assert.equal(persisted.lastRevision, 'stable-v3-base');
   assert.equal(persisted.lastSyncedAt, T0);
-  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+  assert.equal(typeof persisted.encryptedSyncEncryptionKey, 'string');
 
   runtime = createRuntime();
   await runtime.saveSettings({
@@ -555,7 +574,8 @@ test('S3SyncRuntime preserves its merge base across AK, Region, and temporary cr
   assert.equal(persisted.lastRevision, 'stable-v3-base');
   assert.equal('encryptedAccessKeyId' in persisted, false);
   assert.equal('encryptedSecretAccessKey' in persisted, false);
-  assert.equal(typeof persisted.encryptedSecretKeyFingerprint, 'string');
+  assert.equal(typeof persisted.encryptedSyncEncryptionKey, 'string');
+  assert.deepEqual(await runtime.revealS3SyncCredentials(), { syncEncryptionKey: SYNC_KEY });
   assert.doesNotMatch(JSON.stringify(persisted), new RegExp(SECRET_KEY.replace(/[+]/g, '\\+')));
 
   runtime = createRuntime();
@@ -572,8 +592,44 @@ test('S3SyncRuntime preserves its merge base across AK, Region, and temporary cr
   }));
   await runtime.shutdown();
   persisted = JSON.parse(await readFile(settingsPath, 'utf8'));
+  assert.equal(persisted.lastRevision, 'stable-v3-base');
+  assert.equal(persisted.lastSyncedAt, T0);
+});
+
+test('changing Endpoint or Bucket creates a fresh key unless an explicit shared key is supplied', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  await writeConfiguredSettings(userDataPath, 'target-client', {
+    lastRevision: 'old-target-revision',
+    lastSyncedAt: T0,
+  });
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    createRandomBytes: (size) => Buffer.alloc(size, 0x33),
+  });
+
+  await runtime.saveSettings(settingsDraft({
+    endpoint: 'https://other-s3.example.test',
+    syncEncryptionKey: SYNC_KEY,
+  }));
+  let revealed = await runtime.revealS3SyncCredentials();
+  assert.equal(revealed.syncEncryptionKey, Buffer.alloc(32, 0x33).toString('base64url'));
+  let persisted = JSON.parse(await readFile(path.join(userDataPath, 's3-sync.json'), 'utf8'));
   assert.equal('lastRevision' in persisted, false);
   assert.equal('lastSyncedAt' in persisted, false);
+
+  const supplied = Buffer.alloc(32, 0x44).toString('base64url');
+  await runtime.saveSettings(settingsDraft({
+    endpoint: 'https://third-s3.example.test',
+    syncEncryptionKey: supplied,
+  }));
+  revealed = await runtime.revealS3SyncCredentials();
+  assert.equal(revealed.syncEncryptionKey, supplied);
+  persisted = JSON.parse(await readFile(path.join(userDataPath, 's3-sync.json'), 'utf8'));
+  assert.equal('encryptedPreviousSyncEncryptionKey' in persisted, false);
+  await runtime.shutdown();
 });
 
 test('S3SyncRuntime persists pending local intent across shutdown and clears it after success', async (t) => {
@@ -658,7 +714,7 @@ test('S3SyncRuntime persists a new local pending intent while an S3 request is s
   }
 });
 
-test('S3SyncRuntime migrates schema 1, 2, and v2-layout schema 3 settings to schema 4', async (t) => {
+test('S3SyncRuntime migrates schema 1 through 4 settings without retaining an old cloud merge base', async (t) => {
   const protector = fakeProtector();
   const encryptedAccessKeyId = protector.encryptString(ACCESS_KEY).toString('base64');
   const encryptedSecretAccessKey = protector.encryptString(SECRET_KEY).toString('base64');
@@ -713,6 +769,25 @@ test('S3SyncRuntime migrates schema 1, 2, and v2-layout schema 3 settings to sch
         throw new Error('schema 3 must preserve its stable client identity');
       },
     },
+    {
+      name: 'schema 4',
+      value: {
+        schemaVersion: 4,
+        endpoint: ENDPOINT,
+        bucket: BUCKET,
+        region: 'us-east-1',
+        clientId: 'stable-schema-4-client',
+        encryptedAccessKeyId,
+        encryptedSecretAccessKey,
+        encryptedSecretKeyFingerprint: protector.encryptString('0'.repeat(64)).toString('base64'),
+        lastSyncedAt: T0,
+        lastRevision: 'retired-sk-encrypted-v3-revision',
+      },
+      expectedClientId: 'stable-schema-4-client',
+      createClientId: () => {
+        throw new Error('schema 4 must preserve its stable client identity');
+      },
+    },
   ];
 
   for (const migration of cases) {
@@ -726,25 +801,28 @@ test('S3SyncRuntime migrates schema 1, 2, and v2-layout schema 3 settings to sch
         credentialProtector: protector,
         snapshotProvider: async () => sharedData(),
         createClientId: migration.createClientId,
+        createRandomBytes: (size) => Buffer.alloc(size, 0x37),
       });
 
       const view = await runtime.getSettings();
       assert.equal(view.endpoint, ENDPOINT);
       assert.equal(view.bucket, BUCKET);
       assert.equal(view.hasCredentials, true);
+      assert.equal(view.hasSyncEncryptionKey, true);
       assert.equal(view.lastRevision, undefined, 'older cloud-layout state is not a v3 manifest base');
       const migrated = JSON.parse(await readFile(settingsPath, 'utf8'));
-      assert.equal(migrated.schemaVersion, 4);
+      assert.equal(migrated.schemaVersion, 5);
       assert.equal(migrated.endpoint, ENDPOINT);
       assert.equal(migrated.bucket, BUCKET);
       assert.equal(migrated.clientId, migration.expectedClientId);
       assert.equal('bucketUrl' in migrated, false);
       assert.equal('syncVersion' in migrated, false);
       assert.equal('lastRevision' in migrated, false);
-      assert.deepEqual(await runtime.revealS3SyncCredentials(), {
-        accessKeyId: ACCESS_KEY,
-        secretAccessKey: SECRET_KEY,
-      });
+      const revealed = await runtime.revealS3SyncCredentials();
+      assert.equal(revealed.accessKeyId, ACCESS_KEY);
+      assert.equal(revealed.secretAccessKey, SECRET_KEY);
+      assert.equal(revealed.syncEncryptionKey, Buffer.alloc(32, 0x37).toString('base64url'));
+      assert.equal('encryptedSecretKeyFingerprint' in migrated, false);
       await runtime.shutdown();
     });
   }
@@ -768,8 +846,9 @@ test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) =
   assert.equal(settings.endpoint, '');
   assert.equal(settings.bucket, '');
   assert.equal(settings.hasCredentials, false);
+  assert.equal(settings.hasSyncEncryptionKey, false);
   assert.equal(settings.syncState.status, 'not-configured');
-  await assert.rejects(runtime.revealS3SyncCredentials(), /credentials are unavailable/);
+  await assert.rejects(runtime.revealS3SyncCredentials(), /unavailable/);
   await runtime.shutdown();
 });
 
@@ -967,7 +1046,10 @@ test('a second independent client automatically pulls the shared cloud head', as
     fetchImpl: s3.fetch,
   });
   await work.runtime.startAutoSync();
-  await waitFor(() => work.state.applied.length === 1, 'the second client did not automatically pull cloud data');
+  await waitFor(
+    () => work.state.applied.length === 1 && work.runtime.getSyncState().status === 'synced',
+    'the second client did not automatically finish pulling cloud data',
+  );
 
   assert.deepEqual(work.state.data.notes.notes, cloudData.notes.notes);
   assert.equal(work.runtime.getSyncState().status, 'synced');
@@ -976,6 +1058,207 @@ test('a second independent client automatically pulls the shared cloud head', as
     s3.calls.filter((call) => call.url.includes('/service-manager/v1/clients/')).length,
     0,
     'v3 clients must coordinate through one shared head without reading v1 objects',
+  );
+});
+
+test('two clients keep syncing after one rotates only its S3 AK and SK', async (t) => {
+  const s3 = new MemoryS3();
+  const home = await createRuntime(t, {
+    clientId: 'home-key-rotation',
+    data: sharedData([note('shared-key-note', 'before rotation')]),
+    fetchImpl: s3.fetch,
+  });
+  const work = await createRuntime(t, {
+    clientId: 'work-key-rotation',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+  });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+  const baseRevision = work.runtime.getSyncState().lastRevision;
+
+  await work.runtime.saveSettings(settingsDraft({
+    accessKeyId: 'ROTATEDACCESSKEY',
+    secretAccessKey: 'rotated-s3-signing-secret',
+  }));
+  assert.equal((await work.runtime.getSettings()).lastRevision, baseRevision);
+  assert.equal((await work.runtime.revealS3SyncCredentials()).syncEncryptionKey, SYNC_KEY);
+
+  home.state.data = sharedData([note('shared-key-note', 'after rotation', T1)]);
+  await home.runtime.syncAllDataToS3();
+  assert.equal((await work.runtime.syncAllDataToS3()).action, 'pulled');
+  assert.equal(work.state.data.notes.notes[0].content, 'after rotation');
+  await Promise.all([home.runtime.shutdown(), work.runtime.shutdown()]);
+});
+
+test('a client with a different Sync Encryption Key fails closed without replacing cloud data', async (t) => {
+  const s3 = new MemoryS3();
+  const home = await createRuntime(t, {
+    clientId: 'correct-key-client',
+    data: sharedData([note('cloud-key-note', 'must survive')]),
+    fetchImpl: s3.fetch,
+  });
+  await home.runtime.syncAllDataToS3();
+  const originalHead = s3.head.body;
+  const protector = fakeProtector();
+  const wrongKey = Buffer.alloc(32, 0x7f).toString('base64url');
+  const work = await createRuntime(t, {
+    clientId: 'wrong-key-client',
+    data: sharedData([note('local-key-note', 'must not overwrite')]),
+    fetchImpl: s3.fetch,
+    persistedSettings: {
+      encryptedSyncEncryptionKey: protector.encryptString(wrongKey).toString('base64'),
+    },
+  });
+
+  await assert.rejects(work.runtime.syncAllDataToS3(), /Sync Encryption Key does not match/);
+  assert.equal(s3.head.body, originalHead);
+  assert.equal(work.state.applied.length, 0);
+  assert.equal(work.runtime.getSyncState().status, 'error');
+  await Promise.all([home.runtime.shutdown(), work.runtime.shutdown()]);
+});
+
+test('an explicit Sync Key repairs unreadable current and previous safeStorage values without losing the merge base', async (t) => {
+  const s3 = new MemoryS3();
+  const data = sharedData([note('repair-key-note', 'cloud remains canonical')]);
+  const home = await createRuntime(t, {
+    clientId: 'repair-key-home',
+    data,
+    fetchImpl: s3.fetch,
+  });
+  const pushed = await home.runtime.syncAllDataToS3();
+  const originalHead = s3.head.body;
+  const unreadableCiphertext = Buffer.from('not-a-fake-protector-value', 'utf8').toString('base64');
+
+  const repaired = await createRuntime(t, {
+    clientId: 'repair-key-client',
+    data,
+    fetchImpl: s3.fetch,
+    persistedSettings: {
+      encryptedSyncEncryptionKey: unreadableCiphertext,
+      encryptedPreviousSyncEncryptionKey: unreadableCiphertext,
+      lastRevision: pushed.revision,
+      lastSyncedAt: T0,
+    },
+  });
+  const saved = await repaired.runtime.saveSettings(settingsDraft({ syncEncryptionKey: SYNC_KEY }));
+  assert.equal(saved.lastRevision, pushed.revision);
+  let persisted = JSON.parse(await readFile(path.join(repaired.userDataPath, 's3-sync.json'), 'utf8'));
+  assert.equal('encryptedPreviousSyncEncryptionKey' in persisted, false);
+  assert.equal(
+    fakeProtector().decryptString(Buffer.from(persisted.encryptedSyncEncryptionKey, 'base64')),
+    SYNC_KEY,
+  );
+  assert.equal((await repaired.runtime.syncAllDataToS3()).action, 'up-to-date');
+  assert.equal(s3.head.body, originalHead);
+
+  const wrongKey = Buffer.alloc(32, 0x6d).toString('base64url');
+  const wrong = await createRuntime(t, {
+    clientId: 'repair-key-wrong-client',
+    data,
+    fetchImpl: s3.fetch,
+    persistedSettings: {
+      encryptedSyncEncryptionKey: unreadableCiphertext,
+      encryptedPreviousSyncEncryptionKey: unreadableCiphertext,
+      lastRevision: pushed.revision,
+      lastSyncedAt: T0,
+    },
+  });
+  const wrongSaved = await wrong.runtime.saveSettings(settingsDraft({ syncEncryptionKey: wrongKey }));
+  assert.equal(wrongSaved.lastRevision, pushed.revision);
+  persisted = JSON.parse(await readFile(path.join(wrong.userDataPath, 's3-sync.json'), 'utf8'));
+  assert.equal('encryptedPreviousSyncEncryptionKey' in persisted, false);
+  await assert.rejects(wrong.runtime.syncAllDataToS3(), /Sync Encryption Key does not match/);
+  assert.equal(s3.head.body, originalHead);
+
+  await Promise.all([home.runtime.shutdown(), repaired.runtime.shutdown(), wrong.runtime.shutdown()]);
+});
+
+test('an intentional Sync Encryption Key change retains the old key until all live objects are rewritten', async (t) => {
+  const s3 = new MemoryS3();
+  const client = await createRuntime(t, {
+    clientId: 'encryption-key-rotation',
+    data: sharedData([note('rotation-note', 'rotate me')]),
+    fetchImpl: s3.fetch,
+  });
+  await client.runtime.syncAllDataToS3();
+  const rotatedKey = Buffer.alloc(32, 0x61).toString('base64url');
+  await client.runtime.saveSettings(settingsDraft({ syncEncryptionKey: rotatedKey }));
+  let persisted = JSON.parse(await readFile(path.join(client.userDataPath, 's3-sync.json'), 'utf8'));
+  assert.equal(typeof persisted.encryptedPreviousSyncEncryptionKey, 'string');
+
+  const result = await client.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pushed');
+  const head = JSON.parse(s3.head.body);
+  assert.equal(head.encryptionKeyId, getS3SyncEncryptionKeyId(rotatedKey));
+  const manifestEnvelope = JSON.parse(
+    s3.objects.get(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, result.revision)).body,
+  );
+  assert.equal(manifestEnvelope.encryption.keyId, getS3SyncEncryptionKeyId(rotatedKey));
+  persisted = JSON.parse(await readFile(path.join(client.userDataPath, 's3-sync.json'), 'utf8'));
+  assert.equal('encryptedPreviousSyncEncryptionKey' in persisted, false);
+  assert.equal((await client.runtime.revealS3SyncCredentials()).syncEncryptionKey, rotatedKey);
+  await client.runtime.shutdown();
+});
+
+test('a manifest cannot mix Note references encrypted under another key identity', async (t) => {
+  const s3 = new MemoryS3();
+  const mixedNote = note('mixed-note', 'mixed encryption must fail');
+  const objectId = 'mixed-note-object';
+  const noteBody = serializedRemoteNote({ objectId, note: mixedNote });
+  s3.objects.set(buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, objectId), {
+    body: noteBody,
+    etag: '"mixed-note"',
+  });
+  const manifest = createServiceManagerSyncManifestV3({
+    schemaVersion: 3,
+    hosts: { schemaVersion: 1, items: [] },
+    notes: {
+      schemaVersion: 3,
+      items: [{
+        id: mixedNote.id,
+        objectId,
+        sha256: hashS3V3Object(noteBody),
+        contentHash: hashS3V3NoteContent(mixedNote),
+        encryptionKeyId: getS3SyncEncryptionKeyId(Buffer.alloc(32, 0x7e).toString('base64url')),
+      }],
+      tombstones: [],
+    },
+    proxy: { schemaVersion: 1, settings: { mode: 'rule', customRules: [] } },
+  }, {
+    appVersion: '0.3.19',
+    revision: 'mixed-encryption-revision',
+    clientId: 'malformed-client',
+    createdAt: T0,
+  });
+  const manifestBody = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(
+    manifest,
+    SYNC_KEY,
+    (size) => Buffer.alloc(size, size),
+  ));
+  s3.objects.set(buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, manifest.revision), {
+    body: manifestBody,
+    etag: '"mixed-manifest"',
+  });
+  s3.objects.set(buildS3V3HeadObjectUrl(ENDPOINT, BUCKET), {
+    body: JSON.stringify(createS3SyncHeadV3(
+      manifest,
+      hashS3V3Object(manifestBody),
+      getS3SyncEncryptionKeyId(SYNC_KEY),
+    )),
+    etag: '"mixed-head"',
+  });
+  const client = await createRuntime(t, {
+    clientId: 'mixed-reader',
+    data: sharedData([mixedNote]),
+    fetchImpl: s3.fetch,
+  });
+
+  await assert.rejects(client.runtime.syncAllDataToS3(), /mixes Note objects encrypted with a different key/);
+  assert.equal(
+    s3.calls.filter((call) => call.method === 'GET' && call.url.includes('/notes/')).length,
+    0,
+    'reference identity validation must run even when the local Note body matches',
   );
 });
 
@@ -1173,7 +1456,7 @@ test('a true Hosts conflict keeps cloud canonical and saves an encrypted local r
   const recoveryFiles = await readdir(recoveryDirectory);
   assert.equal(recoveryFiles.length, 1);
   const envelope = JSON.parse(await readFile(path.join(recoveryDirectory, recoveryFiles[0]), 'utf8'));
-  const recovery = decryptS3RevisionV2(envelope, SECRET_KEY);
+  const recovery = decryptS3RevisionV2(envelope, SYNC_KEY);
   assert.equal(recovery.data.hosts.items[0].name, 'Local Host');
   assert.doesNotMatch(JSON.stringify(envelope), /Local Host|host-password/);
 });
@@ -1270,7 +1553,7 @@ test('S3SyncRuntime does not recreate its auto-sync interval after shutdown star
   await new Promise((resolve) => setImmediate(resolve));
   await runtime.shutdown();
   releaseSettings({
-    schemaVersion: 4,
+    schemaVersion: 5,
     endpoint: '',
     bucket: '',
     region: 'us-east-1',

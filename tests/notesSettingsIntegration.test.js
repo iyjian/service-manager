@@ -1,16 +1,18 @@
 const assert = require('node:assert/strict');
-const { readFile } = require('node:fs/promises');
+const { readFile, stat } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 
 const distRoot = path.join(__dirname, '..', 'dist');
 const rendererRoot = path.join(distRoot, 'renderer');
 const mainRoot = path.join(distRoot, 'main');
+const projectRoot = path.join(__dirname, '..');
 
 async function readIntegrationFiles() {
-  const [html, styles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main] = await Promise.all([
+  const [html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main] = await Promise.all([
     readFile(path.join(rendererRoot, 'index.html'), 'utf8'),
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
+    readFile(path.join(rendererRoot, 'styles.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'renderer.js'), 'utf8'),
     readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8'),
     readFile(path.join(rendererRoot, 'vendor', 'codemirror.js'), 'utf8'),
@@ -18,7 +20,7 @@ async function readIntegrationFiles() {
     readFile(path.join(mainRoot, 'preload.js'), 'utf8'),
     readFile(path.join(mainRoot, 'main.js'), 'utf8'),
   ]);
-  return { html, styles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main };
+  return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main };
 }
 
 test('compiled Notes page and bridge expose CodeMirror and the complete local CRUD flow', async () => {
@@ -67,12 +69,12 @@ test('compiled Notes page and bridge expose CodeMirror and the complete local CR
   assert.match(codeMirrorVendor, /const basicSetup/);
 });
 
-test('Notes keeps a bounded two-column frame with independently scrolling content', async () => {
-  const { html, styles } = await readIntegrationFiles();
+test('Notes uses the full available width with a bounded responsive sidebar and independent scrolling', async () => {
+  const { html, styles, baseStyles } = await readIntegrationFiles();
 
   assert.match(html, /<section class="notes-page"[^>]*>[\s\S]*?<aside class="notes-sidebar">[\s\S]*?<section class="notes-workspace"/);
-  assert.match(styles, /\.app-shell\[data-page=notes\]\{[^}]*height:100dvh[^}]*max-height:100dvh[^}]*overflow:hidden/);
-  assert.match(styles, /\.notes-page\{[^}]*overflow:hidden[^}]*grid-template-columns:minmax\(220px,260px\) minmax\(0,1fr\)/);
+  assert.match(styles, /\.app-shell\[data-page=notes\]\{[^}]*margin-left:0[^}]*margin-right:0[^}]*max-width:none[^}]*height:100dvh[^}]*max-height:100dvh[^}]*overflow:hidden/);
+  assert.match(styles, /\.notes-page\{[^}]*overflow:hidden[^}]*grid-template-columns:clamp\(240px,22vw,360px\) minmax\(0,1fr\)/);
   assert.match(styles, /\.notes-page,\.notes-sidebar\{[^}]*display:grid[^}]*min-height:0[^}]*min-width:0/);
   assert.match(styles, /\.notes-sidebar\{[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
   assert.match(styles, /\.notes-list\{[^}]*min-height:0[^}]*overflow-y:auto/);
@@ -86,6 +88,31 @@ test('Notes keeps a bounded two-column frame with independently scrolling conten
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*min-height:0[^}]*overflow:auto/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-language-select\{[^}]*width:8rem[^}]*flex-shrink:0/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
+  assert.match(styles, /@media \(max-width:640px\)\{\.notes-page\{[^}]*grid-template-columns:minmax\(190px,220px\) minmax\(280px,1fr\)[^}]*overflow-x:auto/);
+  assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
+  assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes Code'[^}]*notes-code-variable\.woff2[^}]*font-weight:\s*100 800/);
+  assert.match(baseStyles, /--font-family-notes-ui:\s*'STM Notes UI',\s*'STM UI',\s*sans-serif/);
+  assert.match(baseStyles, /--font-family-notes-code:\s*'STM Notes Code',\s*'STM Notes UI',\s*monospace/);
+  assert.match(styles, /\.app-shell\[data-page=notes\][^{]*\{[^}]*font-family:var\(--font-family-notes-ui\)/);
+  assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-size:14px[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-variant-ligatures:none/);
+  assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
+});
+
+test('Notes local UI and code fonts are packaged with their licenses', async () => {
+  const fontRoot = path.join(projectRoot, 'assets', 'fonts');
+  const [uiFont, codeFont, uiLicense, codeLicense, packageJson] = await Promise.all([
+    stat(path.join(fontRoot, 'notes-ui-variable.woff2')),
+    stat(path.join(fontRoot, 'notes-code-variable.woff2')),
+    readFile(path.join(fontRoot, 'OFL-NotoSansCJK.txt'), 'utf8'),
+    readFile(path.join(fontRoot, 'OFL-JetBrainsMono.txt'), 'utf8'),
+    readFile(path.join(projectRoot, 'package.json'), 'utf8').then(JSON.parse),
+  ]);
+
+  assert.ok(uiFont.size > 1_000_000);
+  assert.ok(codeFont.size > 50_000);
+  assert.match(uiLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.match(codeLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 
 test('Settings stays at the bottom of the navigation rail and exposes compact MinIO endpoint and bucket controls', async () => {
@@ -101,6 +128,10 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.doesNotMatch(html, /id="s3-sync-version"|Sync format/i);
   assert.match(html, /id="s3-access-key"[^>]*type="password"/);
   assert.match(html, /id="s3-secret-key"[^>]*type="password"/);
+  assert.match(html, /<label for="s3-sync-encryption-key">Sync Encryption Key<\/label>[\s\S]*?id="s3-sync-encryption-key"[^>]*type="password"/);
+  assert.match(html, /id="s3-sync-encryption-key-visibility"[^>]*aria-label="Show Sync Encryption Key"/);
+  assert.match(html, /id="s3-sync-encryption-key-copy"[^>]*aria-label="Copy Sync Encryption Key"/);
+  assert.doesNotMatch(html, /Independent from AK\/SK|Cloud data is authoritative while online/);
   assert.match(html, /<label for="s3-access-key">Access Key ID<\/label>[\s\S]*?id="s3-access-key-visibility"[^>]*type="button"[^>]*aria-label="Show Access Key ID"[^>]*aria-controls="s3-access-key"[^>]*aria-pressed="false"/);
   assert.match(html, /<label for="s3-secret-key">Secret Access Key<\/label>[\s\S]*?id="s3-secret-key-visibility"[^>]*type="button"[^>]*aria-label="Show Secret Access Key"[^>]*aria-controls="s3-secret-key"[^>]*aria-pressed="false"/);
   assert.match(styles, /\.settings-password-control\{[^}]*position:relative/);
@@ -130,8 +161,8 @@ test('Settings stays at the bottom of the navigation rail and exposes compact Mi
   assert.match(settingsDialog, /endpointInput\.disabled = next/);
   assert.match(settingsDialog, /bucketInput\.disabled = next/);
   assert.match(settingsDialog, /if \(busy \|\| credentialRevealPending\)\s*return/);
-  assert.match(settingsDialog, /!clearCredentials && accessKeyId/);
-  assert.match(settingsDialog, /!clearCredentials && secretAccessKey/);
+  assert.match(settingsDialog, /\.\.\.\(accessKeyId \? \{ accessKeyId \} : \{\}\)/);
+  assert.match(settingsDialog, /\.\.\.\(secretAccessKey \? \{ secretAccessKey \} : \{\}\)/);
 });
 
 test('Settings hydrates saved credentials as masked values and reveals only the selected field', async () => {
@@ -142,6 +173,7 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   const renderSettings = settingsDialog.slice(renderStart, renderEnd);
 
   assert.match(renderSettings, /hasCredentials = settings\.hasCredentials/);
+  assert.match(renderSettings, /hasSyncEncryptionKey = settings\.hasSyncEncryptionKey/);
   assert.match(renderSettings, /if \(clearCredentialInputs \|\| !settings\.hasCredentials\)/);
   assert.match(renderSettings, /accessKeyInput\.value = ''/);
   assert.match(renderSettings, /secretKeyInput\.value = ''/);
@@ -150,7 +182,7 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   assert.doesNotMatch(settingsDialog, /secretKeyInput\.value\s*=\s*settings\./);
 
   assert.match(settingsDialog, /const show = control\.input\.type === 'password'/);
-  assert.match(settingsDialog, /if \(show && !control\.input\.value && hasCredentials\)[\s\S]*?await window\.settingsApi\.revealS3SyncCredentials\(\)/);
+  assert.match(settingsDialog, /if \(show && !control\.input\.value && control\.hasSavedValue\(\)\)[\s\S]*?await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /accessKeyInput\.value = credentials\.accessKeyId/);
   assert.match(settingsDialog, /secretKeyInput\.value = credentials\.secretAccessKey/);
   assert.match(settingsDialog, /control\.input\.type = visible \? 'text' : 'password'/);
@@ -159,11 +191,16 @@ test('Settings hydrates saved credentials as masked values and reveals only the 
   assert.match(settingsDialog, /control\.button\.setAttribute\('aria-label', label\)/);
   assert.match(settingsDialog, /const locked = busy \|\| credentialRevealPending/);
   assert.match(settingsDialog, /closeButton\.disabled = locked/);
-  assert.match(settingsDialog, /if \(settings\.hasCredentials && \(!accessKeyInput\.value \|\| !secretKeyInput\.value\)\)[\s\S]*?await revealSavedCredentials\(\)/);
+  assert.match(settingsDialog, /settings\.hasCredentials && \(!accessKeyInput\.value \|\| !secretKeyInput\.value\)[\s\S]*?settings\.hasSyncEncryptionKey && !syncEncryptionKeyInput\.value[\s\S]*?await revealSavedCredentials\(\)/);
+  assert.match(settingsDialog, /syncEncryptionKeyInput\.value = credentials\.syncEncryptionKey/);
+  assert.match(settingsDialog, /const syncEncryptionKey = syncEncryptionKeyInput\.value\.trim\(\)[\s\S]*?\{ syncEncryptionKey \}/);
+  assert.match(settingsDialog, /writeClipboardText\(syncEncryptionKeyInput\.value\)/);
+  assert.match(settingsDialog, /function renderSettingsWithAuthoritativeSyncKey[\s\S]*?syncEncryptionKeyInput\.value = ''[\s\S]*?renderSettings\(settings, clearCredentialInputs\)[\s\S]*?await revealSavedCredentials\(\)/);
+  assert.match(settingsDialog, /action === 'clear'[\s\S]*?getS3SyncSettings\(\)[\s\S]*?clearCredentials: true[\s\S]*?saveS3SyncSettings\(draft\)[\s\S]*?renderSettingsWithAuthoritativeSyncKey\(settings, action === 'clear'\)/);
+  assert.match(settingsDialog, /saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)[\s\S]*?renderSettingsWithAuthoritativeSyncKey\(await window\.settingsApi\.getS3SyncSettings\(\)\)/);
   assert.match(settingsDialog, /if \(show\)[\s\S]*?other !== control[\s\S]*?setCredentialVisibility\(other, false\)/);
   assert.match(settingsDialog, /dialog\.addEventListener\('close', maskCredentials\)/);
-  assert.match(settingsDialog, /renderSettings\(settings, action === 'clear'\)/);
-  assert.match(settingsDialog, /currentDraft\(action === 'clear'\)/);
+  assert.match(settingsDialog, /renderSettingsWithAuthoritativeSyncKey\(settings, action === 'clear'\)/);
 });
 
 test('normal and signal shutdown flush Notes and stop S3 sync through the shared coordinator', async () => {

@@ -9,6 +9,22 @@
 }
 
 @font-face {
+  font-family: 'STM Notes UI';
+  src: url('../../assets/fonts/notes-ui-variable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'STM Notes Code';
+  src: url('../../assets/fonts/notes-code-variable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+@font-face {
   font-family: 'STM UI';
   src:
     url('../../assets/fonts/app-ui-medium.woff2') format('woff2'),
@@ -69,6 +85,8 @@
   --color-error-bg: #fef2f2;
   --font-family-base: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', Inter, 'PingFang SC', sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace;
+  --font-family-notes-ui: 'STM Notes UI', 'STM UI', sans-serif;
+  --font-family-notes-code: 'STM Notes Code', 'STM Notes UI', monospace;
   --font-size-2xs: 13px;
   --font-size-xs: 14px;
   --font-size-sm: 15px;
