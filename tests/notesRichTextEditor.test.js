@@ -148,7 +148,9 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /event\.key === 'Enter'/);
   assert.match(source, /empty\.textContent = 'No results'/);
   assert.match(source, /coordsAtPos\(this\.range\.to\)/);
-  assert.match(source, /scrollIntoView\(\{ block: 'nearest' \}\)/);
+  assert.match(source, /this\.updateSelection\(\)/);
+  assert.match(source, /revealMenuItemScrollTop\(\{/);
+  assert.doesNotMatch(source, /scrollIntoView\(/);
   assert.match(source, /createTaskListExtension\(\)/);
   assert.match(source, /createTaskItemExtension\(\)/);
   assert.match(source, /checked: checkbox\.checked/);
@@ -156,6 +158,22 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /Tab: \(\) => this\.editor\.commands\.sinkListItem\(this\.name\)/);
   assert.match(source, /'Shift-Tab': \(\) => this\.editor\.commands\.liftListItem\(this\.name\)/);
   assert.match(source, /aria-label', 'Mark task complete'/);
+});
+
+test('slash menu reveal math keeps keyboard selection inside its own scrolling viewport', async () => {
+  const { revealMenuItemScrollTop } = await import('../dist/renderer/notesRichTextMenuScroll.js');
+  const base = {
+    scrollHeight: 496,
+    clientHeight: 330,
+    itemHeight: 48,
+    paddingTop: 8,
+    paddingBottom: 8,
+  };
+
+  assert.equal(revealMenuItemScrollTop({ ...base, scrollTop: 0, itemTop: 8 }), 0);
+  assert.equal(revealMenuItemScrollTop({ ...base, scrollTop: 0, itemTop: 440 }), 166);
+  assert.equal(revealMenuItemScrollTop({ ...base, scrollTop: 166, itemTop: 8 }), 0);
+  assert.equal(revealMenuItemScrollTop({ ...base, scrollTop: 72, itemTop: 200 }), 72);
 });
 
 test('rich text uses a selection-only non-AI formatter with safe block and link controls', async () => {

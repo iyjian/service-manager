@@ -16,6 +16,7 @@ import {
   parseRichTextContent,
   type NoteImageReference,
 } from './noteRichText.js';
+import { revealMenuItemScrollTop } from './notesRichTextMenuScroll.js';
 
 export type RichTextToolbarCommand =
   | 'undo'
@@ -413,7 +414,7 @@ class NotesRichTextSlashMenu {
       if (this.items.length === 0) return true;
       const direction = event.key === 'ArrowDown' ? 1 : -1;
       this.selectedIndex = (this.selectedIndex + direction + this.items.length) % this.items.length;
-      this.render();
+      this.updateSelection();
       return true;
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
@@ -467,8 +468,29 @@ class NotesRichTextSlashMenu {
     }
     this.element.replaceChildren(...children);
     this.element.classList.remove('hidden');
+    this.element.scrollTop = 0;
     this.position();
-    this.element.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    this.updateSelection();
+  }
+
+  private updateSelection(): void {
+    const options = Array.from(this.element.querySelectorAll<HTMLElement>('[data-slash-command-index]'));
+    for (const [index, option] of options.entries()) {
+      option.setAttribute('aria-selected', String(index === this.selectedIndex));
+    }
+
+    const selected = options[this.selectedIndex];
+    if (!selected) return;
+    const styles = window.getComputedStyle(this.element);
+    this.element.scrollTop = revealMenuItemScrollTop({
+      scrollTop: this.element.scrollTop,
+      scrollHeight: this.element.scrollHeight,
+      clientHeight: this.element.clientHeight,
+      itemTop: selected.offsetTop,
+      itemHeight: selected.offsetHeight,
+      paddingTop: Number.parseFloat(styles.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(styles.paddingBottom) || 0,
+    });
   }
 
   private position(): void {
