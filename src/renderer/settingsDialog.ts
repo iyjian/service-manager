@@ -2,6 +2,7 @@ import type {
   LlmSettingsDraft,
   LlmSettingsView,
   S3ConnectionTestDraft,
+  S3SyncProgressPhase,
   S3SyncSettingsDraft,
   S3SyncSettingsView,
   S3SyncState,
@@ -67,6 +68,10 @@ const llmLoadModelsButton = requireElement<HTMLButtonElement>('#settings-llm-loa
 const llmModelStatus = requireElement<HTMLElement>('#llm-model-status');
 const llmHttpWarning = requireElement<HTMLElement>('#llm-http-warning');
 const statusElement = requireElement<HTMLElement>('#s3-sync-status');
+const statusTextElement = requireElement<HTMLElement>('#s3-sync-status-text');
+const syncProgressWrap = requireElement<HTMLElement>('#s3-sync-progress-wrap');
+const syncProgress = requireElement<HTMLProgressElement>('#s3-sync-progress');
+const syncProgressValue = requireElement<HTMLElement>('#s3-sync-progress-value');
 const saveStatusElement = requireElement<HTMLElement>('#settings-save-status');
 const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
@@ -93,6 +98,15 @@ const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
   },
 };
 const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'llm'];
+const syncPhaseLabels: Record<S3SyncProgressPhase, string> = {
+  checking: 'Checking cloud',
+  'reading-local': 'Preparing data',
+  'reading-cloud': 'Reading cloud',
+  merging: 'Merging',
+  uploading: 'Uploading',
+  applying: 'Applying',
+  finishing: 'Finishing',
+};
 
 let busy = false;
 let busyAction: BusyAction | undefined;
@@ -358,16 +372,58 @@ function setBusy(next: boolean, action: BusyAction = 'save'): void {
   updateControls();
 }
 
-function setStatus(
-  message: string,
-  level: 'default' | 'success' | 'error' | 'pending' | 'syncing' | 'conflict' = 'default',
-): void {
-  statusElement.textContent = message;
+type SettingsStatusLevel = 'default' | 'success' | 'error' | 'pending' | 'syncing' | 'conflict';
+
+function applyStatusLevel(level: SettingsStatusLevel): void {
   statusElement.classList.toggle('settings-status-success', level === 'success');
   statusElement.classList.toggle('settings-status-error', level === 'error');
   statusElement.classList.toggle('settings-status-pending', level === 'pending');
   statusElement.classList.toggle('settings-status-syncing', level === 'syncing');
   statusElement.classList.toggle('settings-status-conflict', level === 'conflict');
+}
+
+function resetSyncProgress(): void {
+  syncProgressWrap.classList.add('hidden');
+  syncProgress.removeAttribute('value');
+  syncProgress.removeAttribute('aria-valuetext');
+  syncProgressValue.textContent = '';
+  syncProgressValue.classList.add('hidden');
+  settingsTabs.s3.panel.removeAttribute('aria-busy');
+}
+
+function setStatus(message: string, level: SettingsStatusLevel = 'default'): void {
+  if (statusTextElement.textContent !== message) statusTextElement.textContent = message;
+  applyStatusLevel(level);
+  resetSyncProgress();
+}
+
+function renderSyncProgress(state: S3SyncState): void {
+  const phase = state.phase ?? 'checking';
+  const label = syncPhaseLabels[phase];
+  const hasCount = Number.isSafeInteger(state.completedItems)
+    && Number.isSafeInteger(state.totalItems)
+    && (state.totalItems as number) > 0;
+  const total = hasCount ? Math.max(1, state.totalItems as number) : undefined;
+  const completed = hasCount
+    ? Math.min(total as number, Math.max(0, state.completedItems as number))
+    : undefined;
+
+  if (statusTextElement.textContent !== label) statusTextElement.textContent = label;
+  applyStatusLevel('syncing');
+  settingsTabs.s3.panel.setAttribute('aria-busy', 'true');
+  syncProgressWrap.classList.remove('hidden');
+  if (completed === undefined || total === undefined) {
+    syncProgress.removeAttribute('value');
+    syncProgress.setAttribute('aria-valuetext', label);
+    syncProgressValue.textContent = '';
+    syncProgressValue.classList.add('hidden');
+    return;
+  }
+  const percent = Math.round((completed * 100) / total);
+  syncProgress.value = percent;
+  syncProgress.setAttribute('aria-valuetext', `${label}, ${completed} of ${total}, ${percent} percent`);
+  syncProgressValue.textContent = `${percent}%`;
+  syncProgressValue.classList.remove('hidden');
 }
 
 function formatSyncTimestamp(value: string | undefined): string | undefined {
@@ -383,7 +439,7 @@ function renderSyncState(state: S3SyncState): void {
   const lastSync = formatSyncTimestamp(state.lastSyncedAt);
   switch (state.status) {
     case 'syncing':
-      setStatus('Syncing with S3…', 'syncing');
+      renderSyncProgress(state);
       return;
     case 'synced':
       setStatus(lastSync ? `Synced ${lastSync}.` : 'Synced with S3.', 'success');

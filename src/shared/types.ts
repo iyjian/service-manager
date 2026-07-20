@@ -934,6 +934,15 @@ export type S3SyncStatus =
   | 'conflict'
   | 'error';
 
+export type S3SyncProgressPhase =
+  | 'checking'
+  | 'reading-local'
+  | 'reading-cloud'
+  | 'merging'
+  | 'uploading'
+  | 'applying'
+  | 'finishing';
+
 export interface S3SyncState {
   status: S3SyncStatus;
   pending: boolean;
@@ -942,6 +951,9 @@ export interface S3SyncState {
   pendingSince?: string;
   conflictCount?: number;
   message?: string;
+  phase?: S3SyncProgressPhase;
+  completedItems?: number;
+  totalItems?: number;
 }
 
 export interface PersistentDataReloaded {

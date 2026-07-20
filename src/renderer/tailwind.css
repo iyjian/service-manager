@@ -1248,7 +1248,7 @@
   }
 
   .settings-status {
-    @apply m-0 rounded-md px-2.5 py-2 text-[12px];
+    @apply m-0 flex min-h-9 items-center justify-between gap-3 rounded-md px-2.5 py-2 text-[12px];
   }
 
   .settings-status {
@@ -1273,6 +1273,44 @@
 
   .settings-status-conflict {
     @apply border-violet-200 bg-violet-50 text-violet-800;
+  }
+
+  #s3-sync-status-text {
+    @apply min-w-0;
+  }
+
+  .settings-sync-progress-wrap {
+    @apply flex shrink-0 items-center gap-1.5;
+  }
+
+  .settings-sync-progress-wrap progress {
+    @apply h-1 w-20 overflow-hidden rounded-full border-0 bg-blue-100;
+    appearance: none;
+  }
+
+  .settings-sync-progress-wrap progress::-webkit-progress-bar {
+    @apply rounded-full bg-blue-100;
+  }
+
+  .settings-sync-progress-wrap progress::-webkit-progress-value {
+    @apply rounded-full bg-blue-500 transition-all;
+  }
+
+  .settings-sync-progress-wrap progress:not([value]) {
+    @apply text-blue-500;
+    background-image: linear-gradient(90deg, transparent, currentColor, transparent);
+    background-position: -70% 0;
+    background-repeat: no-repeat;
+    background-size: 40% 100%;
+    animation: settings-sync-progress-indeterminate 1.1s ease-in-out infinite;
+  }
+
+  .settings-sync-progress-wrap progress:not([value])::-webkit-progress-bar {
+    @apply bg-transparent;
+  }
+
+  .settings-sync-progress-wrap > span {
+    @apply min-w-8 text-right font-mono text-[10.5px] tabular-nums text-blue-700;
   }
 
   .form-actions.settings-actions {
@@ -1364,6 +1402,22 @@
 
   .settings-save-status-error {
     @apply border-red-200 bg-red-50 text-red-800;
+  }
+
+  @keyframes settings-sync-progress-indeterminate {
+    0% {
+      background-position: -70% 0;
+    }
+    100% {
+      background-position: 170% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-sync-progress-wrap progress:not([value]) {
+      background-position: 50% 0;
+      animation: none;
+    }
   }
 
   .proxy-grid {

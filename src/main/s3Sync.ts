@@ -20,6 +20,7 @@ import type {
   S3ConnectionTestDraft,
   S3CredentialValues,
   S3SyncResult,
+  S3SyncProgressPhase,
   S3SyncSettingsDraft,
   S3SyncSettingsView,
   S3SyncState,
@@ -109,6 +110,12 @@ export interface S3SyncRuntimeOptions {
   createRandomBytes?: (size: number) => Buffer;
   timeoutMs?: number;
 }
+
+type S3SyncProgressReporter = (
+  phase: S3SyncProgressPhase,
+  completedItems?: number,
+  totalItems?: number,
+) => void;
 
 interface PersistedS3SyncSettings {
   schemaVersion: 6;
@@ -983,13 +990,19 @@ export class S3SyncRuntime {
           persistenceError = error instanceof Error ? error.message : 'S3 sync settings could not be saved.';
         }
       }
+      const syncActive = !persistenceError && this.state.status === 'syncing';
       this.updateState({
-        status: persistenceError ? 'error' : this.syncPromise ? 'syncing' : 'pending',
+        status: persistenceError ? 'error' : syncActive ? 'syncing' : 'pending',
         pending: true,
         pendingSince: durablePendingSince,
         ...(current.lastSyncedAt ? { lastSyncedAt: current.lastSyncedAt } : {}),
         ...(current.lastRevision ? { lastRevision: current.lastRevision } : {}),
         ...(persistenceError ? { message: persistenceError } : {}),
+        ...(syncActive && this.state.phase ? {
+          phase: this.state.phase,
+          ...(this.state.completedItems !== undefined ? { completedItems: this.state.completedItems } : {}),
+          ...(this.state.totalItems !== undefined ? { totalItems: this.state.totalItems } : {}),
+        } : {}),
       });
       return true;
     }).then((configured) => {
@@ -1306,6 +1319,49 @@ export class S3SyncRuntime {
     }
   }
 
+  private reportSyncProgress(
+    phase: S3SyncProgressPhase,
+    completedItems?: number,
+    totalItems?: number,
+  ): void {
+    if (this.state.status !== 'syncing') return;
+    const hasCount = Number.isSafeInteger(completedItems)
+      && Number.isSafeInteger(totalItems)
+      && (totalItems as number) > 0;
+    const normalizedTotal = hasCount ? Math.max(1, totalItems as number) : undefined;
+    const normalizedCompleted = hasCount
+      ? Math.min(normalizedTotal as number, Math.max(0, completedItems as number))
+      : undefined;
+
+    if (this.state.phase === phase) {
+      if (normalizedTotal === undefined && this.state.totalItems === undefined) return;
+      if (
+        normalizedTotal !== undefined
+        && normalizedCompleted !== undefined
+        && this.state.totalItems === normalizedTotal
+        && this.state.completedItems !== undefined
+      ) {
+        const previousPercent = Math.floor((this.state.completedItems * 100) / normalizedTotal);
+        const nextPercent = Math.floor((normalizedCompleted * 100) / normalizedTotal);
+        if (previousPercent === nextPercent && normalizedCompleted < normalizedTotal) return;
+      }
+    }
+
+    const {
+      phase: _phase,
+      completedItems: _completedItems,
+      totalItems: _totalItems,
+      ...current
+    } = this.state;
+    this.updateState({
+      ...current,
+      status: 'syncing',
+      phase,
+      ...(normalizedCompleted !== undefined ? { completedItems: normalizedCompleted } : {}),
+      ...(normalizedTotal !== undefined ? { totalItems: normalizedTotal } : {}),
+    });
+  }
+
   private scheduleSync(delayMs: number, requireRerun: boolean): void {
     if (this.shuttingDown) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
@@ -1596,6 +1652,7 @@ export class S3SyncRuntime {
     objectCache: Map<string, Note>,
     knownTrees: Map<string, NotesTreeSnapshot>,
     treeObjectCache: Map<string, NotesTreeSnapshot>,
+    onItemProcessed?: () => void,
   ): Promise<S3SharedAppDataV2> {
     if (manifest.data.notes.items.some((reference) =>
       reference.encryptionKeyId !== manifestEncryptionKeyId
@@ -1634,6 +1691,7 @@ export class S3SyncRuntime {
     if (materializedSnapshotBytes > MAX_SNAPSHOT_BYTES) {
       throw new Error('The application data snapshot is too large to sync.');
     }
+    onItemProcessed?.();
     let materializedNoteCount = 0;
     const retain = (note: Note): Note => {
       materializedSnapshotBytes += Buffer.byteLength(JSON.stringify(note), 'utf8')
@@ -1644,19 +1702,24 @@ export class S3SyncRuntime {
       }
       return cloneNoteValue(note);
     };
+    const retainAndReport = (note: Note): Note => {
+      const retained = retain(note);
+      onItemProcessed?.();
+      return retained;
+    };
     const notes = await mapWithConcurrency(
       manifest.data.notes.items,
       S3_NOTE_TRANSFER_CONCURRENCY,
       async (reference) => {
         const key = noteContentKey(reference.id, reference.contentHash);
         const known = knownNotes.get(key);
-        if (known) return retain(known);
+        if (known) return retainAndReport(known);
 
         const referenceKey = noteReferenceKey(reference);
         const cached = objectCache.get(referenceKey);
         if (cached) {
           knownNotes.set(key, cloneNoteValue(cached));
-          return retain(cached);
+          return retainAndReport(cached);
         }
 
         const result = await objectStore.getNote(reference);
@@ -1666,7 +1729,7 @@ export class S3SyncRuntime {
         const note = cloneNoteValue(result.object.note);
         objectCache.set(referenceKey, note);
         knownNotes.set(key, note);
-        return retain(note);
+        return retainAndReport(note);
       },
     );
     return sharedDataFromManifest(manifest.data, notes, notesTree);
@@ -1680,6 +1743,7 @@ export class S3SyncRuntime {
     expectedHeadEtag: string | undefined,
     reusableReferences: readonly S3V3NoteReference[],
     reusableTreeReferences: readonly S3V3NotesTreeReference[],
+    reportProgress: S3SyncProgressReporter,
   ): Promise<
     | {
       status: 'conflict';
@@ -1773,6 +1837,17 @@ export class S3SyncRuntime {
       },
     );
 
+    const totalWrites = plannedNotes.reduce(
+      (total, planned) => total + ('reference' in planned ? 0 : 1),
+      plannedNotesTree.kind === 'object' ? 3 : 2,
+    );
+    let completedWrites = 0;
+    const reportCompletedWrite = (): void => {
+      completedWrites += 1;
+      reportProgress('uploading', completedWrites, totalWrites);
+    };
+    reportProgress('uploading', 0, totalWrites);
+
     let byteLength = 0;
     const noteReferences = await mapWithConcurrency(
       plannedNotes,
@@ -1787,6 +1862,7 @@ export class S3SyncRuntime {
           const written = await objectStore.putNote(object);
           if (written.status === 'conflict') continue;
           byteLength += written.byteLength;
+          reportCompletedWrite();
           return { ...written.reference };
         }
         throw new Error('A unique S3 Note object could not be created. Try again.');
@@ -1810,6 +1886,7 @@ export class S3SyncRuntime {
       }
       if (!writtenReference) throw new Error('A unique S3 Notes tree object could not be created. Try again.');
       notesTreeReference = writtenReference;
+      reportCompletedWrite();
     }
 
     const manifest = createServiceManagerSyncManifestV3(
@@ -1827,6 +1904,7 @@ export class S3SyncRuntime {
       return { status: 'conflict', noteReferences, notesTreeReference };
     }
     byteLength += written.byteLength;
+    reportCompletedWrite();
     const head = createS3SyncHeadV3(
       manifest,
       written.manifestSha256,
@@ -1836,6 +1914,7 @@ export class S3SyncRuntime {
     if (headResult.status === 'conflict') {
       return { status: 'conflict', noteReferences, notesTreeReference };
     }
+    reportCompletedWrite();
     return {
       status: 'written',
       manifest,
@@ -1847,6 +1926,7 @@ export class S3SyncRuntime {
   private async reconcile(
     settings: PersistedS3SyncSettings,
     signal: AbortSignal,
+    reportProgress: S3SyncProgressReporter,
   ): Promise<S3SyncResult> {
     const { accessKeyId, secretAccessKey } = this.credentials(settings);
     const syncEncryptionKey = this.syncEncryptionKey(settings) as string;
@@ -1886,9 +1966,11 @@ export class S3SyncRuntime {
 
     for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
       if (signal.aborted || this.shuttingDown) throw new Error('S3 sync was cancelled.');
+      reportProgress('checking');
       const headResult = await objectStore.getHead();
 
       if (headResult.status === 'missing') {
+        reportProgress('reading-local');
         const local = await this.collectLocalData();
         measureBoundedJsonBytes(local);
         const published = await this.publishRevision(
@@ -1899,12 +1981,14 @@ export class S3SyncRuntime {
           undefined,
           [...retainedUploadReferences.values()],
           [...retainedUploadTreeReferences.values()],
+          reportProgress,
         );
         if (published.status === 'conflict') {
           retainUploadedReferences(published.noteReferences);
           retainUploadedTreeReference(published.notesTreeReference);
           continue;
         }
+        reportProgress('finishing');
         const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
         return {
           action: 'pushed',
@@ -1950,6 +2034,7 @@ export class S3SyncRuntime {
           === getS3SyncEncryptionKeyId(syncEncryptionKey);
       }
 
+      reportProgress('reading-local');
       const local = await this.collectLocalData();
       measureBoundedJsonBytes(local);
       const localGeneration = this.dirtyGeneration;
@@ -1962,6 +2047,14 @@ export class S3SyncRuntime {
       const localTreePayload = notesTreePayloadFromSnapshot(local.notes.tree);
       knownTrees.set(hashS3V3NotesTreeContent(localTreePayload), cloneNotesTreeValue(local.notes.tree));
       const treeObjectCache = new Map<string, NotesTreeSnapshot>();
+      const cloudItemTotal = remoteResult.manifest.data.notes.items.length + 1
+        + (baseManifest ? baseManifest.data.notes.items.length + 1 : 0);
+      let cloudItemsCompleted = 0;
+      const reportCloudItem = (): void => {
+        cloudItemsCompleted += 1;
+        reportProgress('reading-cloud', cloudItemsCompleted, cloudItemTotal);
+      };
+      reportProgress('reading-cloud', 0, cloudItemTotal);
       const cloud = await this.materializeManifest(
         objectStore,
         remoteResult.manifest,
@@ -1970,6 +2063,7 @@ export class S3SyncRuntime {
         objectCache,
         knownTrees,
         treeObjectCache,
+        reportCloudItem,
       );
       const base = baseManifest
         ? await this.materializeManifest(
@@ -1980,9 +2074,11 @@ export class S3SyncRuntime {
           objectCache,
           knownTrees,
           treeObjectCache,
+          reportCloudItem,
         )
         : undefined;
 
+      reportProgress('merging');
       const merged = mergeS3SharedAppDataV2({ base, local, cloud, now: this.now().toISOString() });
       const mergedData = canonicalizeSharedNotes(merged.data);
       measureBoundedJsonBytes(mergedData);
@@ -1994,10 +2090,11 @@ export class S3SyncRuntime {
       const conflictCount = merged.conflictCount + merged.discardedLocalSections.length;
       const applyRequired = !isDeepStrictEqual(local, mergedData);
       if (isDeepStrictEqual(mergedData, cloud) && !requiresEncryptionMigration) {
-        if (applyRequired
-          && !await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) {
-          continue;
+        if (applyRequired) {
+          reportProgress('applying');
+          if (!await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) continue;
         }
+        reportProgress('finishing');
         const committed = await this.commitSuccessfulRevision(settings, headResult.head.revision);
         return {
           action: conflictCount > 0 ? 'conflict' : applyRequired ? 'pulled' : 'up-to-date',
@@ -2029,16 +2126,18 @@ export class S3SyncRuntime {
         headResult.etag,
         reusableReferences,
         reusableTreeReferences,
+        reportProgress,
       );
       if (published.status === 'conflict') {
         retainUploadedReferences(published.noteReferences);
         retainUploadedTreeReference(published.notesTreeReference);
         continue;
       }
-      if (applyRequired
-        && !await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) {
-        continue;
+      if (applyRequired) {
+        reportProgress('applying');
+        if (!await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) continue;
       }
+      reportProgress('finishing');
       const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
       return {
         action: conflictCount > 0 ? 'conflict' : 'pushed',
@@ -2066,11 +2165,17 @@ export class S3SyncRuntime {
       ...(this.state.pendingSince ? { pendingSince: this.state.pendingSince } : {}),
       ...(settings.lastSyncedAt ? { lastSyncedAt: settings.lastSyncedAt } : {}),
       ...(settings.lastRevision ? { lastRevision: settings.lastRevision } : {}),
+      phase: 'checking',
     });
     const controller = new AbortController();
     this.activeAbortController = controller;
     try {
-      const result = await this.reconcile(settings, controller.signal);
+      const result = await this.reconcile(
+        settings,
+        controller.signal,
+        (phase, completedItems, totalItems) =>
+          this.reportSyncProgress(phase, completedItems, totalItems),
+      );
       if (this.dirtyGeneration !== startingGeneration) {
         this.updateState({
           status: 'pending',

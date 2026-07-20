@@ -170,6 +170,7 @@ async function createRuntime(t, options) {
   const userDataPath = await temporaryDirectory(t);
   await writeConfiguredSettings(userDataPath, options.clientId, options.persistedSettings);
   const state = { data: clone(options.data), applied: [] };
+  const syncStates = [];
   const runtime = new S3SyncRuntime({
     userDataPath,
     appVersion: '0.3.19',
@@ -185,10 +186,15 @@ async function createRuntime(t, options) {
     createObjectId: options.createObjectId ?? createObjectIdFactory(options.clientId),
     createClientId: () => options.clientId,
     createRandomBytes: (size) => Buffer.alloc(size, size),
+    onStateChanged: (next) => {
+      const snapshot = clone(next);
+      syncStates.push(snapshot);
+      options.onStateChanged?.(snapshot);
+    },
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
   });
   t.after(() => runtime.shutdown());
-  return { runtime, state, userDataPath };
+  return { runtime, state, syncStates, userDataPath };
 }
 
 async function waitFor(predicate, message) {
@@ -787,10 +793,14 @@ test('S3SyncRuntime persists a new local pending intent while an S3 request is s
   let markRequestStarted;
   const requestGate = new Promise((resolve) => { releaseRequest = resolve; });
   const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
-  let firstRequest = true;
+  let requestBlocked = false;
   const fetchImpl = async (url, options) => {
-    if (firstRequest) {
-      firstRequest = false;
+    if (
+      !requestBlocked
+      && (options.method ?? 'GET') === 'PUT'
+      && String(url).includes('/service-manager/v4/notes-trees/')
+    ) {
+      requestBlocked = true;
       markRequestStarted();
       await requestGate;
     }
@@ -805,6 +815,13 @@ test('S3SyncRuntime persists a new local pending intent while an S3 request is s
   const syncing = work.runtime.syncAllDataToS3();
   await requestStarted;
   try {
+    const progressBeforeEdit = work.runtime.getSyncState();
+    assert.equal(progressBeforeEdit.status, 'syncing');
+    assert.equal(progressBeforeEdit.phase, 'uploading');
+    assert.deepEqual(
+      [progressBeforeEdit.completedItems, progressBeforeEdit.totalItems],
+      [1, 4],
+    );
     work.state.data = sharedData([note('note-1', 'edited while syncing', T1)]);
     work.runtime.markLocalChange();
 
@@ -816,7 +833,12 @@ test('S3SyncRuntime persists a new local pending intent while an S3 request is s
       if (!persisted.pendingSince) await new Promise((resolve) => setTimeout(resolve, 5));
     }
     assert.equal(typeof persisted?.pendingSince, 'string');
-    assert.equal(work.runtime.getSyncState().pending, true);
+    const progressAfterEdit = work.runtime.getSyncState();
+    assert.equal(progressAfterEdit.pending, true);
+    assert.equal(progressAfterEdit.status, 'syncing');
+    assert.equal(progressAfterEdit.phase, progressBeforeEdit.phase);
+    assert.equal(progressAfterEdit.completedItems, progressBeforeEdit.completedItems);
+    assert.equal(progressAfterEdit.totalItems, progressBeforeEdit.totalItems);
   } finally {
     releaseRequest();
     await syncing;
@@ -1002,6 +1024,76 @@ test('S3SyncRuntime refuses Electron basic_text credential storage', async (t) =
   assert.equal(settings.syncState.status, 'not-configured');
   await assert.rejects(runtime.revealS3SyncCredentials(), /unavailable/);
   await runtime.shutdown();
+});
+
+test('S3 reconciliation publishes concise bounded progress and clears it at completion', async (t) => {
+  const s3 = new MemoryS3();
+  const work = await createRuntime(t, {
+    clientId: 'progress-push',
+    data: sharedData([note('private-note-id', 'private content')]),
+    fetchImpl: s3.fetch,
+  });
+
+  const result = await work.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pushed');
+  const syncingStates = work.syncStates.filter((state) => state.status === 'syncing');
+  const phases = syncingStates.map((state) => state.phase);
+  assert.equal(phases[0], 'checking');
+  assert.ok(phases.includes('reading-local'));
+  assert.ok(phases.includes('uploading'));
+  assert.equal(phases.at(-1), 'finishing');
+
+  const uploadStates = syncingStates.filter((state) => state.phase === 'uploading');
+  assert.deepEqual(
+    [uploadStates[0].completedItems, uploadStates[0].totalItems],
+    [0, 4],
+  );
+  assert.deepEqual(
+    [uploadStates.at(-1).completedItems, uploadStates.at(-1).totalItems],
+    [4, 4],
+  );
+  for (const state of uploadStates) {
+    assert.ok(Number.isSafeInteger(state.completedItems));
+    assert.ok(Number.isSafeInteger(state.totalItems));
+    assert.ok(state.completedItems >= 0 && state.completedItems <= state.totalItems);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(syncingStates),
+    /s3\.example|example-bucket|private-note-id|private content|progress-push-revision/,
+  );
+
+  const finalState = work.runtime.getSyncState();
+  assert.equal(finalState.status, 'synced');
+  assert.equal('phase' in finalState, false);
+  assert.equal('completedItems' in finalState, false);
+  assert.equal('totalItems' in finalState, false);
+});
+
+test('S3 pull progress counts every cloud Note and tree before applying data', async (t) => {
+  const s3 = new MemoryS3();
+  const entries = [
+    { note: note('remote-a', 'A'), objectId: 'remote-object-a' },
+    { note: note('remote-b', 'B'), objectId: 'remote-object-b' },
+  ];
+  seedGeneratedV3Manifest(s3, entries);
+  const remote = generatedNoteFetch(s3, entries);
+  const work = await createRuntime(t, {
+    clientId: 'progress-pull',
+    data: sharedData(),
+    fetchImpl: remote.fetch,
+  });
+
+  const result = await work.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pulled');
+  const readStates = work.syncStates.filter((state) => state.phase === 'reading-cloud');
+  assert.deepEqual(
+    readStates.map((state) => [state.completedItems, state.totalItems]),
+    [[0, 3], [1, 3], [2, 3], [3, 3]],
+  );
+  assert.ok(work.syncStates.some((state) => state.phase === 'merging'));
+  assert.ok(work.syncStates.some((state) => state.phase === 'applying'));
+  assert.equal(work.syncStates.at(-1).status, 'synced');
+  assert.equal('phase' in work.syncStates.at(-1), false);
 });
 
 test('v4 reconcile uploads each Note and the tree independently before its manifest and conditional head', async (t) => {
@@ -1755,8 +1847,12 @@ test('S3SyncRuntime times out a stalled reconcile and shutdown aborts an active 
     timeoutMs: 5,
   });
   await assert.rejects(timeout.runtime.syncAllDataToS3(), /^Error: S3 sync timed out\.$/);
-  assert.equal(timeout.runtime.getSyncState().status, 'offline');
-  assert.doesNotMatch(timeout.runtime.getSyncState().message, /wJalr/);
+  const timeoutState = timeout.runtime.getSyncState();
+  assert.equal(timeoutState.status, 'offline');
+  assert.equal('phase' in timeoutState, false);
+  assert.equal('completedItems' in timeoutState, false);
+  assert.equal('totalItems' in timeoutState, false);
+  assert.doesNotMatch(timeoutState.message, /wJalr/);
 
   let started;
   const requestStarted = new Promise((resolve) => { started = resolve; });

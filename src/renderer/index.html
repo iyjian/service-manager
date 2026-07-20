@@ -476,7 +476,13 @@
               </button>
             </div>
           </div>
-          <p id="s3-sync-status" class="settings-status" role="status" aria-live="polite">Not configured.</p>
+          <div id="s3-sync-status" class="settings-status">
+            <span id="s3-sync-status-text" role="status" aria-live="polite" aria-atomic="true">Not configured.</span>
+            <span id="s3-sync-progress-wrap" class="settings-sync-progress-wrap hidden">
+              <progress id="s3-sync-progress" max="100" aria-label="S3 sync progress"></progress>
+              <span id="s3-sync-progress-value" aria-hidden="true"></span>
+            </span>
+          </div>
           <div class="form-actions settings-actions">
             <button id="settings-test-btn" type="button" class="btn btn-secondary">Test</button>
             <button id="settings-sync-btn" type="button" class="btn btn-primary">Sync Now</button>

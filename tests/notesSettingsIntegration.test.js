@@ -320,6 +320,10 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(styles, /\.settings-password-toggle svg\{[^}]*display:block[^}]*height:1\.25rem[^}]*width:1\.25rem/);
   assert.match(styles, /\.settings-password-toggle\[aria-pressed=true\]/);
   assert.match(html, /id="settings-s3-panel"[\s\S]*?id="settings-test-btn"[^>]*>Test<\/button>[\s\S]*?id="settings-sync-btn"[^>]*>Sync Now<\/button>[\s\S]*?<\/section>/);
+  assert.match(html, /id="s3-sync-status"[\s\S]*?id="s3-sync-status-text"[^>]*role="status"[^>]*aria-live="polite"[\s\S]*?id="s3-sync-progress-wrap"[^>]*class="settings-sync-progress-wrap hidden"[\s\S]*?id="s3-sync-progress"[^>]*aria-label="S3 sync progress"[\s\S]*?id="s3-sync-progress-value"/);
+  assert.match(styles, /\.settings-status\{[^}]*display:flex[^}]*min-height:2\.25rem[^}]*align-items:center[^}]*justify-content:space-between/);
+  assert.match(styles, /\.settings-sync-progress-wrap progress\{[^}]*height:\.25rem[^}]*width:5rem/);
+  assert.match(styles, /\.settings-sync-progress-wrap progress:not\(\[value\]\)\{[^}]*background-image:linear-gradient[^}]*settings-sync-progress-indeterminate/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="14"/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-editor-theme"[\s\S]*?<option value="light">Light<\/option>[\s\S]*?<option value="dark">Dark<\/option>/);
   assert.doesNotMatch(html, /Adjust the snippet editor text size|Use one theme for code and rich text editors/);
@@ -378,6 +382,11 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /window\.settingsApi\.syncAllDataToS3\(\)/);
   assert.match(settingsDialog, /window\.settingsApi\.testS3Connection\(currentS3TestDraft\(\)\)/);
   assert.match(settingsDialog, /window\.settingsApi\.onS3SyncStateChanged\(renderSyncState\)/);
+  assert.match(settingsDialog, /const syncPhaseLabels = \{[\s\S]*?checking: 'Checking cloud'[\s\S]*?'reading-cloud': 'Reading cloud'[\s\S]*?uploading: 'Uploading'/);
+  assert.match(settingsDialog, /function renderSyncProgress\(state\)[\s\S]*?completedItems[\s\S]*?totalItems[\s\S]*?setAttribute\('aria-busy', 'true'\)[\s\S]*?syncProgress\.value = percent/);
+  assert.match(settingsDialog, /case 'syncing':\s*renderSyncProgress\(state\)/);
+  assert.match(settingsDialog, /function resetSyncProgress\(\)[\s\S]*?syncProgressWrap\.classList\.add\('hidden'\)[\s\S]*?removeAttribute\('aria-busy'\)/);
+  assert.match(settingsDialog, /function setStatus\([\s\S]*?applyStatusLevel\(level\);\s*resetSyncProgress\(\)/);
   assert.match(settingsDialog, /window\.settingsApi\.onUiPreferencesChanged\(renderUiPreferences\)/);
   assert.match(settingsDialog, /bucketInput\.value = settings\.bucket/);
   assert.match(settingsDialog, /bucket:\s*bucketInput\.value\.trim\(\)/);
