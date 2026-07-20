@@ -17,6 +17,7 @@ import {
   normalizeTriliumImageMimeType,
   resolveTriliumImportImages,
   scanTriliumHtmlImages,
+  TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES,
   triliumImageTargetFingerprint,
   validateTriliumImportImageTarget,
   type ResolveTriliumImportImagesOptions,
@@ -29,6 +30,7 @@ import {
 export {
   resolveTriliumImportImages,
   scanTriliumHtmlImages,
+  TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES,
   triliumImageTargetFingerprint,
   validateTriliumImportImageTarget,
 };

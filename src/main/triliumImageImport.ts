@@ -11,7 +11,7 @@ import type {
 } from '../shared/types';
 
 export const TRILIUM_IMPORT_IMAGE_REQUEST_CONCURRENCY = 2;
-export const TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES = 50 * 1024 * 1024;
+export const TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES = 500 * 1024 * 1024;
 
 const MAX_IMAGE_SOURCE_CHARACTERS = 4_096;
 const MAX_IMAGE_TARGETS = 50_000;
@@ -389,7 +389,7 @@ class ImageTransferBudget {
   add(bytes: number): void {
     this.transferred += bytes;
     if (this.transferred > TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES) {
-      throw safeError('The Trilium image import exceeds the supported transfer limit.');
+      throw safeError('The Trilium image import exceeds the supported transfer limit (500 MiB).');
     }
   }
 
@@ -742,6 +742,7 @@ export async function resolveTriliumImportImages(
           throw safeError('A Trilium image changed while the import was being resolved. Retry the import.');
         }
         readyTargets.push(refreshed);
+        report();
       }
     };
     const metadataWorkers = Array.from(

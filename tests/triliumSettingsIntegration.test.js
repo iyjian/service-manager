@@ -215,6 +215,8 @@ test('main process owns Trilium preparation sessions and applies each import ato
   assert.match(resolveHandler, /const initialSettings = await getS3SyncRuntime\(\)\.getSettings\(\);\s*const initialTarget = notesImageTarget\(initialSettings\)/);
   assert.match(resolveHandler, /await resolveTriliumImportImages\([\s\S]*?session\.tokenBuffer\?\.toString\('utf8'\) \?\? ''[\s\S]*?uploadNoteImage\(upload, context\.signal\)[\s\S]*?signal: session\.controller\.signal/);
   assert.match(resolveHandler, /phase: 'images'/);
+  assert.match(main, /function formatTriliumImageTransferProgress\(transferredBytes: number\): string/);
+  assert.match(resolveHandler, /formatTriliumImageTransferProgress\(progress\.transferredBytes\)/);
   assert.match(resolveHandler, /const uploaded = images\.some\(\(asset\) => asset\.status === 'uploaded'\);[\s\S]*?const finalSettings = await getS3SyncRuntime\(\)\.getSettings\(\);[\s\S]*?notesImageTarget\(finalSettings\) !== initialTarget[\s\S]*?S3 settings changed during the Trilium image import/);
   assert.match(resolveHandler, /session\.resolvedImages = images;\s*if \(uploaded\) session\.s3ImageTarget = initialTarget;\s*clearPreparedTriliumToken\(session\)/);
   assert.match(resolveHandler, /catch \(error\) \{\s*removePreparedTriliumImport\(input\.sessionId, true\);\s*activeTriliumImportRequests\.delete\(input\.requestId\);\s*throw error;\s*\} finally \{\s*session\.resolvingImages = false/);

@@ -108,6 +108,7 @@ import {
   mergeTriliumImport,
   prepareTriliumImport as prepareTriliumImportPlan,
   resolveTriliumImportImages,
+  TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES,
   triliumStoredSourceVersion,
   type TriliumImportPlan,
   type TriliumImportProgress,
@@ -520,6 +521,11 @@ function rendererTriliumProgress(
     total: Math.max(progress.discovered, progress.processed),
     message: `Fetching content… ${progress.processed} Notes`,
   };
+}
+
+function formatTriliumImageTransferProgress(transferredBytes: number): string {
+  const mib = 1024 * 1024;
+  return `${(transferredBytes / mib).toFixed(1)}/${TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES / mib} MiB`;
 }
 
 function clearPreparedTriliumToken(session: { tokenBuffer?: Buffer }): void {
@@ -1817,7 +1823,7 @@ function registerIpcHandlers(): void {
             completed: progress.processed,
             total: Math.max(1, progress.total),
             message: progress.total > 0
-              ? `Importing images… ${progress.processed}/${progress.total}`
+              ? `Importing images… ${progress.processed}/${progress.total} · ${formatTriliumImageTransferProgress(progress.transferredBytes)}`
               : 'No Trilium images to import.',
           }),
         },

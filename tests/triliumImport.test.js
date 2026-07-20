@@ -4,6 +4,7 @@ const test = require('node:test');
 
 const {
   TRILIUM_IMPORTER_VERSION,
+  TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES,
   TRILIUM_IMPORT_MAX_RESPONSE_BYTES,
   mergeTriliumImport,
   normalizeTriliumEndpoint,
@@ -153,6 +154,7 @@ function fakeFetch(routes, observations = {}) {
 }
 
 test('Trilium endpoint, token, deterministic IDs, and source tags are canonical and bounded', () => {
+  assert.equal(TRILIUM_IMPORT_MAX_TOTAL_IMAGE_BYTES, 500 * 1024 * 1024);
   assert.equal(normalizeTriliumEndpoint(' HTTPS://Notes.Example.Test:443/base/etapi/ '), ENDPOINT);
   assert.equal(normalizeTriliumEndpoint('https://notes.example.test/base///'), ENDPOINT);
   assert.equal(normalizeTriliumToken(TOKEN), TOKEN);
@@ -652,20 +654,22 @@ test('image resolution uses exact read-only ETAPI content routes and deduplicate
     },
   ];
   const observations = {};
-  const routes = new Map([
-    ['/base/etapi/attachments/attA', jsonResponse(remoteAttachment('attA', {
-      blobId: 'blobSame', contentLength: PNG_1X1.byteLength,
-    }))],
-    ['/base/etapi/notes/imgA', jsonResponse(remoteNote('imgA', [], {
+  const metadata = [
+    remoteAttachment('attA', { blobId: 'blobSame', contentLength: PNG_1X1.byteLength }),
+    remoteNote('imgA', [], {
       type: 'image', mime: 'image/png', blobId: 'blobSame', contentLength: PNG_1X1.byteLength,
-    }))],
-    ['/base/etapi/attachments/attB', jsonResponse(remoteAttachment('attB', {
-      blobId: 'differentBlob', contentLength: PNG_1X1.byteLength,
-    }))],
+    }),
+    remoteAttachment('attB', { blobId: 'differentBlob', contentLength: PNG_1X1.byteLength }),
+  ];
+  const routes = new Map([
+    ['/base/etapi/attachments/attA', jsonResponse(metadata[0])],
+    ['/base/etapi/notes/imgA', jsonResponse(metadata[1])],
+    ['/base/etapi/attachments/attB', jsonResponse(metadata[2])],
     ['/base/etapi/attachments/attA/content', new Response(PNG_1X1)],
     ['/base/etapi/attachments/attB/content', new Response(PNG_1X1)],
   ]);
   let uploads = 0;
+  const progress = [];
   const resolved = await resolveTriliumImportImages(
     { endpoint: ENDPOINT, imageTargets: targets },
     TOKEN,
@@ -676,7 +680,10 @@ test('image resolution uses exact read-only ETAPI content routes and deduplicate
       uploads += 1;
       return { status: 'uploaded', reference: uploadedReference(input.bytes) };
     },
-    { fetchImpl: fakeFetch(routes, observations) },
+    {
+      fetchImpl: fakeFetch(routes, observations),
+      onProgress: (value) => progress.push(value),
+    },
   );
 
   assert.equal(observations.requests, 5);
@@ -690,6 +697,15 @@ test('image resolution uses exact read-only ETAPI content routes and deduplicate
   assert.equal(uploads, 1);
   assert.ok(resolved.every((asset) => asset.status === 'uploaded'));
   assert.equal(new Set(resolved.map((asset) => asset.reference.objectId)).size, 1);
+  const metadataBytes = metadata.reduce(
+    (total, value) => total + Buffer.byteLength(JSON.stringify(value), 'utf8'),
+    0,
+  );
+  assert.equal(progress.at(-1).processed, 3);
+  assert.equal(progress.at(-1).transferredBytes, metadataBytes + (2 * PNG_1X1.byteLength));
+  assert.ok(progress.every((value, index) => (
+    index === 0 || value.transferredBytes >= progress[index - 1].transferredBytes
+  )));
 });
 
 test('image resolution emits explicit placeholders for unavailable or invalid assets but fails closed on auth and S3', async () => {
