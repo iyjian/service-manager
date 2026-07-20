@@ -83,6 +83,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
     'notesUpdate',
     'notesMove',
     'notesTreeExpanded',
+    'notesDeletePreview',
     'notesDelete',
     'notesRecoverDrafts',
     'notesImageUpload',
@@ -110,7 +111,14 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /window\.serviceApi\.writeClipboardText\(content\)/);
   assert.match(notesPage, /new NotesRichTextEditor\(\{/);
   assert.match(html, /"@tiptap\/core": "\.\/vendor\/tiptap-core\.js"/);
-  assert.match(notesPage, /window\.notesApi\.deleteNote\(\{ id: note\.id, expectedIds: subtreeIds \}\)/);
+  assert.match(preload, /previewNoteDelete:\s*\(id\)\s*=>\s*[^\n]*invoke\('notes:delete-preview', id\)/);
+  assert.match(notesPage, /window\.notesApi\.previewNoteDelete\(id\)/);
+  assert.match(notesPage, /sameNoteIdSet\(preview\.expectedIds, confirmedPreview\.expectedIds\)/);
+  assert.match(notesPage, /Updated deletion scope/);
+  assert.match(notesPage, /result\.deletedIds\.length === 1[\s\S]*?'Note deleted\.'[\s\S]*?Notes deleted/);
+  assert.match(notesPage, /window\.notesApi\.deleteNote\(\{[\s\S]*?expectedIds: confirmedPreview\.expectedIds/);
+  assert.match(notesPage, /result\.status === 'changed'/);
+  assert.match(notesPage, /deletingNoteIds = new Set\(\)/);
   assert.match(notesPage, /window\.notesApi\.recoverDrafts\(pending\)/);
   assert.match(notesPage, /expectedNote: cloneNote\(expectedNote\)/);
   assert.match(notesPage, /window\.notesApi\.getWorkspace\(\)/);
@@ -121,10 +129,18 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /export function noteTreeBreadcrumb\(/);
   assert.match(notesPage, /export function resolveNoteTreeDropPlacement\(/);
   assert.match(notesPage, /await this\.flushAllPendingSaves\(\);[\s\S]*?const editVersionBaseline = new Map\(this\.editVersions\)[\s\S]*?this\.applyWorkspace\(workspace, editVersionBaseline\)/);
-  assert.match(notesPage, /This will permanently delete \$\{subtreeIds\.length\} Notes in this subtree\./);
+  assert.match(notesPage, /This will permanently delete \$\{preview\.expectedIds\.length\} Notes in this subtree\./);
   assert.match(main, /await flushRendererNotes\(\);\s*return runS3SharedDataMutation/);
   assert.match(main, /sameNoteIds\(deletedIds, input\.expectedIds\)/);
-  assert.match(main, /The Notes tree changed after confirmation/);
+  assert.match(main, /status: 'changed'[\s\S]*?preview: noteDeletePreview\(input\.id\)/);
+  assert.match(main, /getNotesStore\(\)\.deleteMany\(deletedIds\)/);
+  assert.match(main, /if \(!activeIds\.includes\(input\.noteId\)\) \{\s*return getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds;/);
+  const deleteHandlerStart = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesDelete,');
+  const deleteHandlerEnd = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesRecoverDrafts,', deleteHandlerStart);
+  assert.ok(deleteHandlerStart >= 0 && deleteHandlerEnd > deleteHandlerStart);
+  const deleteHandler = main.slice(deleteHandlerStart, deleteHandlerEnd);
+  assert.doesNotMatch(deleteHandler, /getNotesStore\(\)\.replaceSnapshot\(/);
+  assert.doesNotMatch(main, /The Notes tree changed after confirmation/);
   assert.match(main, /isDeepStrictEqual\)\(current, expectedNote\)/);
   assert.match(main, /This Note changed after the editor loaded it/);
   assert.match(main, /classifyNoteDraftRecovery\)\(current, recovery\.expectedNote, recovery\.draft\)/);

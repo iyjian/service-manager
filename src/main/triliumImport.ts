@@ -10,8 +10,36 @@ import {
 } from './notesTreeStore';
 import { normalizeRichTextContent } from '../shared/noteRichText';
 import type { Note, NoteLanguage } from '../shared/types';
+import {
+  NOTES_IMAGE_LIMITS,
+} from './notesImageS3';
+import {
+  resolveTriliumImportImages,
+  scanTriliumHtmlImages,
+  triliumImageTargetFingerprint,
+  validateTriliumImportImageTarget,
+  type ResolveTriliumImportImagesOptions,
+  type TriliumImageUploadCallback,
+  type TriliumImportImageTarget,
+  type TriliumResolvedImageAsset,
+  type TriliumScannedImageSource,
+} from './triliumImageImport';
 
-export const TRILIUM_IMPORTER_VERSION = 'trilium-etapi-v1' as const;
+export {
+  resolveTriliumImportImages,
+  scanTriliumHtmlImages,
+  triliumImageTargetFingerprint,
+  validateTriliumImportImageTarget,
+};
+export type {
+  ResolveTriliumImportImagesOptions,
+  TriliumImageUploadCallback,
+  TriliumImportImageTarget,
+  TriliumResolvedImageAsset,
+  TriliumScannedImageSource,
+};
+
+export const TRILIUM_IMPORTER_VERSION = 'trilium-etapi-v3' as const;
 export const TRILIUM_IMPORT_REQUEST_CONCURRENCY = 8;
 export const TRILIUM_IMPORT_REQUEST_TIMEOUT_MS = 15_000;
 export const TRILIUM_IMPORT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -36,7 +64,13 @@ export type TriliumPlaceholderReason = 'protected' | 'oversized' | 'unsupported'
 
 export type PreparedTriliumContent =
   | { kind: 'ready'; language: Exclude<NoteLanguage, 'richtext'>; content: string }
-  | { kind: 'html'; language: 'richtext'; html: string }
+  | {
+    kind: 'html';
+    language: 'richtext';
+    html: string;
+    images: TriliumScannedImageSource[];
+  }
+  | { kind: 'image'; language: 'richtext'; sourceKey: string }
   | { kind: 'unchanged-source' }
   | { kind: 'placeholder'; language: 'markdown'; content: string; reason: TriliumPlaceholderReason };
 
@@ -65,6 +99,8 @@ export interface TriliumImportPlan {
   endpoint: string;
   sourceId: string;
   notes: PreparedTriliumNote[];
+  /** Unique validated targets needed only by changed Notes in this plan. */
+  imageTargets: TriliumImportImageTarget[];
   warnings: TriliumImportWarning[];
   clones: number;
   placeholders: number;
@@ -131,6 +167,16 @@ interface RemoteTriliumNote {
   childBranchIds: string[];
   utcDateCreated: string;
   utcDateModified: string;
+  contentLength: number | null;
+}
+
+interface RemoteTriliumAttachment {
+  attachmentId: string;
+  blobId: string;
+  mime: string;
+  utcDateModified: string;
+  contentLength: number | null;
+  isProtected: boolean;
 }
 
 interface RemoteTriliumBranch {
@@ -148,10 +194,17 @@ interface PendingPlacement extends RemoteTriliumBranch {
 interface PreparedNoteResult {
   note: PreparedTriliumNote;
   children: RemoteTriliumBranch[];
+  imageTargets: TriliumImportImageTarget[];
 }
 
 class TriliumImportSafeError extends Error {}
 class TriliumContentOversizedError extends Error {}
+
+class TriliumHttpStatusError extends Error {
+  public constructor(public readonly status: number) {
+    super(`The Trilium ETAPI request failed (${status}).`);
+  }
+}
 
 function safeError(message: string): TriliumImportSafeError {
   return new TriliumImportSafeError(message);
@@ -200,6 +253,14 @@ function normalizeRemoteTimestamp(value: unknown, label: string): string {
     throw safeError(`The Trilium ${label} is invalid.`);
   }
   return timestamp.toISOString();
+}
+
+function normalizeOptionalContentLength(value: unknown, label: string): number | null {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw safeError(`The Trilium ${label} is invalid.`);
+  }
+  return Number(value);
 }
 
 function normalizeRemoteIdList(value: unknown, label: string): string[] {
@@ -268,7 +329,7 @@ export function triliumSourceVersion(value: {
   mime: string;
   blobId: string;
   utcDateModified: string;
-}): string {
+}, imageFingerprints: readonly string[] = []): string {
   return sha256Base64Url(JSON.stringify([
     TRILIUM_IMPORTER_VERSION,
     value.title,
@@ -276,6 +337,7 @@ export function triliumSourceVersion(value: {
     value.mime,
     value.blobId,
     value.utcDateModified,
+    [...new Set(imageFingerprints)].sort(compareText),
   ]));
 }
 
@@ -308,6 +370,26 @@ function parseRemoteNote(value: unknown, expectedNoteId: string): RemoteTriliumN
     childBranchIds: normalizeRemoteIdList(value.childBranchIds, 'child Branch ID'),
     utcDateCreated: normalizeRemoteTimestamp(value.utcDateCreated, 'creation timestamp'),
     utcDateModified: normalizeRemoteTimestamp(value.utcDateModified, 'modified timestamp'),
+    contentLength: normalizeOptionalContentLength(value.contentLength, 'Note content length'),
+  };
+}
+
+function parseRemoteAttachment(value: unknown, expectedAttachmentId: string): RemoteTriliumAttachment {
+  if (!isRecord(value)) throw safeError('The Trilium Attachment response is invalid.');
+  const attachmentId = normalizeRemoteId(value.attachmentId, 'Attachment ID');
+  if (attachmentId !== expectedAttachmentId) {
+    throw safeError('The Trilium Attachment response is invalid.');
+  }
+  if (value.isProtected !== undefined && typeof value.isProtected !== 'boolean') {
+    throw safeError('The Trilium Attachment response is invalid.');
+  }
+  return {
+    attachmentId,
+    blobId: normalizeBoundedText(value.blobId, MAX_REMOTE_BLOB_ID_CHARACTERS, 'Attachment blob ID'),
+    mime: normalizeBoundedText(value.mime, MAX_REMOTE_MIME_CHARACTERS, 'Attachment MIME type'),
+    utcDateModified: normalizeRemoteTimestamp(value.utcDateModified, 'Attachment modified timestamp'),
+    contentLength: normalizeOptionalContentLength(value.contentLength, 'Attachment content length'),
+    isProtected: value.isProtected === true,
   };
 }
 
@@ -336,26 +418,25 @@ function parseRemoteBranch(
   };
 }
 
-function contentLanguage(type: string, mime: string): Exclude<NoteLanguage, 'richtext'> | 'html' | undefined {
+function contentLanguage(
+  type: string,
+  mime: string,
+): Exclude<NoteLanguage, 'richtext'> | 'html' | 'mermaid' | undefined {
   const normalizedType = type.toLocaleLowerCase();
   const normalizedMime = mime.split(';', 1)[0].trim().toLocaleLowerCase();
-  if (normalizedType === 'text') {
-    if (normalizedMime === 'text/html' || normalizedMime === 'application/xhtml+xml') return 'html';
-    if (normalizedMime === 'text/markdown'
-      || normalizedMime === 'text/x-markdown'
-      || normalizedMime === 'application/markdown') return 'markdown';
-    if (normalizedMime === 'text/plain' || !normalizedMime) return 'text';
-    return undefined;
-  }
-  if (normalizedType !== 'code') {
-    return normalizedType === 'image' || normalizedType === 'file' ? undefined : 'text';
-  }
+  // Trilium Text Notes store CKEditor HTML. The MIME field may be stale or
+  // customized, so the Note type is the authoritative content contract.
+  if (normalizedType === 'text') return 'html';
+  if (normalizedType === 'mermaid') return 'mermaid';
+  if (normalizedType !== 'code') return undefined;
   if (normalizedMime.includes('typescript') || normalizedMime === 'application/tsx') return 'typescript';
   if (normalizedMime.includes('javascript')
     || normalizedMime === 'application/ecmascript'
     || normalizedMime === 'text/ecmascript'
     || normalizedMime === 'application/jsx') return 'javascript';
-  if (normalizedMime.includes('markdown')) return 'markdown';
+  if (normalizedMime === 'text/markdown'
+    || normalizedMime === 'text/x-markdown'
+    || normalizedMime === 'text/x-gfm') return 'markdown';
   if (normalizedMime.includes('sql')) return 'sql';
   if (normalizedMime.includes('json')) return 'json';
   if (normalizedMime.includes('yaml') || normalizedMime.includes('yml')) return 'yaml';
@@ -364,6 +445,15 @@ function contentLanguage(type: string, mime: string): Exclude<NoteLanguage, 'ric
     || normalizedMime === 'application/x-sh'
     || normalizedMime === 'text/x-sh') return 'bash';
   return 'text';
+}
+
+function markdownMermaidBlock(source: string): string {
+  let fenceLength = 3;
+  for (const match of source.matchAll(/`+/g)) {
+    fenceLength = Math.max(fenceLength, match[0].length + 1);
+  }
+  const fence = '`'.repeat(fenceLength);
+  return `${fence}mermaid\n${source}${source.endsWith('\n') ? '' : '\n'}${fence}`;
 }
 
 function markdownPlaceholder(note: RemoteTriliumNote, reason: TriliumPlaceholderReason): string {
@@ -459,9 +549,64 @@ class RequestLimiter {
   }
 }
 
+function imageMimeStatus(
+  mimeType: string,
+  isProtected: boolean,
+  contentLength: number | null,
+): TriliumImportImageTarget['status'] {
+  if (isProtected) return 'protected';
+  if (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp') return 'unsupported';
+  if (contentLength !== null && contentLength > NOTES_IMAGE_LIMITS.bytes) return 'oversized';
+  return 'ready';
+}
+
+function imageNoteTarget(remote: RemoteTriliumNote): TriliumImportImageTarget {
+  const mimeType = remote.mime.split(';', 1)[0].trim().toLocaleLowerCase();
+  return {
+    sourceKey: `note:${remote.noteId}`,
+    kind: 'note',
+    remoteId: remote.noteId,
+    blobId: remote.blobId,
+    mimeType,
+    utcDateModified: remote.utcDateModified,
+    contentLength: remote.contentLength,
+    status: remote.type.toLocaleLowerCase() === 'image'
+      ? imageMimeStatus(mimeType, remote.isProtected, remote.contentLength)
+      : 'unsupported',
+  };
+}
+
+function attachmentTarget(remote: RemoteTriliumAttachment): TriliumImportImageTarget {
+  const mimeType = remote.mime.split(';', 1)[0].trim().toLocaleLowerCase();
+  return {
+    sourceKey: `attachment:${remote.attachmentId}`,
+    kind: 'attachment',
+    remoteId: remote.attachmentId,
+    blobId: remote.blobId,
+    mimeType,
+    utcDateModified: remote.utcDateModified,
+    contentLength: remote.contentLength,
+    status: imageMimeStatus(mimeType, remote.isProtected, remote.contentLength),
+  };
+}
+
+function invalidImageTarget(source: TriliumScannedImageSource): TriliumImportImageTarget {
+  return {
+    sourceKey: source.sourceKey,
+    kind: 'invalid',
+    blobId: '',
+    mimeType: '',
+    utcDateModified: '',
+    contentLength: null,
+    status: 'invalid',
+  };
+}
+
 class TriliumEtapiClient {
   private readonly limiter = new RequestLimiter();
   private readonly budget = new TransferBudget();
+  private readonly notes = new Map<string, Promise<RemoteTriliumNote>>();
+  private readonly imageTargets = new Map<string, Promise<TriliumImportImageTarget>>();
 
   constructor(
     private readonly endpoint: string,
@@ -476,8 +621,13 @@ class TriliumEtapiClient {
   }
 
   async note(noteId: string): Promise<RemoteTriliumNote> {
-    const value = await this.json(`/notes/${encodeURIComponent(noteId)}`);
-    return parseRemoteNote(value, noteId);
+    let pending = this.notes.get(noteId);
+    if (!pending) {
+      pending = this.json(`/notes/${encodeURIComponent(noteId)}`)
+        .then((value) => parseRemoteNote(value, noteId));
+      this.notes.set(noteId, pending);
+    }
+    return pending;
   }
 
   async branch(branchId: string, parentNoteId: string): Promise<RemoteTriliumBranch> {
@@ -495,6 +645,38 @@ class TriliumEtapiClient {
     }
     if (content.length > NOTE_LIMITS.contentCharacters) throw new TriliumContentOversizedError();
     return content;
+  }
+
+  async imageTarget(source: TriliumScannedImageSource): Promise<TriliumImportImageTarget> {
+    if (source.kind === 'invalid' || source.status === 'invalid' || !source.remoteId) {
+      return invalidImageTarget(source);
+    }
+    let pending = this.imageTargets.get(source.sourceKey);
+    if (!pending) {
+      pending = (async () => {
+        try {
+          if (source.kind === 'note') return imageNoteTarget(await this.note(source.remoteId as string));
+          const value = await this.json(`/attachments/${encodeURIComponent(source.remoteId as string)}`);
+          return attachmentTarget(parseRemoteAttachment(value, source.remoteId as string));
+        } catch (error) {
+          if (error instanceof TriliumHttpStatusError && error.status === 404) {
+            return {
+              sourceKey: source.sourceKey,
+              kind: source.kind,
+              remoteId: source.remoteId,
+              blobId: '',
+              mimeType: '',
+              utcDateModified: '',
+              contentLength: null,
+              status: 'missing',
+            };
+          }
+          throw error;
+        }
+      })();
+      this.imageTargets.set(source.sourceKey, pending);
+    }
+    return pending;
   }
 
   private async json(pathname: string): Promise<unknown> {
@@ -550,7 +732,7 @@ class TriliumEtapiClient {
         }
         if (response.status < 200 || response.status >= 300) {
           void response.body?.cancel().catch(() => undefined);
-          throw safeError(`The Trilium ETAPI request failed (${response.status}).`);
+          throw new TriliumHttpStatusError(response.status);
         }
         let body: Buffer;
         try {
@@ -602,40 +784,95 @@ async function prepareRemoteNote(
     reason: 'title-truncated',
   });
   const localNoteId = triliumLocalNoteId(endpoint, remote.noteId);
-  const sourceVersion = triliumSourceVersion(remote);
   const knownSourceVersion = knownSourceVersions[localNoteId];
   let content: PreparedTriliumContent;
+  let sourceVersion: string;
+  let imageTargets: TriliumImportImageTarget[] = [];
   const language = contentLanguage(remote.type, remote.mime);
-  if (knownSourceVersion === sourceVersion || knownSourceVersion === triliumVersionTag(sourceVersion)) {
-    content = { kind: 'unchanged-source' };
-  } else if (remote.isProtected) {
-    content = {
-      kind: 'placeholder',
-      language: 'markdown',
-      content: markdownPlaceholder(remote, 'protected'),
-      reason: 'protected',
-    };
-  } else if (language === undefined) {
-    content = {
-      kind: 'placeholder',
-      language: 'markdown',
-      content: markdownPlaceholder(remote, 'unsupported'),
-      reason: 'unsupported',
-    };
-  } else {
+  const isKnown = (version: string): boolean => (
+    knownSourceVersion === version || knownSourceVersion === triliumVersionTag(version)
+  );
+
+  if (language === 'html' && !remote.isProtected) {
     try {
       const remoteContent = await client.content(remote.noteId);
-      content = language === 'html'
-        ? { kind: 'html', language: 'richtext', html: remoteContent }
-        : { kind: 'ready', language, content: remoteContent };
+      const images = scanTriliumHtmlImages(endpoint, remoteContent);
+      const uniqueSources = [...new Map(images.map((image) => [image.sourceKey, image])).values()];
+      const targets = await Promise.all(uniqueSources.map((image) => client.imageTarget(image)));
+      sourceVersion = triliumSourceVersion(remote, targets.map(triliumImageTargetFingerprint));
+      if (isKnown(sourceVersion)) {
+        content = { kind: 'unchanged-source' };
+      } else {
+        content = { kind: 'html', language: 'richtext', html: remoteContent, images };
+        imageTargets = targets;
+      }
     } catch (error) {
       if (!(error instanceof TriliumContentOversizedError)) throw error;
+      sourceVersion = triliumSourceVersion(remote);
       content = {
         kind: 'placeholder',
         language: 'markdown',
         content: markdownPlaceholder(remote, 'oversized'),
         reason: 'oversized',
       };
+    }
+  } else if (remote.type.toLocaleLowerCase() === 'image') {
+    const target = imageNoteTarget(remote);
+    sourceVersion = triliumSourceVersion(remote, [triliumImageTargetFingerprint(target)]);
+    if (isKnown(sourceVersion)) {
+      content = { kind: 'unchanged-source' };
+    } else if (target.status === 'ready') {
+      content = { kind: 'image', language: 'richtext', sourceKey: target.sourceKey };
+      imageTargets = [target];
+    } else {
+      const reason: TriliumPlaceholderReason = target.status === 'protected'
+        ? 'protected'
+        : target.status === 'oversized'
+          ? 'oversized'
+          : 'unsupported';
+      content = {
+        kind: 'placeholder',
+        language: 'markdown',
+        content: markdownPlaceholder(remote, reason),
+        reason,
+      };
+    }
+  } else {
+    sourceVersion = triliumSourceVersion(remote);
+    if (isKnown(sourceVersion)) {
+      content = { kind: 'unchanged-source' };
+    } else if (remote.isProtected) {
+      content = {
+        kind: 'placeholder',
+        language: 'markdown',
+        content: markdownPlaceholder(remote, 'protected'),
+        reason: 'protected',
+      };
+    } else if (language === undefined) {
+      content = {
+        kind: 'placeholder',
+        language: 'markdown',
+        content: markdownPlaceholder(remote, 'unsupported'),
+        reason: 'unsupported',
+      };
+    } else {
+      if (language === 'html') throw safeError('The Trilium Note content contract is invalid.');
+      try {
+        const remoteContent = await client.content(remote.noteId);
+        const readyContent: Extract<PreparedTriliumContent, { kind: 'ready' }> = language === 'mermaid'
+          ? { kind: 'ready', language: 'markdown', content: markdownMermaidBlock(remoteContent) }
+          : { kind: 'ready', language, content: remoteContent };
+        if (readyContent.content.length > NOTE_LIMITS.contentCharacters) throw new TriliumContentOversizedError();
+        content = readyContent;
+      } catch (error) {
+        if (!(error instanceof TriliumContentOversizedError)) throw error;
+        content = {
+          kind: 'placeholder',
+          language: 'markdown',
+          content: markdownPlaceholder(remote, 'oversized'),
+          reason: 'oversized',
+        };
+      }
     }
   }
   if (content.kind === 'placeholder') pushWarning(warnings, {
@@ -659,6 +896,7 @@ async function prepareRemoteNote(
       content,
     },
     children,
+    imageTargets,
   };
 }
 
@@ -697,6 +935,7 @@ export async function prepareTriliumImport(options: PrepareTriliumImportOptions)
   const seenNoteIds = new Set<string>();
   const seenBranchIds = new Set<string>();
   const notes: PreparedTriliumNote[] = [];
+  const imageTargets = new Map<string, TriliumImportImageTarget>();
   const warnings: TriliumImportWarning[] = [];
   let clones = 0;
   let skippedSystemTrees = 0;
@@ -776,6 +1015,17 @@ export async function prepareTriliumImport(options: PrepareTriliumImportOptions)
       const nextFrontier: PendingPlacement[] = [];
       for (const result of results) {
         notes.push(result.note);
+        for (const target of result.imageTargets) {
+          const existing = imageTargets.get(target.sourceKey);
+          if (existing
+            && triliumImageTargetFingerprint(existing) !== triliumImageTargetFingerprint(target)) {
+            throw safeError('A Trilium image changed while the import was being prepared.');
+          }
+          if (!existing && imageTargets.size >= TRILIUM_IMPORT_MAX_BRANCHES) {
+            throw safeError(`The Trilium import cannot contain more than ${TRILIUM_IMPORT_MAX_BRANCHES} images.`);
+          }
+          imageTargets.set(target.sourceKey, target);
+        }
         for (const child of result.children) {
           if (seenBranchIds.has(child.branchId)) {
             throw safeError('The Trilium hierarchy contains a duplicate Branch ID.');
@@ -811,6 +1061,7 @@ export async function prepareTriliumImport(options: PrepareTriliumImportOptions)
       endpoint,
       sourceId: triliumSourceId(endpoint),
       notes,
+      imageTargets: [...imageTargets.values()].sort((left, right) => compareText(left.sourceKey, right.sourceKey)),
       warnings,
       clones,
       placeholders,
@@ -821,7 +1072,9 @@ export async function prepareTriliumImport(options: PrepareTriliumImportOptions)
   } catch (error) {
     controller.abort();
     if (options.signal?.aborted) throw new Error('The Trilium import was cancelled.');
-    if (error instanceof TriliumImportSafeError || error instanceof TriliumContentOversizedError) {
+    if (error instanceof TriliumImportSafeError
+      || error instanceof TriliumContentOversizedError
+      || error instanceof TriliumHttpStatusError) {
       throw new Error(error.message || 'A Trilium Note is too large.');
     }
     throw new Error('The Trilium import failed.');
@@ -851,7 +1104,7 @@ function preparedBody(
   if (note.content.kind === 'unchanged-source') {
     throw new Error(`Imported Note ${note.title} was marked unchanged but has no current local body.`);
   }
-  if (note.content.kind === 'html') {
+  if (note.content.kind === 'html' || note.content.kind === 'image') {
     const converted = convertedHtml[note.localNoteId];
     if (typeof converted !== 'string') {
       throw new Error(`Converted Rich Text is missing for imported Note ${note.title}.`);
@@ -922,7 +1175,19 @@ function validatePlan(plan: TriliumImportPlan): void {
     || normalizeTriliumEndpoint(plan.endpoint) !== plan.endpoint
     || triliumSourceId(plan.endpoint) !== plan.sourceId
     || !Array.isArray(plan.notes)
-    || plan.notes.length > TRILIUM_IMPORT_MAX_NOTES) {
+    || plan.notes.length > TRILIUM_IMPORT_MAX_NOTES
+    || !Array.isArray(plan.imageTargets)
+    || plan.imageTargets.length > TRILIUM_IMPORT_MAX_BRANCHES) {
+    throw new Error('The prepared Trilium import is invalid.');
+  }
+  const imageTargetKeys = new Set<string>();
+  try {
+    for (const target of plan.imageTargets) {
+      validateTriliumImportImageTarget(target);
+      if (imageTargetKeys.has(target.sourceKey)) throw new Error('duplicate target');
+      imageTargetKeys.add(target.sourceKey);
+    }
+  } catch {
     throw new Error('The prepared Trilium import is invalid.');
   }
   const ids = new Set<string>();
@@ -934,6 +1199,14 @@ function validatePlan(plan: TriliumImportPlan): void {
       || note.depth < 0
       || note.depth > NOTES_TREE_MAX_DEPTH
       || (note.parentLocalNoteId !== null && !ids.has(note.parentLocalNoteId))) {
+      throw new Error('The prepared Trilium import is invalid.');
+    }
+    if (note.content.kind === 'html') {
+      if (!Array.isArray(note.content.images)
+        || note.content.images.some((image) => !imageTargetKeys.has(image.sourceKey))) {
+        throw new Error('The prepared Trilium import is invalid.');
+      }
+    } else if (note.content.kind === 'image' && !imageTargetKeys.has(note.content.sourceKey)) {
       throw new Error('The prepared Trilium import is invalid.');
     }
     ids.add(note.localNoteId);

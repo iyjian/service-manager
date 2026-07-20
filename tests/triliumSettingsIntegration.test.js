@@ -84,13 +84,17 @@ test('Trilium Settings flow flushes drafts, fences requests, converts HTML in ba
 
   const flushIndex = importFlow.indexOf('await flushNotesPage();');
   const prepareIndex = importFlow.indexOf('window.settingsApi.prepareTriliumImport({');
-  const convertIndex = importFlow.indexOf('convertTriliumHtmlToRichText(source.html, preparation.endpoint)');
+  const resolveIndex = importFlow.indexOf('window.settingsApi.resolveTriliumImportImages({');
+  const convertIndex = importFlow.indexOf('const converted = convertTriliumHtmlToRichText(');
   const applyIndex = importFlow.indexOf('window.settingsApi.applyTriliumImport({');
   assert.ok(flushIndex >= 0 && flushIndex < prepareIndex);
-  assert.ok(prepareIndex < convertIndex && convertIndex < applyIndex);
+  assert.ok(prepareIndex < resolveIndex && resolveIndex < convertIndex && convertIndex < applyIndex);
   assert.match(importFlow, /const requestId = crypto\.randomUUID\(\);[\s\S]*?activeTriliumImportRequestId = requestId/);
   assert.match(importFlow, /prepareTriliumImport\(\{\s*requestId,\s*endpoint,\s*etapiToken,\s*\}\)/);
   assert.match(importFlow, /if \(preparation\.requestId !== requestId\) throw new Error\('The Trilium import response did not match this request\.'\)/);
+  assert.match(importFlow, /resolveTriliumImportImages\(\{\s*requestId,\s*sessionId: preparation\.sessionId,\s*\}\)/);
+  assert.match(importFlow, /const imageAssetsBySource = new Map\(/);
+  assert.match(importFlow, /convertTriliumHtmlToRichText\(\s*source\.html,\s*preparation\.endpoint,\s*imageAssetsBySource/);
   assert.ok((importFlow.match(/if \(triliumCancelRequested\) throw new Error\('Trilium import cancelled\.'\)/g) ?? []).length >= 3);
   assert.match(importFlow, /const convertedNotes: TriliumImportConvertedNote\[\] = \[\]/);
   assert.match(importFlow, /convertedNotes\.push\(\{ noteId: source\.noteId, \.\.\.converted \}\)/);
@@ -117,7 +121,7 @@ test('Trilium Settings flow flushes drafts, fences requests, converts HTML in ba
   assert.match(cancelFlow, /triliumApplyStarted\) return/);
 });
 
-test('preload exposes only the bounded Trilium import IPC request, apply, cancel, and progress channels', async () => {
+test('preload exposes only the bounded Trilium prepare, image resolve, apply, cancel, and progress channels', async () => {
   const [preload, types] = await Promise.all([
     source('src/main/preload.ts'),
     source('src/shared/types.ts'),
@@ -125,19 +129,28 @@ test('preload exposes only the bounded Trilium import IPC request, apply, cancel
   const settingsApi = between(preload, 'const settingsApi: SettingsApi = {', 'const proxyApi: ProxyApi = {');
 
   assert.match(settingsApi, /prepareTriliumImport: \(input: TriliumImportPrepareInput\) =>\s*ipcRenderer\.invoke\('settings:notes:trilium-import:prepare', input\)/);
+  assert.match(settingsApi, /resolveTriliumImportImages: \(input: TriliumImportResolveImagesInput\) =>\s*ipcRenderer\.invoke\('settings:notes:trilium-import:resolve-images', input\)/);
   assert.match(settingsApi, /applyTriliumImport: \(input: TriliumImportApplyInput\) =>\s*ipcRenderer\.invoke\('settings:notes:trilium-import:apply', input\)/);
   assert.match(settingsApi, /cancelTriliumImport: \(requestId: string\) =>\s*ipcRenderer\.invoke\('settings:notes:trilium-import:cancel', requestId\)/);
   assert.match(settingsApi, /onTriliumImportProgress:[\s\S]*?ipcRenderer\.on\('settings:notes:trilium-import:progress', wrapped\)[\s\S]*?removeListener\('settings:notes:trilium-import:progress', wrapped\)/);
   assert.match(preload, /contextBridge\.exposeInMainWorld\('settingsApi', settingsApi\)/);
-  assert.match(types, /interface SettingsApi \{[\s\S]*?prepareTriliumImport:[\s\S]*?applyTriliumImport:[\s\S]*?cancelTriliumImport:[\s\S]*?onTriliumImportProgress:/);
+  assert.match(types, /interface SettingsApi \{[\s\S]*?prepareTriliumImport:[\s\S]*?resolveTriliumImportImages:[\s\S]*?applyTriliumImport:[\s\S]*?cancelTriliumImport:[\s\S]*?onTriliumImportProgress:/);
   assert.match(types, /interface PersistentDataReloaded \{\s*generation: number;\s*source: 's3' \| 'trilium';\s*\}/);
 });
 
 test('main process owns Trilium preparation sessions and applies each import atomically before one sync marker and reload', async () => {
-  const main = await source('src/main/main.ts');
+  const [main, s3Sync] = await Promise.all([
+    source('src/main/main.ts'),
+    source('src/main/s3Sync.ts'),
+  ]);
   const prepareHandler = between(
     main,
     'ipcMain.handle(IPC_CHANNELS.triliumImportPrepare',
+    'ipcMain.handle(IPC_CHANNELS.triliumImportResolveImages',
+  );
+  const resolveHandler = between(
+    main,
+    'ipcMain.handle(IPC_CHANNELS.triliumImportResolveImages',
     'ipcMain.handle(IPC_CHANNELS.triliumImportApply',
   );
   const applyHandler = between(
@@ -155,14 +168,27 @@ test('main process owns Trilium preparation sessions and applies each import ato
     'const activeTriliumImportRequests',
     'const autoStartAbortController',
   );
+  const sessionHelpers = between(
+    main,
+    'function clearPreparedTriliumToken',
+    'function triliumImageNoteHtml',
+  );
+  const convertedImageValidation = between(
+    main,
+    'function richTextImageIdentities(',
+    'function trackTriliumImportTask',
+  );
 
   assert.match(main, /triliumImportPrepare: 'settings:notes:trilium-import:prepare'/);
+  assert.match(main, /triliumImportResolveImages: 'settings:notes:trilium-import:resolve-images'/);
   assert.match(main, /triliumImportApply: 'settings:notes:trilium-import:apply'/);
   assert.match(main, /triliumImportCancel: 'settings:notes:trilium-import:cancel'/);
   assert.match(main, /triliumImportProgress: 'settings:notes:trilium-import:progress'/);
-  assert.match(importState, /preparedTriliumImports = new Map<string, \{\s*senderId: number;\s*requestId: string;\s*plan: TriliumImportPlan;\s*expiresAt: number;/);
-  assert.doesNotMatch(importState, /token|endpoint/i);
+  assert.match(importState, /preparedTriliumImports = new Map<string, \{[\s\S]*?plan: TriliumImportPlan;[\s\S]*?controller: AbortController;[\s\S]*?tokenBuffer\?: Buffer;[\s\S]*?resolvedImages\?: TriliumResolvedImageAsset\[\];[\s\S]*?s3ImageTarget\?: string;[\s\S]*?resolvingImages: boolean;[\s\S]*?expiresAt: number;/);
   assert.match(importState, /TRILIUM_IMPORT_SESSION_TTL_MS = 10 \* 60 \* 1_000/);
+  assert.match(sessionHelpers, /session\.tokenBuffer\?\.fill\(0\);\s*delete session\.tokenBuffer/);
+  assert.match(sessionHelpers, /if \(abort\) session\.controller\.abort\(\);\s*clearPreparedTriliumToken\(session\);\s*preparedTriliumImports\.delete\(sessionId\)/);
+  assert.match(sessionHelpers, /if \(session\.expiresAt > now\) continue;\s*removePreparedTriliumImport\(sessionId, true\);\s*activeTriliumImportRequests\.delete\(session\.requestId\)/);
 
   assert.match(prepareHandler, /validateTriliumImportPrepare\(inputValue\)/);
   assert.match(prepareHandler, /if \(activeTriliumImportRequests\.size > 0\)[\s\S]*?Another Trilium import is already being prepared/);
@@ -170,31 +196,62 @@ test('main process owns Trilium preparation sessions and applies each import ato
   const prepareFlush = prepareHandler.indexOf('await flushRendererNotes();');
   const prepareFetch = prepareHandler.indexOf('await prepareTriliumImportPlan({');
   assert.ok(prepareFlush >= 0 && prepareFlush < prepareFetch);
+  assert.match(prepareHandler, /const tokenBuffer = Buffer\.from\(input\.etapiToken, 'utf8'\);\s*let retainedSession = false/);
+  assert.match(prepareHandler, /session\.senderId === event\.sender\.id[\s\S]*?removePreparedTriliumImport\(sessionId, true\)/);
   assert.match(prepareHandler, /triliumStoredSourceVersion\(note\.tags\)[\s\S]*?knownSourceVersions\[note\.id\] = version/);
   assert.match(prepareHandler, /token: input\.etapiToken,[\s\S]*?signal: controller\.signal,[\s\S]*?knownSourceVersions/);
-  assert.match(prepareHandler, /preparedTriliumImports\.set\(sessionId, \{\s*senderId: event\.sender\.id,\s*requestId: input\.requestId,\s*plan,\s*expiresAt:/);
-  assert.match(prepareHandler, /htmlNotes: plan\.notes\.flatMap\([\s\S]*?note\.content\.kind === 'html'[\s\S]*?noteId: note\.localNoteId, html: note\.content\.html/);
+  assert.match(prepareHandler, /preparedTriliumImports\.set\(sessionId, \{[\s\S]*?senderId: event\.sender\.id,[\s\S]*?requestId: input\.requestId,[\s\S]*?plan,[\s\S]*?controller,[\s\S]*?tokenBuffer,[\s\S]*?resolvingImages: false,[\s\S]*?expiresAt:/);
+  assert.match(prepareHandler, /preparedTriliumImports\.set\([\s\S]*?retainedSession = true/);
+  assert.match(prepareHandler, /htmlNotes: triliumHtmlNotes\(plan\)/);
+  assert.match(prepareHandler, /imageTargetCount: plan\.imageTargets\.length/);
   assert.doesNotMatch(prepareHandler.slice(prepareHandler.indexOf('      return {')), /etapiToken|token:/);
-  assert.match(prepareHandler, /active\?\.controller === controller[\s\S]*?activeTriliumImportRequests\.delete\(input\.requestId\)/);
+  assert.match(prepareHandler, /finally \{\s*if \(!retainedSession\) \{\s*tokenBuffer\.fill\(0\);[\s\S]*?active\?\.controller === controller[\s\S]*?activeTriliumImportRequests\.delete\(input\.requestId\)/);
+
+  assert.match(resolveHandler, /validateTriliumImportResolveImages\(inputValue\)/);
+  assert.match(resolveHandler, /session\.senderId !== event\.sender\.id[\s\S]*?session\.requestId !== input\.requestId/);
+  assert.match(resolveHandler, /if \(session\.resolvedImages\) \{[\s\S]*?assets: session\.resolvedImages[\s\S]*?status === 'placeholder'/);
+  assert.match(resolveHandler, /if \(session\.resolvingImages \|\| !session\.tokenBuffer\)[\s\S]*?already being resolved/);
+  assert.match(resolveHandler, /session\.resolvingImages = true/);
+  assert.match(resolveHandler, /const initialSettings = await getS3SyncRuntime\(\)\.getSettings\(\);\s*const initialTarget = notesImageTarget\(initialSettings\)/);
+  assert.match(resolveHandler, /await resolveTriliumImportImages\([\s\S]*?session\.tokenBuffer\?\.toString\('utf8'\) \?\? ''[\s\S]*?uploadNoteImage\(upload, context\.signal\)[\s\S]*?signal: session\.controller\.signal/);
+  assert.match(resolveHandler, /phase: 'images'/);
+  assert.match(resolveHandler, /const uploaded = images\.some\(\(asset\) => asset\.status === 'uploaded'\);[\s\S]*?const finalSettings = await getS3SyncRuntime\(\)\.getSettings\(\);[\s\S]*?notesImageTarget\(finalSettings\) !== initialTarget[\s\S]*?S3 settings changed during the Trilium image import/);
+  assert.match(resolveHandler, /session\.resolvedImages = images;\s*if \(uploaded\) session\.s3ImageTarget = initialTarget;\s*clearPreparedTriliumToken\(session\)/);
+  assert.match(resolveHandler, /catch \(error\) \{\s*removePreparedTriliumImport\(input\.sessionId, true\);\s*activeTriliumImportRequests\.delete\(input\.requestId\);\s*throw error;\s*\} finally \{\s*session\.resolvingImages = false/);
+  assert.doesNotMatch(resolveHandler, /assets:.*bytes|etapiToken/);
+  assert.match(s3Sync, /public async uploadNoteImage\(value: unknown, signal\?: AbortSignal\): Promise<NoteImageUploadResult>[\s\S]*?this\.shuttingDown \|\| signal\?\.aborted[\s\S]*?createNotesImageStore\(settings, signal\)/);
 
   assert.match(applyHandler, /session\.senderId !== event\.sender\.id[\s\S]*?session\.requestId !== input\.requestId/);
-  assert.match(applyHandler, /expectedHtmlIds[\s\S]*?convertedIds[\s\S]*?isDeepStrictEqual\(expectedHtmlIds, convertedIds\)/);
-  assert.match(applyHandler, /preparedTriliumImports\.delete\(input\.sessionId\)/);
+  assert.match(applyHandler, /if \(!session\.resolvedImages\)[\s\S]*?Resolve the Trilium images before applying the import/);
+  assert.match(applyHandler, /const expectedHtmlIds = session\.plan\.notes[\s\S]*?filter\(\(note\) => note\.content\.kind === 'html' \|\| note\.content\.kind === 'image'\)/);
+  assert.match(applyHandler, /const convertedIds = input\.convertedNotes[\s\S]*?isDeepStrictEqual\(expectedHtmlIds, convertedIds\)/);
+  assert.match(applyHandler, /validateConvertedTriliumImages\(session\.plan, session\.resolvedImages, input\.convertedNotes\)/);
+  assert.match(applyHandler, /removePreparedTriliumImport\(input\.sessionId\)/);
   const applyFlush = applyHandler.indexOf('await flushRendererNotes();');
   const sharedMutation = applyHandler.indexOf('await runS3SharedDataMutation(async () => {');
   assert.ok(applyFlush >= 0 && applyFlush < sharedMutation);
+  assert.match(applyHandler.slice(applyFlush, sharedMutation), /if \(session\.s3ImageTarget\)[\s\S]*?notesImageTarget\(settings\) !== session\.s3ImageTarget[\s\S]*?S3 settings changed after the Trilium images were imported/);
   assert.match(applyHandler, /const previousNotes = getNotesStore\(\)\.exportSnapshot\(\);[\s\S]*?const previousTombstones = getNotesStore\(\)\.exportTombstones\(\);[\s\S]*?const previousTree = getNotesTreeStore\(\)\.snapshot\(\);[\s\S]*?const previousExpanded = getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds/);
   assert.match(applyHandler, /try \{[\s\S]*?replaceSnapshot\(merged\.notes, merged\.tombstones\)[\s\S]*?getNotesTreeStore\(\)\.replaceSnapshot\(merged\.tree, activeIds\)[\s\S]*?getNotesTreeViewStore\(\)\.replaceActiveIds\(activeIds\)[\s\S]*?\} catch \(error\) \{\s*await restoreNotesWorkspace\(previousNotes, previousTombstones, previousTree, previousExpanded\);\s*throw error;/);
   assert.equal((applyHandler.match(/s3SyncRuntime\?\.markLocalChange\(\)/g) ?? []).length, 1);
   assert.match(applyHandler, /if \(notesChanged \|\| treeChanged\) \{[\s\S]*?s3SyncRuntime\?\.markLocalChange\(\)/);
   assert.match(applyHandler, /if \(applied\.changed\) \{[\s\S]*?broadcast\(IPC_CHANNELS\.persistentDataReloaded, \{\s*generation: persistentDataGeneration,\s*source: 'trilium'/);
   assert.match(applyHandler, /phase: 'complete'[\s\S]*?message: `Imported \$\{result\.total\} Notes\.`/);
+  assert.match(applyHandler, /imagePlaceholderCount: input\.convertedNotes\.reduce\([\s\S]*?note\.imagePlaceholderCount/);
+  assert.match(applyHandler, /finally \{[\s\S]*?active\?\.controller === session\.controller[\s\S]*?activeTriliumImportRequests\.delete\(input\.requestId\)/);
+
+  assert.match(convertedImageValidation, /note\.content\.kind === 'html'[\s\S]*?note\.content\.kind === 'image'/);
+  assert.match(convertedImageValidation, /converted\.embeddedImageCount !== expected\.images[\s\S]*?converted\.imagePlaceholderCount !== expected\.placeholders/);
+  assert.match(convertedImageValidation, /parseRichTextContent\(content\)[\s\S]*?node\.type === 's3Image'[\s\S]*?parseNoteImageNodeAttributes\(node\.attrs\)/);
+  assert.match(convertedImageValidation, /actual\.some\(\(identity\) => !allowed\.has\(identity\)\)[\s\S]*?unexpected reference/);
+  assert.match(convertedImageValidation, /\[\.\.\.allowed\]\.some\(\(identity\) => !used\.has\(identity\)\)[\s\S]*?converted Trilium images are incomplete/);
 
   assert.match(cancelHandler, /const active = activeTriliumImportRequests\.get\(requestId\)/);
   assert.match(cancelHandler, /if \(active\?\.senderId === event\.sender\.id\) active\.controller\.abort\(\)/);
-  assert.match(cancelHandler, /session\.senderId === event\.sender\.id && session\.requestId === requestId[\s\S]*?preparedTriliumImports\.delete\(sessionId\)/);
-  assert.match(main, /async function shutdownRuntimesForQuit\(\)[\s\S]*?for \(const \{ controller \} of activeTriliumImportRequests\.values\(\)\) controller\.abort\(\);[\s\S]*?await Promise\.allSettled\(\[\.\.\.activeTriliumImportTasks\]\)/);
-  assert.match(main, /app\.on\('render-process-gone'[\s\S]*?active\.senderId !== webContents\.id[\s\S]*?active\.controller\.abort\(\)[\s\S]*?session\.senderId === webContents\.id/);
+  assert.match(cancelHandler, /session\.senderId === event\.sender\.id && session\.requestId === requestId[\s\S]*?removePreparedTriliumImport\(sessionId, true\)/);
+  assert.match(cancelHandler, /await Promise\.allSettled\(\[\.\.\.activeTriliumImportTasks\]\);\s*activeTriliumImportRequests\.delete\(requestId\)/);
+  assert.match(main, /async function shutdownRuntimesForQuit\(\)[\s\S]*?for \(const \{ controller \} of activeTriliumImportRequests\.values\(\)\) controller\.abort\(\);[\s\S]*?await Promise\.allSettled\(\[\.\.\.activeTriliumImportTasks\]\);[\s\S]*?for \(const sessionId of \[\.\.\.preparedTriliumImports\.keys\(\)\]\) removePreparedTriliumImport\(sessionId\)/);
+  assert.match(main, /app\.on\('render-process-gone'[\s\S]*?active\.senderId !== webContents\.id[\s\S]*?active\.controller\.abort\(\)[\s\S]*?session\.senderId === webContents\.id[\s\S]*?removePreparedTriliumImport\(sessionId, true\)/);
 });
 
 test('persistent-data reload is source-aware: Trilium refreshes Notes only while S3 refreshes Hosts and Notes', async () => {
@@ -243,15 +300,16 @@ test('Trilium HTML conversion uses the live Tiptap schema, strips active content
   assert.match(extensionFactory, /StarterKit\.configure\(/);
   assert.match(extensionFactory, /TableKit\.configure\(/);
   assert.match(extensionFactory, /createTaskListExtension\(\)/);
-  assert.match(extensionFactory, /createS3ImageExtension\(onError, onLayoutChange\)/);
+  assert.match(extensionFactory, /createS3ImageExtension\(onError, onLayoutChange, importImages, importToken\)/);
   assert.match(liveEditor, /extensions: createNotesRichTextExtensions\(\s*this\.onError,/);
   assert.match(conversion, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
   assert.match(conversion, /script,style,iframe,object,embed,form,input,button,textarea,select,meta,link/);
-  assert.match(conversion, /querySelectorAll\('img'\)[\s\S]*?embeddedImageCount \+= 1[\s\S]*?replaceWith\(parsed\.createTextNode\(alt \? `\[Image: \$\{alt\}\]` : '\[Embedded image\]'\)\)/);
+  assert.match(conversion, /querySelectorAll\('\[data-trilium-import-image\]'\)[\s\S]*?removeAttribute\('data-trilium-import-image'\)/);
+  assert.match(conversion, /adaptTriliumImages\(parsed\.body, endpoint, imageAssets, importToken\)/);
   assert.match(conversion, /querySelectorAll\('a\[href\]'\)[\s\S]*?new URL\(href, endpointBase\)[\s\S]*?isAllowedRichTextLinkHref\(absolute\.href\)[\s\S]*?anchor\.setAttribute\('href', absolute\.href\)/);
   assert.match(conversion, /catch \{\s*anchor\.removeAttribute\('href'\);\s*anchor\.removeAttribute\('target'\);\s*anchor\.removeAttribute\('rel'\)/);
-  assert.match(conversion, /generateJSON\(\s*parsed\.body\.innerHTML,\s*createNotesRichTextExtensions\(\(\) => undefined, \(\) => undefined\)/);
-  assert.match(conversion, /content: normalizeEditorContent\(generated\)/);
+  assert.match(conversion, /generateJSON\(\s*parsed\.body\.innerHTML,\s*createNotesRichTextExtensions\(/);
+  assert.match(conversion, /const content = normalizeEditorContent\(generated\);\s*assertImportedImagesRetained\(content, adaptedImages\.attributes\)/);
   assert.match(conversion, /content: richTextPlainTextFallback\(parsed\.body\.textContent \?\? ''\)[\s\S]*?usedPlainTextFallback: true/);
   assert.doesNotMatch(conversion, /\bfetch\s*\(|window\.settingsApi|innerHTML\s*=/);
   assert.match(fallback, /replace\(\/\[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f\]\/g, ''\)/);

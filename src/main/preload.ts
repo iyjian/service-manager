@@ -36,6 +36,7 @@ import type {
   TriliumImportApplyInput,
   TriliumImportPrepareInput,
   TriliumImportProgress,
+  TriliumImportResolveImagesInput,
   UiPreferences,
   UiPreferencesDraft,
   UpdateState,
@@ -103,6 +104,7 @@ const notesApi: NotesApi = {
     ipcRenderer.invoke('notes:update', { id, draft, expectedNote }),
   moveNote: (input) => ipcRenderer.invoke('notes:move', input),
   setTreeExpanded: (input) => ipcRenderer.invoke('notes:tree-expanded', input),
+  previewNoteDelete: (id) => ipcRenderer.invoke('notes:delete-preview', id),
   deleteNote: (input) => ipcRenderer.invoke('notes:delete', input),
   recoverDrafts: (input) => ipcRenderer.invoke('notes:recover-drafts', input),
   uploadImage: (input) => ipcRenderer.invoke('notes:image:upload', input),
@@ -129,6 +131,8 @@ const settingsApi: SettingsApi = {
     ipcRenderer.invoke('settings:ui:notes-sidebar-width:save', width),
   prepareTriliumImport: (input: TriliumImportPrepareInput) =>
     ipcRenderer.invoke('settings:notes:trilium-import:prepare', input),
+  resolveTriliumImportImages: (input: TriliumImportResolveImagesInput) =>
+    ipcRenderer.invoke('settings:notes:trilium-import:resolve-images', input),
   applyTriliumImport: (input: TriliumImportApplyInput) =>
     ipcRenderer.invoke('settings:notes:trilium-import:apply', input),
   cancelTriliumImport: (requestId: string) =>

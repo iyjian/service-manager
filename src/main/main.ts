@@ -5,6 +5,12 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import {
+  parseNoteImageNodeAttributes,
+  parseRichTextContent,
+  type NoteImageReference,
+  type RichTextNode,
+} from '../shared/noteRichText';
 import type {
   ConfigTransferResult,
   ConfirmDialogOptions,
@@ -12,6 +18,7 @@ import type {
   HostConfig,
   HostDraft,
   NoteDeleteInput,
+  NoteDeletePreview,
   NoteDraft,
   NoteDraftRecoveryInput,
   NotePlacementInput,
@@ -38,8 +45,10 @@ import type {
   KubernetesListSnapshot,
   KubernetesPortForwardState,
   TriliumImportApplyInput,
+  TriliumImportImageAsset,
   TriliumImportPrepareInput,
   TriliumImportProgress as RendererTriliumImportProgress,
+  TriliumImportResolveImagesInput,
   TriliumImportResult,
   KubernetesVncLaunchResult,
   KubernetesVncTarget,
@@ -92,9 +101,11 @@ import {
 import {
   mergeTriliumImport,
   prepareTriliumImport as prepareTriliumImportPlan,
+  resolveTriliumImportImages,
   triliumStoredSourceVersion,
   type TriliumImportPlan,
   type TriliumImportProgress,
+  type TriliumResolvedImageAsset,
 } from './triliumImport';
 
 const IPC_CHANNELS = {
@@ -128,6 +139,7 @@ const IPC_CHANNELS = {
   notesUpdate: 'notes:update',
   notesMove: 'notes:move',
   notesTreeExpanded: 'notes:tree-expanded',
+  notesDeletePreview: 'notes:delete-preview',
   notesDelete: 'notes:delete',
   notesRecoverDrafts: 'notes:recover-drafts',
   notesImageUpload: 'notes:image:upload',
@@ -139,6 +151,7 @@ const IPC_CHANNELS = {
   uiPreferencesNotesSidebarWidthSave: 'settings:ui:notes-sidebar-width:save',
   uiPreferencesChanged: 'settings:ui:changed',
   triliumImportPrepare: 'settings:notes:trilium-import:prepare',
+  triliumImportResolveImages: 'settings:notes:trilium-import:resolve-images',
   triliumImportApply: 'settings:notes:trilium-import:apply',
   triliumImportCancel: 'settings:notes:trilium-import:cancel',
   triliumImportProgress: 'settings:notes:trilium-import:progress',
@@ -239,6 +252,11 @@ const preparedTriliumImports = new Map<string, {
   senderId: number;
   requestId: string;
   plan: TriliumImportPlan;
+  controller: AbortController;
+  tokenBuffer?: Buffer;
+  resolvedImages?: TriliumResolvedImageAsset[];
+  s3ImageTarget?: string;
+  resolvingImages: boolean;
   expiresAt: number;
 }>();
 const TRILIUM_IMPORT_SESSION_TTL_MS = 10 * 60 * 1_000;
@@ -406,6 +424,20 @@ function validateTriliumImportPrepare(value: unknown): TriliumImportPrepareInput
   };
 }
 
+function validateTriliumImportResolveImages(value: unknown): TriliumImportResolveImagesInput {
+  if (!isRecord(value)
+    || typeof value.sessionId !== 'string'
+    || value.sessionId.length < 8
+    || value.sessionId.length > 128
+    || !/^[A-Za-z0-9_-]+$/.test(value.sessionId)) {
+    throw new Error('The prepared Trilium image import is invalid.');
+  }
+  return {
+    requestId: validateTriliumRequestId(value.requestId),
+    sessionId: value.sessionId,
+  };
+}
+
 function validateTriliumImportApply(value: unknown): TriliumImportApplyInput {
   if (!isRecord(value)
     || typeof value.sessionId !== 'string'
@@ -425,6 +457,9 @@ function validateTriliumImportApply(value: unknown): TriliumImportApplyInput {
       || !Number.isSafeInteger(candidate.embeddedImageCount)
       || Number(candidate.embeddedImageCount) < 0
       || Number(candidate.embeddedImageCount) > 1_000_000
+      || !Number.isSafeInteger(candidate.imagePlaceholderCount)
+      || Number(candidate.imagePlaceholderCount) < 0
+      || Number(candidate.imagePlaceholderCount) > Number(candidate.embeddedImageCount)
       || typeof candidate.usedPlainTextFallback !== 'boolean'
       || noteIds.has(candidate.noteId)) {
       throw new Error('The converted Trilium content is invalid.');
@@ -434,6 +469,7 @@ function validateTriliumImportApply(value: unknown): TriliumImportApplyInput {
       noteId: candidate.noteId,
       content: candidate.content,
       embeddedImageCount: Number(candidate.embeddedImageCount),
+      imagePlaceholderCount: Number(candidate.imagePlaceholderCount),
       usedPlainTextFallback: candidate.usedPlainTextFallback,
     };
   });
@@ -480,9 +516,111 @@ function rendererTriliumProgress(
   };
 }
 
+function clearPreparedTriliumToken(session: { tokenBuffer?: Buffer }): void {
+  session.tokenBuffer?.fill(0);
+  delete session.tokenBuffer;
+}
+
+function removePreparedTriliumImport(sessionId: string, abort = false): void {
+  const session = preparedTriliumImports.get(sessionId);
+  if (!session) return;
+  if (abort) session.controller.abort();
+  clearPreparedTriliumToken(session);
+  preparedTriliumImports.delete(sessionId);
+}
+
 function prunePreparedTriliumImports(now = Date.now()): void {
   for (const [sessionId, session] of preparedTriliumImports) {
-    if (session.expiresAt <= now) preparedTriliumImports.delete(sessionId);
+    if (session.expiresAt > now) continue;
+    removePreparedTriliumImport(sessionId, true);
+    activeTriliumImportRequests.delete(session.requestId);
+  }
+}
+
+function triliumImageNoteHtml(sourceKey: string): string {
+  const match = sourceKey.match(/^note:([A-Za-z0-9_]{4,32})$/);
+  if (!match) throw new Error('The prepared Trilium Image Note is invalid.');
+  return `<figure class="image"><img src="api/images/${match[1]}"></figure>`;
+}
+
+function triliumHtmlNotes(plan: TriliumImportPlan): Array<{ noteId: string; html: string }> {
+  return plan.notes.flatMap((note) => {
+    if (note.content.kind === 'html') return [{ noteId: note.localNoteId, html: note.content.html }];
+    if (note.content.kind === 'image') {
+      return [{ noteId: note.localNoteId, html: triliumImageNoteHtml(note.content.sourceKey) }];
+    }
+    return [];
+  });
+}
+
+function notesImageTarget(settings: { endpoint: string; bucket: string }): string {
+  return `${settings.endpoint}\0${settings.bucket}`;
+}
+
+function imageReferenceIdentity(reference: NoteImageReference): string {
+  return JSON.stringify([
+    reference.objectId,
+    reference.assetKey,
+    reference.ciphertextSha256,
+    reference.contentSha256,
+    reference.mimeType,
+    reference.byteLength,
+    reference.width,
+    reference.height,
+  ]);
+}
+
+function richTextImageIdentities(content: string): string[] {
+  const document = parseRichTextContent(content);
+  const identities: string[] = [];
+  const visit = (node: RichTextNode): void => {
+    if (node.type === 's3Image') {
+      identities.push(imageReferenceIdentity(parseNoteImageNodeAttributes(node.attrs)));
+    }
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(document);
+  return identities;
+}
+
+function validateConvertedTriliumImages(
+  plan: TriliumImportPlan,
+  resolvedImages: readonly TriliumResolvedImageAsset[],
+  convertedNotes: readonly TriliumImportApplyInput['convertedNotes'][number][],
+): void {
+  const assetsBySource = new Map(resolvedImages.map((asset) => [asset.sourceKey, asset]));
+  const expectedByNote = new Map<string, { images: number; placeholders: number }>();
+  for (const note of plan.notes) {
+    const sources = note.content.kind === 'html'
+      ? note.content.images.map((image) => image.sourceKey)
+      : note.content.kind === 'image'
+        ? [note.content.sourceKey]
+        : [];
+    if (sources.length === 0 && note.content.kind !== 'html') continue;
+    expectedByNote.set(note.localNoteId, {
+      images: sources.length,
+      placeholders: sources.filter((sourceKey) => assetsBySource.get(sourceKey)?.status !== 'uploaded').length,
+    });
+  }
+  for (const converted of convertedNotes) {
+    const expected = expectedByNote.get(converted.noteId);
+    if (!expected
+      || converted.embeddedImageCount !== expected.images
+      || converted.imagePlaceholderCount !== expected.placeholders) {
+      throw new Error('The converted Trilium images are incomplete.');
+    }
+  }
+
+  const allowed = new Set(resolvedImages.flatMap((asset) => (
+    asset.status === 'uploaded' ? [imageReferenceIdentity(asset.reference)] : []
+  )));
+  const actual = convertedNotes.flatMap((note) => richTextImageIdentities(note.content));
+  if (actual.some((identity) => !allowed.has(identity))) {
+    throw new Error('The converted Trilium images contain an unexpected reference.');
+  }
+  const used = new Set(actual);
+  if ([...allowed].some((identity) => !used.has(identity))) {
+    throw new Error('The converted Trilium images are incomplete.');
   }
 }
 
@@ -562,6 +700,14 @@ function sameNoteIds(left: readonly string[], right: readonly string[]): boolean
   if (left.length !== right.length) return false;
   const expected = new Set(left);
   return expected.size === left.length && right.every((id) => expected.has(id));
+}
+
+function noteDeletePreview(rootId: string): NoteDeletePreview | null {
+  const note = getNotesStore().get(rootId);
+  const expectedIds = noteSubtreeIds(rootId);
+  return note && expectedIds.length > 0
+    ? { id: note.id, name: note.name, expectedIds }
+    : null;
 }
 
 async function restoreNotesWorkspace(
@@ -1029,7 +1175,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
   for (const { controller } of activeTriliumImportRequests.values()) controller.abort();
   await Promise.allSettled([...activeTriliumImportTasks]);
   activeTriliumImportRequests.clear();
-  preparedTriliumImports.clear();
+  for (const sessionId of [...preparedTriliumImports.keys()]) removePreparedTriliumImport(sessionId);
 
   try {
     await flushRendererNotes();
@@ -1118,7 +1264,7 @@ function registerProcessErrorHandlers(): void {
       activeTriliumImportRequests.delete(requestId);
     }
     for (const [sessionId, session] of preparedTriliumImports) {
-      if (session.senderId === webContents.id) preparedTriliumImports.delete(sessionId);
+      if (session.senderId === webContents.id) removePreparedTriliumImport(sessionId, true);
     }
     logRuntimeError('app:render-process-gone', new Error(`Renderer process exited: ${details.reason}`), {
       reason: details.reason,
@@ -1432,40 +1578,60 @@ function registerIpcHandlers(): void {
     const input = validateNoteTreeExpansion(inputValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
+      const activeIds = getNotesStore().list().map((candidate) => candidate.id);
+      if (!activeIds.includes(input.noteId)) {
+        return getNotesTreeViewStore().snapshot().expandedNoteIds;
+      }
       return (await getNotesTreeViewStore().set(
         input.noteId,
         input.expanded,
-        getNotesStore().list().map((candidate) => candidate.id),
+        activeIds,
       )).expandedNoteIds;
+    });
+  });
+  ipcMain.handle(IPC_CHANNELS.notesDeletePreview, async (_event, idValue: unknown) => {
+    const id = validateNoteId(idValue);
+    return runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
+      return noteDeletePreview(id);
     });
   });
   ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, inputValue: unknown) => {
     const input = validateNoteDelete(inputValue);
-    return mutateNotesSharedData(async () => {
+    return runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
       const deletedIds = noteSubtreeIds(input.id);
       if (!sameNoteIds(deletedIds, input.expectedIds)) {
-        throw new Error('The Notes tree changed after confirmation. Review the subtree and try again.');
+        return { status: 'changed' as const, preview: noteDeletePreview(input.id) };
       }
-      if (deletedIds.length === 0) return { deletedIds, workspace: notesWorkspaceSnapshot() };
+      if (deletedIds.length === 0) {
+        return {
+          status: 'deleted' as const,
+          deletedIds,
+          tree: getNotesTreeStore().snapshot(),
+          expandedNoteIds: getNotesTreeViewStore().snapshot().expandedNoteIds,
+        };
+      }
       const previousNotes = getNotesStore().exportSnapshot();
       const previousTombstones = getNotesStore().exportTombstones();
       const previousTree = getNotesTreeStore().snapshot();
       const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
-      const deleted = new Set(deletedIds);
-      const deletedAt = new Date().toISOString();
-      const replacementNotes: NotesSnapshot = {
-        schemaVersion: previousNotes.schemaVersion,
-        notes: previousNotes.notes.filter((note) => !deleted.has(note.id)),
-      };
-      const replacementTombstones: NoteTombstone[] = [
-        ...previousTombstones.filter((tombstone) => !deleted.has(tombstone.id)),
-        ...deletedIds.map((noteId) => ({ id: noteId, deletedAt })),
-      ];
       try {
-        await getNotesStore().replaceSnapshot(replacementNotes, replacementTombstones);
-        await getNotesTreeStore().removeIds(deletedIds);
-        await getNotesTreeViewStore().replaceActiveIds(replacementNotes.notes.map((note) => note.id));
-        return { deletedIds, workspace: notesWorkspaceSnapshot() };
+        const persistedDeletedIds = await getNotesStore().deleteMany(deletedIds);
+        if (!sameNoteIds(deletedIds, persistedDeletedIds)) {
+          throw new Error('The confirmed Notes subtree could not be deleted completely.');
+        }
+        const tree = await getNotesTreeStore().removeIds(deletedIds);
+        const expanded = await getNotesTreeViewStore().replaceActiveIds(
+          getNotesStore().list().map((note) => note.id),
+        );
+        s3SyncRuntime?.markLocalChange();
+        return {
+          status: 'deleted' as const,
+          deletedIds,
+          tree,
+          expandedNoteIds: expanded.expandedNoteIds,
+        };
       } catch (error) {
         await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
         throw error;
@@ -1541,10 +1707,15 @@ function registerIpcHandlers(): void {
       throw new Error('Another Trilium import is already being prepared.');
     }
     for (const [sessionId, session] of preparedTriliumImports) {
-      if (session.senderId === event.sender.id) preparedTriliumImports.delete(sessionId);
+      if (session.senderId === event.sender.id) {
+        removePreparedTriliumImport(sessionId, true);
+        activeTriliumImportRequests.delete(session.requestId);
+      }
     }
 
     const controller = new AbortController();
+    const tokenBuffer = Buffer.from(input.etapiToken, 'utf8');
+    let retainedSession = false;
     activeTriliumImportRequests.set(input.requestId, { senderId: event.sender.id, controller });
     const task = (async () => {
       await flushRendererNotes();
@@ -1570,8 +1741,12 @@ function registerIpcHandlers(): void {
         senderId: event.sender.id,
         requestId: input.requestId,
         plan,
+        controller,
+        tokenBuffer,
+        resolvingImages: false,
         expiresAt: Date.now() + TRILIUM_IMPORT_SESSION_TTL_MS,
       });
+      retainedSession = true;
       sendTriliumImportProgress(event.sender, {
         requestId: input.requestId,
         phase: 'fetching',
@@ -1584,9 +1759,8 @@ function registerIpcHandlers(): void {
         sessionId,
         endpoint: plan.endpoint,
         total: plan.notes.length,
-        htmlNotes: plan.notes.flatMap((note) => note.content.kind === 'html'
-          ? [{ noteId: note.localNoteId, html: note.content.html }]
-          : []),
+        htmlNotes: triliumHtmlNotes(plan),
+        imageTargetCount: plan.imageTargets.length,
         placeholderCount: plan.placeholders,
         cloneCount: plan.clones,
       };
@@ -1594,8 +1768,78 @@ function registerIpcHandlers(): void {
     try {
       return await trackTriliumImportTask(task);
     } finally {
-      const active = activeTriliumImportRequests.get(input.requestId);
-      if (active?.controller === controller) activeTriliumImportRequests.delete(input.requestId);
+      if (!retainedSession) {
+        tokenBuffer.fill(0);
+        const active = activeTriliumImportRequests.get(input.requestId);
+        if (active?.controller === controller) activeTriliumImportRequests.delete(input.requestId);
+      }
+    }
+  });
+  ipcMain.handle(IPC_CHANNELS.triliumImportResolveImages, async (event, inputValue: unknown) => {
+    const input = validateTriliumImportResolveImages(inputValue);
+    prunePreparedTriliumImports();
+    const session = preparedTriliumImports.get(input.sessionId);
+    if (!session
+      || session.senderId !== event.sender.id
+      || session.requestId !== input.requestId) {
+      throw new Error('The prepared Trilium import expired. Start the import again.');
+    }
+    if (session.resolvedImages) {
+      return {
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        assets: session.resolvedImages as TriliumImportImageAsset[],
+        placeholderCount: session.resolvedImages.filter((asset) => asset.status === 'placeholder').length,
+      };
+    }
+    if (session.resolvingImages || !session.tokenBuffer) {
+      throw new Error('The Trilium images are already being resolved.');
+    }
+    session.resolvingImages = true;
+    const task = (async () => {
+      const initialSettings = await getS3SyncRuntime().getSettings();
+      const initialTarget = notesImageTarget(initialSettings);
+      const images = await resolveTriliumImportImages(
+        session.plan,
+        session.tokenBuffer?.toString('utf8') ?? '',
+        (upload, context) => getS3SyncRuntime().uploadNoteImage(upload, context.signal),
+        {
+          signal: session.controller.signal,
+          onProgress: (progress) => sendTriliumImportProgress(event.sender, {
+            requestId: input.requestId,
+            phase: 'images',
+            completed: progress.processed,
+            total: Math.max(1, progress.total),
+            message: progress.total > 0
+              ? `Importing images… ${progress.processed}/${progress.total}`
+              : 'No Trilium images to import.',
+          }),
+        },
+      );
+      if (session.controller.signal.aborted) throw new Error('The Trilium import was cancelled.');
+      const uploaded = images.some((asset) => asset.status === 'uploaded');
+      const finalSettings = await getS3SyncRuntime().getSettings();
+      if (uploaded && notesImageTarget(finalSettings) !== initialTarget) {
+        throw new Error('S3 settings changed during the Trilium image import. Start the import again.');
+      }
+      session.resolvedImages = images;
+      if (uploaded) session.s3ImageTarget = initialTarget;
+      clearPreparedTriliumToken(session);
+      return {
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        assets: images as TriliumImportImageAsset[],
+        placeholderCount: images.filter((asset) => asset.status === 'placeholder').length,
+      };
+    })();
+    try {
+      return await trackTriliumImportTask(task);
+    } catch (error) {
+      removePreparedTriliumImport(input.sessionId, true);
+      activeTriliumImportRequests.delete(input.requestId);
+      throw error;
+    } finally {
+      session.resolvingImages = false;
     }
   });
   ipcMain.handle(IPC_CHANNELS.triliumImportApply, async (event, inputValue: unknown): Promise<TriliumImportResult> => {
@@ -1607,15 +1851,19 @@ function registerIpcHandlers(): void {
       || session.requestId !== input.requestId) {
       throw new Error('The prepared Trilium import expired. Start the import again.');
     }
+    if (!session.resolvedImages) {
+      throw new Error('Resolve the Trilium images before applying the import.');
+    }
     const expectedHtmlIds = session.plan.notes
-      .filter((note) => note.content.kind === 'html')
+      .filter((note) => note.content.kind === 'html' || note.content.kind === 'image')
       .map((note) => note.localNoteId)
       .sort();
     const convertedIds = input.convertedNotes.map((note) => note.noteId).sort();
     if (!isDeepStrictEqual(expectedHtmlIds, convertedIds)) {
       throw new Error('The converted Trilium content is incomplete.');
     }
-    preparedTriliumImports.delete(input.sessionId);
+    validateConvertedTriliumImages(session.plan, session.resolvedImages, input.convertedNotes);
+    removePreparedTriliumImport(input.sessionId);
 
     const task = (async (): Promise<TriliumImportResult> => {
       sendTriliumImportProgress(event.sender, {
@@ -1626,6 +1874,12 @@ function registerIpcHandlers(): void {
         message: 'Applying imported Notes…',
       });
       await flushRendererNotes();
+      if (session.s3ImageTarget) {
+        const settings = await getS3SyncRuntime().getSettings();
+        if (notesImageTarget(settings) !== session.s3ImageTarget) {
+          throw new Error('S3 settings changed after the Trilium images were imported. Start the import again.');
+        }
+      }
       const applied = await runS3SharedDataMutation(async () => {
         assertNotesWorkspaceSafe();
         const previousNotes = getNotesStore().exportSnapshot();
@@ -1671,6 +1925,10 @@ function registerIpcHandlers(): void {
           (total, note) => total + note.embeddedImageCount,
           0,
         ),
+        imagePlaceholderCount: input.convertedNotes.reduce(
+          (total, note) => total + note.imagePlaceholderCount,
+          0,
+        ),
         plainTextFallbackCount: input.convertedNotes.filter(
           (note) => note.usedPlainTextFallback,
         ).length,
@@ -1691,7 +1949,12 @@ function registerIpcHandlers(): void {
       });
       return result;
     })();
-    return trackTriliumImportTask(task);
+    try {
+      return await trackTriliumImportTask(task);
+    } finally {
+      const active = activeTriliumImportRequests.get(input.requestId);
+      if (active?.controller === session.controller) activeTriliumImportRequests.delete(input.requestId);
+    }
   });
   ipcMain.handle(IPC_CHANNELS.triliumImportCancel, async (event, requestIdValue: unknown) => {
     const requestId = validateTriliumRequestId(requestIdValue);
@@ -1699,8 +1962,12 @@ function registerIpcHandlers(): void {
     if (active?.senderId === event.sender.id) active.controller.abort();
     for (const [sessionId, session] of preparedTriliumImports) {
       if (session.senderId === event.sender.id && session.requestId === requestId) {
-        preparedTriliumImports.delete(sessionId);
+        removePreparedTriliumImport(sessionId, true);
       }
+    }
+    if (active?.senderId === event.sender.id) {
+      await Promise.allSettled([...activeTriliumImportTasks]);
+      activeTriliumImportRequests.delete(requestId);
     }
   });
   ipcMain.handle(IPC_CHANNELS.llmSettingsGet, async () => getLlmSettingsStore().get());

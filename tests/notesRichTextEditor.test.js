@@ -42,7 +42,9 @@ test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () =>
   ]);
   assert.doesNotMatch(attributes, /\bsrc\b|\btitle\b/);
 
-  assert.match(imageExtension, /parseHTML\(\) \{\s*return \[\];\s*\}/);
+  assert.match(imageExtension, /parseHTML\(\) \{\s*if \(!importImages \|\| !importToken\) return \[\];/);
+  assert.match(imageExtension, /tag: 'div\[data-trilium-import-image\]'/);
+  assert.match(imageExtension, /const prefix = `\$\{importToken\}:`/);
   assert.match(imageExtension, /addInputRules\(\) \{\s*return \[\];\s*\}/);
   assert.match(imageExtension, /addPasteRules\(\) \{\s*return \[\];\s*\}/);
   assert.match(imageExtension, /addCommands\(\) \{[\s\S]*?return \{\};\s*\}/);

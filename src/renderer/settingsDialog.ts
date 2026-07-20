@@ -646,7 +646,8 @@ function formatTriliumImportSummary(result: TriliumImportResult): string {
     `${result.unchanged} unchanged`,
     `${result.placeholderCount} placeholders`,
     `${result.cloneCount} clone placements deduplicated`,
-    `${result.embeddedImageCount} embedded image placeholders`,
+    `${result.embeddedImageCount - result.imagePlaceholderCount} images`,
+    `${result.imagePlaceholderCount} image placeholders`,
     `${result.plainTextFallbackCount} plain-text fallbacks`,
   ].join(' · ');
 }
@@ -709,13 +710,39 @@ async function importFromTrilium(): Promise<void> {
     if (preparation.requestId !== requestId) throw new Error('The Trilium import response did not match this request.');
     if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
 
+    renderTriliumProgress({
+      requestId,
+      phase: 'images',
+      completed: 0,
+      total: Math.max(1, preparation.imageTargetCount),
+      message: preparation.imageTargetCount > 0
+        ? `Importing images… 0/${preparation.imageTargetCount}`
+        : 'Checking imported images…',
+    });
+    const imageResolution = await window.settingsApi.resolveTriliumImportImages({
+      requestId,
+      sessionId: preparation.sessionId,
+    });
+    if (imageResolution.requestId !== requestId
+      || imageResolution.sessionId !== preparation.sessionId) {
+      throw new Error('The Trilium image response did not match this import.');
+    }
+    if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
+
     const convertedNotes: TriliumImportConvertedNote[] = [];
+    const imageAssetsBySource = new Map(
+      imageResolution.assets.map((asset) => [asset.sourceKey, asset]),
+    );
     const conversionTotal = preparation.htmlNotes.length;
     for (let index = 0; index < conversionTotal; index += 1) {
       if (triliumCancelRequested) throw new Error('Trilium import cancelled.');
       const source = preparation.htmlNotes[index];
       if (!source) continue;
-      const converted = convertTriliumHtmlToRichText(source.html, preparation.endpoint);
+      const converted = convertTriliumHtmlToRichText(
+        source.html,
+        preparation.endpoint,
+        imageAssetsBySource,
+      );
       convertedNotes.push({ noteId: source.noteId, ...converted });
 
       const completed = index + 1;
@@ -750,6 +777,13 @@ async function importFromTrilium(): Promise<void> {
     triliumEtapiTokenInput.value = '';
     setTriliumTokenVisibility(false);
   } catch (error) {
+    if (!triliumApplyStarted) {
+      try {
+        await window.settingsApi.cancelTriliumImport(requestId);
+      } catch {
+        // The main process may already have disposed a failed preparation.
+      }
+    }
     if (triliumCancelRequested) {
       setTriliumImportMessage('Trilium import cancelled.');
     } else {

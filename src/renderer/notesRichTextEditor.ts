@@ -23,6 +23,7 @@ import {
   type NoteImageAlignment,
   type NoteImageNodeAttributes,
   type NoteImageReference,
+  type RichTextNode,
 } from './noteRichText.js';
 import { revealMenuItemScrollTop } from './notesRichTextMenuScroll.js';
 import {
@@ -30,6 +31,23 @@ import {
   RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
 } from './notesRichTextImageResize.js';
 import { NotesRichTextTableControls } from './notesRichTextTable.js';
+import type {
+  TriliumImportImageAsset,
+  TriliumImportImagePlaceholderReason,
+} from '../shared/types';
+import {
+  isTriliumTodoCheckboxType,
+  isTriliumTodoDescriptionClass,
+  isTriliumTodoLabelClass,
+  isTriliumTodoListClass,
+  mapTriliumTableCellColumnWidths,
+  normalizeTriliumTableColumnWidths,
+  parseTriliumImageSource,
+  triliumImageAlignment,
+  triliumImagePixelWidth,
+  triliumTodoChecked,
+  type TriliumTableCellSpan,
+} from './triliumRichText.js';
 
 export type RichTextToolbarCommand =
   | 'undo'
@@ -300,7 +318,7 @@ function createTaskListExtension() {
     group: 'block',
     content: 'taskItem+',
     parseHTML() {
-      return [{ tag: 'ul[data-type="taskList"]' }];
+      return [{ tag: 'ul[data-type="taskList"]', priority: 60 }];
     },
     renderHTML() {
       return ['ul', { 'data-type': 'taskList' }, 0];
@@ -323,7 +341,7 @@ function createTaskItemExtension() {
       };
     },
     parseHTML() {
-      return [{ tag: 'li[data-task-item]' }];
+      return [{ tag: 'li[data-task-item]', priority: 60 }];
     },
     renderHTML({ HTMLAttributes }) {
       return ['li', { ...HTMLAttributes, 'data-task-item': '' }, 0];
@@ -1500,6 +1518,8 @@ function createS3ImageNodeView(
 function createS3ImageExtension(
   onError: (message: string) => void,
   onLayoutChange: () => void,
+  importImages?: readonly NoteImageNodeAttributes[],
+  importToken?: string,
 ) {
   return Image.extend({
     name: 's3Image',
@@ -1521,7 +1541,20 @@ function createS3ImageExtension(
     // Rich text is loaded only from validated JSON. In particular, pasted or
     // dropped <img src> elements and Markdown image URLs must not create nodes.
     parseHTML() {
-      return [];
+      if (!importImages || !importToken) return [];
+      return [{
+        tag: 'div[data-trilium-import-image]',
+        getAttrs: (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const marker = element.getAttribute('data-trilium-import-image');
+          const prefix = `${importToken}:`;
+          if (!marker?.startsWith(prefix)) return false;
+          const rawIndex = marker.slice(prefix.length);
+          if (!/^\d+$/.test(rawIndex)) return false;
+          const attributes = importImages[Number(rawIndex)];
+          return attributes ? { ...attributes } : false;
+        },
+      }];
     },
     addInputRules() {
       return [];
@@ -1558,6 +1591,8 @@ function createS3ImageExtension(
 function createNotesRichTextExtensions(
   onError: (message: string) => void,
   onLayoutChange: () => void,
+  importImages?: readonly NoteImageNodeAttributes[],
+  importToken?: string,
 ): Extensions {
   return [StarterKit.configure({
     link: {
@@ -1586,12 +1621,13 @@ function createNotesRichTextExtensions(
   createMathExtension(),
   createTaskListExtension(),
   createTaskItemExtension(),
-  createS3ImageExtension(onError, onLayoutChange)];
+  createS3ImageExtension(onError, onLayoutChange, importImages, importToken)];
 }
 
 export interface TriliumHtmlConversionResult {
   content: string;
   embeddedImageCount: number;
+  imagePlaceholderCount: number;
   usedPlainTextFallback: boolean;
 }
 
@@ -1607,23 +1643,290 @@ function richTextPlainTextFallback(value: string): string {
   return normalizeRichTextContent({ type: 'doc', content: paragraphs });
 }
 
+function directElementChildren(element: Element, tagName: string): Element[] {
+  const normalizedTagName = tagName.toUpperCase();
+  return Array.from(element.children).filter((child) => child.tagName === normalizedTagName);
+}
+
+function triliumTodoLabel(item: Element): HTMLLabelElement | undefined {
+  return directElementChildren(item, 'label').find((candidate): candidate is HTMLLabelElement => (
+    candidate instanceof HTMLLabelElement
+    && isTriliumTodoLabelClass(candidate.getAttribute('class'))
+  ));
+}
+
+function triliumTodoCheckbox(label: HTMLLabelElement): HTMLInputElement | undefined {
+  return Array.from(label.querySelectorAll('input')).find((candidate) => (
+    isTriliumTodoCheckboxType(candidate.getAttribute('type'))
+  ));
+}
+
+function unwrapTriliumTodoLabel(
+  label: HTMLLabelElement,
+  checkbox: HTMLInputElement | undefined,
+): HTMLParagraphElement {
+  const paragraph = label.ownerDocument.createElement('p');
+  checkbox?.remove();
+  for (const child of Array.from(label.childNodes)) {
+    if (child instanceof Element
+      && isTriliumTodoDescriptionClass(child.getAttribute('class'))) {
+      while (child.firstChild) paragraph.append(child.firstChild);
+      continue;
+    }
+    paragraph.append(child);
+  }
+  label.replaceWith(paragraph);
+  return paragraph;
+}
+
+function ensureTriliumTaskItemStartsWithParagraph(item: HTMLLIElement): void {
+  const firstElement = Array.from(item.children)[0];
+  if (firstElement?.tagName === 'P') return;
+  item.insertBefore(item.ownerDocument.createElement('p'), item.firstChild);
+}
+
+/** Rewrites CKEditor's checklist DOM into the exact TaskList DOM parsed by Notes. */
+function adaptTriliumTodoLists(root: ParentNode): void {
+  const lists = Array.from(root.querySelectorAll('ul')).filter((candidate) => (
+    isTriliumTodoListClass(candidate.getAttribute('class'))
+  ));
+  for (const list of lists) list.setAttribute('data-type', 'taskList');
+
+  for (const list of lists) {
+    for (const candidate of directElementChildren(list, 'li')) {
+      if (!(candidate instanceof HTMLLIElement)) continue;
+      const label = triliumTodoLabel(candidate);
+      const checkbox = label ? triliumTodoCheckbox(label) : undefined;
+      candidate.setAttribute('data-task-item', '');
+      candidate.setAttribute(
+        'data-checked',
+        String(triliumTodoChecked(
+          checkbox?.checked === true,
+          checkbox?.hasAttribute('checked') === true,
+        )),
+      );
+      if (label) unwrapTriliumTodoLabel(label, checkbox);
+      ensureTriliumTaskItemStartsWithParagraph(candidate);
+    }
+  }
+}
+
+function positiveTriliumTableSpan(value: string | null, maximum: number): number | undefined {
+  if (value === null) return 1;
+  if (!/^\d+$/.test(value.trim())) return undefined;
+  const span = Number(value);
+  return Number.isSafeInteger(span) && span >= 1 && span <= maximum ? span : undefined;
+}
+
+function triliumTableColumnWidthSource(column: HTMLTableColElement): string | null {
+  const styleWidth = column.style.getPropertyValue('width').trim();
+  return styleWidth || column.getAttribute('width');
+}
+
+/** Adds only the bounded width attributes consumed by Tiptap's official TableKit parser. */
+function adaptTriliumTableColumnWidths(root: ParentNode): void {
+  const tables = Array.from(root.querySelectorAll('table'));
+  for (const candidate of tables) {
+    if (!(candidate instanceof HTMLTableElement)) continue;
+    const columns = directElementChildren(candidate, 'colgroup')
+      .flatMap((group) => directElementChildren(group, 'col'))
+      .filter((column): column is HTMLTableColElement => column instanceof HTMLTableColElement);
+    if (columns.some((column) => positiveTriliumTableSpan(column.getAttribute('span'), 1) !== 1)) {
+      continue;
+    }
+    const columnWidths = normalizeTriliumTableColumnWidths(
+      columns.map(triliumTableColumnWidthSource),
+    );
+    if (!columnWidths) continue;
+
+    const cellsByRow = Array.from(candidate.rows, (row) => Array.from(row.cells));
+    const spanRows: TriliumTableCellSpan[][] = [];
+    let validSpans = true;
+    for (const cells of cellsByRow) {
+      const spans: TriliumTableCellSpan[] = [];
+      for (const cell of cells) {
+        const colspan = positiveTriliumTableSpan(
+          cell.getAttribute('colspan'),
+          RICH_TEXT_LIMITS.tableColumns,
+        );
+        const rowspan = positiveTriliumTableSpan(
+          cell.getAttribute('rowspan'),
+          RICH_TEXT_LIMITS.tableRows,
+        );
+        if (colspan === undefined || rowspan === undefined) {
+          validSpans = false;
+          break;
+        }
+        spans.push({ colspan, rowspan });
+      }
+      if (!validSpans) break;
+      spanRows.push(spans);
+    }
+    if (!validSpans) continue;
+    const cellWidths = mapTriliumTableCellColumnWidths(spanRows, columnWidths);
+    if (!cellWidths) continue;
+
+    for (const [index, column] of columns.entries()) {
+      const width = columnWidths[index];
+      if (width !== undefined) column.setAttribute('width', String(width));
+    }
+    for (const [rowIndex, cells] of cellsByRow.entries()) {
+      for (const [cellIndex, cell] of cells.entries()) {
+        const widths = cellWidths[rowIndex]?.[cellIndex];
+        if (widths) cell.setAttribute('colwidth', widths.join(','));
+      }
+    }
+  }
+}
+
+interface AdaptedTriliumImages {
+  attributes: NoteImageNodeAttributes[];
+  embeddedImageCount: number;
+  imagePlaceholderCount: number;
+}
+
+function triliumImageAlt(image: HTMLImageElement): string | undefined {
+  const value = image.getAttribute('alt')
+    ?.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, RICH_TEXT_LIMITS.imageAltCharacters);
+  return value || undefined;
+}
+
+function triliumImagePlaceholder(
+  document: Document,
+  alt: string | undefined,
+  reason: TriliumImportImagePlaceholderReason,
+): Text {
+  const detail = alt || (reason === 'protected'
+    ? 'protected'
+    : reason === 'oversized'
+      ? 'too large'
+      : reason === 'missing'
+        ? 'not found'
+        : 'unsupported format or source');
+  return document.createTextNode(`[Image unavailable: ${detail}]`);
+}
+
+function unwrapTriliumImageFigures(root: ParentNode): void {
+  for (const figure of Array.from(root.querySelectorAll('figure'))) {
+    if (!figure.classList.contains('image')
+      && !figure.querySelector('[data-trilium-import-image]')) continue;
+    const fragment = figure.ownerDocument.createDocumentFragment();
+    for (const child of Array.from(figure.childNodes)) {
+      if (child instanceof HTMLElement && child.tagName === 'FIGCAPTION') {
+        const paragraph = figure.ownerDocument.createElement('p');
+        while (child.firstChild) paragraph.append(child.firstChild);
+        fragment.append(paragraph);
+      } else {
+        fragment.append(child);
+      }
+    }
+    figure.replaceWith(fragment);
+  }
+  for (const anchor of Array.from(root.querySelectorAll('a'))) {
+    if (!anchor.querySelector('[data-trilium-import-image]')) continue;
+    anchor.replaceWith(...Array.from(anchor.childNodes));
+  }
+}
+
+function adaptTriliumImages(
+  root: ParentNode,
+  endpoint: string,
+  assets: readonly TriliumImportImageAsset[] | Map<string, TriliumImportImageAsset>,
+  importToken: string,
+): AdaptedTriliumImages {
+  const assetsBySource = assets instanceof Map
+    ? assets
+    : new Map(assets.map((asset) => [asset.sourceKey, asset]));
+  const attributes: NoteImageNodeAttributes[] = [];
+  let embeddedImageCount = 0;
+  let imagePlaceholderCount = 0;
+
+  for (const candidate of Array.from(root.querySelectorAll('img'))) {
+    if (!(candidate instanceof HTMLImageElement)) continue;
+    embeddedImageCount += 1;
+    const alt = triliumImageAlt(candidate);
+    const figure = candidate.closest('figure');
+    const source = parseTriliumImageSource(candidate.getAttribute('src'), endpoint);
+    const asset = source ? assetsBySource.get(source.sourceKey) : undefined;
+    if (!asset || asset.status === 'placeholder') {
+      imagePlaceholderCount += 1;
+      candidate.replaceWith(triliumImagePlaceholder(
+        candidate.ownerDocument,
+        alt,
+        asset?.status === 'placeholder' ? asset.reason : 'unsupported',
+      ));
+      continue;
+    }
+
+    const reference = parseNoteImageReference(asset.reference);
+    const alignment = triliumImageAlignment(
+      figure?.getAttribute('class'),
+      candidate.getAttribute('class'),
+    );
+    const displayWidth = triliumImagePixelWidth(
+      figure instanceof HTMLElement ? figure.style.getPropertyValue('width') : undefined,
+      candidate.style.getPropertyValue('width'),
+      candidate.getAttribute('width'),
+    );
+    const imageAttributes = parseNoteImageNodeAttributes({
+      ...reference,
+      ...(alt ? { alt } : {}),
+      ...(displayWidth !== undefined ? { displayWidth } : {}),
+      ...(alignment !== 'left' ? { alignment } : {}),
+    });
+    const marker = candidate.ownerDocument.createElement('div');
+    marker.setAttribute('data-trilium-import-image', `${importToken}:${attributes.length}`);
+    attributes.push(imageAttributes);
+    candidate.replaceWith(marker);
+  }
+  unwrapTriliumImageFigures(root);
+  return { attributes, embeddedImageCount, imagePlaceholderCount };
+}
+
+function importedImageAttributes(value: unknown): NoteImageNodeAttributes[] {
+  const document = parseRichTextContent(value);
+  const images: NoteImageNodeAttributes[] = [];
+  const visit = (node: RichTextNode): void => {
+    if (node.type === 's3Image') images.push(parseNoteImageNodeAttributes(node.attrs));
+    for (const child of node.content ?? []) visit(child);
+  };
+  visit(document);
+  return images;
+}
+
+function assertImportedImagesRetained(
+  content: string,
+  expected: readonly NoteImageNodeAttributes[],
+): void {
+  const actual = importedImageAttributes(content);
+  if (actual.length !== expected.length
+    || actual.some((attributes, index) => (
+      JSON.stringify(attributes) !== JSON.stringify(expected[index])
+    ))) {
+    throw new Error('The Trilium Rich Text conversion did not retain every imported image.');
+  }
+}
+
 /** Convert a Trilium HTML fragment through the exact schema and canonical validator used by Notes. */
 export function convertTriliumHtmlToRichText(
   html: string,
   endpoint: string,
+  imageAssets: readonly TriliumImportImageAsset[] | Map<string, TriliumImportImageAsset> = [],
 ): TriliumHtmlConversionResult {
   const endpointBase = `${endpoint.replace(/\/+$/, '')}/`;
   const parsed = new DOMParser().parseFromString(html, 'text/html');
+  parsed.body.querySelectorAll('[data-trilium-import-image]').forEach((element) => {
+    element.removeAttribute('data-trilium-import-image');
+  });
+  adaptTriliumTodoLists(parsed.body);
+  adaptTriliumTableColumnWidths(parsed.body);
   parsed.body.querySelectorAll(
     'script,style,iframe,object,embed,form,input,button,textarea,select,meta,link',
   ).forEach((unsafe) => unsafe.remove());
-
-  let embeddedImageCount = 0;
-  parsed.body.querySelectorAll('img').forEach((image) => {
-    embeddedImageCount += 1;
-    const alt = image.getAttribute('alt')?.trim();
-    image.replaceWith(parsed.createTextNode(alt ? `[Image: ${alt}]` : '[Embedded image]'));
-  });
+  const importToken = crypto.randomUUID();
+  const adaptedImages = adaptTriliumImages(parsed.body, endpoint, imageAssets, importToken);
 
   parsed.body.querySelectorAll('a[href]').forEach((anchor) => {
     const href = anchor.getAttribute('href')?.trim();
@@ -1647,17 +1950,29 @@ export function convertTriliumHtmlToRichText(
   try {
     const generated = generateJSON(
       parsed.body.innerHTML,
-      createNotesRichTextExtensions(() => undefined, () => undefined),
+      createNotesRichTextExtensions(
+        () => undefined,
+        () => undefined,
+        adaptedImages.attributes,
+        importToken,
+      ),
     );
+    const content = normalizeEditorContent(generated);
+    assertImportedImagesRetained(content, adaptedImages.attributes);
     return {
-      content: normalizeEditorContent(generated),
-      embeddedImageCount,
+      content,
+      embeddedImageCount: adaptedImages.embeddedImageCount,
+      imagePlaceholderCount: adaptedImages.imagePlaceholderCount,
       usedPlainTextFallback: false,
     };
   } catch {
+    if (adaptedImages.attributes.length > 0) {
+      throw new Error('A Trilium Rich Text Note could not be converted without losing an imported image.');
+    }
     return {
       content: richTextPlainTextFallback(parsed.body.textContent ?? ''),
-      embeddedImageCount,
+      embeddedImageCount: adaptedImages.embeddedImageCount,
+      imagePlaceholderCount: adaptedImages.imagePlaceholderCount,
       usedPlainTextFallback: true,
     };
   }

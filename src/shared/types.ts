@@ -679,10 +679,21 @@ export interface NoteDeleteInput {
   expectedIds: string[];
 }
 
-export interface NoteDeleteResult {
-  deletedIds: string[];
-  workspace: NotesWorkspaceSnapshot;
+export interface NoteDeletePreview {
+  id: string;
+  name: string;
+  expectedIds: string[];
 }
+
+export type NoteDeleteResult = {
+  status: 'deleted';
+  deletedIds: string[];
+  tree: NotesTreeSnapshot;
+  expandedNoteIds: string[];
+} | {
+  status: 'changed';
+  preview: NoteDeletePreview | null;
+};
 
 export interface NoteDraftRecoveryInput {
   originalId: string;
@@ -738,6 +749,7 @@ export interface NotesApi {
   updateNote: (id: string, draft: NoteDraft, expectedNote: Note) => Promise<Note>;
   moveNote: (input: NoteMoveInput) => Promise<NotesWorkspaceSnapshot>;
   setTreeExpanded: (input: NoteTreeExpansionInput) => Promise<string[]>;
+  previewNoteDelete: (id: string) => Promise<NoteDeletePreview | null>;
   deleteNote: (input: NoteDeleteInput) => Promise<NoteDeleteResult>;
   recoverDrafts: (input: NoteDraftRecoveryInput[]) => Promise<NoteDraftRecoveryResult>;
   uploadImage: (input: NoteImageUploadInput) => Promise<NoteImageUploadResult>;
@@ -756,6 +768,7 @@ export type UiPreferencesDraft = Pick<UiPreferences, 'notesFontSize' | 'notesEdi
 export type TriliumImportPhase =
   | 'discovering'
   | 'fetching'
+  | 'images'
   | 'converting'
   | 'applying'
   | 'complete';
@@ -773,20 +786,53 @@ export interface TriliumImportHtmlNote {
   html: string;
 }
 
+export type TriliumImportImagePlaceholderReason =
+  | 'protected'
+  | 'missing'
+  | 'invalid'
+  | 'unsupported'
+  | 'oversized';
+
+export type TriliumImportImageAsset =
+  | {
+    sourceKey: string;
+    status: 'uploaded';
+    reference: NoteImageReference;
+  }
+  | {
+    sourceKey: string;
+    status: 'placeholder';
+    reason: TriliumImportImagePlaceholderReason;
+  };
+
 export interface TriliumImportPreparation {
   requestId: string;
   sessionId: string;
   endpoint: string;
   total: number;
   htmlNotes: TriliumImportHtmlNote[];
+  imageTargetCount: number;
   placeholderCount: number;
   cloneCount: number;
+}
+
+export interface TriliumImportResolveImagesInput {
+  requestId: string;
+  sessionId: string;
+}
+
+export interface TriliumImportImageResolution {
+  requestId: string;
+  sessionId: string;
+  assets: TriliumImportImageAsset[];
+  placeholderCount: number;
 }
 
 export interface TriliumImportConvertedNote {
   noteId: string;
   content: string;
   embeddedImageCount: number;
+  imagePlaceholderCount: number;
   usedPlainTextFallback: boolean;
 }
 
@@ -812,6 +858,7 @@ export interface TriliumImportResult {
   placeholderCount: number;
   cloneCount: number;
   embeddedImageCount: number;
+  imagePlaceholderCount: number;
   plainTextFallbackCount: number;
 }
 
@@ -907,6 +954,7 @@ export interface SettingsApi {
   saveUiPreferences: (draft: UiPreferencesDraft) => Promise<UiPreferences>;
   saveNotesSidebarWidth: (width: number) => Promise<UiPreferences>;
   prepareTriliumImport: (input: TriliumImportPrepareInput) => Promise<TriliumImportPreparation>;
+  resolveTriliumImportImages: (input: TriliumImportResolveImagesInput) => Promise<TriliumImportImageResolution>;
   applyTriliumImport: (input: TriliumImportApplyInput) => Promise<TriliumImportResult>;
   cancelTriliumImport: (requestId: string) => Promise<void>;
   onTriliumImportProgress: (listener: (progress: TriliumImportProgress) => void) => () => void;

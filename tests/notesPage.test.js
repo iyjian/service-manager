@@ -153,6 +153,15 @@ test('Notes tree renders arbitrary expanded levels and search breadcrumbs keep t
   assert.deepEqual(noteTreeSubtreeIds('missing', nodes), []);
 });
 
+test('Notes delete confirmation compares subtree membership without rejecting harmless reorders', async () => {
+  const { sameNoteIdSet } = await import(path.join(distRenderer, 'notesPage.js'));
+
+  assert.equal(sameNoteIdSet(['root', 'child'], ['child', 'root']), true);
+  assert.equal(sameNoteIdSet(['root', 'child'], ['root', 'other']), false);
+  assert.equal(sameNoteIdSet(['root', 'child'], ['root', 'child', 'new-child']), false);
+  assert.equal(sameNoteIdSet(['root', 'root'], ['root', 'root']), false);
+});
+
 test('Notes tree resolves before, inside, and after drops while rejecting self-descendant moves', async () => {
   const {
     isValidNoteTreeParent,
@@ -348,7 +357,10 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.notesApi\.getWorkspace\(\)/);
   assert.match(source, /window\.notesApi\.createNote\(\{ parentId \}\)/);
   assert.match(source, /window\.notesApi\.updateNote\(id, draft, cloneNote\(expectedNote\)\)/);
-  assert.match(source, /window\.notesApi\.deleteNote\(\{ id: note\.id, expectedIds: subtreeIds \}\)/);
+  assert.match(source, /window\.notesApi\.previewNoteDelete\(id\)/);
+  assert.match(source, /sameNoteIdSet\(preview\.expectedIds, confirmedPreview\.expectedIds\)/);
+  assert.match(source, /window\.notesApi\.deleteNote\(\{[\s\S]*?expectedIds: confirmedPreview\.expectedIds/);
+  assert.match(source, /result\.status === 'changed'/);
   assert.match(source, /note\.language === 'richtext'[\s\S]*?extractRichTextPlainText\(note\.content\)[\s\S]*?window\.serviceApi\.writeClipboardText\(content\)/);
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
@@ -366,7 +378,9 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /name\.textContent = note\.name \|\| 'Untitled'/);
   assert.match(source, /this\.saveStatus\.textContent = text/);
   assert.match(source, /private async deleteNote\(id: string\)/);
-  assert.match(source, /const subtreeIds = noteTreeSubtreeIds\(id, this\.treeNodes\)/);
+  assert.match(source, /this\.notes\.filter\(\(note\) => !this\.deletedIds\.has\(note\.id\)\)/);
+  assert.match(source, /this\.selectedId = focusAfterDelete/);
+  assert.match(source, /remove\.disabled = this\.deletingNoteIds\.has\(note\.id\)/);
   assert.match(source, /this\.pageRoot\.inert = true/);
   assert.match(source, /window\.notesApi\.recoverDrafts\(pending\)/);
   assert.match(source, /expectedNote: cloneNote\(expectedNote\)/);
@@ -383,7 +397,7 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
 
   assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(note\.id\)[\s\S]*?> baselineVersion/);
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
-  assert.match(source, /this\.applyWorkspace\(result\.workspace, editVersionBaseline\)/);
+  assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
   assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);
   assert.match(source, /if \(!isValidNoteTreeParent\(this\.treeNodes, noteId, parentId\)\)/);

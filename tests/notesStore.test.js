@@ -345,6 +345,89 @@ test('NotesStore delete atomically replaces only the active envelope with a dura
   assert.equal(reloaded.exportTombstones()[0].id, first.id);
 });
 
+test('NotesStore batch delete rewrites only requested envelopes and leaves unrelated Notes untouched', async (t) => {
+  const { directory, notesDirectory, store } = await createStore(t);
+  const first = await store.create();
+  const second = await store.create();
+  const retained = await store.create();
+  const retainedPath = noteFilePath(notesDirectory, retained.id);
+  const retainedBefore = await fs.readFile(retainedPath, 'utf8');
+  const retainedMetadataBefore = await fs.stat(retainedPath);
+  const originalLink = fs.link;
+  let linkCalls = 0;
+  fs.link = async (...args) => {
+    linkCalls += 1;
+    return originalLink(...args);
+  };
+  t.after(() => {
+    fs.link = originalLink;
+  });
+
+  const deletedIds = await store.deleteMany([second.id, first.id, second.id]);
+  await store.flush();
+
+  assert.deepEqual(new Set(deletedIds), new Set([first.id, second.id]));
+  assert.deepEqual(store.list().map((note) => note.id), [retained.id]);
+  const tombstones = store.exportTombstones();
+  assert.deepEqual(new Set(tombstones.map((item) => item.id)), new Set([first.id, second.id]));
+  assert.equal(new Set(tombstones.map((item) => item.deletedAt)).size, 1);
+  assert.ok((await readEnvelope(notesDirectory, first.id)).tombstone);
+  assert.ok((await readEnvelope(notesDirectory, second.id)).tombstone);
+  assert.equal(await fs.readFile(retainedPath, 'utf8'), retainedBefore);
+  assert.equal((await fs.stat(retainedPath)).ino, retainedMetadataBefore.ino);
+  assert.equal((await fs.stat(retainedPath)).mtimeMs, retainedMetadataBefore.mtimeMs);
+  assert.equal(linkCalls, 0);
+  await assertPathMissing(path.join(directory, '.notes.next'));
+  await assertPathMissing(path.join(directory, '.notes.previous'));
+  assert.equal(store.get(retained.id).id, retained.id);
+  const detached = store.get(retained.id);
+  detached.name = 'mutated';
+  assert.equal(store.get(retained.id).name, retained.name);
+
+  const reloaded = new NotesStore(notesDirectory);
+  await reloaded.load();
+  assert.deepEqual(reloaded.list().map((note) => note.id), [retained.id]);
+});
+
+test('NotesStore batch delete restores every target when a later tombstone write fails after rename', async (t) => {
+  const { notesDirectory, store } = await createStore(t);
+  const first = await store.create();
+  const second = await store.create();
+  const retained = await store.create();
+  const before = await directoryFileSnapshot(notesDirectory);
+  const sortedTargets = [first.id, second.id].sort();
+  const failingDestination = path.resolve(noteFilePath(notesDirectory, sortedTargets[1]));
+  const originalRename = fs.rename;
+  let injectedFailure = false;
+
+  fs.rename = async (source, destination) => {
+    if (!injectedFailure && path.resolve(String(destination)) === failingDestination) {
+      await originalRename(source, destination);
+      injectedFailure = true;
+      throw new Error('injected post-rename failure');
+    }
+    return originalRename(source, destination);
+  };
+  t.after(() => {
+    fs.rename = originalRename;
+  });
+
+  await assert.rejects(
+    store.deleteMany([first.id, second.id]),
+    /injected post-rename failure/,
+  );
+  assert.equal(injectedFailure, true);
+  assert.deepEqual(new Set(store.list().map((note) => note.id)), new Set([first.id, second.id, retained.id]));
+  assert.deepEqual(store.exportTombstones(), []);
+  assert.deepEqual(await directoryFileSnapshot(notesDirectory), before);
+  assert.equal((await fs.readdir(notesDirectory)).some((name) => name.endsWith('.tmp')), false);
+
+  const reloaded = new NotesStore(notesDirectory);
+  await reloaded.load();
+  assert.deepEqual(new Set(reloaded.list().map((note) => note.id)), new Set([first.id, second.id, retained.id]));
+  assert.deepEqual(reloaded.exportTombstones(), []);
+});
+
 test('NotesStore staged replacement persists active Notes and tombstones and detaches caller data', async (t) => {
   const { directory, notesDirectory, store } = await createStore(t);
   const local = await store.create();

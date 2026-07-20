@@ -1176,12 +1176,12 @@ export class S3SyncRuntime {
     return this.requestSync(true);
   }
 
-  public async uploadNoteImage(value: unknown): Promise<NoteImageUploadResult> {
-    if (this.shuttingDown) throw new Error('Notes image upload was cancelled.');
+  public async uploadNoteImage(value: unknown, signal?: AbortSignal): Promise<NoteImageUploadResult> {
+    if (this.shuttingDown || signal?.aborted) throw new Error('Notes image upload was cancelled.');
     const input = this.validateNoteImageUploadInput(value);
     const settings = await this.ensureSettings();
-    if (this.shuttingDown) throw new Error('Notes image upload was cancelled.');
-    const store = this.createNotesImageStore(settings);
+    if (this.shuttingDown || signal?.aborted) throw new Error('Notes image upload was cancelled.');
+    const store = this.createNotesImageStore(settings, signal);
     if (!store) return { status: 'not-configured' };
     const target = `${settings.endpoint}\0${settings.bucket}`;
     this.activeNotesImageStores.add(store);
@@ -1271,7 +1271,10 @@ export class S3SyncRuntime {
     };
   }
 
-  private createNotesImageStore(settings: PersistedS3SyncSettings): NotesImageS3Store | undefined {
+  private createNotesImageStore(
+    settings: PersistedS3SyncSettings,
+    signal?: AbortSignal,
+  ): NotesImageS3Store | undefined {
     if (
       !settings.endpoint
       || !settings.bucket
@@ -1290,6 +1293,7 @@ export class S3SyncRuntime {
       now: this.now,
       createRandomBytes: this.createRandomBytes,
       timeoutMs: this.timeoutMs,
+      ...(signal ? { signal } : {}),
     });
   }
 

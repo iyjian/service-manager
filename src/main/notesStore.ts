@@ -331,6 +331,12 @@ export class NotesStore {
     return this.notes.map(cloneNote);
   }
 
+  get(id: string): Note | undefined {
+    const normalizedId = normalizeId(id);
+    const note = this.notes.find((candidate) => candidate.id === normalizedId);
+    return note ? cloneNote(note) : undefined;
+  }
+
   create(): Promise<Note> {
     return this.enqueue(async () => {
       if (this.notes.length >= NOTE_LIMITS.notes) {
@@ -379,25 +385,57 @@ export class NotesStore {
   }
 
   async delete(id: string): Promise<void> {
-    const normalizedId = normalizeId(id);
+    await this.deleteMany([id]);
+  }
+
+  deleteMany(ids: readonly string[]): Promise<string[]> {
+    if (!Array.isArray(ids) || ids.length > NOTE_LIMITS.notes) {
+      throw new Error('Deleted Note IDs are invalid.');
+    }
+    const normalizedIds = [...new Set(ids.map(normalizeId))];
     return this.enqueue(async () => {
-      const index = this.notes.findIndex((note) => note.id === normalizedId);
-      if (index < 0) return;
-      if (this.tombstones.length >= NOTE_LIMITS.tombstones) {
+      const requested = new Set(normalizedIds);
+      const deletingNotes = this.notes.filter((note) => requested.has(note.id));
+      if (deletingNotes.length === 0) return [];
+
+      const deletedIds = deletingNotes.map((note) => note.id);
+      const deleted = new Set(deletedIds);
+      const deletedAt = new Date().toISOString();
+      const replacementTombstones = deletedIds.map((noteId): NoteTombstone => ({
+        id: noteId,
+        deletedAt,
+      }));
+      const nextTombstones = [
+        ...this.tombstones.filter((candidate) => !deleted.has(candidate.id)),
+        ...replacementTombstones,
+      ];
+      if (nextTombstones.length > NOTE_LIMITS.tombstones) {
         throw new Error(`No more than ${NOTE_LIMITS.tombstones} deleted Note records can be stored.`);
       }
-      const tombstone: NoteTombstone = {
-        id: normalizedId,
-        deletedAt: new Date().toISOString(),
-      };
-      await this.writeEnvelope(this.directoryPath, { schemaVersion: NOTES_SCHEMA_VERSION, tombstone });
-      const nextNotes = this.notes.map(cloneNote);
-      nextNotes.splice(index, 1);
-      this.notes = sortNotes(nextNotes);
-      this.tombstones = sortTombstones([
-        ...this.tombstones.filter((candidate) => candidate.id !== normalizedId),
-        tombstone,
-      ]);
+
+      try {
+        for (const tombstone of replacementTombstones) {
+          await this.writeEnvelope(this.directoryPath, { schemaVersion: NOTES_SCHEMA_VERSION, tombstone });
+        }
+      } catch (error) {
+        const rollbackErrors: unknown[] = [];
+        // A failed atomic write may already have renamed its tombstone before a
+        // later chmod/directory-sync error, so conservatively restore every
+        // target envelope rather than only writes whose Promise resolved.
+        for (const note of deletingNotes) {
+          await this.writeEnvelope(this.directoryPath, { schemaVersion: NOTES_SCHEMA_VERSION, note })
+            .catch((rollbackError) => rollbackErrors.push(rollbackError));
+        }
+        if (rollbackErrors.length > 0) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Note deletion failed and its files could not be restored completely: ${message}`);
+        }
+        throw error;
+      }
+
+      this.notes = sortNotes(this.notes.filter((note) => !deleted.has(note.id)).map(cloneNote));
+      this.tombstones = sortTombstones(nextTombstones.map(cloneTombstone));
+      return [...deletedIds];
     });
   }
 

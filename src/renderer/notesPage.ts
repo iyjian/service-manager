@@ -1,5 +1,6 @@
 import type {
   Note,
+  NoteDeletePreview,
   NoteDraft,
   NoteDraftRecoveryInput,
   NoteImageReference,
@@ -332,6 +333,13 @@ export function noteTreeSubtreeIds(rootId: string, nodes: readonly NotesTreeNode
   return result;
 }
 
+/** Compares confirmed subtree membership without treating a harmless reorder as a change. */
+export function sameNoteIdSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const ids = new Set(left);
+  return ids.size === left.length && right.every((id) => ids.has(id));
+}
+
 /** Rejects self/descendant parents before a drag operation reaches IPC. */
 export function isValidNoteTreeParent(
   nodes: readonly NotesTreeNode[],
@@ -466,6 +474,7 @@ class NotesPage {
   private readonly saveQueues = new Map<string, Promise<void>>();
   private readonly persistedNotes = new Map<string, Note>();
   private readonly deletedIds = new Set<string>();
+  private readonly deletingNoteIds = new Set<string>();
   private readonly saveErrorNoteIds = new Set<string>();
   private editorLanguage: NoteLanguage = 'markdown';
   private editorNoteId: string | undefined;
@@ -822,7 +831,7 @@ class NotesPage {
   }
 
   private treeChildren(): Map<string | null, NotesTreeNode[]> {
-    return noteTreeChildren(this.treeNodes);
+    return noteTreeChildren(this.treeNodes.filter((node) => !this.deletedIds.has(node.noteId)));
   }
 
   private breadcrumb(noteId: string): string {
@@ -830,7 +839,11 @@ class NotesPage {
   }
 
   private visibleTreeRows(): NoteTreeRow[] {
-    return visibleNoteTreeRows(this.notes, this.treeNodes, this.expandedNoteIds);
+    return visibleNoteTreeRows(
+      this.notes.filter((note) => !this.deletedIds.has(note.id)),
+      this.treeNodes.filter((node) => !this.deletedIds.has(node.noteId)),
+      this.expandedNoteIds,
+    );
   }
 
   private clearTreeDropMarkers(): void {
@@ -885,7 +898,10 @@ class NotesPage {
     const searchActive = Boolean(this.searchInput.value.trim());
     const children = this.treeChildren();
     const rows = searchActive
-      ? rankNotes(this.notes, this.searchInput.value).map((note) => ({
+      ? rankNotes(
+        this.notes.filter((note) => !this.deletedIds.has(note.id)),
+        this.searchInput.value,
+      ).map((note) => ({
         note,
         node: this.treeNodes.find((node) => node.noteId === note.id) ?? { noteId: note.id, parentId: null, order: 0 },
         depth: 0,
@@ -971,6 +987,7 @@ class NotesPage {
       remove.type = 'button';
       remove.className = 'notes-list-remove';
       remove.dataset.noteId = note.id;
+      remove.disabled = this.deletingNoteIds.has(note.id);
       remove.setAttribute('aria-label', `Remove ${note.name || 'Untitled'}`);
       remove.title = `Remove ${note.name || 'Untitled'}`;
       remove.appendChild(createRemoveIcon());
@@ -1455,65 +1472,121 @@ class NotesPage {
   }
 
   private async deleteNote(id: string): Promise<void> {
-    const note = this.notes.find((item) => item.id === id);
-    if (!note) return;
-    const subtreeIds = noteTreeSubtreeIds(id, this.treeNodes);
-    if (subtreeIds.length === 0) return;
-    let confirmed = false;
-    try {
-      confirmed = await window.serviceApi.confirmAction({
-        title: 'Delete Note',
-        message: `Delete “${note.name || 'Untitled'}”?`,
-        detail: subtreeIds.length > 1
-          ? `This will permanently delete ${subtreeIds.length} Notes in this subtree.`
-          : 'This action cannot be undone.',
-        kind: 'warning',
-        confirmLabel: 'Delete',
-        cancelLabel: 'Cancel',
-      });
-    } catch (error) {
-      this.setSaveStatus(`Delete failed: ${toErrorMessage(error)}`, 'error');
-      return;
-    }
-    if (!confirmed) return;
-
-    const visibleBeforeDelete = this.searchInput.value.trim()
-      ? rankNotes(this.notes, this.searchInput.value).map((item) => item.id)
-      : this.visibleTreeRows().map((item) => item.note.id);
-    const deletedIndex = visibleBeforeDelete.indexOf(note.id);
-    const focusAfterDelete = visibleBeforeDelete.slice(deletedIndex + 1).find((candidate) => !subtreeIds.includes(candidate))
-      ?? [...visibleBeforeDelete.slice(0, deletedIndex)].reverse().find((candidate) => !subtreeIds.includes(candidate));
+    if (this.deletingNoteIds.has(id)) return;
+    this.deletingNoteIds.add(id);
+    this.renderList(id);
 
     try {
       await this.flushAllPendingSaves();
-    } catch (error) {
-      this.setSaveStatus(`Delete blocked: ${toErrorMessage(error)}`, 'error');
-      return;
-    }
-    const editVersionBaseline = new Map(this.editVersions);
-    for (const noteId of subtreeIds) {
-      this.deletedIds.add(noteId);
-      this.clearSaveTimer(noteId);
-    }
-    try {
-      const result = await window.notesApi.deleteNote({ id: note.id, expectedIds: subtreeIds });
-      this.applyWorkspace(result.workspace, editVersionBaseline);
-      for (const deletedId of result.deletedIds) this.deletedIds.delete(deletedId);
-      if (!this.selectedId) this.selectedId = focusAfterDelete ?? this.treeNodes[0]?.noteId;
-      this.renderEditor();
-      this.renderList(focusAfterDelete ?? this.selectedId);
-      if (!this.selectedId) this.newButton.focus();
-      const selectedDirty = Boolean(this.selectedId && this.isDirty(this.selectedId));
-      this.setSaveStatus(
-        this.selectedId ? selectedDirty ? 'Saving…' : 'Saved' : '',
-        selectedDirty ? 'saving' : 'saved',
-      );
-    } catch (error) {
-      for (const noteId of subtreeIds) {
-        this.deletedIds.delete(noteId);
-        if (this.isDirty(noteId)) this.scheduleSave(noteId);
+      let promptUsesUpdatedScope = false;
+      let pendingPreview: NoteDeletePreview | null | undefined;
+
+      while (true) {
+        const preview = pendingPreview === undefined
+          ? await window.notesApi.previewNoteDelete(id)
+          : pendingPreview;
+        pendingPreview = undefined;
+        if (!preview || preview.expectedIds.length === 0) {
+          await this.reload();
+          return;
+        }
+
+        const scopeDetail = preview.expectedIds.length > 1
+          ? `This will permanently delete ${preview.expectedIds.length} Notes in this subtree.`
+          : 'This action cannot be undone.';
+        const confirmed = await window.serviceApi.confirmAction({
+          title: 'Delete Note',
+          message: `Delete “${preview.name || 'Untitled'}”?`,
+          detail: promptUsesUpdatedScope
+            ? `Updated deletion scope: ${scopeDetail}`
+            : scopeDetail,
+          kind: 'warning',
+          confirmLabel: 'Delete',
+          cancelLabel: 'Cancel',
+        });
+        if (!confirmed) return;
+
+        // Recheck only the lightweight authoritative scope after the native
+        // dialog. No complete Note bodies cross IPC for a confirmation retry.
+        const confirmedPreview = await window.notesApi.previewNoteDelete(id);
+        if (!confirmedPreview
+          || !sameNoteIdSet(preview.expectedIds, confirmedPreview.expectedIds)) {
+          pendingPreview = confirmedPreview;
+          promptUsesUpdatedScope = true;
+          continue;
+        }
+
+        const visibleBeforeDelete = this.searchInput.value.trim()
+          ? rankNotes(this.notes, this.searchInput.value).map((item) => item.id)
+          : this.visibleTreeRows().map((item) => item.note.id);
+        const deletedIndex = visibleBeforeDelete.indexOf(id);
+        const focusAfterDelete = visibleBeforeDelete.slice(deletedIndex + 1)
+          .find((candidate) => !confirmedPreview.expectedIds.includes(candidate))
+          ?? [...visibleBeforeDelete.slice(0, deletedIndex)].reverse()
+            .find((candidate) => !confirmedPreview.expectedIds.includes(candidate));
+        const selectedBeforeDelete = this.selectedId;
+        const editVersionBaseline = new Map(this.editVersions);
+        for (const noteId of confirmedPreview.expectedIds) {
+          this.deletedIds.add(noteId);
+          this.clearSaveTimer(noteId);
+        }
+        if (this.selectedId && this.deletedIds.has(this.selectedId)) {
+          this.selectedId = focusAfterDelete
+            ?? this.treeNodes.find((node) => !this.deletedIds.has(node.noteId))?.noteId;
+        }
+        this.render();
+
+        try {
+          const result = await window.notesApi.deleteNote({
+            id,
+            expectedIds: confirmedPreview.expectedIds,
+          });
+          if (result.status === 'changed') {
+            for (const noteId of confirmedPreview.expectedIds) this.deletedIds.delete(noteId);
+            this.selectedId = selectedBeforeDelete;
+            this.render();
+            pendingPreview = result.preview;
+            promptUsesUpdatedScope = true;
+            continue;
+          }
+
+          this.applyWorkspace({
+            notes: this.notes.filter((note) => !result.deletedIds.includes(note.id)),
+            tree: result.tree,
+            expandedNoteIds: result.expandedNoteIds,
+          }, editVersionBaseline);
+          for (const deletedId of result.deletedIds) this.deletedIds.delete(deletedId);
+          if (!this.selectedId) this.selectedId = focusAfterDelete ?? this.treeNodes[0]?.noteId;
+          this.render();
+          this.renderList(focusAfterDelete ?? this.selectedId);
+          if (!this.selectedId) this.newButton.focus();
+          const selectedDirty = Boolean(this.selectedId && this.isDirty(this.selectedId));
+          this.setSaveStatus(
+            this.selectedId ? selectedDirty ? 'Saving…' : 'Saved' : '',
+            selectedDirty ? 'saving' : 'saved',
+          );
+          setMessage(
+            result.deletedIds.length === 1
+              ? 'Note deleted.'
+              : `${result.deletedIds.length} Notes deleted.`,
+            'success',
+          );
+          return;
+        } catch (error) {
+          for (const noteId of confirmedPreview.expectedIds) {
+            this.deletedIds.delete(noteId);
+            if (this.isDirty(noteId)) this.scheduleSave(noteId);
+          }
+          this.selectedId = selectedBeforeDelete;
+          this.render();
+          throw error;
+        }
       }
+    } catch (error) {
       this.setSaveStatus(`Delete failed: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.deletingNoteIds.delete(id);
+      this.renderList(this.selectedId);
     }
   }
 
