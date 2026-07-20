@@ -399,6 +399,9 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
   assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
+  assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*void this\.selectNote\(note\.id\);\s*if \(childNodes\.length > 0 && !searchActive\) \{\s*void this\.toggleTreeExpanded\(note\.id\);/);
+  assert.match(source, /if \(childNodes\.length > 0 && !searchActive\) \{\s*button\.setAttribute\('aria-expanded', String\(this\.expandedNoteIds\.has\(note\.id\)\)\);/);
+  assert.match(source, /toggleButton\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*void this\.toggleTreeExpanded\(note\.id\);/);
   assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);
   assert.match(source, /if \(!isValidNoteTreeParent\(this\.treeNodes, noteId, parentId\)\)/);
   assert.match(source, /event\.key === 'ArrowRight' \|\| event\.key === 'ArrowLeft'/);

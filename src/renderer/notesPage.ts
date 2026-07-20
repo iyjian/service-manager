@@ -942,6 +942,9 @@ class NotesPage {
       button.className = 'notes-list-item';
       button.dataset.noteId = note.id;
       button.setAttribute('aria-current', note.id === this.selectedId ? 'true' : 'false');
+      if (childNodes.length > 0 && !searchActive) {
+        button.setAttribute('aria-expanded', String(this.expandedNoteIds.has(note.id)));
+      }
 
       const nameRow = document.createElement('span');
       nameRow.className = 'notes-list-item-name-row';
@@ -967,7 +970,12 @@ class NotesPage {
         }
       }
 
-      button.addEventListener('click', () => void this.selectNote(note.id));
+      button.addEventListener('click', () => {
+        void this.selectNote(note.id);
+        if (childNodes.length > 0 && !searchActive) {
+          void this.toggleTreeExpanded(note.id);
+        }
+      });
 
       const actions = document.createElement('span');
       actions.className = 'notes-tree-actions';
