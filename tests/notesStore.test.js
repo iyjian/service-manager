@@ -130,6 +130,9 @@ test('NotesStore updates only the target envelope, normalizes fields, and return
   const { notesDirectory, store } = await createStore(t);
   const first = await store.create();
   const second = await store.create();
+  const internalNotes = store.notes;
+  const internalFirst = internalNotes.find((note) => note.id === first.id);
+  const internalSecond = internalNotes.find((note) => note.id === second.id);
   const untouchedBefore = await fs.readFile(noteFilePath(notesDirectory, second.id), 'utf8');
   const originalRename = fs.rename;
   const renameDestinations = [];
@@ -156,6 +159,9 @@ test('NotesStore updates only the target envelope, normalizes fields, and return
   assert.deepEqual(updated.tags, ['production', 'Release']);
   assert.equal(updated.createdAt, first.createdAt);
   assert.deepEqual((await readEnvelope(notesDirectory, first.id)).note, updated);
+  assert.equal(store.notes, internalNotes);
+  assert.notEqual(store.notes.find((note) => note.id === first.id), internalFirst);
+  assert.equal(store.notes.find((note) => note.id === second.id), internalSecond);
 
   updated.name = 'mutated';
   updated.tags.push('mutated');
@@ -167,6 +173,37 @@ test('NotesStore updates only the target envelope, normalizes fields, and return
   assert.equal(durable.name, 'Deploy API');
   assert.equal(durable.content, 'pnpm deploy');
   assert.deepEqual(durable.tags, ['production', 'Release']);
+});
+
+test('NotesStore compare-and-update checks the base inside the serialized mutation queue', async (t) => {
+  const { notesDirectory, store } = await createStore(t);
+  const note = await store.create();
+  const expected = store.get(note.id);
+
+  const precedingUpdate = store.update(note.id, draft({ content: 'preceding update' }));
+  const staleUpdate = store.compareAndUpdate(
+    note.id,
+    expected,
+    draft({ content: 'must not overwrite the preceding update' }),
+  );
+
+  const persisted = await precedingUpdate;
+  await assert.rejects(staleUpdate, /This Note changed after the editor loaded it/);
+  assert.equal(store.get(note.id).content, 'preceding update');
+  assert.deepEqual((await readEnvelope(notesDirectory, note.id)).note, persisted);
+
+  const current = store.get(note.id);
+  const comparedPromise = store.compareAndUpdate(
+    note.id,
+    current,
+    draft({ content: 'atomic compared update', tags: ['detached'] }),
+  );
+  current.content = 'mutated after the call';
+  current.tags.push('mutated');
+  const compared = await comparedPromise;
+  compared.tags.push('mutated');
+  assert.equal(store.get(note.id).content, 'atomic compared update');
+  assert.deepEqual(store.get(note.id).tags, ['detached']);
 });
 
 test('NotesStore canonicalizes rich text and rejects unsafe rich text nodes before persistence', async (t) => {

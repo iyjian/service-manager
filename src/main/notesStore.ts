@@ -98,6 +98,22 @@ function sortNotes(notes: Note[]): Note[] {
   return notes.sort(compareIds);
 }
 
+function findNoteIndex(notes: readonly Note[], id: string): number {
+  let low = 0;
+  let high = notes.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const candidateId = notes[middle].id;
+    if (candidateId === id) return middle;
+    if (candidateId < id) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return -1;
+}
+
 function sortTombstones(tombstones: NoteTombstone[]): NoteTombstone[] {
   return tombstones.sort(compareIds);
 }
@@ -333,7 +349,8 @@ export class NotesStore {
 
   get(id: string): Note | undefined {
     const normalizedId = normalizeId(id);
-    const note = this.notes.find((candidate) => candidate.id === normalizedId);
+    const index = findNoteIndex(this.notes, normalizedId);
+    const note = index >= 0 ? this.notes[index] : undefined;
     return note ? cloneNote(note) : undefined;
   }
 
@@ -368,19 +385,23 @@ export class NotesStore {
     const normalizedId = normalizeId(id);
     const normalizedDraft = normalizeNoteDraft(draft);
     return this.enqueue(async () => {
-      const index = this.notes.findIndex((note) => note.id === normalizedId);
+      const index = findNoteIndex(this.notes, normalizedId);
       if (index < 0) throw new Error('Note not found.');
-      const note: Note = {
-        ...this.notes[index],
-        ...normalizedDraft,
-        tags: [...normalizedDraft.tags],
-        updatedAt: new Date().toISOString(),
-      };
-      await this.writeEnvelope(this.directoryPath, { schemaVersion: NOTES_SCHEMA_VERSION, note });
-      const nextNotes = this.notes.map(cloneNote);
-      nextNotes[index] = note;
-      this.notes = sortNotes(nextNotes);
-      return cloneNote(note);
+      return this.persistUpdate(index, normalizedDraft);
+    });
+  }
+
+  async compareAndUpdate(id: string, expectedNote: Note, draft: NoteDraft): Promise<Note> {
+    const normalizedId = normalizeId(id);
+    const normalizedExpected = normalizeNoteSnapshot(expectedNote);
+    const normalizedDraft = normalizeNoteDraft(draft);
+    if (normalizedExpected.id !== normalizedId) throw new Error('Note update base is invalid.');
+    return this.enqueue(async () => {
+      const index = findNoteIndex(this.notes, normalizedId);
+      if (index < 0 || !isDeepStrictEqual(this.notes[index], normalizedExpected)) {
+        throw new Error('This Note changed after the editor loaded it. Reload Notes to preserve both versions.');
+      }
+      return this.persistUpdate(index, normalizedDraft);
     });
   }
 
@@ -471,6 +492,20 @@ export class NotesStore {
     const result = this.operationQueue.then(operation);
     this.operationQueue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private async persistUpdate(index: number, draft: NoteDraft): Promise<Note> {
+    const note: Note = {
+      ...this.notes[index],
+      ...draft,
+      tags: [...draft.tags],
+      updatedAt: new Date().toISOString(),
+    };
+    await this.writeEnvelope(this.directoryPath, { schemaVersion: NOTES_SCHEMA_VERSION, note });
+    // Note IDs never change during an update, so replacing this one sorted
+    // slot preserves ordering without cloning and sorting the complete store.
+    this.notes[index] = note;
+    return cloneNote(note);
   }
 
   private replacementPath(kind: 'next' | 'previous'): string {

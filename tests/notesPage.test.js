@@ -83,6 +83,31 @@ test('Notes empty search sorts by updated time descending and stays stable for t
   assert.deepEqual(notes.map(({ id }) => id), ['old', 'new-a', 'new-b']);
 });
 
+test('Notes page reuses invalidatable search and tree indexes with a bounded search debounce', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /NOTE_SEARCH_DEBOUNCE_MS = 120/);
+  assert.match(source, /this\.searchInput\.addEventListener\('input', \(\) => this\.queueSearchRender\(\)\)/);
+  assert.match(source, /private noteSearchIndex: NoteSearchIndexEntry\[\] = \[\]/);
+  assert.match(source, /private readonly treeNodesById = new Map<string, NotesTreeNode>\(\)/);
+  assert.match(source, /this\.noteSearchIndex\[index\] = createNoteSearchIndexEntry\(note, index\)/);
+  assert.match(source, /rankNoteSearchIndex\(this\.noteSearchIndex, this\.searchInput\.value, this\.deletedIds\)/);
+  assert.match(source, /node: this\.treeNodesById\.get\(note\.id\)/);
+  assert.match(source, /const cached = this\.breadcrumbCache\.get\(noteId\)/);
+  assert.match(source, /noteTreeBreadcrumbFromIndexes\(noteId, this\.notesById, this\.treeNodesById\)/);
+  assert.match(source, /this\.flushSearchRender\(\);\s*this\.finishSidebarResize\(\)/);
+  assert.match(source, /finally \{\s*this\.flushSearchRender\(\);\s*\}/);
+});
+
+test('Notes name input updates one rendered row and only debounces ranking while search is active', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /private readonly renderedRowsById = new Map<string, HTMLElement>\(\)/);
+  assert.match(source, /private updateListNoteName\(note: Note\): void \{[\s\S]*?this\.renderedRowsById\.get\(note\.id\)[\s\S]*?name\.textContent = displayName/);
+  assert.match(source, /note\.name = this\.nameInput\.value;[\s\S]*?this\.updateListNoteName\(note\);[\s\S]*?this\.markNoteEdited\(note, Boolean\(this\.searchInput\.value\.trim\(\)\)\)/);
+  assert.match(source, /if \(refreshSearchResults\) this\.queueSearchRender\(\)/);
+});
+
 test('Notes sidebar width clamp rounds finite pixels and enforces stable bounds', async () => {
   const { clampNotesSidebarWidth } = await import(path.join(distRenderer, 'notesPage.js'));
 
@@ -378,7 +403,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /name\.textContent = note\.name \|\| 'Untitled'/);
   assert.match(source, /this\.saveStatus\.textContent = text/);
   assert.match(source, /private async deleteNote\(id: string\)/);
-  assert.match(source, /this\.notes\.filter\(\(note\) => !this\.deletedIds\.has\(note\.id\)\)/);
+  assert.match(source, /this\.treeNodes\.filter\(\(node\) => !this\.deletedIds\.has\(node\.noteId\)\)/);
   assert.match(source, /this\.selectedId = focusAfterDelete/);
   assert.match(source, /remove\.disabled = this\.deletingNoteIds\.has\(note\.id\)/);
   assert.match(source, /this\.pageRoot\.inert = true/);

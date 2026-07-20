@@ -439,6 +439,11 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   const noteObject = createServiceManagerNoteObjectV3(note(), objectId);
   const noteWrite = await store.putNote(noteObject);
   assert.equal(noteWrite.status, 'written');
+  assert.equal(
+    calls.at(-1).options.body,
+    serializeEncryptedS3ObjectV3(encryptS3NoteV3(noteObject, SYNC_KEY, deterministicBytes)),
+    'the optimized owned PUT path must preserve the exact Note wire envelope',
+  );
   assert.deepEqual(
     Object.keys(noteWrite.reference),
     ['id', 'objectId', 'sha256', 'contentHash', 'encryptionKeyId'],
@@ -452,6 +457,11 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   );
   const treeWrite = await store.putNotesTree(treeObject);
   assert.equal(treeWrite.status, 'written');
+  assert.equal(
+    calls.at(-1).options.body,
+    serializeEncryptedS3ObjectV3(encryptS3NotesTreeV3(treeObject, SYNC_KEY, deterministicBytes)),
+    'the optimized owned PUT path must preserve the exact tree wire envelope',
+  );
   assert.deepEqual(
     Object.keys(treeWrite.reference),
     ['objectId', 'sha256', 'contentHash', 'encryptionKeyId'],
@@ -462,6 +472,11 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   const manifestValue = manifest(manifestData([noteWrite.reference], [], treeWrite.reference));
   const manifestWrite = await store.putManifest(manifestValue);
   assert.equal(manifestWrite.status, 'written');
+  assert.equal(
+    calls.at(-1).options.body,
+    serializeEncryptedS3ObjectV3(encryptS3ManifestV3(manifestValue, SYNC_KEY, deterministicBytes)),
+    'the optimized owned PUT path must preserve the exact manifest wire envelope',
+  );
   assert.equal(calls.at(-1).options.headers['if-none-match'], '*');
   assert.equal((await store.putManifest(manifestValue)).status, 'conflict');
 

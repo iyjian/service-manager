@@ -118,6 +118,15 @@ let pageMessageTimer: number | null = null;
 const collapsedHostIds = new Set<string>();
 const PAGE_TOAST_DURATION_MS = 10_000;
 
+type RuntimeStatusDomTarget =
+  | { kind: 'service'; hostId: string; itemId: string }
+  | { kind: 'forward'; hostId: string; itemId: string };
+
+const pendingRuntimeStatusDomUpdates = new Map<string, RuntimeStatusDomTarget>();
+let runtimeStatusUpdateFrame: number | null = null;
+let floatingTooltip: HTMLDivElement | null = null;
+let floatingTooltipAnchor: HTMLElement | null = null;
+
 type MessageLevel = 'default' | 'success' | 'error';
 
 interface MessageView {
@@ -1846,6 +1855,208 @@ function renderServicePort(service: HostView['services'][number]): string {
   return `<span>${base}</span> <span class="forward-indicator pending" title="Forward pending">…</span>`;
 }
 
+function createForwardRuntimeRow(
+  host: HostView,
+  forward: HostView['forwards'][number],
+  index: number,
+): HTMLDivElement {
+  const item = document.createElement('div');
+  item.className = 'runtime-row runtime-row-tunnel';
+  item.dataset.hostId = host.id;
+  item.dataset.forwardId = forward.id;
+  const canStop = canStopForward(forward.status);
+  const action = canStop
+    ? renderRuntimeActionButton('stop-forward', 'Stop', false, forward.status)
+    : renderRuntimeActionButton('start-forward', 'Start', !canStartForward(forward.status), forward.status);
+  const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
+    ? `<span class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</span>`
+    : '';
+  const forwardError = escapeAttribute(forward.error ?? '');
+  item.innerHTML = `
+    <span class="runtime-name-cell">
+      <span
+        class="runtime-name runtime-name-status ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}"
+        title="${escapeAttribute(formatStatus(forward.status))}"
+        ${forwardError ? `data-tooltip="${forwardError}"` : ''}
+      >
+        <span class="runtime-status-marker">${runtimeStatusMarker(forward.status)}</span>
+        <span class="runtime-name-text">${escapeHtml(forward.name?.trim() || `Rule #${index + 1}`)}</span>
+      </span>
+      ${forward.autoStart ? '<span class="runtime-auto">AUTO</span>' : ''}${retry}
+    </span>
+    <span class="runtime-port">${renderTunnelPort(forward)}</span>
+    <span class="runtime-actions">${action}</span>
+  `;
+  item.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
+    try {
+      await window.serviceApi.startForward(host.id, forward.id);
+    } catch (error) {
+      setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
+    }
+  });
+  item.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
+    try {
+      await window.serviceApi.stopForward(host.id, forward.id);
+    } catch (error) {
+      setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
+    }
+  });
+  return item;
+}
+
+function createServiceRuntimeRow(
+  host: HostView,
+  service: HostView['services'][number],
+): HTMLDivElement {
+  const item = document.createElement('div');
+  item.className = 'runtime-row runtime-row-service';
+  item.dataset.hostId = host.id;
+  item.dataset.serviceId = service.id;
+  const canStop = canStopService(service.status);
+  const action = canStop
+    ? renderRuntimeActionButton('stop', 'Stop', false, service.status)
+    : renderRuntimeActionButton('start', 'Start', !canStartService(service.status), service.status);
+  const serviceError = escapeAttribute(service.error ?? '');
+  const logTitle = service.pid
+    ? `Open logs (PID ${service.pid}, ${formatStatus(service.status)})`
+    : `Open logs (${formatStatus(service.status)})`;
+
+  item.innerHTML = `
+    <span class="runtime-name-cell">
+      <button
+        class="runtime-name runtime-name-button runtime-name-status ${statusClass(service.status)}${serviceError ? ' status-has-tooltip' : ''}"
+        type="button"
+        data-action="logs"
+        title="${escapeAttribute(logTitle)}"
+        ${serviceError ? `data-tooltip="${serviceError}"` : ''}
+      >
+        <span class="runtime-status-marker">${runtimeStatusMarker(service.status)}</span>
+        <span class="runtime-name-text">${escapeHtml(service.name)}</span>
+      </button>
+    </span>
+    <span class="runtime-port">${renderServicePort(service)}</span>
+    <span class="runtime-actions">${action}</span>
+  `;
+  item.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
+    try {
+      await window.serviceApi.startService(host.id, service.id);
+    } catch (error) {
+      setMessage(`Start failed: ${(error as Error).message}`, 'error');
+    }
+  });
+  item.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
+    try {
+      await window.serviceApi.stopService(host.id, service.id);
+    } catch (error) {
+      setMessage(`Stop failed: ${(error as Error).message}`, 'error');
+    }
+  });
+  item.querySelector<HTMLButtonElement>('[data-action="logs"]')?.addEventListener('click', () => {
+    openServiceLogDialog(host, service.id);
+  });
+  return item;
+}
+
+function findRenderedHostPanel(hostId: string): HTMLElement | null {
+  return Array.from(hostTableBody.querySelectorAll<HTMLElement>('.host-panel[data-host-id]'))
+    .find((panel) => panel.dataset.hostId === hostId) ?? null;
+}
+
+function replaceRenderedForwardRow(hostId: string, forwardId: string): boolean {
+  const host = hosts.find((item) => item.id === hostId);
+  const forwardIndex = host?.forwards.findIndex((item) => item.id === forwardId) ?? -1;
+  if (!host || forwardIndex < 0) {
+    return true;
+  }
+
+  const panel = findRenderedHostPanel(hostId);
+  if (!panel) {
+    return false;
+  }
+  if (panel.classList.contains('host-panel-collapsed')) {
+    return true;
+  }
+
+  const list = panel.querySelector<HTMLElement>('.runtime-section-tunnels .runtime-list');
+  const currentRow = list
+    ? Array.from(list.querySelectorAll<HTMLElement>('.runtime-row[data-forward-id]'))
+      .find((item) => item.dataset.forwardId === forwardId) ?? null
+    : null;
+  if (!currentRow) {
+    return false;
+  }
+
+  if (floatingTooltipAnchor && currentRow.contains(floatingTooltipAnchor)) {
+    hideFloatingTooltip();
+  }
+  currentRow.replaceWith(createForwardRuntimeRow(host, host.forwards[forwardIndex], forwardIndex));
+  return true;
+}
+
+function replaceRenderedServiceRow(hostId: string, serviceId: string): boolean {
+  const host = hosts.find((item) => item.id === hostId);
+  const service = host?.services.find((item) => item.id === serviceId);
+  if (!host || !service) {
+    return true;
+  }
+
+  const panel = findRenderedHostPanel(hostId);
+  if (!panel) {
+    return false;
+  }
+  if (panel.classList.contains('host-panel-collapsed')) {
+    return true;
+  }
+
+  const list = panel.querySelector<HTMLElement>('.runtime-section-services .runtime-list');
+  const currentRow = list
+    ? Array.from(list.querySelectorAll<HTMLElement>('.runtime-row[data-service-id]'))
+      .find((item) => item.dataset.serviceId === serviceId) ?? null
+    : null;
+  if (!currentRow) {
+    return false;
+  }
+
+  if (floatingTooltipAnchor && currentRow.contains(floatingTooltipAnchor)) {
+    hideFloatingTooltip();
+  }
+  currentRow.replaceWith(createServiceRuntimeRow(host, service));
+  return true;
+}
+
+function flushRuntimeStatusDomUpdates(): void {
+  runtimeStatusUpdateFrame = null;
+  const updates = Array.from(pendingRuntimeStatusDomUpdates.values());
+  pendingRuntimeStatusDomUpdates.clear();
+  let needsFullRender = false;
+
+  try {
+    for (const update of updates) {
+      const updated = update.kind === 'service'
+        ? replaceRenderedServiceRow(update.hostId, update.itemId)
+        : replaceRenderedForwardRow(update.hostId, update.itemId);
+      needsFullRender ||= !updated;
+    }
+  } catch (error) {
+    logRendererError('runtime-status-local-update', error);
+    captureRendererException('runtime-status-local-update', error);
+    needsFullRender = true;
+  }
+
+  if (needsFullRender) {
+    renderSafely('runtime-status-fallback-render');
+  }
+}
+
+function scheduleRuntimeStatusDomUpdate(target: RuntimeStatusDomTarget): void {
+  const key = JSON.stringify([target.kind, target.hostId, target.itemId]);
+  pendingRuntimeStatusDomUpdates.set(key, target);
+  if (runtimeStatusUpdateFrame !== null) {
+    return;
+  }
+  runtimeStatusUpdateFrame = window.requestAnimationFrame(flushRuntimeStatusDomUpdates);
+}
+
 function renderPageStats(): void {
   const bytes = appMemoryUsage?.bytes;
   pageStatsElement.textContent = typeof bytes === 'number' && bytes >= 0
@@ -1900,6 +2111,7 @@ function render(): void {
 
     const panel = document.createElement('article');
     panel.className = `host-panel${isCollapsed ? ' host-panel-collapsed' : ''}`;
+    panel.dataset.hostId = host.id;
     const hostName = escapeHtml(host.name);
     const hostDesc = escapeHtml(`${host.username}@${host.sshHost}:${host.sshPort}${formatJumpChain(host.jumpHosts)}`);
     const hostInitial = escapeHtml(([...host.name.trim()][0] ?? '#').toUpperCase());
@@ -1969,46 +2181,7 @@ function render(): void {
         tunnelList.innerHTML = '<div class="runtime-empty">No tunnels</div>';
       } else {
         host.forwards.forEach((forward, index) => {
-          const item = document.createElement('div');
-          item.className = 'runtime-row runtime-row-tunnel';
-          const canStop = canStopForward(forward.status);
-          const action = canStop
-            ? renderRuntimeActionButton('stop-forward', 'Stop', false, forward.status)
-            : renderRuntimeActionButton('start-forward', 'Start', !canStartForward(forward.status), forward.status);
-          const retry = forward.status === 'error' && forward.reconnectAt && forward.reconnectAt > Date.now()
-            ? `<span class="status-retry">Retry in ${Math.ceil((forward.reconnectAt - Date.now()) / 1000)}s</span>`
-            : '';
-          const forwardError = escapeAttribute(forward.error ?? '');
-          item.innerHTML = `
-            <span class="runtime-name-cell">
-              <span
-                class="runtime-name runtime-name-status ${statusClass(forward.status)}${forwardError ? ' status-has-tooltip' : ''}"
-                title="${escapeAttribute(formatStatus(forward.status))}"
-                ${forwardError ? `data-tooltip="${forwardError}"` : ''}
-              >
-                <span class="runtime-status-marker">${runtimeStatusMarker(forward.status)}</span>
-                <span class="runtime-name-text">${escapeHtml(forward.name?.trim() || `Rule #${index + 1}`)}</span>
-              </span>
-              ${forward.autoStart ? '<span class="runtime-auto">AUTO</span>' : ''}${retry}
-            </span>
-            <span class="runtime-port">${renderTunnelPort(forward)}</span>
-            <span class="runtime-actions">${action}</span>
-          `;
-          item.querySelector<HTMLButtonElement>('[data-action="start-forward"]')?.addEventListener('click', async () => {
-            try {
-              await window.serviceApi.startForward(host.id, forward.id);
-            } catch (error) {
-              setMessage(`Start forward failed: ${(error as Error).message}`, 'error');
-            }
-          });
-          item.querySelector<HTMLButtonElement>('[data-action="stop-forward"]')?.addEventListener('click', async () => {
-            try {
-              await window.serviceApi.stopForward(host.id, forward.id);
-            } catch (error) {
-              setMessage(`Stop forward failed: ${(error as Error).message}`, 'error');
-            }
-          });
-          tunnelList.appendChild(item);
+          tunnelList.appendChild(createForwardRuntimeRow(host, forward, index));
         });
       }
       body.appendChild(tunnelSection);
@@ -2030,51 +2203,7 @@ function render(): void {
         serviceList.innerHTML = '<div class="runtime-empty">No services</div>';
       } else {
         for (const service of host.services) {
-          const item = document.createElement('div');
-          item.className = 'runtime-row runtime-row-service';
-          const canStop = canStopService(service.status);
-          const action = canStop
-            ? renderRuntimeActionButton('stop', 'Stop', false, service.status)
-            : renderRuntimeActionButton('start', 'Start', !canStartService(service.status), service.status);
-          const serviceError = escapeAttribute(service.error ?? '');
-          const logTitle = service.pid
-            ? `Open logs (PID ${service.pid}, ${formatStatus(service.status)})`
-            : `Open logs (${formatStatus(service.status)})`;
-
-          item.innerHTML = `
-            <span class="runtime-name-cell">
-              <button
-                class="runtime-name runtime-name-button runtime-name-status ${statusClass(service.status)}${serviceError ? ' status-has-tooltip' : ''}"
-                type="button"
-                data-action="logs"
-                title="${escapeAttribute(logTitle)}"
-                ${serviceError ? `data-tooltip="${serviceError}"` : ''}
-              >
-                <span class="runtime-status-marker">${runtimeStatusMarker(service.status)}</span>
-                <span class="runtime-name-text">${escapeHtml(service.name)}</span>
-              </button>
-            </span>
-            <span class="runtime-port">${renderServicePort(service)}</span>
-            <span class="runtime-actions">${action}</span>
-          `;
-          item.querySelector<HTMLButtonElement>('[data-action="start"]')?.addEventListener('click', async () => {
-            try {
-              await window.serviceApi.startService(host.id, service.id);
-            } catch (error) {
-              setMessage(`Start failed: ${(error as Error).message}`, 'error');
-            }
-          });
-          item.querySelector<HTMLButtonElement>('[data-action="stop"]')?.addEventListener('click', async () => {
-            try {
-              await window.serviceApi.stopService(host.id, service.id);
-            } catch (error) {
-              setMessage(`Stop failed: ${(error as Error).message}`, 'error');
-            }
-          });
-          item.querySelector<HTMLButtonElement>('[data-action="logs"]')?.addEventListener('click', () => {
-            openServiceLogDialog(host, service.id);
-          });
-          serviceList.appendChild(item);
+          serviceList.appendChild(createServiceRuntimeRow(host, service));
         }
       }
       body.appendChild(serviceSection);
@@ -2237,10 +2366,13 @@ window.addEventListener('beforeunload', () => {
   stopLogAutoRefresh();
   stopStatusAutoRefresh();
   stopAppMemoryRefresh();
+  if (runtimeStatusUpdateFrame !== null) {
+    window.cancelAnimationFrame(runtimeStatusUpdateFrame);
+    runtimeStatusUpdateFrame = null;
+  }
+  pendingRuntimeStatusDomUpdates.clear();
   setServiceLogPageScrollLock(false);
 });
-
-let floatingTooltip: HTMLDivElement | null = null;
 
 function showFloatingTooltip(anchor: HTMLElement): void {
   const text = anchor.getAttribute('data-tooltip');
@@ -2251,6 +2383,7 @@ function showFloatingTooltip(anchor: HTMLElement): void {
   tip.textContent = text;
   document.body.appendChild(tip);
   floatingTooltip = tip;
+  floatingTooltipAnchor = anchor;
   const rect = anchor.getBoundingClientRect();
   tip.style.left = `${rect.left}px`;
   tip.style.top = `${rect.bottom + 6}px`;
@@ -2261,6 +2394,7 @@ function hideFloatingTooltip(): void {
     floatingTooltip.remove();
     floatingTooltip = null;
   }
+  floatingTooltipAnchor = null;
 }
 
 hostTableBody.addEventListener('mouseenter', (event) => {
@@ -2333,13 +2467,24 @@ window.serviceApi.onServiceStatusChanged((change) => {
     const service = host.services.find((item) => item.id === change.serviceId);
     if (!service) return;
 
+    const hasVisibleChange = service.status !== change.status
+      || service.pid !== change.pid
+      || service.error !== change.error
+      || service.forwardState !== change.forwardState
+      || service.forwardError !== change.forwardError;
     service.status = change.status;
     service.pid = change.pid;
     service.error = change.error;
     service.updatedAt = change.updatedAt;
     service.forwardState = change.forwardState;
     service.forwardError = change.forwardError;
-    renderSafely('service-status-changed');
+    if (hasVisibleChange) {
+      scheduleRuntimeStatusDomUpdate({
+        kind: 'service',
+        hostId: change.hostId,
+        itemId: change.serviceId,
+      });
+    }
     const serviceError = change.error;
     if (!change.silent && change.status === 'error' && serviceError && shouldPromoteServiceError(serviceError)) {
       setMessage(serviceError, 'error');
@@ -2360,10 +2505,22 @@ window.serviceApi.onForwardStatusChanged((change) => {
     const forward = host.forwards.find((item) => item.id === change.forwardId);
     if (!forward) return;
 
+    const hasVisibleChange = forward.status !== change.status
+      || forward.error !== change.error
+      || forward.reconnectAt !== change.reconnectAt;
+    const refreshRetryText = change.status === 'error'
+      && typeof change.reconnectAt === 'number'
+      && change.reconnectAt > Date.now();
     forward.status = change.status;
     forward.error = change.error;
     forward.reconnectAt = change.reconnectAt;
-    renderSafely('forward-status-changed');
+    if (hasVisibleChange || refreshRetryText) {
+      scheduleRuntimeStatusDomUpdate({
+        kind: 'forward',
+        hostId: change.hostId,
+        itemId: change.forwardId,
+      });
+    }
   } catch (error) {
     reportRendererError('forward-status-changed', error, 'Unexpected tunnel status update error.');
   }

@@ -63,6 +63,22 @@ test('missing Notes tree creates deterministic private roots for every active No
   });
 });
 
+test('missing Notes tree assigns a large active set in one deterministic order pass', async (t) => {
+  const { store } = await createStore(t);
+  const activeIds = Array.from({ length: 10_000 }, (_, index) => `note-${String(index).padStart(5, '0')}`);
+  const snapshot = await store.load(activeIds);
+
+  assert.equal(snapshot.nodes.length, activeIds.length);
+  assert.deepEqual(snapshot.nodes.slice(0, 2), [
+    node('note-00000', null, 1024),
+    node('note-00001', null, 2048),
+  ]);
+  assert.deepEqual(snapshot.nodes.slice(-2), [
+    node('note-09998', null, 10_238_976),
+    node('note-09999', null, 10_240_000),
+  ]);
+});
+
 test('load drops extras, deduplicates, appends missing roots, and repairs dangling parents and cycles', async (t) => {
   const { filePath, store } = await createStore(t);
   await writeTree(filePath, [
@@ -86,6 +102,22 @@ test('load drops extras, deduplicates, appends missing roots, and repairs dangli
 
   const reloaded = new NotesTreeStore(filePath);
   assert.deepEqual(await reloaded.load(['a', 'b', 'c', 'd', 'e']), snapshot);
+});
+
+test('repair rebalances existing roots once before a missing-root batch would exhaust safe order space', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await writeTree(filePath, [
+    node('a', null, Number.MAX_SAFE_INTEGER - 1),
+    node('b', null, Number.MAX_SAFE_INTEGER),
+  ]);
+
+  const snapshot = await store.load(['a', 'b', 'c', 'd']);
+  assert.deepEqual(snapshot.nodes, [
+    node('a', null, 1024),
+    node('b', null, 2048),
+    node('c', null, 3072),
+    node('d', null, 4096),
+  ]);
 });
 
 test('load deterministically roots every stored node beyond depth 32', async (t) => {

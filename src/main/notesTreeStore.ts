@@ -216,13 +216,21 @@ function canonicalizeNodes(nodes: readonly NotesTreeNode[]): NotesTreeNode[] {
   return result;
 }
 
-function nextAppendOrder(nodes: readonly NotesTreeNode[], parentId: string | null): number {
-  const siblings = nodes.filter((node) => node.parentId === parentId).sort(compareNodes);
-  if (siblings.length === 0) return ORDER_STEP;
-  const last = siblings[siblings.length - 1];
-  if (last.order <= Number.MAX_SAFE_INTEGER - ORDER_STEP) return last.order + ORDER_STEP;
-  rebalanceSiblings(siblings);
-  return siblings[siblings.length - 1].order + ORDER_STEP;
+function appendMissingRoots(nodes: NotesTreeNode[], missingNoteIds: readonly string[]): void {
+  if (missingNoteIds.length === 0) return;
+
+  const roots = nodes.filter((node) => node.parentId === null).sort(compareNodes);
+  let lastOrder = roots.at(-1)?.order ?? 0;
+  const requiredOrderSpace = ORDER_STEP * missingNoteIds.length;
+  if (lastOrder > Number.MAX_SAFE_INTEGER - requiredOrderSpace) {
+    rebalanceSiblings(roots);
+    lastOrder = roots.at(-1)?.order ?? 0;
+  }
+
+  for (const noteId of missingNoteIds) {
+    lastOrder += ORDER_STEP;
+    nodes.push({ noteId, parentId: null, order: lastOrder });
+  }
 }
 
 function repairSnapshot(rawNodes: readonly NotesTreeNode[], activeNoteIds: readonly string[]): NotesTreeNode[] {
@@ -244,15 +252,7 @@ function repairSnapshot(rawNodes: readonly NotesTreeNode[], activeNoteIds: reado
   }
 
   const missing = activeNoteIds.filter((noteId) => !selected.has(noteId));
-  for (const noteId of missing) {
-    const node: NotesTreeNode = {
-      noteId,
-      parentId: null,
-      order: nextAppendOrder(nodes, null),
-    };
-    nodes.push(node);
-    selected.set(noteId, node);
-  }
+  appendMissingRoots(nodes, missing);
 
   repairCycles(nodes);
   repairExcessiveDepth(nodes);

@@ -34,6 +34,7 @@ import { registerPage } from './nav.js';
 import { NotesRichTextEditor } from './notesRichTextEditor.js';
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
+const NOTE_SEARCH_DEBOUNCE_MS = 120;
 const NOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
 const MIN_NOTES_SIDEBAR_WIDTH = 240;
@@ -143,28 +144,22 @@ interface RankedNote {
   note: Note;
   score: number;
   index: number;
+  updatedAt: number;
+}
+
+interface NoteSearchIndexEntry {
+  note: Note;
+  index: number;
+  name: string;
+  tags: readonly string[];
+  language: string;
+  content?: string;
+  updatedAt: number;
 }
 
 function timestampValue(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function noteSearchScore(note: Note, query: string): number {
-  const name = note.name.trim().toLocaleLowerCase();
-  if (name === query) return 1_000;
-  if (name.startsWith(query)) return 900;
-  if (name.includes(query)) return 800;
-
-  const tags = note.tags.map((tag) => tag.toLocaleLowerCase());
-  if (tags.some((tag) => tag === query)) return 600;
-  if (tags.some((tag) => tag.includes(query))) return 500;
-
-  const language = note.language.toLocaleLowerCase();
-  if (language === query) return 400;
-  if (language.includes(query)) return 350;
-
-  return searchableNoteContent(note).toLocaleLowerCase().includes(query) ? 200 : 0;
 }
 
 const richTextPlainTextCache = new WeakMap<Note, { content: string; text: string }>();
@@ -182,6 +177,59 @@ function searchableNoteContent(note: Note): string {
   }
   richTextPlainTextCache.set(note, { content: note.content, text });
   return text;
+}
+
+function createNoteSearchIndexEntry(note: Note, index: number): NoteSearchIndexEntry {
+  return {
+    note,
+    index,
+    name: note.name.trim().toLocaleLowerCase(),
+    tags: note.tags.map((tag) => tag.toLocaleLowerCase()),
+    language: note.language.toLocaleLowerCase(),
+    updatedAt: timestampValue(note.updatedAt),
+  };
+}
+
+function noteSearchScore(entry: NoteSearchIndexEntry, query: string): number {
+  if (entry.name === query) return 1_000;
+  if (entry.name.startsWith(query)) return 900;
+  if (entry.name.includes(query)) return 800;
+
+  if (entry.tags.some((tag) => tag === query)) return 600;
+  if (entry.tags.some((tag) => tag.includes(query))) return 500;
+
+  if (entry.language === query) return 400;
+  if (entry.language.includes(query)) return 350;
+
+  entry.content ??= searchableNoteContent(entry.note).toLocaleLowerCase();
+  return entry.content.includes(query) ? 200 : 0;
+}
+
+function rankNoteSearchIndex(
+  entries: readonly NoteSearchIndexEntry[],
+  query: string,
+  excludedIds?: ReadonlySet<string>,
+): Note[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const ranked: RankedNote[] = [];
+  for (const entry of entries) {
+    if (excludedIds?.has(entry.note.id)) continue;
+    const score = normalizedQuery ? noteSearchScore(entry, normalizedQuery) : 1;
+    if (score <= 0) continue;
+    ranked.push({
+      note: entry.note,
+      index: entry.index,
+      score,
+      updatedAt: entry.updatedAt,
+    });
+  }
+
+  return ranked
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return right.updatedAt - left.updatedAt || left.index - right.index;
+    })
+    .map(({ note }) => note);
 }
 
 /** Converts plain note text into safe, canonical Tiptap JSON. */
@@ -219,21 +267,10 @@ function setMessage(text: string, level: 'default' | 'success' | 'error' = 'defa
  * tag, language, and content matches. An empty query shows the newest notes.
  */
 export function rankNotes(notes: readonly Note[], query: string): Note[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const ranked: RankedNote[] = notes.map((note, index) => ({
-    note,
-    index,
-    score: normalizedQuery ? noteSearchScore(note, normalizedQuery) : 1,
-  }));
-
-  return ranked
-    .filter(({ score }) => score > 0)
-    .sort((left, right) => {
-      if (right.score !== left.score) return right.score - left.score;
-      const updatedDifference = timestampValue(right.note.updatedAt) - timestampValue(left.note.updatedAt);
-      return updatedDifference || left.index - right.index;
-    })
-    .map(({ note }) => note);
+  return rankNoteSearchIndex(
+    notes.map((note, index) => createNoteSearchIndexEntry(note, index)),
+    query,
+  );
 }
 
 export function noteSaveIndicatorState(
@@ -274,14 +311,11 @@ export function noteTreeChildren(nodes: readonly NotesTreeNode[]): Map<string | 
   return groups;
 }
 
-/** Returns the visible pre-order tree while respecting device-local expansion state. */
-export function visibleNoteTreeRows(
-  notes: readonly Note[],
-  nodes: readonly NotesTreeNode[],
+function visibleNoteTreeRowsFromIndexes(
+  notesById: ReadonlyMap<string, Note>,
+  children: ReadonlyMap<string | null, readonly NotesTreeNode[]>,
   expandedNoteIds: ReadonlySet<string>,
 ): NoteTreeRow[] {
-  const notesById = new Map(notes.map((note) => [note.id, note]));
-  const children = noteTreeChildren(nodes);
   const visited = new Set<string>();
   const rows: NoteTreeRow[] = [];
   const append = (parentId: string | null, depth: number): void => {
@@ -298,14 +332,22 @@ export function visibleNoteTreeRows(
   return rows;
 }
 
-/** Returns only ancestor names for compact global-search context. */
-export function noteTreeBreadcrumb(
-  noteId: string,
+/** Returns the visible pre-order tree while respecting device-local expansion state. */
+export function visibleNoteTreeRows(
   notes: readonly Note[],
   nodes: readonly NotesTreeNode[],
-): string {
-  const nodesById = new Map(nodes.map((node) => [node.noteId, node]));
+  expandedNoteIds: ReadonlySet<string>,
+): NoteTreeRow[] {
   const notesById = new Map(notes.map((note) => [note.id, note]));
+  const children = noteTreeChildren(nodes);
+  return visibleNoteTreeRowsFromIndexes(notesById, children, expandedNoteIds);
+}
+
+function noteTreeBreadcrumbFromIndexes(
+  noteId: string,
+  notesById: ReadonlyMap<string, Note>,
+  nodesById: ReadonlyMap<string, NotesTreeNode>,
+): string {
   const names: string[] = [];
   const visited = new Set<string>([noteId]);
   let parentId = nodesById.get(noteId)?.parentId ?? null;
@@ -315,6 +357,17 @@ export function noteTreeBreadcrumb(
     parentId = nodesById.get(parentId)?.parentId ?? null;
   }
   return names.join(' / ');
+}
+
+/** Returns only ancestor names for compact global-search context. */
+export function noteTreeBreadcrumb(
+  noteId: string,
+  notes: readonly Note[],
+  nodes: readonly NotesTreeNode[],
+): string {
+  const nodesById = new Map(nodes.map((node) => [node.noteId, node]));
+  const notesById = new Map(notes.map((note) => [note.id, note]));
+  return noteTreeBreadcrumbFromIndexes(noteId, notesById, nodesById);
 }
 
 /** Returns a bounded deterministic subtree, including the requested root. */
@@ -461,6 +514,12 @@ class NotesPage {
 
   private notes: Note[] = [];
   private treeNodes: NotesTreeNode[] = [];
+  private readonly notesById = new Map<string, Note>();
+  private readonly treeNodesById = new Map<string, NotesTreeNode>();
+  private noteSearchIndex: NoteSearchIndexEntry[] = [];
+  private readonly noteSearchPositions = new Map<string, number>();
+  private readonly breadcrumbCache = new Map<string, string>();
+  private readonly renderedRowsById = new Map<string, HTMLElement>();
   private expandedNoteIds = new Set<string>();
   private selectedId: string | undefined;
   private loaded = false;
@@ -489,6 +548,7 @@ class NotesPage {
   private sidebarResizeDrag: { pointerId: number; startX: number; startWidth: number } | undefined;
   private sidebarMeasureFrame: number | undefined;
   private sidebarKeyboardSaveTimer: number | undefined;
+  private searchRenderTimer: number | undefined;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
 
   constructor() {
@@ -510,7 +570,7 @@ class NotesPage {
     this.setSidebarWidth(this.sidebarWidth);
     this.updateEditorEmptyState();
     this.newButton.addEventListener('click', () => void this.createNote(null));
-    this.searchInput.addEventListener('input', () => this.renderList());
+    this.searchInput.addEventListener('input', () => this.queueSearchRender());
     this.list.addEventListener('keydown', (event) => this.handleListKeydown(event));
     this.list.addEventListener('dragover', (event) => {
       if (!this.draggingNoteId || this.searchInput.value.trim() || event.target !== this.list) return;
@@ -549,9 +609,14 @@ class NotesPage {
   }
 
   async flush(): Promise<void> {
+    this.flushSearchRender();
     this.finishSidebarResize();
     this.flushQueuedSidebarWidthSave();
-    await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
+    try {
+      await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
+    } finally {
+      this.flushSearchRender();
+    }
   }
 
   requestEditorMeasure(): void {
@@ -610,6 +675,26 @@ class NotesPage {
     while (this.sidebarWidthSaveTasks.size > 0) {
       await Promise.all([...this.sidebarWidthSaveTasks]);
     }
+  }
+
+  private queueSearchRender(): void {
+    this.cancelSearchRender();
+    this.searchRenderTimer = window.setTimeout(() => {
+      this.searchRenderTimer = undefined;
+      this.renderList();
+    }, NOTE_SEARCH_DEBOUNCE_MS);
+  }
+
+  private cancelSearchRender(): void {
+    if (this.searchRenderTimer === undefined) return;
+    window.clearTimeout(this.searchRenderTimer);
+    this.searchRenderTimer = undefined;
+  }
+
+  private flushSearchRender(): void {
+    if (this.searchRenderTimer === undefined) return;
+    this.cancelSearchRender();
+    this.renderList();
   }
 
   private finishSidebarResize(pointerId?: number, releaseCapture = true): void {
@@ -695,6 +780,7 @@ class NotesPage {
     // with its last persisted Note as a compare-and-swap base. If the cloud
     // changed or deleted that base, preserve the late draft as a Conflict
     // Note instead of overwriting the newly applied cloud value.
+    this.cancelSearchRender();
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
     this.pageRoot.inert = true;
@@ -752,6 +838,28 @@ class NotesPage {
     }
   }
 
+  private rebuildWorkspaceIndexes(): void {
+    this.notesById.clear();
+    this.noteSearchPositions.clear();
+    this.noteSearchIndex = this.notes.map((note, index) => {
+      this.notesById.set(note.id, note);
+      this.noteSearchPositions.set(note.id, index);
+      return createNoteSearchIndexEntry(note, index);
+    });
+    this.treeNodesById.clear();
+    for (const node of this.treeNodes) this.treeNodesById.set(node.noteId, node);
+    this.breadcrumbCache.clear();
+  }
+
+  private refreshNoteSearchEntry(note: Note): void {
+    const index = this.noteSearchPositions.get(note.id);
+    if (index === undefined) {
+      this.rebuildWorkspaceIndexes();
+      return;
+    }
+    this.noteSearchIndex[index] = createNoteSearchIndexEntry(note, index);
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) {
       this.render();
@@ -766,6 +874,7 @@ class NotesPage {
     this.loadPromise = window.notesApi.getWorkspace().then((workspace) => {
       this.notes = workspace.notes;
       this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
+      this.rebuildWorkspaceIndexes();
       this.expandedNoteIds = new Set(workspace.expandedNoteIds);
       for (const note of workspace.notes) {
         this.editVersions.set(note.id, 0);
@@ -827,6 +936,7 @@ class NotesPage {
       this.saveErrorNoteIds.delete(id);
       this.clearSaveTimer(id);
     }
+    this.rebuildWorkspaceIndexes();
     if (this.selectedId && !activeIds.has(this.selectedId)) this.selectedId = undefined;
   }
 
@@ -835,15 +945,17 @@ class NotesPage {
   }
 
   private breadcrumb(noteId: string): string {
-    return noteTreeBreadcrumb(noteId, this.notes, this.treeNodes);
+    const cached = this.breadcrumbCache.get(noteId);
+    if (cached !== undefined || this.breadcrumbCache.has(noteId)) return cached ?? '';
+    const breadcrumb = noteTreeBreadcrumbFromIndexes(noteId, this.notesById, this.treeNodesById);
+    this.breadcrumbCache.set(noteId, breadcrumb);
+    return breadcrumb;
   }
 
-  private visibleTreeRows(): NoteTreeRow[] {
-    return visibleNoteTreeRows(
-      this.notes.filter((note) => !this.deletedIds.has(note.id)),
-      this.treeNodes.filter((node) => !this.deletedIds.has(node.noteId)),
-      this.expandedNoteIds,
-    );
+  private visibleTreeRows(
+    children = this.treeChildren(),
+  ): NoteTreeRow[] {
+    return visibleNoteTreeRowsFromIndexes(this.notesById, children, this.expandedNoteIds);
   }
 
   private clearTreeDropMarkers(): void {
@@ -879,8 +991,7 @@ class NotesPage {
   }
 
   private updateListSaveIndicator(noteId: string): void {
-    const row = Array.from(this.list.querySelectorAll<HTMLElement>('.notes-tree-row'))
-      .find((candidate) => candidate.dataset.noteId === noteId);
+    const row = this.renderedRowsById.get(noteId);
     const nameRow = row?.querySelector<HTMLElement>('.notes-list-item-name-row');
     if (!nameRow) return;
     this.renderListSaveIndicator(
@@ -889,25 +1000,47 @@ class NotesPage {
     );
   }
 
+  private updateListNoteName(note: Note): void {
+    const row = this.renderedRowsById.get(note.id);
+    if (!row) return;
+    const displayName = note.name || 'Untitled';
+    const name = row.querySelector<HTMLElement>('.notes-list-item-name');
+    if (name) name.textContent = displayName;
+
+    const toggle = row.querySelector<HTMLButtonElement>('.notes-tree-toggle');
+    if (toggle) {
+      const expanded = this.expandedNoteIds.has(note.id);
+      toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${note.name}`);
+    }
+    const add = row.querySelector<HTMLButtonElement>('.notes-tree-add');
+    add?.setAttribute('aria-label', `New child Note under ${displayName}`);
+    const remove = row.querySelector<HTMLButtonElement>('.notes-list-remove');
+    if (remove) {
+      remove.setAttribute('aria-label', `Remove ${displayName}`);
+      remove.title = `Remove ${displayName}`;
+    }
+  }
+
   private renderList(focusId?: string): void {
+    this.cancelSearchRender();
     const activeItem = document.activeElement instanceof HTMLButtonElement
       && document.activeElement.classList.contains('notes-list-item')
       ? document.activeElement
       : undefined;
     const restoreFocusId = focusId ?? activeItem?.dataset.noteId;
     const searchActive = Boolean(this.searchInput.value.trim());
-    const children = this.treeChildren();
+    const children = searchActive
+      ? new Map<string | null, NotesTreeNode[]>()
+      : this.treeChildren();
     const rows = searchActive
-      ? rankNotes(
-        this.notes.filter((note) => !this.deletedIds.has(note.id)),
-        this.searchInput.value,
-      ).map((note) => ({
+      ? rankNoteSearchIndex(this.noteSearchIndex, this.searchInput.value, this.deletedIds).map((note) => ({
         note,
-        node: this.treeNodes.find((node) => node.noteId === note.id) ?? { noteId: note.id, parentId: null, order: 0 },
+        node: this.treeNodesById.get(note.id) ?? { noteId: note.id, parentId: null, order: 0 },
         depth: 0,
       }))
-      : this.visibleTreeRows();
+      : this.visibleTreeRows(children);
     this.list.replaceChildren();
+    this.renderedRowsById.clear();
 
     for (const { note, node, depth } of rows) {
       const row = document.createElement('div');
@@ -915,6 +1048,7 @@ class NotesPage {
       row.dataset.noteId = note.id;
       row.dataset.selected = String(note.id === this.selectedId);
       row.style.setProperty('--notes-tree-depth', String(depth));
+      this.renderedRowsById.set(note.id, row);
 
       const childNodes = children.get(note.id) ?? [];
       let toggle: HTMLElement;
@@ -1122,7 +1256,7 @@ class NotesPage {
   }
 
   private selectedNote(): Note | undefined {
-    return this.notes.find((note) => note.id === this.selectedId);
+    return this.selectedId ? this.notesById.get(this.selectedId) : undefined;
   }
 
   private async selectNote(id: string): Promise<void> {
@@ -1154,8 +1288,13 @@ class NotesPage {
     const note = this.selectedNote();
     if (!note) return;
 
+    const previousName = note.name;
     note.name = this.nameInput.value;
-    this.markNoteEdited(note, document.activeElement === this.nameInput || Boolean(this.searchInput.value.trim()));
+    if (note.name !== previousName) {
+      this.breadcrumbCache.clear();
+      this.updateListNoteName(note);
+    }
+    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
   }
 
   private updateSelectedCodeContent(): void {
@@ -1176,13 +1315,14 @@ class NotesPage {
     this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
   }
 
-  private markNoteEdited(note: Note, refreshList: boolean): void {
+  private markNoteEdited(note: Note, refreshSearchResults: boolean): void {
     const wasDirty = this.isDirty(note.id);
     const hadSaveError = this.saveErrorNoteIds.delete(note.id);
+    this.refreshNoteSearchEntry(note);
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     if (this.selectedId === note.id) this.setSaveStatus('Saving…', 'saving');
-    if (refreshList) this.renderList();
-    else if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
+    if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
+    if (refreshSearchResults) this.queueSearchRender();
     this.scheduleSave(note.id);
   }
 
@@ -1292,7 +1432,7 @@ class NotesPage {
         return;
       }
 
-      const destination = this.notes.find((candidate) => candidate.id === note.id);
+      const destination = this.notesById.get(note.id);
       if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
         setMessage('The image was uploaded, but its Note is no longer available.', 'error');
         return;
@@ -1334,7 +1474,7 @@ class NotesPage {
 
   private flushNote(id: string): Promise<void> {
     this.clearSaveTimer(id);
-    const note = this.notes.find((item) => item.id === id);
+    const note = this.notesById.get(id);
     const version = this.editVersions.get(id) ?? 0;
     const completedVersion = this.persistedVersions.get(id) ?? 0;
     const queuedVersion = this.queuedVersions.get(id) ?? 0;
@@ -1361,14 +1501,19 @@ class NotesPage {
       this.persistedNotes.set(id, cloneNote(saved));
       this.persistedVersions.set(id, Math.max(this.persistedVersions.get(id) ?? 0, version));
       this.saveErrorNoteIds.delete(id);
-      const current = this.notes.find((item) => item.id === id);
+      const current = this.notesById.get(id);
       let normalizedNameChanged = false;
       if (current && (this.editVersions.get(id) ?? 0) === version) {
         normalizedNameChanged = current.name !== saved.name;
         Object.assign(current, saved, { tags: [...saved.tags] });
+        this.refreshNoteSearchEntry(current);
       }
-      if (normalizedNameChanged) this.renderList();
-      else this.updateListSaveIndicator(id);
+      if (normalizedNameChanged && current) {
+        this.breadcrumbCache.clear();
+        this.updateListNoteName(current);
+        if (this.searchInput.value.trim()) this.queueSearchRender();
+      }
+      this.updateListSaveIndicator(id);
       if (this.selectedId === id) {
         this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
       }
@@ -1616,7 +1761,7 @@ class NotesPage {
         else items.find((candidate) => candidate.dataset.noteId === children[0]?.noteId)?.focus();
         return;
       }
-      const node = this.treeNodes.find((candidate) => candidate.noteId === noteId);
+      const node = this.treeNodesById.get(noteId);
       event.preventDefault();
       if (children.length > 0 && this.expandedNoteIds.has(noteId)) void this.toggleTreeExpanded(noteId);
       else if (node?.parentId) items.find((candidate) => candidate.dataset.noteId === node.parentId)?.focus();

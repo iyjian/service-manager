@@ -9,7 +9,7 @@ const mainRoot = path.join(distRoot, 'main');
 const projectRoot = path.join(__dirname, '..');
 
 async function readIntegrationFiles() {
-  const [html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main] = await Promise.all([
+  const [html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main, notesStore] = await Promise.all([
     readFile(path.join(rendererRoot, 'index.html'), 'utf8'),
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'styles.css'), 'utf8'),
@@ -19,12 +19,13 @@ async function readIntegrationFiles() {
     readFile(path.join(rendererRoot, 'settingsDialog.js'), 'utf8'),
     readFile(path.join(mainRoot, 'preload.js'), 'utf8'),
     readFile(path.join(mainRoot, 'main.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'notesStore.js'), 'utf8'),
   ]);
-  return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main };
+  return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main, notesStore };
 }
 
 test('compiled Notes page and bridge expose the hierarchical local workspace flow', async () => {
-  const { html, styles, renderer, notesPage, codeMirrorVendor, preload, main } = await readIntegrationFiles();
+  const { html, styles, renderer, notesPage, codeMirrorVendor, preload, main, notesStore } = await readIntegrationFiles();
 
   assert.match(html, /<main class="app-shell hidden" data-page="notes">/);
   assert.match(html, /id="notes-search"[^>]*type="search"/);
@@ -48,10 +49,10 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /noteSaveIndicatorState\(this\.isDirty\(note\.id\), this\.saveErrorNoteIds\.has\(note\.id\)\)/);
   assert.match(notesPage, /if \(this\.selectedId === note\.id\)\s*this\.setSaveStatus\('Saving…', 'saving'\)/);
   assert.match(notesPage, /saveLabel\.textContent = state === 'error' \? 'Save failed' : 'Saving'/);
-  assert.match(notesPage, /if \(refreshList\)\s*this\.renderList\(\)[\s\S]*?else if \(!wasDirty \|\| hadSaveError\)\s*this\.updateListSaveIndicator\(note\.id\)/);
+  assert.match(notesPage, /if \(!wasDirty \|\| hadSaveError\)\s*this\.updateListSaveIndicator\(note\.id\)[\s\S]*?if \(refreshSearchResults\)\s*this\.queueSearchRender\(\)/);
   assert.match(notesPage, /if \(!this\.deletedIds\.has\(id\)\) \{[\s\S]*?this\.saveErrorNoteIds\.add\(id\)[\s\S]*?if \(this\.selectedId === id\)/);
   assert.ok((notesPage.match(/this\.updateListSaveIndicator\(id\)/g) ?? []).length >= 2);
-  assert.match(notesPage, /normalizedNameChanged = current\.name !== saved\.name[\s\S]*?if \(normalizedNameChanged\)\s*this\.renderList\(\)[\s\S]*?else\s*this\.updateListSaveIndicator\(id\)/);
+  assert.match(notesPage, /normalizedNameChanged = current\.name !== saved\.name[\s\S]*?if \(normalizedNameChanged && current\) \{[\s\S]*?this\.updateListNoteName\(current\)[\s\S]*?this\.queueSearchRender\(\)[\s\S]*?\}\s*this\.updateListSaveIndicator\(id\)/);
   assert.match(notesPage, /if \(this\.saveStatus\.textContent === text && this\.saveStatus\.dataset\.state === state\)\s*return/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
   for (const language of ['markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
@@ -149,8 +150,8 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   const deleteHandler = main.slice(deleteHandlerStart, deleteHandlerEnd);
   assert.doesNotMatch(deleteHandler, /getNotesStore\(\)\.replaceSnapshot\(/);
   assert.doesNotMatch(main, /The Notes tree changed after confirmation/);
-  assert.match(main, /isDeepStrictEqual\)\(current, expectedNote\)/);
-  assert.match(main, /This Note changed after the editor loaded it/);
+  assert.match(main, /getNotesStore\(\)\.compareAndUpdate\(id, expectedNote, draft\)/);
+  assert.match(notesStore, /This Note changed after the editor loaded it/);
   assert.match(main, /classifyNoteDraftRecovery\)\(current, recovery\.expectedNote, recovery\.draft\)/);
   assert.match(main, /decision === 'already-saved'/);
   assert.match(main, /decision === 'update'/);

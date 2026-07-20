@@ -886,35 +886,56 @@ function encryptS3ObjectV3(
   createBytes: (size: number) => Buffer,
 ): EncryptedS3ObjectV3 {
   const normalizedKey = normalizeS3SyncEncryptionKey(syncEncryptionKey);
-  return encryptS3ObjectV3WithKeyMaterial(
-    value,
+  const parsed = parsePlainS3ObjectV3(value);
+  return encryptParsedS3ObjectV3(
+    parsed,
     syncEncryptionKeyMaterial(normalizedKey),
     createBytes,
     getS3SyncEncryptionKeyId(normalizedKey),
   );
 }
 
-function encryptS3ObjectV3WithKeyMaterial(
-  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
-  keyMaterial: Buffer,
-  createBytes: (size: number) => Buffer,
-  keyId: string,
-): EncryptedS3ObjectV3 {
+type PlainS3ObjectV3 =
+  | ServiceManagerSyncManifestV3
+  | ServiceManagerNoteObjectV3
+  | ServiceManagerNotesTreeObjectV3;
+
+function parsePlainS3ObjectV3(value: PlainS3ObjectV3): PlainS3ObjectV3 {
   const objectType: S3V3ObjectType = 'objectType' in value
     ? value.objectType
     : 'manifest';
-  const parsed = objectType === 'manifest'
+  return objectType === 'manifest'
     ? parseServiceManagerSyncManifestV3(value)
     : objectType === 'note'
       ? parseServiceManagerNoteObjectV3(value)
       : parseServiceManagerNotesTreeObjectV3(value);
-  const objectId = objectType === 'manifest'
-    ? (parsed as ServiceManagerSyncManifestV3).revision
-    : (parsed as ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3).objectId;
-  const plaintext = Buffer.from(JSON.stringify(parsed), 'utf8');
+}
+
+function serializePlainS3ObjectV3(
+  value: PlainS3ObjectV3,
+  objectType: S3V3ObjectType,
+): Buffer {
+  const plaintext = Buffer.from(JSON.stringify(value), 'utf8');
   if (plaintext.byteLength > objectPlaintextLimit(objectType)) {
     throw new Error(`The S3 ${objectType} is too large to sync.`);
   }
+  return plaintext;
+}
+
+function encryptParsedS3ObjectV3(
+  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
+  keyMaterial: Buffer,
+  createBytes: (size: number) => Buffer,
+  keyId: string,
+  serializedPlaintext?: Buffer,
+): EncryptedS3ObjectV3 {
+  const objectType: S3V3ObjectType = 'objectType' in value
+    ? value.objectType
+    : 'manifest';
+  const objectId = objectType === 'manifest'
+    ? (value as ServiceManagerSyncManifestV3).revision
+    : (value as ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3).objectId;
+  const plaintext = serializedPlaintext ?? serializePlainS3ObjectV3(value, objectType);
   const salt = createBytes(16);
   const iv = createBytes(12);
   if (!Buffer.isBuffer(salt) || salt.byteLength !== 16 || !Buffer.isBuffer(iv) || iv.byteLength !== 12) {
@@ -950,11 +971,23 @@ function decryptS3ObjectV3(
   try {
     if (!encryptionKey) throw new Error('missing key');
     const envelope = parseEncryptedS3ObjectV3(value);
-    if (envelope.objectType !== expectedType) throw new Error('object type mismatch');
     const keyMaterial = syncEncryptionKeyMaterial(encryptionKey);
-    if (envelope.encryption.keyId !== getS3SyncEncryptionKeyId(encryptionKey)) {
+    if (envelope.encryption.keyId !== sha256Hex(keyMaterial)) {
       throw new Error('key identity mismatch');
     }
+    return decryptParsedS3ObjectV3(envelope, keyMaterial, expectedType);
+  } catch {
+    throw new Error(`The encrypted S3 ${expectedType} could not be decrypted.`);
+  }
+}
+
+function decryptParsedS3ObjectV3(
+  envelope: EncryptedS3ObjectV3,
+  keyMaterial: Buffer,
+  expectedType: S3V3ObjectType,
+): ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3 {
+  try {
+    if (envelope.objectType !== expectedType) throw new Error('object type mismatch');
     const maximumBytes = objectCiphertextLimit(expectedType);
     const salt = strictBase64(envelope.encryption.salt, 16, 16);
     const iv = strictBase64(envelope.encryption.iv, 12, 12);
@@ -1289,9 +1322,10 @@ export class S3V3ObjectStore {
   private readonly now: () => Date;
   private readonly createRandomBytes: (size: number) => Buffer;
   private readonly timeoutMs: number;
-  private readonly syncEncryptionKey: string;
+  private readonly syncEncryptionKeyMaterial: Buffer;
   private readonly syncEncryptionKeyId: string;
-  private readonly previousSyncEncryptionKey?: string;
+  private readonly previousSyncEncryptionKeyMaterial?: Buffer;
+  private readonly previousSyncEncryptionKeyId?: string;
   private readonly activeControllers = new Set<AbortController>();
 
   public constructor(private readonly options: S3V3ObjectStoreOptions) {
@@ -1302,11 +1336,14 @@ export class S3V3ObjectStore {
       throw new Error('A valid S3 region is required.');
     }
     if (!options.accessKeyId || !options.secretAccessKey) throw new Error('S3 credentials are unavailable.');
-    this.syncEncryptionKey = normalizeS3SyncEncryptionKey(options.syncEncryptionKey);
-    this.syncEncryptionKeyId = getS3SyncEncryptionKeyId(this.syncEncryptionKey);
-    this.previousSyncEncryptionKey = options.previousSyncEncryptionKey === undefined
-      ? undefined
-      : normalizeS3SyncEncryptionKey(options.previousSyncEncryptionKey);
+    const normalizedSyncEncryptionKey = normalizeS3SyncEncryptionKey(options.syncEncryptionKey);
+    this.syncEncryptionKeyMaterial = syncEncryptionKeyMaterial(normalizedSyncEncryptionKey);
+    this.syncEncryptionKeyId = sha256Hex(this.syncEncryptionKeyMaterial);
+    if (options.previousSyncEncryptionKey !== undefined) {
+      const normalizedPreviousKey = normalizeS3SyncEncryptionKey(options.previousSyncEncryptionKey);
+      this.previousSyncEncryptionKeyMaterial = syncEncryptionKeyMaterial(normalizedPreviousKey);
+      this.previousSyncEncryptionKeyId = sha256Hex(this.previousSyncEncryptionKeyMaterial);
+    }
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.createRandomBytes = options.createRandomBytes ?? randomBytes;
@@ -1361,8 +1398,18 @@ export class S3V3ObjectStore {
 
   public async putManifest(manifestValue: ServiceManagerSyncManifestV3): Promise<S3V3ManifestWriteResult> {
     const manifest = parseServiceManagerSyncManifestV3(manifestValue);
-    const encrypted = encryptS3ManifestV3(manifest, this.syncEncryptionKey, this.createRandomBytes);
-    const body = serializeEncryptedS3ObjectV3(encrypted);
+    const plaintext = serializePlainS3ObjectV3(manifest, 'manifest');
+    const encrypted = encryptParsedS3ObjectV3(
+      manifest,
+      this.syncEncryptionKeyMaterial,
+      this.createRandomBytes,
+      this.syncEncryptionKeyId,
+      plaintext,
+    );
+    // This envelope was produced immediately above from already validated
+    // plaintext, so avoid reparsing the complete base64 ciphertext solely to
+    // serialize it for the owned PUT request.
+    const body = JSON.stringify(encrypted);
     const manifestSha256 = hashS3V3Object(body);
     const byteLength = Buffer.byteLength(body, 'utf8');
     const result = await this.request(
@@ -1418,13 +1465,21 @@ export class S3V3ObjectStore {
 
   public async putNote(objectValue: ServiceManagerNoteObjectV3): Promise<S3V3NoteWriteResult> {
     const object = parseServiceManagerNoteObjectV3(objectValue);
-    const encrypted = encryptS3NoteV3(object, this.syncEncryptionKey, this.createRandomBytes);
-    const body = serializeEncryptedS3ObjectV3(encrypted);
+    const plaintext = serializePlainS3ObjectV3(object, 'note');
+    const contentHash = sha256Hex(JSON.stringify(object.note));
+    const encrypted = encryptParsedS3ObjectV3(
+      object,
+      this.syncEncryptionKeyMaterial,
+      this.createRandomBytes,
+      this.syncEncryptionKeyId,
+      plaintext,
+    );
+    const body = JSON.stringify(encrypted);
     const reference: S3V3NoteReference = {
       id: object.note.id,
       objectId: object.objectId,
       sha256: hashS3V3Object(body),
-      contentHash: hashS3V3NoteContent(object),
+      contentHash,
       encryptionKeyId: this.syncEncryptionKeyId,
     };
     const result = await this.request(
@@ -1482,12 +1537,20 @@ export class S3V3ObjectStore {
     objectValue: ServiceManagerNotesTreeObjectV3,
   ): Promise<S3V3NotesTreeWriteResult> {
     const object = parseServiceManagerNotesTreeObjectV3(objectValue);
-    const encrypted = encryptS3NotesTreeV3(object, this.syncEncryptionKey, this.createRandomBytes);
-    const body = serializeEncryptedS3ObjectV3(encrypted);
+    const plaintext = serializePlainS3ObjectV3(object, 'notes-tree');
+    const contentHash = sha256Hex(JSON.stringify(object.tree));
+    const encrypted = encryptParsedS3ObjectV3(
+      object,
+      this.syncEncryptionKeyMaterial,
+      this.createRandomBytes,
+      this.syncEncryptionKeyId,
+      plaintext,
+    );
+    const body = JSON.stringify(encrypted);
     const reference: S3V3NotesTreeReference = {
       objectId: object.objectId,
       sha256: hashS3V3Object(body),
-      contentHash: hashS3V3NotesTreeContent(object),
+      contentHash,
       encryptionKeyId: this.syncEncryptionKeyId,
     };
     const result = await this.request(
@@ -1533,37 +1596,30 @@ export class S3V3ObjectStore {
   }
 
   private decryptManifest(encrypted: EncryptedS3ObjectV3): ServiceManagerSyncManifestV3 {
-    return this.decryptWithAvailableKeys(
-      encrypted,
-      (key) => decryptS3ManifestV3(encrypted, key),
-    );
+    return this.decryptWithAvailableKeys(encrypted, 'manifest') as ServiceManagerSyncManifestV3;
   }
 
   private decryptNote(encrypted: EncryptedS3ObjectV3): ServiceManagerNoteObjectV3 {
-    return this.decryptWithAvailableKeys(
-      encrypted,
-      (key) => decryptS3NoteV3(encrypted, key),
-    );
+    return this.decryptWithAvailableKeys(encrypted, 'note') as ServiceManagerNoteObjectV3;
   }
 
   private decryptNotesTree(encrypted: EncryptedS3ObjectV3): ServiceManagerNotesTreeObjectV3 {
-    return this.decryptWithAvailableKeys(
-      encrypted,
-      (key) => decryptS3NotesTreeV3(encrypted, key),
-    );
+    return this.decryptWithAvailableKeys(encrypted, 'notes-tree') as ServiceManagerNotesTreeObjectV3;
   }
 
-  private decryptWithAvailableKeys<T>(
+  private decryptWithAvailableKeys(
     encrypted: EncryptedS3ObjectV3,
-    decrypt: (key: string) => T,
-  ): T {
+    expectedType: S3V3ObjectType,
+  ): PlainS3ObjectV3 {
     const keyId = encrypted.encryption.keyId;
-    if (keyId === this.syncEncryptionKeyId) return decrypt(this.syncEncryptionKey);
+    if (keyId === this.syncEncryptionKeyId) {
+      return decryptParsedS3ObjectV3(encrypted, this.syncEncryptionKeyMaterial, expectedType);
+    }
     if (
-      this.previousSyncEncryptionKey
-      && keyId === getS3SyncEncryptionKeyId(this.previousSyncEncryptionKey)
+      this.previousSyncEncryptionKeyMaterial
+      && keyId === this.previousSyncEncryptionKeyId
     ) {
-      return decrypt(this.previousSyncEncryptionKey);
+      return decryptParsedS3ObjectV3(encrypted, this.previousSyncEncryptionKeyMaterial, expectedType);
     }
     throw new Error('The Sync Encryption Key does not match the S3 data.');
   }

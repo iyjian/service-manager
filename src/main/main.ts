@@ -1559,11 +1559,7 @@ function registerIpcHandlers(): void {
     const expectedNote = normalizeNoteSnapshot(payload.expectedNote);
     if (expectedNote.id !== id) throw new Error('Note update base is invalid.');
     return mutateNotesSharedData(async () => {
-      const current = getNotesStore().list().find((note) => note.id === id);
-      if (!current || !isDeepStrictEqual(current, expectedNote)) {
-        throw new Error('This Note changed after the editor loaded it. Reload Notes to preserve both versions.');
-      }
-      return getNotesStore().update(id, draft);
+      return getNotesStore().compareAndUpdate(id, expectedNote, draft);
     });
   });
   ipcMain.handle(IPC_CHANNELS.notesMove, async (_event, inputValue: unknown) => {
