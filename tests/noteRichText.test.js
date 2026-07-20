@@ -221,6 +221,64 @@ test('rich text safely canonicalizes the bounded Novel math and color model', ()
   }), /invalid location/);
 });
 
+test('rich text hard breaks retain only canonical Tiptap marks', () => {
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{ type: 'text', text: 'before', marks: [{ type: 'bold' }] }, {
+        type: 'hardBreak',
+        marks: [
+          { type: 'highlight', attrs: { color: '#DBEAFE' } },
+          { type: 'bold' },
+        ],
+      }, { type: 'text', text: 'after', marks: [{ type: 'bold' }] }, {
+        type: 'hardBreak',
+        marks: [{ type: 'code' }],
+      }, { type: 'text', text: 'code line', marks: [{ type: 'code' }] }],
+    }],
+  });
+
+  assert.deepEqual(JSON.parse(normalized).content[0].content[1], {
+    type: 'hardBreak',
+    marks: [
+      { type: 'bold' },
+      { type: 'highlight', attrs: { color: '#DBEAFE' } },
+    ],
+  });
+  assert.deepEqual(JSON.parse(normalized).content[0].content[3], {
+    type: 'hardBreak',
+    marks: [{ type: 'code' }],
+  });
+  assert.equal(extractRichTextPlainText(normalized), 'before\nafter\ncode line');
+
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{ type: 'hardBreak', marks: [{ type: 'bold' }, { type: 'bold' }] }],
+    }],
+  }), /duplicate/i);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'hardBreak',
+        marks: [{ type: 'link', attrs: { href: 'javascript:alert(1)' } }],
+      }],
+    }],
+  }), /rich text link is invalid/i);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'paragraph', content: [{ type: 'hardBreak', attrs: {} }] }],
+  }), /unsupported field/i);
+  assert.throws(() => normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 'horizontalRule', marks: [{ type: 'bold' }] }],
+  }), /unsupported field/i);
+});
+
 test('canonical rich text round-trips through the configured Tiptap schema without drift', async () => {
   const [{ getSchema }, { default: StarterKit }, { default: Image }, { TableKit }] = await Promise.all([
     import('@tiptap/core'),
@@ -259,6 +317,13 @@ test('canonical rich text round-trips through the configured Tiptap schema witho
         type: 'text',
         text: 'Read safely',
         marks: [{ type: 'link', attrs: { href: 'https://example.test' } }, { type: 'bold' }],
+      }, {
+        type: 'hardBreak',
+        marks: [{ type: 'bold' }],
+      }, {
+        type: 'text',
+        text: 'Continue',
+        marks: [{ type: 'bold' }],
       }],
     }, {
       type: 'orderedList',

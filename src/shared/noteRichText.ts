@@ -591,8 +591,17 @@ function normalizeNode(
     return { type, ...(marks ? { marks } : {}), text: value.text };
   }
 
-  if (type === 'hardBreak' || type === 'horizontalRule') {
-    assertAllowedKeys(value, new Set(['type']), `A rich text ${type} node`);
+  if (type === 'hardBreak') {
+    // ProseMirror permits marks on inline leaf nodes. Tiptap's HTML parser
+    // emits them for markup such as <strong>before<br>after</strong>, so keep
+    // the same strictly validated mark representation used by text nodes.
+    assertAllowedKeys(value, new Set(['type', 'marks']), 'A rich text hardBreak node');
+    const marks = normalizeMarks(value.marks);
+    return { type, ...(marks ? { marks } : {}) };
+  }
+
+  if (type === 'horizontalRule') {
+    assertAllowedKeys(value, new Set(['type']), 'A rich text horizontalRule node');
     return { type };
   }
 
