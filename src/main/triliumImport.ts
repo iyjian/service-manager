@@ -14,6 +14,7 @@ import {
   NOTES_IMAGE_LIMITS,
 } from './notesImageS3';
 import {
+  normalizeTriliumImageMimeType,
   resolveTriliumImportImages,
   scanTriliumHtmlImages,
   triliumImageTargetFingerprint,
@@ -561,7 +562,7 @@ function imageMimeStatus(
 }
 
 function imageNoteTarget(remote: RemoteTriliumNote): TriliumImportImageTarget {
-  const mimeType = remote.mime.split(';', 1)[0].trim().toLocaleLowerCase();
+  const mimeType = normalizeTriliumImageMimeType(remote.mime);
   return {
     sourceKey: `note:${remote.noteId}`,
     kind: 'note',
@@ -577,7 +578,7 @@ function imageNoteTarget(remote: RemoteTriliumNote): TriliumImportImageTarget {
 }
 
 function attachmentTarget(remote: RemoteTriliumAttachment): TriliumImportImageTarget {
-  const mimeType = remote.mime.split(';', 1)[0].trim().toLocaleLowerCase();
+  const mimeType = normalizeTriliumImageMimeType(remote.mime);
   return {
     sourceKey: `attachment:${remote.attachmentId}`,
     kind: 'attachment',

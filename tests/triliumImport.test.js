@@ -11,6 +11,7 @@ const {
   prepareTriliumImport,
   resolveTriliumImportImages,
   scanTriliumHtmlImages,
+  triliumImageTargetFingerprint,
   triliumLocalNoteId,
   triliumSourceId,
   triliumSourceVersion,
@@ -81,7 +82,16 @@ const PNG_1X1 = Buffer.from(
   'base64',
 );
 
-function uploadedReference(bytes = PNG_1X1) {
+const JPEG_1X1 = Buffer.from([
+  0xff, 0xd8,
+  0xff, 0xc0, 0x00, 0x0b, 0x08,
+  0x00, 0x01,
+  0x00, 0x01,
+  0x01, 0x01, 0x11, 0x00,
+  0xff, 0xd9,
+]);
+
+function uploadedReference(bytes = PNG_1X1, overrides = {}) {
   return {
     objectId: Buffer.alloc(24, 1).toString('base64url'),
     assetKey: Buffer.alloc(32, 2).toString('base64url'),
@@ -91,6 +101,7 @@ function uploadedReference(bytes = PNG_1X1) {
     byteLength: bytes.byteLength,
     width: 1,
     height: 1,
+    ...overrides,
   };
 }
 
@@ -524,9 +535,9 @@ test('image Notes become resolvable Rich Text image content without reading bina
     ['/base/etapi/branches/b001', jsonResponse(remoteBranch('b001', 'imgA', 'root', 1))],
     ['/base/etapi/notes/imgA', jsonResponse(remoteNote('imgA', [], {
       type: 'image',
-      mime: 'image/png',
+      mime: 'image/jpg',
       blobId: 'sharedBlob',
-      contentLength: PNG_1X1.byteLength,
+      contentLength: JPEG_1X1.byteLength,
     }))],
   ]);
   const observations = {};
@@ -538,10 +549,91 @@ test('image Notes become resolvable Rich Text image content without reading bina
   assert.deepEqual(plan.notes[0].content, {
     kind: 'image', language: 'richtext', sourceKey: 'note:imgA',
   });
-  assert.deepEqual(plan.imageTargets.map((target) => [target.kind, target.remoteId, target.status]), [
-    ['note', 'imgA', 'ready'],
+  assert.deepEqual(plan.imageTargets.map((target) => [
+    target.kind,
+    target.remoteId,
+    target.mimeType,
+    target.status,
+  ]), [
+    ['note', 'imgA', 'image/jpeg', 'ready'],
   ]);
   assert.equal(observations.paths.includes('/base/etapi/notes/imgA/content'), false);
+});
+
+test('Trilium image/jpg metadata canonicalizes to JPEG across prepare and resolve', async () => {
+  const html = '<figure><img src="api/attachments/attA/image/a.jpg"></figure>';
+  const noteMetadata = remoteNote('noteA');
+  const oldAliasTarget = {
+    sourceKey: 'attachment:attA', kind: 'attachment', remoteId: 'attA', blobId: 'blob-attA',
+    mimeType: 'image/jpg', utcDateModified: MODIFIED, contentLength: JPEG_1X1.byteLength,
+    status: 'unsupported',
+  };
+  const oldAliasVersion = triliumSourceVersion(noteMetadata, [
+    triliumImageTargetFingerprint(oldAliasTarget),
+  ]);
+  const preparedVersions = [];
+  const cases = [
+    [' Image/JPG; charset=binary', 'image/jpeg'],
+    ['image/jpeg', ' IMAGE/JPG; charset=binary'],
+  ];
+
+  for (const [index, [prepareMime, resolveMime]] of cases.entries()) {
+    const prepareRoutes = new Map([
+      ['/base/etapi/notes/root', jsonResponse(remoteNote('root', ['b001']))],
+      ['/base/etapi/branches/b001', jsonResponse(remoteBranch('b001', 'noteA', 'root', 1))],
+      ['/base/etapi/notes/noteA', jsonResponse(noteMetadata)],
+      ['/base/etapi/notes/noteA/content', new Response(html)],
+      ['/base/etapi/attachments/attA', jsonResponse(remoteAttachment('attA', {
+        mime: prepareMime,
+        title: 'a.jpg',
+        contentLength: JPEG_1X1.byteLength,
+      }))],
+    ]);
+    const plan = await prepareTriliumImport({
+      endpoint: ENDPOINT,
+      token: TOKEN,
+      ...(index === 0 ? {
+        knownSourceVersions: { [triliumLocalNoteId(ENDPOINT, 'noteA')]: oldAliasVersion },
+      } : {}),
+      fetchImpl: fakeFetch(prepareRoutes),
+    });
+
+    assert.equal(plan.notes[0].content.kind, 'html');
+    assert.notEqual(plan.notes[0].sourceVersion, oldAliasVersion);
+    assert.deepEqual(plan.imageTargets.map(({ mimeType, status }) => [mimeType, status]), [
+      ['image/jpeg', 'ready'],
+    ]);
+    preparedVersions.push(plan.notes[0].sourceVersion);
+
+    let uploads = 0;
+    const resolved = await resolveTriliumImportImages(
+      { endpoint: ENDPOINT, imageTargets: plan.imageTargets },
+      TOKEN,
+      async (input) => {
+        uploads += 1;
+        assert.deepEqual(Buffer.from(input.bytes), JPEG_1X1);
+        assert.equal(input.mimeType, 'image/jpeg');
+        return {
+          status: 'uploaded',
+          reference: uploadedReference(input.bytes, { mimeType: 'image/jpeg' }),
+        };
+      },
+      { fetchImpl: fakeFetch(new Map([
+        ['/base/etapi/attachments/attA', jsonResponse(remoteAttachment('attA', {
+          mime: resolveMime,
+          title: 'a.jpg',
+          contentLength: JPEG_1X1.byteLength,
+        }))],
+        ['/base/etapi/attachments/attA/content', new Response(JPEG_1X1)],
+      ])) },
+    );
+
+    assert.equal(uploads, 1);
+    assert.equal(resolved[0].status, 'uploaded');
+    assert.equal(resolved[0].reference.mimeType, 'image/jpeg');
+  }
+
+  assert.equal(preparedVersions[0], preparedVersions[1]);
 });
 
 test('image resolution uses exact read-only ETAPI content routes and deduplicates blobs and uploaded content', async () => {
@@ -630,6 +722,32 @@ test('image resolution emits explicit placeholders for unavailable or invalid as
     ])) },
   );
   assert.deepEqual(invalid, [{ sourceKey: 'attachment:attA', status: 'placeholder', reason: 'invalid' }]);
+
+  let spoofedUploads = 0;
+  const spoofed = await resolveTriliumImportImages(
+    {
+      endpoint: ENDPOINT,
+      imageTargets: [{
+        ...baseTarget,
+        mimeType: 'image/jpeg',
+        contentLength: PNG_1X1.byteLength,
+      }],
+    },
+    TOKEN,
+    async () => {
+      spoofedUploads += 1;
+      return { status: 'uploaded', reference: uploadedReference() };
+    },
+    { fetchImpl: fakeFetch(new Map([
+      ['/base/etapi/attachments/attA', jsonResponse(remoteAttachment('attA', {
+        mime: 'image/jpg',
+        contentLength: PNG_1X1.byteLength,
+      }))],
+      ['/base/etapi/attachments/attA/content', new Response(PNG_1X1)],
+    ])) },
+  );
+  assert.equal(spoofedUploads, 0);
+  assert.deepEqual(spoofed, [{ sourceKey: 'attachment:attA', status: 'placeholder', reason: 'invalid' }]);
 
   await assert.rejects(
     resolveTriliumImportImages(

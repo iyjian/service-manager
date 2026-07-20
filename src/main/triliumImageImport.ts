@@ -115,6 +115,11 @@ function isSupportedImageMime(value: string): boolean {
   return value === 'image/png' || value === 'image/jpeg' || value === 'image/webp';
 }
 
+export function normalizeTriliumImageMimeType(value: string): string {
+  const normalized = value.split(';', 1)[0].trim().toLowerCase();
+  return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+}
+
 function invalidScannedSource(source: string, identity: string): TriliumScannedImageSource {
   return {
     source,
@@ -503,7 +508,7 @@ function refreshedTargetFromMetadata(
   if (expected.kind === 'note' && (noteType === undefined || typeof value.isProtected !== 'boolean')) {
     throw safeError('A Trilium image metadata response is invalid.');
   }
-  const mimeType = rawMime.split(';', 1)[0].trim().toLocaleLowerCase();
+  const mimeType = normalizeTriliumImageMimeType(rawMime);
   const protectedAsset = value.isProtected === true;
   let status: TriliumImageTargetStatus;
   if (expected.kind === 'note' && noteType?.toLocaleLowerCase() !== 'image') status = 'unsupported';
@@ -552,7 +557,7 @@ class TriliumImageClient {
     const route = target.kind === 'attachment'
       ? `/attachments/${encodeURIComponent(remoteId)}/content`
       : `/notes/${encodeURIComponent(remoteId)}/content`;
-    return this.request(route, 'image/png, image/jpeg, image/webp', readImageBody);
+    return this.request(route, 'image/png, image/jpeg, image/jpg, image/webp', readImageBody);
   }
 
   private async request(
