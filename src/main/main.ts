@@ -94,6 +94,12 @@ import { LlmSettingsStore } from './llmSettingsStore';
 import { fetchLlmModels } from './llmModels';
 import { S3SyncRuntime } from './s3Sync';
 import {
+  acquireUserDataInstanceLock,
+  assertUserDataInstanceLockAvailable,
+  UserDataInstanceLockError,
+  type UserDataInstanceLock,
+} from './userDataInstanceLock';
+import {
   createS3SharedAppDataV2,
   stageS3SharedAppDataForLocalApply,
   type S3SharedAppDataV2,
@@ -2721,10 +2727,66 @@ process.once('SIGTERM', () => {
   requestQuitAfterRuntimeShutdown(true);
 });
 
-const ownsSingleInstanceLock = app.requestSingleInstanceLock();
+let userDataInstanceLock: UserDataInstanceLock | undefined;
+let userDataInstanceLockError: unknown;
+function releaseUserDataInstanceLock(): void {
+  const lock = userDataInstanceLock;
+  userDataInstanceLock = undefined;
+  if (!lock) return;
+  try {
+    lock.release();
+  } catch {
+    // A stale owner record is reclaimed safely on the next startup.
+  }
+}
+
+let ownsSingleInstanceLock = false;
+const userDataPathForInstanceLock = app.getPath('userData');
+try {
+  assertUserDataInstanceLockAvailable(userDataPathForInstanceLock);
+} catch (error) {
+  userDataInstanceLockError = error;
+}
+
+if (!userDataInstanceLockError) {
+  ownsSingleInstanceLock = app.requestSingleInstanceLock();
+  if (ownsSingleInstanceLock) {
+    try {
+      // Electron's lock serializes stale durable-lock reclamation between
+      // competing current releases.
+      userDataInstanceLock = acquireUserDataInstanceLock(userDataPathForInstanceLock);
+    } catch (error) {
+      userDataInstanceLockError = error;
+      app.releaseSingleInstanceLock();
+      ownsSingleInstanceLock = false;
+    }
+  }
+} else if (
+  userDataInstanceLockError instanceof UserDataInstanceLockError
+  && userDataInstanceLockError.source === 'service-manager'
+) {
+  // Current releases create the durable lock only after acquiring Electron's
+  // ProcessSingleton, so this cannot steal the lock from an owner that is
+  // still between its two startup phases.
+  const ownsTemporaryElectronLock = app.requestSingleInstanceLock();
+  if (ownsTemporaryElectronLock) app.releaseSingleInstanceLock();
+}
+
 if (!ownsSingleInstanceLock) {
   // Notes directory transactions are intentionally single-writer. A second
-  // Electron process must exit before any persistent store is initialized.
+  // process or an older installed/development build sharing userData must exit
+  // before any persistent store is initialized.
+  releaseUserDataInstanceLock();
+  if (userDataInstanceLockError) {
+    if (userDataInstanceLockError instanceof UserDataInstanceLockError) {
+      const owner = userDataInstanceLockError.ownerPid
+        ? ` (PID ${userDataInstanceLockError.ownerPid})`
+        : '';
+      console.error(`Service Manager data is already in use by another process${owner}.`);
+    } else {
+      console.error('Service Manager could not acquire exclusive access to its data directory.');
+    }
+  }
   app.exit(0);
 } else {
   app.on('second-instance', () => {
@@ -2735,6 +2797,10 @@ if (!ownsSingleInstanceLock) {
     window.focus();
   });
 }
+
+process.once('exit', () => {
+  releaseUserDataInstanceLock();
+});
 
 app.whenReady()
   .then(async () => {

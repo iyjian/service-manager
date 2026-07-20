@@ -261,7 +261,52 @@ test('conflict Note copies preserve the corresponding local tree hierarchy', () 
   assert.equal(treeById.get('conflict-child').parentId, 'conflict-parent');
 });
 
-test('cloud deletion wins over a local edit while preserving that edit as a conflict Note', () => {
+test('a new child Conflict stays under its reused parent Conflict after a fenced retry', () => {
+  const baseNotes = [note('parent', 'base parent'), note('child', 'base child')];
+  const base = data(baseNotes, {
+    notesTree: notesTree(baseNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const firstLocalNotes = [note('parent', 'local parent v1', T1), note('child', 'local child v1', T1)];
+  const firstLocal = data(firstLocalNotes, {
+    notesTree: notesTree(firstLocalNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const cloudNotes = [note('parent', 'cloud parent', T1), note('child', 'cloud child', T1)];
+  const cloud = data(cloudNotes, {
+    notesTree: notesTree(cloudNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const published = mergeS3SharedAppDataV2({ base, local: firstLocal, cloud, now: T2 });
+  const publishedBySource = new Map(published.noteConflicts.map((conflict) => [
+    conflict.sourceNoteId,
+    conflict.conflictNoteId,
+  ]));
+
+  const retryLocalNotes = [note('parent', 'local parent v1', T1), note('child', 'local child v2', T2)];
+  const retryLocal = data(retryLocalNotes, {
+    notesTree: notesTree(retryLocalNotes, { child: { parentId: 'parent', order: 1024 } }),
+  });
+  const retried = mergeS3SharedAppDataV2({
+    base,
+    local: retryLocal,
+    cloud: published.data,
+    now: T2,
+  });
+  const retriedBySource = new Map(retried.noteConflicts.map((conflict) => [
+    conflict.sourceNoteId,
+    conflict.conflictNoteId,
+  ]));
+  const reusedParentId = publishedBySource.get('parent');
+  const firstChildId = publishedBySource.get('child');
+  const secondChildId = retriedBySource.get('child');
+  assert.equal(retriedBySource.get('parent'), reusedParentId);
+  assert.notEqual(secondChildId, firstChildId);
+
+  const treeById = new Map(retried.data.notes.tree.nodes.map((node) => [node.noteId, node]));
+  assert.equal(treeById.get(reusedParentId).parentId, null);
+  assert.equal(treeById.get(firstChildId).parentId, reusedParentId);
+  assert.equal(treeById.get(secondChildId).parentId, reusedParentId);
+});
+
+test('a cloud tombstone defeats a same-ID local Note when the base still contains that Note', () => {
   const base = data([note('note-1', 'base')]);
   const local = data([note('note-1', 'offline edit', T1)]);
   const cloud = data([], {
@@ -281,6 +326,10 @@ test('cloud deletion wins over a local edit while preserving that edit as a conf
   assert.deepEqual(result.data.notes.notes.map((item) => [item.id, item.content]), [
     ['conflict-deleted', 'offline edit'],
   ]);
+  assert.deepEqual(result.noteConflicts, [{
+    sourceNoteId: 'note-1',
+    conflictNoteId: 'conflict-deleted',
+  }]);
 });
 
 test('cloud deletion removes an unchanged local Note without creating a false conflict', () => {
@@ -332,9 +381,10 @@ test('a missing local per-Note file is not inferred as a deletion without a tomb
   assert.equal(result.conflictCount, 0);
 });
 
-test('an established cloud tombstone cannot be resurrected with the same stable Note ID', () => {
+test('a local restore wins when its base already contains the unchanged cloud tombstone', () => {
   const base = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T1 }] });
-  const local = data([note('note-1', 'attempted restore', T2)]);
+  const restored = note('note-1', 'intentional restore', T2);
+  const local = data([restored]);
   const cloud = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T1 }] });
 
   const result = mergeS3SharedAppDataV2({
@@ -342,12 +392,55 @@ test('an established cloud tombstone cannot be resurrected with the same stable 
     local,
     cloud,
     now: T2,
-    createId: () => 'restored-conflict',
+    createId: () => {
+      throw new Error('an acknowledged local restore must not create a Conflict Note');
+    },
+  });
+
+  assert.deepEqual(result.data.notes.notes, [restored]);
+  assert.deepEqual(result.data.notes.tombstones, []);
+  assert.equal(result.conflictCount, 0);
+  assert.deepEqual(result.noteConflicts, []);
+});
+
+test('a cloud tombstone defeats a same-ID local Note when no merge base is known', () => {
+  const local = data([note('note-1', 'unknown local restore', T2)]);
+  const cloud = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T1 }] });
+
+  const result = mergeS3SharedAppDataV2({
+    local,
+    cloud,
+    now: T2,
+    createId: () => 'unknown-base-conflict',
   });
 
   assert.deepEqual(result.data.notes.tombstones, [{ id: 'note-1', deletedAt: T1 }]);
   assert.deepEqual(result.data.notes.notes.map((item) => [item.id, item.content]), [
-    ['restored-conflict', 'attempted restore'],
+    ['unknown-base-conflict', 'unknown local restore'],
+  ]);
+  assert.equal(result.conflictCount, 1);
+  assert.deepEqual(result.noteConflicts, [{
+    sourceNoteId: 'note-1',
+    conflictNoteId: 'unknown-base-conflict',
+  }]);
+});
+
+test('a newer cloud tombstone defeats a restore based on an older deletion event', () => {
+  const base = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T1 }] });
+  const local = data([note('note-1', 'restore from old deletion', T2)]);
+  const cloud = data([], { noteTombstones: [{ id: 'note-1', deletedAt: T2 }] });
+
+  const result = mergeS3SharedAppDataV2({
+    base,
+    local,
+    cloud,
+    now: T2,
+    createId: () => 'new-deletion-conflict',
+  });
+
+  assert.deepEqual(result.data.notes.tombstones, [{ id: 'note-1', deletedAt: T2 }]);
+  assert.deepEqual(result.data.notes.notes.map((item) => [item.id, item.content]), [
+    ['new-deletion-conflict', 'restore from old deletion'],
   ]);
   assert.equal(result.conflictCount, 1);
 });

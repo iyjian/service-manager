@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   AuthType,
@@ -36,6 +36,8 @@ const MAX_PROXY_SELECTIONS = 10_000;
 const MAX_PROXY_RULES = 10_000;
 const CONFLICT_TAG = 'Conflict';
 const CONFLICT_SUFFIX = ' (Conflict)';
+const CONFLICT_ID_PREFIX = 's3-conflict-';
+const CONFLICT_ID_DOMAIN = 'service-manager/s3-note-conflict/v1';
 const PROXY_MODES = new Set<ProxyMode>(['direct', 'rule', 'global']);
 const NOTES_TREE_ORDER_STEP = 1_024;
 
@@ -698,30 +700,101 @@ function conflictTags(tags: string[]): string[] {
   return [...tags.slice(0, NOTE_LIMITS.tags - 1), CONFLICT_TAG];
 }
 
-function createConflictNote(
+function conflictNoteIdentityValue(note: Note): readonly unknown[] {
+  // Keep this aligned with notesEquivalent. updatedAt alone is not a content
+  // divergence and conflict copies receive the merge timestamp anyway.
+  return [
+    note.id,
+    note.name,
+    note.content,
+    note.language,
+    note.tags,
+    note.createdAt,
+  ];
+}
+
+function conflictStateIdentityValue(state: NoteState): readonly unknown[] {
+  if (state.kind === 'absent') return ['absent'];
+  if (state.kind === 'deleted') return ['deleted', state.tombstone.id, state.tombstone.deletedAt];
+  return ['note', ...conflictNoteIdentityValue(state.note)];
+}
+
+function stableConflictId(
   source: Note,
+  baseState: NoteState,
+  cloudState: NoteState,
+  attempt: number,
+): string {
+  const identity = JSON.stringify([
+    CONFLICT_ID_DOMAIN,
+    conflictStateIdentityValue(baseState),
+    conflictNoteIdentityValue(source),
+    conflictStateIdentityValue(cloudState),
+    attempt,
+  ]);
+  const digest = createHash('sha256').update(identity, 'utf8').digest('base64url');
+  return stableId(`${CONFLICT_ID_PREFIX}${digest}`, 'Conflict Note ID');
+}
+
+function isConflictCopyPayload(note: Note, source: Note): boolean {
+  return note.name === conflictName(source.name)
+    && note.content === source.content
+    && note.language === source.language
+    && isDeepStrictEqual(note.tags, conflictTags(source.tags));
+}
+
+type ConflictNoteResolution =
+  | { kind: 'created'; note: Note }
+  | { kind: 'reused'; id: string };
+
+function resolveConflictNote(
+  source: Note,
+  baseState: NoteState,
+  cloudState: NoteState,
   timestamp: string,
   reservedIds: Set<string>,
-  createId: () => string,
-): Note {
-  let id: string | undefined;
+  createId: (() => string) | undefined,
+  baseNotes: ReadonlyMap<string, Note>,
+  baseTombstones: ReadonlyMap<string, S3NoteTombstone>,
+  localNotes: ReadonlyMap<string, Note>,
+  localTombstones: ReadonlyMap<string, S3NoteTombstone>,
+  cloudNotes: ReadonlyMap<string, Note>,
+): ConflictNoteResolution {
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const candidate = stableId(createId(), 'Conflict Note ID');
+    const candidate = createId
+      ? stableId(createId(), 'Conflict Note ID')
+      : stableConflictId(source, baseState, cloudState, attempt);
     if (!reservedIds.has(candidate)) {
-      id = candidate;
-      break;
+      reservedIds.add(candidate);
+      return {
+        kind: 'created',
+        note: {
+          ...source,
+          id: candidate,
+          name: conflictName(source.name),
+          tags: conflictTags(source.tags),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      };
+    }
+    if (!createId
+      && rawNoteState(baseNotes, baseTombstones, candidate).kind === 'absent') {
+      // This is a revision that this client already published but did not get
+      // to apply locally. Reuse only when cloud still owns the exact copy and
+      // local has not deleted or independently changed that candidate; its
+      // existing cloud tree placement must remain authoritative.
+      const cloudConflict = cloudNotes.get(candidate);
+      const localConflict = rawNoteState(localNotes, localTombstones, candidate);
+      if (cloudConflict
+        && isConflictCopyPayload(cloudConflict, source)
+        && (localConflict.kind === 'absent'
+          || (localConflict.kind === 'note' && notesEquivalent(localConflict.note, cloudConflict)))) {
+        return { kind: 'reused', id: candidate };
+      }
     }
   }
-  if (!id) throw new Error('A unique conflict Note ID could not be created.');
-  reservedIds.add(id);
-  return {
-    ...source,
-    id,
-    name: conflictName(source.name),
-    tags: conflictTags(source.tags),
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
+  throw new Error('A unique conflict Note ID could not be created.');
 }
 
 function sectionChoice<T>(
@@ -768,6 +841,7 @@ export function mergeS3NotesTreeSnapshots(options: {
   cloud: NotesTreeSnapshot;
   activeNoteIds: readonly string[];
   conflicts?: readonly S3NoteConflict[];
+  newConflicts?: readonly S3NoteConflict[];
 }): NotesTreeSnapshot {
   const normalizeBranch = (tree: NotesTreeSnapshot): NotesTreeSnapshot =>
     normalizeS3NotesTreeSnapshot(tree, tree.nodes.map((node) => node.noteId));
@@ -804,7 +878,7 @@ export function mergeS3NotesTreeSnapshots(options: {
     conflict.sourceNoteId,
     conflict.conflictNoteId,
   ]));
-  for (const conflict of options.conflicts ?? []) {
+  for (const conflict of options.newConflicts ?? options.conflicts ?? []) {
     const source = localNodes.get(conflict.sourceNoteId);
     if (!source) continue;
     selected.push({
@@ -837,7 +911,7 @@ export function mergeS3SharedAppDataV2(options: {
   const local = parseS3SharedAppDataV2(options.local);
   const cloud = parseS3SharedAppDataV2(options.cloud);
   const now = isoTimestamp(options.now ?? new Date().toISOString(), 'Merge timestamp');
-  const createId = options.createId ?? randomUUID;
+  const createId = options.createId;
   const discardedLocalSections: Array<'hosts' | 'proxy'> = [];
 
   const baseNotes = new Map((base?.notes.notes ?? []).map((note) => [note.id, note]));
@@ -859,6 +933,7 @@ export function mergeS3SharedAppDataV2(options: {
   const mergedTombstones: S3NoteTombstone[] = [];
   const conflictNotes: Note[] = [];
   const noteConflicts: S3NoteConflict[] = [];
+  const newNoteConflicts: S3NoteConflict[] = [];
   let deletionConflicts = 0;
 
   for (const id of orderedIds) {
@@ -869,15 +944,42 @@ export function mergeS3SharedAppDataV2(options: {
     const cloudChanged = !noteStatesEquivalent(cloudState, baseState);
     let chosen: NoteState;
 
-    // A canonical tombstone must never be cleared by reintroducing the same
-    // stable ID. Preserve an intentional local restore under a new conflict ID
-    // instead, so a stale or partially applied client cannot resurrect it.
+    // A client whose merge base already contains this exact tombstone has
+    // observed the deletion. Reintroducing the Note after that point is an
+    // explicit restore (for example, a deliberate Trilium re-import), not a
+    // stale client resurrecting data it has never seen deleted.
     if (cloudState.kind === 'deleted' && localState.kind === 'note') {
-      chosen = cloudState;
-      if (localChanged) {
-        const conflict = createConflictNote(localState.note, now, reservedIds, createId);
-        conflictNotes.push(conflict);
-        noteConflicts.push({ sourceNoteId: id, conflictNoteId: conflict.id });
+      const restoresKnownDeletion = baseState.kind === 'deleted'
+        && baseState.tombstone.id === cloudState.tombstone.id
+        && baseState.tombstone.deletedAt === cloudState.tombstone.deletedAt;
+      if (restoresKnownDeletion) {
+        chosen = localState;
+      } else {
+        chosen = cloudState;
+      }
+      if (!restoresKnownDeletion && localChanged) {
+        const conflict = resolveConflictNote(
+          localState.note,
+          baseState,
+          cloudState,
+          now,
+          reservedIds,
+          createId,
+          baseNotes,
+          baseTombstones,
+          localNotes,
+          localTombstones,
+          cloudNotes,
+        );
+        const mapping = {
+          sourceNoteId: id,
+          conflictNoteId: conflict.kind === 'created' ? conflict.note.id : conflict.id,
+        };
+        noteConflicts.push(mapping);
+        if (conflict.kind === 'created') {
+          conflictNotes.push(conflict.note);
+          newNoteConflicts.push(mapping);
+        }
       }
     } else if (!localChanged) chosen = cloudState;
     else if (!cloudChanged) chosen = localState;
@@ -885,9 +987,28 @@ export function mergeS3SharedAppDataV2(options: {
     else {
       chosen = cloudState;
       if (localState.kind === 'note') {
-        const conflict = createConflictNote(localState.note, now, reservedIds, createId);
-        conflictNotes.push(conflict);
-        noteConflicts.push({ sourceNoteId: id, conflictNoteId: conflict.id });
+        const conflict = resolveConflictNote(
+          localState.note,
+          baseState,
+          cloudState,
+          now,
+          reservedIds,
+          createId,
+          baseNotes,
+          baseTombstones,
+          localNotes,
+          localTombstones,
+          cloudNotes,
+        );
+        const mapping = {
+          sourceNoteId: id,
+          conflictNoteId: conflict.kind === 'created' ? conflict.note.id : conflict.id,
+        };
+        noteConflicts.push(mapping);
+        if (conflict.kind === 'created') {
+          conflictNotes.push(conflict.note);
+          newNoteConflicts.push(mapping);
+        }
       } else if (localState.kind === 'deleted' && cloudState.kind === 'note') {
         // There is no local body to preserve as a conflict copy, but the cloud
         // edit did override an intentional local deletion and must remain
@@ -910,6 +1031,7 @@ export function mergeS3SharedAppDataV2(options: {
     cloud: cloud.notes.tree,
     activeNoteIds: mergedNotes.map((note) => note.id),
     conflicts: noteConflicts,
+    newConflicts: newNoteConflicts,
   });
   const data = parseS3SharedAppDataV2({
     schemaVersion: S3_SHARED_DATA_SCHEMA_VERSION,

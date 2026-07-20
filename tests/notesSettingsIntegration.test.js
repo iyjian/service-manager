@@ -91,9 +91,17 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   ]) {
     assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
   }
+  const instanceLockProbe = main.indexOf('assertUserDataInstanceLockAvailable');
   const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
+  const durableInstanceLock = main.indexOf('acquireUserDataInstanceLock');
   const notesStoreInitialization = main.indexOf('new notesStore_1.NotesStore');
-  assert.ok(singleInstanceLock >= 0 && notesStoreInitialization > singleInstanceLock);
+  assert.ok(
+    instanceLockProbe >= 0
+      && singleInstanceLock > instanceLockProbe
+      && durableInstanceLock > singleInstanceLock
+      && notesStoreInitialization > durableInstanceLock,
+  );
+  assert.match(main, /process\.once\('exit',[\s\S]*releaseUserDataInstanceLock\(\)/);
   assert.match(main, /app\.on\('second-instance'/);
   assert.match(main, /new notesStore_1\.NotesStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-v4'\)\)/);
   assert.match(main, /new notesTreeStore_1\.NotesTreeStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-tree\.json'\)\)/);

@@ -176,7 +176,10 @@ async function createRuntime(t, options) {
     appVersion: '0.3.19',
     credentialProtector: fakeProtector(),
     snapshotProvider: async () => clone(state.data),
-    snapshotApplier: async (data) => {
+    snapshotApplier: async (data, expectedLocal) => {
+      if (options.snapshotApplier) {
+        return options.snapshotApplier({ data, expectedLocal, state });
+      }
       state.data = clone(data);
       state.applied.push(clone(data));
     },
@@ -1634,6 +1637,122 @@ test('a late local edit fences cloud apply and is reconciled before advancing th
   assert.equal(runtime.getSyncState().lastRevision, result.revision);
 });
 
+test('a late unrelated edit does not duplicate a published same-Note Conflict on retry', async (t) => {
+  const s3 = new MemoryS3();
+  const parent = note('parent-note', 'parent');
+  const baseTree = {
+    schemaVersion: 1,
+    nodes: [
+      { noteId: parent.id, parentId: null, order: 1024 },
+      { noteId: 'shared-note', parentId: parent.id, order: 1024 },
+    ],
+  };
+  const base = sharedData([parent, note('shared-note', 'base')], [], [], baseTree);
+  const home = await createRuntime(t, { clientId: 'home', data: base, fetchImpl: s3.fetch });
+  let rejectNextApply = false;
+  const work = await createRuntime(t, {
+    clientId: 'work',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+    now: () => new Date(T2),
+    snapshotApplier: async ({ data, expectedLocal, state }) => {
+      if (rejectNextApply) {
+        rejectNextApply = false;
+        assert.equal(expectedLocal.notes.notes.find((item) => item.id === 'shared-note').content, 'work edit');
+        state.data = sharedData([
+          parent,
+          note('shared-note', 'work edit', T1),
+          note('late-note', 'typed during apply', T2),
+        ], [], [], {
+          schemaVersion: 1,
+          nodes: [
+            ...baseTree.nodes,
+            { noteId: 'late-note', parentId: null, order: 2048 },
+          ],
+        });
+        return false;
+      }
+      state.data = clone(data);
+      state.applied.push(clone(data));
+      return true;
+    },
+  });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+
+  home.state.data = sharedData([parent, note('shared-note', 'home edit', T1)], [], [], baseTree);
+  await home.runtime.syncAllDataToS3();
+  work.state.data = sharedData([parent, note('shared-note', 'work edit', T1)], [], [], baseTree);
+  rejectNextApply = true;
+
+  const result = await work.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'conflict');
+  assert.equal(work.state.data.notes.notes.find((item) => item.id === 'shared-note').content, 'home edit');
+  assert.equal(work.state.data.notes.notes.find((item) => item.id === 'late-note').content, 'typed during apply');
+  const conflicts = work.state.data.notes.notes.filter((item) => item.tags.includes('Conflict'));
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].content, 'work edit');
+  assert.match(conflicts[0].id, /^s3-conflict-[A-Za-z0-9_-]{43}$/);
+  assert.doesNotMatch(conflicts[0].id, /work|edit|shared-note/);
+  assert.equal(
+    work.state.data.notes.tree.nodes.find((item) => item.noteId === conflicts[0].id).parentId,
+    parent.id,
+  );
+
+  await home.runtime.syncAllDataToS3();
+  assert.equal(home.state.data.notes.notes.filter((item) => item.tags.includes('Conflict')).length, 1);
+  assert.equal(
+    home.state.data.notes.tree.nodes.find((item) => item.noteId === conflicts[0].id).parentId,
+    parent.id,
+  );
+});
+
+test('a second loser Note version during fenced apply keeps one Conflict for each distinct version', async (t) => {
+  const s3 = new MemoryS3();
+  const base = sharedData([note('shared-note', 'base')]);
+  const home = await createRuntime(t, { clientId: 'home', data: base, fetchImpl: s3.fetch });
+  let rejectNextApply = false;
+  const work = await createRuntime(t, {
+    clientId: 'work',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+    now: () => new Date(T2),
+    snapshotApplier: async ({ data, state }) => {
+      if (rejectNextApply) {
+        rejectNextApply = false;
+        state.data = sharedData([note('shared-note', 'work edit v2', T2)]);
+        return false;
+      }
+      state.data = clone(data);
+      state.applied.push(clone(data));
+      return true;
+    },
+  });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+
+  home.state.data = sharedData([note('shared-note', 'home edit', T1)]);
+  await home.runtime.syncAllDataToS3();
+  work.state.data = sharedData([note('shared-note', 'work edit v1', T1)]);
+  rejectNextApply = true;
+
+  const result = await work.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'conflict');
+  const conflicts = work.state.data.notes.notes.filter((item) => item.tags.includes('Conflict'));
+  assert.equal(conflicts.length, 2);
+  assert.deepEqual(conflicts.map((item) => item.content).sort(), ['work edit v1', 'work edit v2']);
+  assert.equal(new Set(conflicts.map((item) => item.id)).size, 2);
+
+  await home.runtime.syncAllDataToS3();
+  assert.deepEqual(
+    home.state.data.notes.notes
+      .filter((item) => item.tags.includes('Conflict'))
+      .map((item) => item.content)
+      .sort(),
+    ['work edit v1', 'work edit v2'],
+  );
+});
+
 test('v4 reconcile automatically merges edits to different Notes from two clients', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([
@@ -1724,6 +1843,33 @@ test('a synced Note deletion remains deleted when a stale client reconnects', as
   assert.deepEqual(work.state.data.notes.notes, []);
   assert.equal((await work.runtime.syncAllDataToS3()).action, 'up-to-date');
   assert.deepEqual(work.state.data.notes.notes, []);
+});
+
+test('a client can explicitly restore a Note after synchronizing its exact tombstone', async (t) => {
+  const s3 = new MemoryS3();
+  const original = note('restored-note', 'original body');
+  const home = await createRuntime(t, { clientId: 'home', data: sharedData([original]), fetchImpl: s3.fetch });
+  const work = await createRuntime(t, { clientId: 'work', data: sharedData(), fetchImpl: s3.fetch });
+  await home.runtime.syncAllDataToS3();
+  await work.runtime.syncAllDataToS3();
+
+  const tombstone = { id: original.id, deletedAt: T2 };
+  home.state.data = sharedData([], [], [tombstone]);
+  assert.equal((await home.runtime.syncAllDataToS3()).action, 'pushed');
+  assert.equal((await work.runtime.syncAllDataToS3()).action, 'pulled');
+  assert.deepEqual(work.state.data.notes.tombstones, [tombstone]);
+
+  const restored = note(original.id, 'deliberately restored body', T2);
+  work.state.data = sharedData([restored]);
+  const restoredResult = await work.runtime.syncAllDataToS3();
+  assert.equal(restoredResult.action, 'pushed');
+  assert.deepEqual(work.state.data.notes.notes, [restored]);
+  assert.deepEqual(work.state.data.notes.tombstones, []);
+  assert.equal(work.runtime.getSyncState().conflictCount, undefined);
+
+  assert.equal((await home.runtime.syncAllDataToS3()).action, 'pulled');
+  assert.deepEqual(home.state.data.notes.notes, [restored]);
+  assert.deepEqual(home.state.data.notes.tombstones, []);
 });
 
 test('same-Note concurrent edits use CAS, keep cloud canonical, and preserve the loser as a Conflict copy', async (t) => {
