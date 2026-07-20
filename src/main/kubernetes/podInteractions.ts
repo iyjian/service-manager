@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   KubernetesLogScope,
   KubernetesLogState,
+  KubernetesLogUpdate,
   KubernetesPortForwardState,
   KubernetesTerminalState,
   KubernetesTerminalOutput,
@@ -16,6 +17,8 @@ import type {
 
 const INITIAL_LOG_TAIL_LINES = 500;
 const MAXIMUM_LOG_LINES = 2_000;
+const LOG_UPDATE_BATCH_MS = 32;
+const PENDING_LOG_COMPACTION_LINES = MAXIMUM_LOG_LINES * 2;
 const MAXIMUM_DEPLOYMENT_LOG_PODS = 50;
 const MAXIMUM_PORT_FORWARDS = 10;
 const MAXIMUM_TERMINAL_OUTPUT_CHUNK_LENGTH = 16_384;
@@ -41,6 +44,8 @@ export interface KubernetesPortForwardInput {
 export interface PodInteractionManagerOptions {
   client: () => KubernetesClient;
   createId?: () => string;
+  /** Test seam; production live-log updates use one 32 ms bounded batch. */
+  logBatchDelayMs?: number;
   /** Bounded fallback for interactive shells that intentionally emit no initial prompt. */
   terminalReadyTimeoutMs?: number;
 }
@@ -90,6 +95,12 @@ interface LogSession {
   lastRawLines: Map<string, string>;
   aggregateLines: AggregateLogLine[];
   aggregateSequence: number;
+  pendingPodLines: string[];
+  pendingAggregateLines: AggregateLogLine[];
+  pendingLastRawLines: Map<string, string>;
+  pendingScopeGeneration?: number;
+  logFlushTimer?: ReturnType<typeof setTimeout>;
+  logBatchHoldGenerations: Set<number>;
   deploymentTargets?: KubernetesPodDeploymentLogTargets;
   olderLoads: Set<OlderLogLoad>;
   olderLoad?: Promise<KubernetesLogState>;
@@ -101,6 +112,12 @@ interface AggregateLogLine {
   podName: string;
   timestamp?: number;
   sequence: number;
+}
+
+interface AppliedLogBatch {
+  appendable: boolean;
+  removeLeading: number;
+  lines: string[];
 }
 
 interface LogScopeSnapshot {
@@ -213,6 +230,28 @@ function compareAggregateLogLines(left: AggregateLogLine, right: AggregateLogLin
   return left.podName.localeCompare(right.podName) || left.sequence - right.sequence;
 }
 
+function mergeBoundedAggregateLogLines(
+  existing: readonly AggregateLogLine[],
+  incoming: readonly AggregateLogLine[],
+  maximum: number
+): AggregateLogLine[] {
+  const merged: AggregateLogLine[] = [];
+  let existingIndex = 0;
+  let incomingIndex = 0;
+  while (existingIndex < existing.length && incomingIndex < incoming.length) {
+    if (compareAggregateLogLines(existing[existingIndex], incoming[incomingIndex]) <= 0) {
+      merged.push(existing[existingIndex]);
+      existingIndex += 1;
+    } else {
+      merged.push(incoming[incomingIndex]);
+      incomingIndex += 1;
+    }
+  }
+  if (existingIndex < existing.length) merged.push(...existing.slice(existingIndex));
+  if (incomingIndex < incoming.length) merged.push(...incoming.slice(incomingIndex));
+  return merged.length <= maximum ? merged : merged.slice(-maximum);
+}
+
 /**
  * Finds the newest, longest contiguous prefix of `retained` in a bounded log
  * snapshot. A single log line is not a safe anchor: identical messages can
@@ -294,10 +333,11 @@ export class PodInteractionManager {
   private readonly terminals = new Map<string, TerminalSession>();
   private readonly forwards = new Map<string, PortForwardSession>();
   private readonly createId: () => string;
-  private readonly logListeners = new Set<(state: KubernetesLogState) => void>();
+  private readonly logListeners = new Set<(update: KubernetesLogUpdate) => void>();
   private readonly terminalListeners = new Set<(state: KubernetesTerminalState) => void>();
   private readonly terminalOutputListeners = new Set<(output: KubernetesTerminalOutput) => void>();
   private readonly terminalReadyTimeoutMs: number;
+  private readonly logBatchDelayMs: number;
   private pageGeneration = 0;
   private allGeneration = 0;
 
@@ -308,9 +348,15 @@ export class PodInteractionManager {
       throw new Error('Kubernetes terminal ready timeout must be a non-negative number.');
     }
     this.terminalReadyTimeoutMs = readyTimeout;
+    const logBatchDelayMs = options.logBatchDelayMs ?? LOG_UPDATE_BATCH_MS;
+    if (!Number.isFinite(logBatchDelayMs)
+      || (logBatchDelayMs !== 0 && (logBatchDelayMs < 16 || logBatchDelayMs > 50))) {
+      throw new Error('Kubernetes log update batch delay must be 0 for tests or between 16 and 50 milliseconds.');
+    }
+    this.logBatchDelayMs = logBatchDelayMs;
   }
 
-  public onLogChanged(listener: (state: KubernetesLogState) => void): () => void {
+  public onLogChanged(listener: (update: KubernetesLogUpdate) => void): () => void {
     this.logListeners.add(listener);
     return () => this.logListeners.delete(listener);
   }
@@ -350,6 +396,10 @@ export class PodInteractionManager {
       lastRawLines: new Map(),
       aggregateLines: [],
       aggregateSequence: 0,
+      pendingPodLines: [],
+      pendingAggregateLines: [],
+      pendingLastRawLines: new Map(),
+      logBatchHoldGenerations: new Set(),
       olderLoads: new Set(),
       timeLoads: new Set(),
     };
@@ -364,13 +414,14 @@ export class PodInteractionManager {
         session.state.hasOlder = false;
       }
       await this.openCurrentLogStreams(session, true, session.scopeGeneration);
-      this.emitLog(session, false);
+      this.emitLogReset(session, false);
       return copyLogState(session.state);
     } catch (error) {
       if (this.logs.get(sessionId) === session) {
         this.logs.delete(sessionId);
         session.closed = true;
       }
+      this.clearPendingLogBatch(session);
       await this.closeLogStreams([...session.streams.values()]).catch(() => undefined);
       throw error;
     }
@@ -394,6 +445,7 @@ export class PodInteractionManager {
   }
 
   private async loadOlderLogSnapshot(session: LogSession): Promise<KubernetesLogState> {
+    this.flushPendingLogBatch(session);
     if (session.state.scope !== 'pod') {
       session.state.hasOlder = false;
       return copyLogState(session.state);
@@ -401,7 +453,7 @@ export class PodInteractionManager {
     const retainedAtStart = [...session.state.lines];
     if (retainedAtStart.length === 0) {
       session.state.hasOlder = false;
-      this.emitLog(session);
+      this.emitLogReset(session);
       return copyLogState(session.state);
     }
 
@@ -447,7 +499,7 @@ export class PodInteractionManager {
       session.state.hasOlder = older.length > 0
         && session.state.lines.length < MAXIMUM_LOG_LINES
         && received.length >= tailLines;
-      this.emitLog(session);
+      this.emitLogReset(session);
       return copyLogState(session.state);
     } finally {
       session.olderLoads.delete(pending);
@@ -461,6 +513,7 @@ export class PodInteractionManager {
    */
   public async setLogStartTime(sessionId: string, value?: string): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
+    this.flushPendingLogBatch(session);
     const startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
     if (session.state.startTime === startTime && !session.state.following && session.timeLoads.size === 0) {
       return copyLogState(session.state);
@@ -483,7 +536,7 @@ export class PodInteractionManager {
     session.lastRawLines.clear();
     session.aggregateLines = [];
     session.aggregateSequence = 0;
-    this.emitLog(session);
+    this.emitLogReset(session);
 
     try {
       await Promise.all([
@@ -515,7 +568,7 @@ export class PodInteractionManager {
       if (!this.isLogTimeTransitionCurrent(session, scopeGeneration, startTime)) {
         return copyLogState(session.state);
       }
-      this.emitLog(session);
+      this.emitLogReset(session);
       return copyLogState(session.state);
     } catch (error) {
       if (this.isLogTransitionCurrent(session, scopeGeneration)) {
@@ -526,7 +579,7 @@ export class PodInteractionManager {
         session.aggregateLines = previous.aggregateLines.map((line) => ({ ...line }));
         session.aggregateSequence = previous.aggregateSequence;
         session.deploymentTargets = copyDeploymentTargets(previous.deploymentTargets);
-        this.emitLog(session);
+        this.emitLogReset(session);
         await this.closeTimeLogLoads(failedLoads).catch(() => undefined);
       }
       throw error;
@@ -535,13 +588,14 @@ export class PodInteractionManager {
 
   public async setLogFollowing(sessionId: string, following: boolean): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
+    this.flushPendingLogBatch(session);
     if (!following) {
       if (!session.state.following) {
         return copyLogState(session.state);
       }
       session.scopeGeneration += 1;
       session.state.following = false;
-      this.emitLog(session);
+      this.emitLogReset(session);
       const streams = this.detachLogStreams(session);
       await this.closeLogStreams(streams).catch(() => undefined);
       return copyLogState(session.state);
@@ -577,13 +631,13 @@ export class PodInteractionManager {
       if (!this.isLogTransitionCurrent(session, scopeGeneration, true)) {
         return copyLogState(session.state);
       }
-      this.emitLog(session);
+      this.emitLogReset(session);
       return copyLogState(session.state);
     } catch (error) {
       if (this.isLogTransitionCurrent(session, scopeGeneration)) {
         session.state.following = false;
         session.state.startTime = previousStartTime;
-        this.emitLog(session);
+        this.emitLogReset(session);
       }
       throw error;
     }
@@ -591,6 +645,7 @@ export class PodInteractionManager {
 
   public async setLogScope(sessionId: string, scope: KubernetesLogScope): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
+    this.flushPendingLogBatch(session);
     if (scope !== 'pod' && scope !== 'deployment') {
       throw new Error('Kubernetes log scope must be pod or deployment.');
     }
@@ -651,7 +706,7 @@ export class PodInteractionManager {
           return copyLogState(session.state);
         }
       }
-      this.emitLog(session);
+      this.emitLogReset(session);
       return copyLogState(session.state);
     } catch (error) {
       if (this.isLogTransitionCurrent(session, scopeGeneration)) {
@@ -668,7 +723,7 @@ export class PodInteractionManager {
         session.aggregateLines = previous.aggregateLines.map((line) => ({ ...line }));
         session.aggregateSequence = previous.aggregateSequence;
         session.deploymentTargets = copyDeploymentTargets(previous.deploymentTargets);
-        this.emitLog(session);
+        this.emitLogReset(session);
         await Promise.all([
           this.closeLogStreams(failedStreams).catch(() => undefined),
           this.closeTimeLogLoads(failedTimeLoads).catch(() => undefined),
@@ -680,11 +735,12 @@ export class PodInteractionManager {
 
   public clearLogs(sessionId: string): KubernetesLogState {
     const session = this.requireLog(sessionId);
+    this.flushPendingLogBatch(session);
     session.state.lines = [];
     session.aggregateLines = [];
     session.aggregateSequence = 0;
     session.state.hasOlder = false;
-    this.emitLog(session);
+    this.emitLogReset(session);
     return copyLogState(session.state);
   }
 
@@ -695,6 +751,7 @@ export class PodInteractionManager {
     }
     this.logs.delete(sessionId);
     session.closed = true;
+    this.clearPendingLogBatch(session);
     const results = await Promise.allSettled([
       ...this.detachLogStreams(session).map((stream) => this.closeLogStream(stream)),
       ...[...session.olderLoads].map((pending) => this.closeOlderLoad(pending)),
@@ -1007,6 +1064,7 @@ export class PodInteractionManager {
     const boundedTailLines = session.state.scope === 'deployment'
       ? Math.max(1, Math.ceil(INITIAL_LOG_TAIL_LINES / targets.length))
       : INITIAL_LOG_TAIL_LINES;
+    session.logBatchHoldGenerations.add(scopeGeneration);
     try {
       await Promise.all(targets.map((target) => {
         const resumeSkipLine = initial ? undefined : session.lastRawLines.get(target.podName);
@@ -1026,17 +1084,24 @@ export class PodInteractionManager {
           resumeSkipLine
         );
       }));
-      if (initial && session.state.scope === 'deployment' && session.aggregateLines.length > INITIAL_LOG_TAIL_LINES) {
-        session.aggregateLines = session.aggregateLines.slice(-INITIAL_LOG_TAIL_LINES);
-        session.state.lines = session.aggregateLines.map((line) => line.display);
-      }
+      this.applyPendingLogBatch(
+        session,
+        initial && session.state.scope === 'deployment' ? INITIAL_LOG_TAIL_LINES : MAXIMUM_LOG_LINES,
+        scopeGeneration
+      );
     } catch (error) {
+      this.clearPendingLogBatch(session, scopeGeneration);
       const streams = [...session.streams.values()].filter((stream) => stream.scopeGeneration === scopeGeneration);
       for (const stream of streams) {
         if (session.streams.get(stream.podName) === stream) session.streams.delete(stream.podName);
       }
       await this.closeLogStreams(streams).catch(() => undefined);
       throw error;
+    } finally {
+      session.logBatchHoldGenerations.delete(scopeGeneration);
+      if (session.pendingScopeGeneration === session.scopeGeneration) {
+        this.scheduleLogFlush(session, session.scopeGeneration);
+      }
     }
   }
 
@@ -1078,25 +1143,29 @@ export class PodInteractionManager {
           stream.resumeSkipLine = undefined;
         }
         if (incoming.length === 0) return;
+        if (session.pendingScopeGeneration !== undefined
+          && session.pendingScopeGeneration !== scopeGeneration) {
+          this.clearPendingLogBatch(session);
+        }
+        session.pendingScopeGeneration = scopeGeneration;
         for (const rawLine of incoming) {
-          session.lastRawLines.set(podName, rawLine);
+          // Resume cursors commit with the batch. A partially opened multi-Pod
+          // generation may still fail, and discarded lines must remain
+          // eligible for the next bounded catch-up request.
+          session.pendingLastRawLines.set(podName, rawLine);
           if (session.state.scope === 'deployment') {
-            session.aggregateLines.push({
+            session.pendingAggregateLines.push({
               display: aggregateDisplayLine(podName, rawLine),
               podName,
               timestamp: aggregateTimestamp(rawLine),
               sequence: ++session.aggregateSequence,
             });
+          } else {
+            session.pendingPodLines.push(rawLine);
           }
         }
-        if (session.state.scope === 'deployment') {
-          session.aggregateLines.sort(compareAggregateLogLines);
-          session.aggregateLines = session.aggregateLines.slice(-MAXIMUM_LOG_LINES);
-          session.state.lines = session.aggregateLines.map((entry) => entry.display);
-        } else {
-          session.state.lines = appendBoundedLogLines(session.state.lines, incoming);
-        }
-        this.emitLog(session);
+        this.compactPendingLogBatch(session);
+        this.scheduleLogFlush(session, scopeGeneration);
       },
     });
     stream.handle = handle;
@@ -1104,6 +1173,156 @@ export class PodInteractionManager {
       await this.closeLogStream(stream);
       throw closedBefore('log session');
     }
+  }
+
+  private compactPendingLogBatch(session: LogSession): void {
+    if (session.pendingPodLines.length >= PENDING_LOG_COMPACTION_LINES) {
+      session.pendingPodLines = session.pendingPodLines.slice(-MAXIMUM_LOG_LINES);
+    }
+    if (session.pendingAggregateLines.length >= PENDING_LOG_COMPACTION_LINES) {
+      session.pendingAggregateLines.sort(compareAggregateLogLines);
+      session.pendingAggregateLines = session.pendingAggregateLines.slice(-MAXIMUM_LOG_LINES);
+    }
+  }
+
+  private scheduleLogFlush(session: LogSession, scopeGeneration: number): void {
+    if (session.logBatchHoldGenerations.has(scopeGeneration) || session.logFlushTimer !== undefined) return;
+    if (this.logBatchDelayMs === 0) {
+      this.flushPendingLogBatch(session);
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (session.logFlushTimer !== timer) return;
+      session.logFlushTimer = undefined;
+      if (!this.isLogSessionActive(session)
+        || session.scopeGeneration !== scopeGeneration
+        || session.pendingScopeGeneration !== scopeGeneration) {
+        if (session.pendingScopeGeneration === scopeGeneration) {
+          session.pendingPodLines = [];
+          session.pendingAggregateLines = [];
+          session.pendingLastRawLines.clear();
+          session.pendingScopeGeneration = undefined;
+        }
+        const pendingGeneration = session.pendingScopeGeneration;
+        if (this.isLogSessionActive(session)
+          && pendingGeneration === session.scopeGeneration
+          && !session.logBatchHoldGenerations.has(pendingGeneration)) {
+          this.scheduleLogFlush(session, pendingGeneration);
+        }
+        return;
+      }
+      this.flushPendingLogBatch(session);
+    }, this.logBatchDelayMs);
+    session.logFlushTimer = timer;
+  }
+
+  private applyPendingLogBatch(
+    session: LogSession,
+    maximum = MAXIMUM_LOG_LINES,
+    expectedScopeGeneration?: number
+  ): AppliedLogBatch | undefined {
+    if (expectedScopeGeneration !== undefined
+      && session.pendingScopeGeneration !== expectedScopeGeneration) {
+      return undefined;
+    }
+    if (session.logFlushTimer !== undefined) {
+      clearTimeout(session.logFlushTimer);
+      session.logFlushTimer = undefined;
+    }
+    const pendingPodLines = session.pendingPodLines;
+    const pendingAggregateLines = session.pendingAggregateLines;
+    const pendingLastRawLines = session.pendingLastRawLines;
+    session.pendingPodLines = [];
+    session.pendingAggregateLines = [];
+    session.pendingLastRawLines = new Map();
+    session.pendingScopeGeneration = undefined;
+    for (const [podName, rawLine] of pendingLastRawLines) {
+      session.lastRawLines.set(podName, rawLine);
+    }
+
+    if (session.state.scope !== 'deployment') {
+      if (pendingPodLines.length === 0) return undefined;
+      const existing = session.state.lines;
+      const retainedOldCount = Math.min(existing.length, Math.max(0, maximum - pendingPodLines.length));
+      const removeLeading = existing.length - retainedOldCount;
+      const appended = pendingPodLines.length > maximum
+        ? pendingPodLines.slice(-maximum)
+        : pendingPodLines;
+      const next = [...existing.slice(removeLeading), ...appended];
+      session.state.lines = next;
+      return { appendable: true, removeLeading, lines: [...appended] };
+    }
+
+    if (pendingAggregateLines.length === 0) return undefined;
+    pendingAggregateLines.sort(compareAggregateLogLines);
+    const existing = session.aggregateLines;
+    const incomingEntries = new Set(pendingAggregateLines);
+    const next = mergeBoundedAggregateLogLines(existing, pendingAggregateLines, maximum);
+    const unchanged = next.length === existing.length
+      && next.every((entry, index) => entry === existing[index]);
+    session.aggregateLines = next;
+    session.state.lines = next.map((entry) => entry.display);
+    if (unchanged) return undefined;
+
+    let oldCount = 0;
+    let sawIncoming = false;
+    let appendable = true;
+    for (const entry of next) {
+      if (incomingEntries.has(entry)) {
+        sawIncoming = true;
+      } else {
+        if (sawIncoming) appendable = false;
+        oldCount += 1;
+      }
+    }
+    const oldStart = existing.length - oldCount;
+    if (oldStart < 0 || next.slice(0, oldCount).some((entry, index) => entry !== existing[oldStart + index])) {
+      appendable = false;
+    }
+    return {
+      appendable,
+      removeLeading: appendable ? oldStart : 0,
+      lines: appendable ? next.slice(oldCount).map((entry) => entry.display) : [],
+    };
+  }
+
+  private flushPendingLogBatch(session: LogSession): void {
+    const applied = this.applyPendingLogBatch(session);
+    if (!applied || !this.isLogSessionActive(session)) return;
+    const baseRevision = session.state.revision;
+    session.state.revision += 1;
+    if (!applied.appendable) {
+      this.emitLogReset(session, false);
+      return;
+    }
+    const update: KubernetesLogUpdate = {
+      kind: 'append',
+      sessionId: session.state.sessionId,
+      podName: session.state.podName,
+      namespace: session.state.namespace,
+      container: session.state.container,
+      scope: session.state.scope,
+      following: session.state.following,
+      ...(session.state.startTime ? { startTime: session.state.startTime } : {}),
+      baseRevision,
+      revision: session.state.revision,
+      removeLeading: applied.removeLeading,
+      lines: applied.lines,
+    };
+    for (const listener of this.logListeners) listener(update);
+  }
+
+  private clearPendingLogBatch(session: LogSession, expectedScopeGeneration?: number): void {
+    if (expectedScopeGeneration !== undefined
+      && session.pendingScopeGeneration !== expectedScopeGeneration) {
+      return;
+    }
+    if (session.logFlushTimer !== undefined) clearTimeout(session.logFlushTimer);
+    session.logFlushTimer = undefined;
+    session.pendingPodLines = [];
+    session.pendingAggregateLines = [];
+    session.pendingLastRawLines.clear();
+    session.pendingScopeGeneration = undefined;
   }
 
   private detachLogStreams(session: LogSession): LogStream[] {
@@ -1507,16 +1726,16 @@ export class PodInteractionManager {
       && session.allGeneration === this.allGeneration;
   }
 
-  private emitLog(session: LogSession, changed = true): void {
+  private emitLogReset(session: LogSession, changed = true): void {
     if (!this.isLogSessionActive(session)) {
       return;
     }
     if (changed) {
       session.state.revision += 1;
     }
-    const state = copyLogState(session.state);
+    const update: KubernetesLogUpdate = { kind: 'reset', state: copyLogState(session.state) };
     for (const listener of this.logListeners) {
-      listener(state);
+      listener(update);
     }
   }
 

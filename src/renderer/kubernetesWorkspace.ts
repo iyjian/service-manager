@@ -1,4 +1,5 @@
 import type {
+  KubernetesLogUpdate,
   KubernetesLogScope,
   KubernetesLogState,
   KubernetesPodTarget,
@@ -29,6 +30,11 @@ export interface KubernetesWorkspaceState {
   bindTerminal(tabId: string, terminalId: string): boolean;
   routeTerminalFinal(state: Pick<KubernetesTerminalState, 'id' | 'state'>): boolean;
   applyLog(state: KubernetesLogState): boolean;
+  applyLogAppend(update: Extract<KubernetesLogUpdate, { kind: 'append' }>): {
+    status: 'applied' | 'ignored' | 'recover';
+    tab?: KubernetesWorkspaceTab;
+    removedLines?: string[];
+  };
   logForSession(sessionId: string): KubernetesLogState | undefined;
   tabIdForLogSession(sessionId: string): string | undefined;
   tabIdForTerminal(id: string): string | undefined;
@@ -39,7 +45,7 @@ export interface KubernetesWorkspaceState {
 export interface KubernetesWorkspace {
   openLogs(target: KubernetesPodTarget): Promise<void>;
   openShell(target: KubernetesPodTarget): Promise<void>;
-  onLogChanged(state: KubernetesLogState): void;
+  onLogChanged(update: KubernetesLogUpdate): void;
   onTerminalChanged(state: KubernetesTerminalState): void;
   onTerminalOutput(output: KubernetesTerminalOutput): void;
   dispose(): Promise<void>;
@@ -80,8 +86,68 @@ interface KubernetesWorkspaceStartTimeIntent {
 
 type KubernetesWorkspaceScrollIntent = 'none' | 'follow';
 
+type KubernetesWorkspaceAppendLogUpdate = Extract<KubernetesLogUpdate, { kind: 'append' }>;
+
+interface AnsiRenderState {
+  classes: string[];
+}
+
+interface RenderedAnsiLine {
+  node: HTMLSpanElement;
+  lineBreak: HTMLSpanElement;
+}
+
+interface MountedLogPane {
+  tabId: string;
+  panel: HTMLElement;
+  toolbar: HTMLElement;
+  scopeSwitch: HTMLButtonElement;
+  search: HTMLInputElement;
+  startTime: HTMLInputElement;
+  follow: HTMLButtonElement;
+  clear: HTMLButtonElement;
+  output: HTMLPreElement;
+  stateLabel: HTMLElement;
+  count: HTMLElement;
+  renderedLines: RenderedAnsiLine[];
+  ansiState: AnsiRenderState;
+  renderedRevision?: number;
+  renderedSourceKey?: string;
+  appliedSearch: string;
+  searchFrame?: { frame?: number };
+}
+
+interface AppliedLogUpdate {
+  tab?: KubernetesWorkspaceTab;
+  followed: boolean;
+  recover?: boolean;
+  append?: {
+    update: KubernetesWorkspaceAppendLogUpdate;
+    removedLines: string[];
+  };
+  reset: boolean;
+}
+
+interface KubernetesLogRenderMutation {
+  append?: NonNullable<AppliedLogUpdate['append']>;
+  reset?: boolean;
+  forceSearchReset?: boolean;
+}
+
+interface PendingPreBindLogUpdate {
+  tabId: string;
+  update: KubernetesLogUpdate;
+}
+
+interface KubernetesLogRecoveryRequest {
+  retry: boolean;
+}
+
 const MAX_PENDING_TERMINAL_OUTPUT_CHARACTERS = 64 * 1024;
 const MAX_PENDING_TERMINAL_OUTPUT_CHUNKS = 256;
+const MAX_PENDING_LOG_UPDATES = 2_048;
+const MAX_PENDING_LOG_LINES = 4_000;
+const MAX_RENDERED_LOG_LINES = 2_000;
 const KUBERNETES_WORKSPACE_MIN_HEIGHT = 120;
 const KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO = 0.8;
 const KUBERNETES_WORKSPACE_KEYBOARD_STEP = 20;
@@ -129,6 +195,55 @@ function copyLog(log: KubernetesLogState): KubernetesLogState {
     lines: [...log.lines],
     ...(log.deployment ? { deployment: { ...log.deployment } } : {}),
   };
+}
+
+function isBoundedLogState(log: KubernetesLogState): boolean {
+  return Number.isSafeInteger(log.revision)
+    && log.revision >= 0
+    && log.lines.length <= MAX_RENDERED_LOG_LINES
+    && log.lines.every((line) => typeof line === 'string');
+}
+
+function logUpdateSessionId(update: KubernetesLogUpdate): string {
+  return update.kind === 'reset' ? update.state.sessionId : update.sessionId;
+}
+
+function logUpdateTarget(update: KubernetesLogUpdate): KubernetesPodTarget {
+  const state = update.kind === 'reset' ? update.state : update;
+  return {
+    namespace: state.namespace,
+    podName: state.podName,
+    container: state.container,
+  };
+}
+
+function logUpdateLineCount(update: KubernetesLogUpdate): number {
+  return update.kind === 'reset' ? update.state.lines.length : update.lines.length;
+}
+
+function cloneLogUpdate(update: KubernetesLogUpdate): KubernetesLogUpdate {
+  if (update.kind === 'reset') return { kind: 'reset', state: copyLog(update.state) };
+  return { ...update, lines: [...update.lines] };
+}
+
+function normalizedLogSearch(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function logSourceKey(log: KubernetesLogState): string {
+  return [
+    log.sessionId,
+    log.scope ?? 'pod',
+    log.startTime ? `snapshot:${log.startTime}` : 'live',
+  ].join('\u0000');
+}
+
+function lineMatchesLogSearch(line: string, search: string): boolean {
+  return !search || line.toLowerCase().includes(search);
+}
+
+function cloneAnsiState(state: AnsiRenderState): AnsiRenderState {
+  return { classes: [...state.classes] };
 }
 
 function copyTab(tab: KubernetesWorkspaceTab): KubernetesWorkspaceTab {
@@ -284,6 +399,43 @@ export function createKubernetesWorkspaceState(): KubernetesWorkspaceState {
       return true;
     },
 
+    applyLogAppend(update) {
+      const tabId = tabIdByLogSession.get(update.sessionId);
+      const tab = tabId ? current(tabId) : undefined;
+      const log = tab?.log;
+      if (!tab || tab.type !== 'logs' || !log || log.sessionId !== update.sessionId) {
+        return { status: 'ignored' };
+      }
+      if (!sameTarget(tab.target, update)
+        || !Number.isSafeInteger(update.baseRevision)
+        || !Number.isSafeInteger(update.revision)
+        || update.revision <= update.baseRevision
+        || !Number.isSafeInteger(update.removeLeading)
+        || update.removeLeading < 0
+        || update.lines.length > MAX_RENDERED_LOG_LINES
+        || update.lines.some((line) => typeof line !== 'string')) {
+        return { status: 'ignored' };
+      }
+      if (update.baseRevision < log.revision) return { status: 'ignored' };
+      if (update.baseRevision > log.revision
+        || update.revision !== update.baseRevision + 1
+        || update.scope !== log.scope
+        || update.startTime !== log.startTime
+        || update.removeLeading > log.lines.length
+        || log.lines.length - update.removeLeading + update.lines.length > MAX_RENDERED_LOG_LINES) {
+        return { status: 'recover' };
+      }
+
+      // The state owns this bounded mutable buffer. Live append batches avoid
+      // rebuilding/copying all 2,000 retained lines; a copy is made only for
+      // the renderer snapshot returned across this state boundary.
+      const removedLines = log.lines.splice(0, update.removeLeading);
+      log.lines.push(...update.lines);
+      log.following = update.following;
+      log.revision = update.revision;
+      return { status: 'applied', tab: copyTab(tab), removedLines };
+    },
+
     logForSession(sessionId) {
       const tabId = tabIdByLogSession.get(sessionId);
       const tab = tabId ? current(tabId) : undefined;
@@ -352,6 +504,10 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const startTimeIntents = new Map<string, KubernetesWorkspaceStartTimeIntent>();
   const logScrollTops = new Map<string, number>();
   const renderedLogOutputs = new Map<string, HTMLPreElement>();
+  const openingLogTabIds = new Set<string>();
+  const pendingPreBindLogUpdates: PendingPreBindLogUpdate[] = [];
+  const preBindLogRecoveryTabIds = new Set<string>();
+  const logRecoveryRequests = new Map<string, KubernetesLogRecoveryRequest>();
   const remotelyClosedLogIds = new Set<string>();
   const remotelyClosedTerminalIds = new Set<string>();
   const terminalPane = createKubernetesTerminalPane({
@@ -362,6 +518,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   let mountedTerminalTabId: string | undefined;
   let mountedTerminalId: string | undefined;
   let mountedTerminalHost: HTMLElement | undefined;
+  let mountedLogPane: MountedLogPane | undefined;
   let disposed = false;
   let disposal: Promise<void> | undefined;
   let autoScrollFrame: number | undefined;
@@ -370,6 +527,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   let preserveScrollTabId: string | undefined;
   let pendingTerminalOutputCharacters = 0;
   let pendingTerminalOutputChunks = 0;
+  let pendingPreBindLogLines = 0;
   let workspaceResizeFrame: number | undefined;
   let workspaceResizeDrag: { pointerId: number; startY: number; startHeight: number } | undefined;
 
@@ -557,6 +715,60 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     pendingTerminalOutputCharacters += data.length;
   };
 
+  const discardPendingPreBindLogUpdates = (predicate: (entry: PendingPreBindLogUpdate) => boolean): void => {
+    let retainedCount = 0;
+    for (const entry of pendingPreBindLogUpdates) {
+      if (predicate(entry)) {
+        pendingPreBindLogLines -= logUpdateLineCount(entry.update);
+      } else {
+        pendingPreBindLogUpdates[retainedCount] = entry;
+        retainedCount += 1;
+      }
+    }
+    pendingPreBindLogUpdates.length = retainedCount;
+  };
+
+  const queuePendingPreBindLogUpdate = (update: KubernetesLogUpdate): void => {
+    const target = logUpdateTarget(update);
+    const ownerTabId = [...openingLogTabIds].find((tabId) => {
+      const tab = state.tab(tabId);
+      return Boolean(tab && tab.type === 'logs' && !tab.log && sameTarget(tab.target, target));
+    });
+    if (!ownerTabId) return;
+
+    const queued = cloneLogUpdate(update);
+    pendingPreBindLogUpdates.push({ tabId: ownerTabId, update: queued });
+    pendingPreBindLogLines += logUpdateLineCount(queued);
+    let removeCount = 0;
+    while (
+      pendingPreBindLogUpdates.length - removeCount > MAX_PENDING_LOG_UPDATES
+      || pendingPreBindLogLines > MAX_PENDING_LOG_LINES
+    ) {
+      const removed = pendingPreBindLogUpdates[removeCount];
+      if (!removed) break;
+      removeCount += 1;
+      pendingPreBindLogLines -= logUpdateLineCount(removed.update);
+      preBindLogRecoveryTabIds.add(removed.tabId);
+    }
+    if (removeCount > 0) pendingPreBindLogUpdates.splice(0, removeCount);
+  };
+
+  const takePendingPreBindLogUpdates = (tabId: string, sessionId: string): KubernetesLogUpdate[] => {
+    const updates: KubernetesLogUpdate[] = [];
+    let retainedCount = 0;
+    for (const entry of pendingPreBindLogUpdates) {
+      if (entry.tabId !== tabId || logUpdateSessionId(entry.update) !== sessionId) {
+        pendingPreBindLogUpdates[retainedCount] = entry;
+        retainedCount += 1;
+        continue;
+      }
+      updates.push(entry.update);
+      pendingPreBindLogLines -= logUpdateLineCount(entry.update);
+    }
+    pendingPreBindLogUpdates.length = retainedCount;
+    return updates;
+  };
+
   const currentTab = (id: string, type?: KubernetesWorkspaceTabType): KubernetesWorkspaceTab | undefined => {
     const tab = state.tab(id);
     return tab && (!type || tab.type === type) ? tab : undefined;
@@ -670,22 +882,26 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     }
   };
 
-  const renderAnsiLines = (output: HTMLPreElement, lines: string[]): void => {
-    output.replaceChildren();
-    const input = lines.join('\n');
+  const createRenderedAnsiLine = (
+    raw: string,
+    initialState: AnsiRenderState,
+    trailingLineBreak: boolean,
+  ): { line: RenderedAnsiLine; endState: AnsiRenderState } => {
+    const node = document.createElement('span');
+    node.className = 'kubernetes-log-line';
+    const classes = [...initialState.classes];
     const token = /\x1b\[([0-9;]*)m/g;
-    const classes: string[] = [];
     let lastIndex = 0;
     const append = (text: string): void => {
       if (!text) return;
-      const node = document.createElement('span');
-      node.textContent = text;
-      if (classes.length > 0) node.className = classes.join(' ');
-      output.appendChild(node);
+      const segment = document.createElement('span');
+      segment.textContent = text;
+      if (classes.length > 0) segment.className = classes.join(' ');
+      node.appendChild(segment);
     };
     let match: RegExpExecArray | null;
-    while ((match = token.exec(input)) !== null) {
-      append(input.slice(lastIndex, match.index));
+    while ((match = token.exec(raw)) !== null) {
+      append(raw.slice(lastIndex, match.index));
       lastIndex = token.lastIndex;
       for (const value of (match[1] || '0').split(';')) {
         const code = Number(value || '0');
@@ -700,11 +916,104 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
         }
       }
     }
-    append(input.slice(lastIndex));
+    append(raw.slice(lastIndex));
+    const lineBreak = document.createElement('span');
+    lineBreak.className = 'kubernetes-log-line-break';
+    lineBreak.textContent = trailingLineBreak ? '\n' : '';
+    node.appendChild(lineBreak);
+    return { line: { node, lineBreak }, endState: { classes } };
   };
 
-  const renderLogPane = (tab: KubernetesWorkspaceTab, scrollIntent: KubernetesWorkspaceScrollIntent): void => {
-    captureRenderedLogScroll(tab.id);
+  const resetRenderedLogLines = (
+    view: MountedLogPane,
+    log: KubernetesLogState,
+    search: string,
+  ): number => {
+    const lines = search
+      ? log.lines.filter((line) => lineMatchesLogSearch(line, search))
+      : log.lines;
+    let ansiState: AnsiRenderState = { classes: [] };
+    const renderedLines = lines.map((line, index) => {
+      const rendered = createRenderedAnsiLine(line, ansiState, index < lines.length - 1);
+      ansiState = cloneAnsiState(rendered.endState);
+      return rendered.line;
+    });
+    view.output.textContent = '';
+    view.output.replaceChildren(...renderedLines.map((line) => line.node));
+    view.renderedLines = renderedLines;
+    view.ansiState = ansiState;
+    view.renderedRevision = log.revision;
+    view.renderedSourceKey = logSourceKey(log);
+    view.appliedSearch = search;
+    return lines.length;
+  };
+
+  const appendRenderedLogLines = (
+    view: MountedLogPane,
+    log: KubernetesLogState,
+    append: NonNullable<AppliedLogUpdate['append']>,
+  ): number | undefined => {
+    const { update, removedLines } = append;
+    if (
+      view.renderedRevision !== update.baseRevision
+      || view.renderedSourceKey !== logSourceKey(log)
+    ) {
+      return undefined;
+    }
+
+    const removedVisibleCount = removedLines.reduce(
+      (count, line) => count + Number(lineMatchesLogSearch(line, view.appliedSearch)),
+      0,
+    );
+    if (removedVisibleCount > view.renderedLines.length) return undefined;
+    const removed = view.renderedLines.splice(0, removedVisibleCount);
+    for (const line of removed) line.node.remove();
+    if (view.renderedLines.length === 0) view.ansiState = { classes: [] };
+
+    const appended = update.lines.filter((line) => lineMatchesLogSearch(line, view.appliedSearch));
+    if (appended.length > 0) {
+      const previousLast = view.renderedLines.at(-1);
+      if (previousLast) previousLast.lineBreak.textContent = '\n';
+      let ansiState = cloneAnsiState(view.ansiState);
+      const rendered = appended.map((line, index) => {
+        const next = createRenderedAnsiLine(line, ansiState, index < appended.length - 1);
+        ansiState = cloneAnsiState(next.endState);
+        return next.line;
+      });
+      view.output.append(...rendered.map((line) => line.node));
+      view.renderedLines.push(...rendered);
+      view.ansiState = ansiState;
+    } else {
+      const last = view.renderedLines.at(-1);
+      if (last) {
+        last.lineBreak.textContent = '';
+      } else {
+        view.ansiState = { classes: [] };
+      }
+    }
+    view.renderedRevision = update.revision;
+    return view.renderedLines.length;
+  };
+
+  const cancelLogSearchFrame = (view = mountedLogPane): void => {
+    const pending = view?.searchFrame;
+    if (!pending) return;
+    if (pending.frame !== undefined) window.cancelAnimationFrame(pending.frame);
+    view.searchFrame = undefined;
+  };
+
+  const releaseMountedLogPane = (): void => {
+    if (!mountedLogPane) return;
+    cancelLogSearchFrame(mountedLogPane);
+    mountedLogPane = undefined;
+  };
+
+  const ensureMountedLogPane = (tab: KubernetesWorkspaceTab): MountedLogPane => {
+    if (mountedLogPane?.tabId === tab.id && mountedLogPane.panel.parentElement === options.pane) {
+      return mountedLogPane;
+    }
+
+    if (mountedLogPane) cancelLogSearchFrame(mountedLogPane);
     detachTerminalPane();
     renderedLogOutputs.clear();
     options.pane.replaceChildren();
@@ -712,16 +1021,17 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     panel.className = 'kubernetes-log-panel';
     const toolbar = document.createElement('div');
     toolbar.className = 'kubernetes-log-toolbar';
+    const scopeSwitch = document.createElement('button');
+    scopeSwitch.type = 'button';
+    scopeSwitch.className = 'kubernetes-log-scope-switch';
+    scopeSwitch.setAttribute('role', 'switch');
+    scopeSwitch.addEventListener('click', () => toggleLogScope(tab.id));
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'input kubernetes-log-search-field';
     search.placeholder = 'Search logs';
     search.value = tab.logSearch;
     search.setAttribute('aria-label', `Search ${tabLabel(tab)}`);
-    search.addEventListener('input', () => {
-      if (!state.setLogSearch(tab.id, search.value)) return;
-      renderPane('none');
-    });
     const startTimeField = document.createElement('label');
     startTimeField.className = 'kubernetes-log-start-time';
     const startTimeLabel = document.createElement('span');
@@ -747,92 +1057,161 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     status.className = 'kubernetes-log-status';
     const stateLabel = document.createElement('span');
     const count = document.createElement('span');
-    const log = tab.log;
-    let scopeSwitch: HTMLButtonElement | undefined;
-    let restoreScrollTop: number | undefined;
-    let scrollToBottom = false;
-    if (!log) {
-      startTime.disabled = true;
-      follow.disabled = true;
-      clear.disabled = true;
-      follow.setAttribute('aria-label', 'Pause log follow');
-      follow.textContent = 'Ⅱ';
-      output.textContent = 'Loading logs…';
-      stateLabel.textContent = 'Opening';
-      count.textContent = '0 lines';
-      cancelAutoScroll();
-      cancelPreserveScroll();
-    } else {
-      startTime.value = kubernetesLogStartTimeInputValue(log.startTime);
-      startTime.disabled = startTimeRequests.has(log.sessionId)
-        || followRequests.has(log.sessionId)
-        || scopeRequests.has(log.sessionId);
-      startTime.addEventListener('change', () => {
-        const timestamp = kubernetesLogStartTimeIso(startTime.value);
-        if (!timestamp) {
-          renderPane('none');
-          return;
-        }
-        setLogStartTime(tab.id, timestamp);
-      });
-      if (log.deployment) {
-        scopeSwitch = document.createElement('button');
-        scopeSwitch.type = 'button';
-        scopeSwitch.className = 'kubernetes-log-scope-switch';
-        scopeSwitch.setAttribute('role', 'switch');
-        scopeSwitch.setAttribute('aria-checked', String(log.scope === 'deployment'));
-        scopeSwitch.setAttribute('aria-label', `Include all Pods in Deployment ${log.deployment.name}`);
-        scopeSwitch.title = log.scope === 'deployment'
-          ? `Showing all ${log.deployment.name} Deployment Pods; click for this Pod only`
-          : `Showing this Pod only; click for all ${log.deployment.name} Deployment Pods`;
-        scopeSwitch.textContent = `Deployment pods (${log.deployment.podCount})`;
-        scopeSwitch.disabled = scopeRequests.has(log.sessionId) || startTimeRequests.has(log.sessionId);
-        scopeSwitch.addEventListener('click', () => toggleLogScope(tab.id));
-      }
-      const following = log.following;
-      follow.disabled = startTimeRequests.has(log.sessionId) || followRequests.has(log.sessionId);
-      follow.setAttribute('aria-label', following ? 'Pause log follow' : 'Resume log follow');
-      follow.setAttribute('title', following ? 'Pause log follow' : 'Resume log follow');
-      follow.textContent = following ? 'Ⅱ' : '▶';
-      follow.addEventListener('click', () => {
-        toggleLogFollowing(tab.id);
-      });
-      clear.addEventListener('click', () => {
-        clearLog(tab.id);
-      });
-      clear.disabled = startTimeRequests.has(log.sessionId);
-      const searchValue = tab.logSearch.trim().toLocaleLowerCase();
-      const lines = searchValue ? log.lines.filter((line) => line.toLocaleLowerCase().includes(searchValue)) : log.lines;
-      renderAnsiLines(output, lines);
-      const unit = log.lines.length === 1 ? 'line' : 'lines';
-      count.textContent = lines.length === log.lines.length
-        ? `${log.lines.length} ${unit}`
-        : `${lines.length} of ${log.lines.length} ${unit}`;
-      stateLabel.textContent = following ? 'Live' : 'Paused';
-      output.addEventListener('scroll', () => {
-        logScrollTops.set(tab.id, output.scrollTop);
-      });
-      renderedLogOutputs.set(tab.id, output);
-      if (following && scrollIntent === 'follow') {
-        scrollToBottom = true;
-      } else {
-        if (!following) cancelAutoScroll();
-        restoreScrollTop = logScrollTops.get(tab.id) ?? 0;
-      }
-    }
     status.append(stateLabel, count);
-    if (scopeSwitch) toolbar.appendChild(scopeSwitch);
     toolbar.append(search, startTimeField, follow, clear);
     panel.append(toolbar, output, status);
     options.pane.appendChild(panel);
+
+    const view: MountedLogPane = {
+      tabId: tab.id,
+      panel,
+      toolbar,
+      scopeSwitch,
+      search,
+      startTime,
+      follow,
+      clear,
+      output,
+      stateLabel,
+      count,
+      renderedLines: [],
+      ansiState: { classes: [] },
+      appliedSearch: normalizedLogSearch(tab.logSearch),
+    };
+    mountedLogPane = view;
+    renderedLogOutputs.set(tab.id, output);
+
+    search.addEventListener('input', () => {
+      if (!state.setLogSearch(tab.id, search.value)) return;
+      cancelLogSearchFrame(view);
+      const pending: { frame?: number } = {};
+      view.searchFrame = pending;
+      pending.frame = window.requestAnimationFrame(() => {
+        if (view.searchFrame !== pending) return;
+        view.searchFrame = undefined;
+        const current = isCurrentLogTab(tab.id);
+        if (!current || selectedTabId !== tab.id || mountedLogPane !== view) return;
+        renderLogPane(current, 'none', { forceSearchReset: true });
+      });
+    });
+    startTime.addEventListener('change', () => {
+      const current = isCurrentLogTab(tab.id);
+      if (!current?.log) return;
+      const timestamp = kubernetesLogStartTimeIso(startTime.value);
+      if (!timestamp) {
+        startTime.value = kubernetesLogStartTimeInputValue(current.log.startTime);
+        renderLogPane(current, 'none');
+        return;
+      }
+      setLogStartTime(tab.id, timestamp);
+    });
+    follow.addEventListener('click', () => toggleLogFollowing(tab.id));
+    clear.addEventListener('click', () => clearLog(tab.id));
+    output.addEventListener('scroll', () => {
+      logScrollTops.set(tab.id, output.scrollTop);
+    });
+    return view;
+  };
+
+  const patchMountedLogToolbar = (view: MountedLogPane, tab: KubernetesWorkspaceTab): void => {
+    const log = tab.log;
+    if (view.search.value !== tab.logSearch) view.search.value = tab.logSearch;
+    if (!log) {
+      view.scopeSwitch.remove();
+      view.startTime.value = '';
+      view.startTime.disabled = true;
+      view.follow.disabled = true;
+      view.clear.disabled = true;
+      view.follow.setAttribute('aria-label', 'Pause log follow');
+      view.follow.textContent = 'Ⅱ';
+      view.stateLabel.textContent = 'Opening';
+      view.count.textContent = '0 lines';
+      return;
+    }
+
+    const startTimeValue = kubernetesLogStartTimeInputValue(log.startTime);
+    if (document.activeElement !== view.startTime) {
+      view.startTime.value = startTimeValue;
+    }
+    view.startTime.disabled = startTimeRequests.has(log.sessionId)
+      || followRequests.has(log.sessionId)
+      || scopeRequests.has(log.sessionId);
+    if (log.deployment) {
+      if (!view.scopeSwitch.parentElement) view.toolbar.insertBefore(view.scopeSwitch, view.search);
+      view.scopeSwitch.setAttribute('aria-checked', String(log.scope === 'deployment'));
+      view.scopeSwitch.setAttribute('aria-label', `Include all Pods in Deployment ${log.deployment.name}`);
+      view.scopeSwitch.title = log.scope === 'deployment'
+        ? `Showing all ${log.deployment.name} Deployment Pods; click for this Pod only`
+        : `Showing this Pod only; click for all ${log.deployment.name} Deployment Pods`;
+      view.scopeSwitch.textContent = `Deployment pods (${log.deployment.podCount})`;
+      view.scopeSwitch.disabled = scopeRequests.has(log.sessionId) || startTimeRequests.has(log.sessionId);
+    } else {
+      view.scopeSwitch.remove();
+    }
+    view.follow.disabled = startTimeRequests.has(log.sessionId) || followRequests.has(log.sessionId);
+    view.follow.setAttribute('aria-label', log.following ? 'Pause log follow' : 'Resume log follow');
+    view.follow.setAttribute('title', log.following ? 'Pause log follow' : 'Resume log follow');
+    view.follow.textContent = log.following ? 'Ⅱ' : '▶';
+    view.clear.disabled = startTimeRequests.has(log.sessionId);
+    view.stateLabel.textContent = log.following ? 'Live' : 'Paused';
+  };
+
+  const renderLogPane = (
+    tab: KubernetesWorkspaceTab,
+    scrollIntent: KubernetesWorkspaceScrollIntent,
+    mutation: KubernetesLogRenderMutation = {},
+  ): void => {
+    captureRenderedLogScroll(tab.id);
+    const view = ensureMountedLogPane(tab);
+    patchMountedLogToolbar(view, tab);
+    const log = tab.log;
+    let restoreScrollTop: number | undefined;
+    let scrollToBottom = false;
+    if (!log) {
+      view.output.replaceChildren();
+      view.output.textContent = 'Loading logs…';
+      view.renderedLines = [];
+      view.ansiState = { classes: [] };
+      view.renderedRevision = undefined;
+      view.renderedSourceKey = undefined;
+      cancelAutoScroll();
+      cancelPreserveScroll();
+    } else {
+      const requestedSearch = normalizedLogSearch(tab.logSearch);
+      const effectiveSearch = view.searchFrame && !mutation.forceSearchReset
+        ? view.appliedSearch
+        : requestedSearch;
+      let visibleCount: number | undefined;
+      if (mutation.append && !mutation.reset && !mutation.forceSearchReset
+        && effectiveSearch === view.appliedSearch) {
+        visibleCount = appendRenderedLogLines(view, log, mutation.append);
+      }
+      if (visibleCount === undefined && (
+        mutation.reset
+        || mutation.forceSearchReset
+        || view.renderedRevision !== log.revision
+        || view.renderedSourceKey !== logSourceKey(log)
+        || view.appliedSearch !== effectiveSearch
+      )) {
+        visibleCount = resetRenderedLogLines(view, log, effectiveSearch);
+      }
+      visibleCount ??= view.renderedLines.length;
+      const unit = log.lines.length === 1 ? 'line' : 'lines';
+      view.count.textContent = visibleCount === log.lines.length
+        ? `${log.lines.length} ${unit}`
+        : `${visibleCount} of ${log.lines.length} ${unit}`;
+      if (log.following && scrollIntent === 'follow') {
+        scrollToBottom = true;
+      } else {
+        if (!log.following) cancelAutoScroll();
+        restoreScrollTop = logScrollTops.get(tab.id) ?? 0;
+      }
+    }
     if (scrollToBottom && log) {
       scheduleLogBottom(tab, log);
     } else if (restoreScrollTop !== undefined && log) {
-      // The replacement output is attached now, so restore immediately to
-      // avoid a visible one-frame jump to the top. Reapply on the next frame
-      // because Chromium can still clamp during the same layout turn.
-      output.scrollTop = restoreScrollTop;
-      logScrollTops.set(tab.id, output.scrollTop);
+      view.output.scrollTop = restoreScrollTop;
+      logScrollTops.set(tab.id, view.output.scrollTop);
       scheduleLogScrollRestore(tab, log, restoreScrollTop, log.following);
     }
   };
@@ -840,6 +1219,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
   const renderShellPane = (tab: KubernetesWorkspaceTab): void => {
     for (const tabId of renderedLogOutputs.keys()) captureRenderedLogScroll(tabId);
     renderedLogOutputs.clear();
+    releaseMountedLogPane();
     cancelPreserveScroll();
     const terminal = tab.terminalId ? terminalStates.get(tab.terminalId) : undefined;
     if (terminal && mountedTerminalTabId === tab.id && mountedTerminalId === terminal.id && mountedTerminalHost) {
@@ -875,18 +1255,25 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     terminalPane.focus();
   };
 
-  const renderPane = (scrollIntent: KubernetesWorkspaceScrollIntent = 'none'): void => {
-    const tab = selectedTabId ? currentTab(selectedTabId) : undefined;
+  const renderPane = (
+    scrollIntent: KubernetesWorkspaceScrollIntent = 'none',
+    logMutation: KubernetesLogRenderMutation = {},
+    tabSnapshot?: KubernetesWorkspaceTab,
+  ): void => {
+    const tab = tabSnapshot?.id === selectedTabId
+      ? tabSnapshot
+      : selectedTabId ? currentTab(selectedTabId) : undefined;
     if (!tab) {
       options.pane.removeAttribute('aria-label');
       detachTerminalPane();
       renderedLogOutputs.clear();
+      releaseMountedLogPane();
       options.pane.replaceChildren();
       cancelAutoScroll();
       return;
     }
     options.pane.setAttribute('aria-label', tabLabel(tab));
-    if (tab.type === 'logs') renderLogPane(tab, scrollIntent);
+    if (tab.type === 'logs') renderLogPane(tab, scrollIntent, logMutation);
     else renderShellPane(tab);
   };
 
@@ -905,6 +1292,10 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     if (openingTerminalTabIds.size === 0) clearPendingTerminalOutputs();
     logScrollTops.delete(tab.id);
     renderedLogOutputs.delete(tab.id);
+    openingLogTabIds.delete(tab.id);
+    discardPendingPreBindLogUpdates((entry) => entry.tabId === tab.id);
+    preBindLogRecoveryTabIds.delete(tab.id);
+    if (mountedLogPane?.tabId === tab.id) releaseMountedLogPane();
     if (preserveScrollTabId === tab.id) cancelPreserveScroll();
     if (tab.log) {
       followRequests.delete(tab.log.sessionId);
@@ -913,6 +1304,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       scopeIntents.delete(tab.log.sessionId);
       startTimeRequests.delete(tab.log.sessionId);
       startTimeIntents.delete(tab.log.sessionId);
+      logRecoveryRequests.delete(tab.log.sessionId);
     }
     if (tab.terminalId) {
       terminalFinalIds.add(tab.terminalId);
@@ -937,32 +1329,116 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     return tab && (!sessionId || tab.log?.sessionId === sessionId) ? tab : undefined;
   };
 
-  const applyIncomingLog = (next: KubernetesLogState): { tab?: KubernetesWorkspaceTab; followed: boolean } => {
+  const applyIncomingLog = (next: KubernetesLogState): AppliedLogUpdate => {
     const tabId = state.tabIdForLogSession(next.sessionId);
     const before = tabId ? isCurrentLogTab(tabId, next.sessionId) : undefined;
-    if (!tabId || !before?.log) return { followed: false };
+    if (!tabId || !before?.log) return { followed: false, reset: false };
+    if (!isBoundedLogState(next)) {
+      return { followed: false, reset: false };
+    }
     const intent = followIntents.get(next.sessionId);
     const scopeIntent = scopeIntents.get(next.sessionId);
     const startTimeIntent = startTimeIntents.get(next.sessionId);
-    if (next.revision < before.log.revision) return { followed: false };
+    if (next.revision < before.log.revision) return { followed: false, reset: false };
     if (intent && (next.revision < intent.revision
       || (next.revision === intent.revision && next.following !== intent.following))) {
-      return { followed: false };
+      return { followed: false, reset: false };
     }
     if (scopeIntent && (next.revision < scopeIntent.revision
       || (next.revision === scopeIntent.revision && next.scope !== scopeIntent.scope))) {
-      return { followed: false };
+      return { followed: false, reset: false };
     }
     if (startTimeIntent && (next.revision < startTimeIntent.revision
       || (next.revision === startTimeIntent.revision && next.startTime !== startTimeIntent.startTime))) {
-      return { followed: false };
+      return { followed: false, reset: false };
     }
-    if (!state.applyLog(next)) return { followed: false };
+    if (!state.applyLog(next)) return { followed: false, reset: false };
     if (intent && next.revision > intent.revision) followIntents.delete(next.sessionId);
     if (scopeIntent && next.revision > scopeIntent.revision) scopeIntents.delete(next.sessionId);
     if (startTimeIntent && next.revision > startTimeIntent.revision) startTimeIntents.delete(next.sessionId);
     const tab = isCurrentLogTab(tabId, next.sessionId);
-    return { tab, followed: Boolean(tab && next.following && next.revision > before.log.revision) };
+    return {
+      tab,
+      followed: Boolean(tab && next.following && next.revision > before.log.revision),
+      reset: Boolean(tab),
+    };
+  };
+
+  const applyIncomingLogUpdate = (update: KubernetesLogUpdate): AppliedLogUpdate => {
+    if (update.kind === 'reset') return applyIncomingLog(update.state);
+
+    const tabId = state.tabIdForLogSession(update.sessionId);
+    const canRecover = !followRequests.has(update.sessionId)
+      && !scopeRequests.has(update.sessionId)
+      && !startTimeRequests.has(update.sessionId);
+    if (!tabId) {
+      return { followed: false, reset: false };
+    }
+
+    const intent = followIntents.get(update.sessionId);
+    const scopeIntent = scopeIntents.get(update.sessionId);
+    const startTimeIntent = startTimeIntents.get(update.sessionId);
+    if (intent && (update.revision < intent.revision
+      || (update.revision === intent.revision && update.following !== intent.following))) {
+      return { followed: false, reset: false };
+    }
+    if (scopeIntent && (update.revision < scopeIntent.revision
+      || (update.revision === scopeIntent.revision && update.scope !== scopeIntent.scope))) {
+      return { followed: false, reset: false };
+    }
+    if (startTimeIntent && (update.revision < startTimeIntent.revision
+      || (update.revision === startTimeIntent.revision && update.startTime !== startTimeIntent.startTime))) {
+      return { followed: false, reset: false };
+    }
+
+    const result = state.applyLogAppend(update);
+    if (result.status !== 'applied' || !result.tab || !result.removedLines) {
+      return {
+        followed: false,
+        reset: false,
+        recover: result.status === 'recover' && canRecover,
+      };
+    }
+    if (intent && update.revision > intent.revision) followIntents.delete(update.sessionId);
+    if (scopeIntent && update.revision > scopeIntent.revision) scopeIntents.delete(update.sessionId);
+    if (startTimeIntent && update.revision > startTimeIntent.revision) startTimeIntents.delete(update.sessionId);
+    return {
+      tab: result.tab,
+      followed: update.following,
+      append: { update, removedLines: result.removedLines },
+      reset: false,
+    };
+  };
+
+  const recoverLogSession = (tabId: string, sessionId: string): void => {
+    const tab = isCurrentLogTab(tabId, sessionId);
+    const current = tab?.log;
+    if (!tab || !current) return;
+    const existing = logRecoveryRequests.get(sessionId);
+    if (existing) {
+      existing.retry = true;
+      return;
+    }
+    const request: KubernetesLogRecoveryRequest = { retry: false };
+    logRecoveryRequests.set(sessionId, request);
+    // The existing command is idempotent when passed the current intent and
+    // returns a complete state, so it is also the narrow recovery path for a
+    // missed append without adding another renderer/main API surface.
+    void options.setLogFollowing(sessionId, current.following).then((next) => {
+      if (logRecoveryRequests.get(sessionId) !== request || !isCurrentLogTab(tabId, sessionId)) return;
+      const applied = applyIncomingLog(next);
+      if (applied.tab?.id === selectedTabId) {
+        renderPane(applied.followed ? 'follow' : 'none', { reset: applied.reset });
+      }
+    }).catch((error) => {
+      if (logRecoveryRequests.get(sessionId) === request && isCurrentLogTab(tabId, sessionId)) {
+        options.reportError(error);
+      }
+    }).finally(() => {
+      if (logRecoveryRequests.get(sessionId) !== request) return;
+      logRecoveryRequests.delete(sessionId);
+      if (request.retry) recoverLogSession(tabId, sessionId);
+    });
   };
 
   const toggleLogFollowing = (tabId: string): void => {
@@ -985,12 +1461,17 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       following: desired,
       ...(desired ? { startTime: undefined } : {}),
     });
+    if (desired && mountedLogPane?.tabId === tab.id) {
+      mountedLogPane.startTime.value = '';
+    }
     if (selectedTabId === tab.id) renderPane(desired ? 'follow' : 'none');
     void options.setLogFollowing(previous.sessionId, desired).then((next) => {
       if (followRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
       followIntents.set(previous.sessionId, { following: next.following, revision: next.revision });
       const applied = applyIncomingLog(next);
-      if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
+      if (applied.tab?.id === selectedTabId) {
+        renderPane(applied.followed ? 'follow' : 'none', { reset: applied.reset });
+      }
     }).catch((error) => {
       if (followRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
       if (!desired) {
@@ -1030,7 +1511,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       startTimeIntents.set(previous.sessionId, { startTime: next.startTime, revision: next.revision });
       followIntents.set(previous.sessionId, { following: next.following, revision: next.revision });
       const applied = applyIncomingLog(next);
-      if (applied.tab?.id === selectedTabId) renderPane('none');
+      if (applied.tab?.id === selectedTabId) renderPane('none', { reset: applied.reset });
     }).catch((error) => {
       if (startTimeRequests.get(previous.sessionId) === token && isCurrentLogTab(tab.id, previous.sessionId)) {
         options.reportError(error);
@@ -1061,7 +1542,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       if (scopeRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
       scopeIntents.set(previous.sessionId, { scope: next.scope, revision: next.revision });
       const applied = applyIncomingLog(next);
-      if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
+      if (applied.tab?.id === selectedTabId) {
+        renderPane(applied.followed ? 'follow' : 'none', { reset: applied.reset });
+      }
     }).catch((error) => {
       if (scopeRequests.get(previous.sessionId) !== token || !isCurrentLogTab(tab.id, previous.sessionId)) return;
       scopeIntents.set(previous.sessionId, { scope: previous.scope, revision: previous.revision });
@@ -1084,7 +1567,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     void options.clearLogs(log.sessionId).then((next) => {
       if (!isCurrentLogTab(tab.id, log.sessionId)) return;
       const applied = applyIncomingLog(next);
-      if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
+      if (applied.tab?.id === selectedTabId) {
+        renderPane(applied.followed ? 'follow' : 'none', { reset: applied.reset });
+      }
     }).catch((error) => {
       if (isCurrentLogTab(tab.id, log.sessionId)) options.reportError(error);
     });
@@ -1096,18 +1581,36 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     selectedTabId = opened.tab.id;
     render('none');
     if (!opened.created) return;
+    openingLogTabIds.add(opened.tab.id);
     try {
       const log = await options.openLogs(target);
-      if (disposed || !state.bindLog(opened.tab.id, log)) {
+      if (disposed || !isBoundedLogState(log) || !state.bindLog(opened.tab.id, log)) {
         await closeRemoteLog(log.sessionId).catch(() => undefined);
         return;
       }
-      if (selectedTabId === opened.tab.id) renderPane(log.following ? 'follow' : 'none');
+      const queued = takePendingPreBindLogUpdates(opened.tab.id, log.sessionId);
+      let needsRecovery = preBindLogRecoveryTabIds.delete(opened.tab.id);
+      for (const update of queued) {
+        if (applyIncomingLogUpdate(update).recover) needsRecovery = true;
+      }
+      const bound = isCurrentLogTab(opened.tab.id, log.sessionId);
+      if (!bound?.log) {
+        await closeRemoteLog(log.sessionId).catch(() => undefined);
+        return;
+      }
+      if (selectedTabId === opened.tab.id) {
+        renderPane(bound.log.following ? 'follow' : 'none', { reset: true });
+      }
       else renderTabs();
+      if (needsRecovery) recoverLogSession(opened.tab.id, log.sessionId);
     } catch (error) {
       if (!currentTab(opened.tab.id, 'logs')) return;
       closeTab(opened.tab.id, false);
       options.reportError(error);
+    } finally {
+      openingLogTabIds.delete(opened.tab.id);
+      discardPendingPreBindLogUpdates((entry) => entry.tabId === opened.tab.id);
+      preBindLogRecoveryTabIds.delete(opened.tab.id);
     }
   };
 
@@ -1165,9 +1668,22 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     openLogs,
     openShell,
 
-    onLogChanged(next) {
-      const applied = applyIncomingLog(next);
-      if (applied.tab?.id === selectedTabId) renderPane(applied.followed ? 'follow' : 'none');
+    onLogChanged(update) {
+      if (disposed) return;
+      const sessionId = logUpdateSessionId(update);
+      const tabId = state.tabIdForLogSession(sessionId);
+      if (!tabId) {
+        queuePendingPreBindLogUpdate(update);
+        return;
+      }
+      const applied = applyIncomingLogUpdate(update);
+      if (applied.tab?.id === selectedTabId) {
+        renderPane(applied.followed ? 'follow' : 'none', {
+          ...(applied.append ? { append: applied.append } : {}),
+          reset: applied.reset,
+        }, applied.tab);
+      }
+      if (applied.recover) recoverLogSession(tabId, sessionId);
     },
 
     onTerminalChanged(next) {
@@ -1213,7 +1729,13 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       terminalStates.clear();
       openingTerminalTabIds.clear();
       clearPendingTerminalOutputs();
+      openingLogTabIds.clear();
+      pendingPreBindLogUpdates.splice(0, pendingPreBindLogUpdates.length);
+      pendingPreBindLogLines = 0;
+      preBindLogRecoveryTabIds.clear();
+      logRecoveryRequests.clear();
       renderedLogOutputs.clear();
+      releaseMountedLogPane();
       cancelAutoScroll();
       cancelPreserveScroll();
       followRequests.clear();

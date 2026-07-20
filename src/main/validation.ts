@@ -159,6 +159,28 @@ export function preserveServiceRuntimeFields(previous: HostConfig | undefined, n
     return next;
   }
 
+  const sameJumpHosts = previous.jumpHosts.length === next.jumpHosts.length
+    && previous.jumpHosts.every((jumpHost, index) => {
+      const candidate = next.jumpHosts[index];
+      return candidate !== undefined
+        && jumpHost.sshHost === candidate.sshHost
+        && jumpHost.sshPort === candidate.sshPort
+        && jumpHost.username === candidate.username
+        && jumpHost.authType === candidate.authType
+        && jumpHost.password === candidate.password
+        && jumpHost.privateKey === candidate.privateKey
+        && jumpHost.passphrase === candidate.passphrase;
+    });
+  const sameRuntimeEndpoint = previous.sshHost === next.sshHost
+    && previous.sshPort === next.sshPort
+    && previous.username === next.username
+    && previous.authType === next.authType
+    && previous.password === next.password
+    && previous.privateKey === next.privateKey
+    && previous.passphrase === next.passphrase
+    && previous.privateKeyPath === next.privateKeyPath
+    && sameJumpHosts;
+
   const previousById = new Map(previous.services.map((service) => [service.id, service]));
   return {
     ...next,
@@ -168,7 +190,9 @@ export function preserveServiceRuntimeFields(previous: HostConfig | undefined, n
         return service;
       }
 
-      const sameRuntimeShape = old.startCommand === service.startCommand && old.port === service.port;
+      const sameRuntimeShape = sameRuntimeEndpoint
+        && old.startCommand === service.startCommand
+        && old.port === service.port;
       if (!sameRuntimeShape) {
         return service;
       }

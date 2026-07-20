@@ -27,12 +27,14 @@ import type {
   NotesWorkspaceSnapshot,
   LlmModelsDraft,
   PrivateKeyImportResult,
+  ServiceConfig,
   ServiceRefreshOptions,
   ServiceLogsResult,
   ServiceStatus,
+  ServiceStatusChange,
   TunnelStatusChange,
   UpdateState,
-  KubernetesLogState,
+  KubernetesLogUpdate,
   KubernetesLogScope,
   KubernetesNamespaceScope,
   KubernetesPodTarget,
@@ -54,7 +56,15 @@ import type {
   KubernetesVncTarget,
 } from '../shared/types';
 import { ServiceStore } from './store';
-import { checkServiceStatus, getServiceLogs, setServiceRuntimeDiagnostics, startService, stopService } from './serviceRuntime';
+import {
+  checkHostServicesStatus,
+  checkServiceStatus,
+  getServiceLogs,
+  setServiceRuntimeDiagnostics,
+  startService,
+  stopService,
+  type HostServiceStatusResult,
+} from './serviceRuntime';
 import { RuntimeLogWriter } from './runtimeLog';
 import { PortForwardManager } from './portForwardManager';
 import { TunnelManager } from './tunnelManager';
@@ -128,8 +138,10 @@ const IPC_CHANNELS = {
   startForward: 'forward:start',
   stopForward: 'forward:stop',
   refreshService: 'service:refresh',
+  refreshHostServices: 'service:refresh-host',
   getServiceLogs: 'service:logs',
   serviceStatusChanged: 'service:status',
+  serviceStatusBatchChanged: 'service:status-batch',
   forwardStatusChanged: 'forward:status',
   importPrivateKey: 'auth:import-private-key',
   openExternal: 'app:open-external',
@@ -781,6 +793,18 @@ function serviceForwardKey(hostId: string, serviceId: string): string {
   return serviceKey(hostId, serviceId);
 }
 
+function hasSameServiceStatusEndpoint(left: HostConfig, right: HostConfig): boolean {
+  return left.sshHost === right.sshHost
+    && left.sshPort === right.sshPort
+    && left.username === right.username
+    && left.authType === right.authType
+    && left.password === right.password
+    && left.privateKey === right.privateKey
+    && left.passphrase === right.passphrase
+    && left.privateKeyPath === right.privateKeyPath
+    && isDeepStrictEqual(left.jumpHosts, right.jumpHosts);
+}
+
 async function persistServicePidIfCurrent(
   hostId: string,
   serviceId: string,
@@ -1153,6 +1177,133 @@ function emitStatus(
 function emitForwardStatus(hostId: string, serviceId: string, state: ForwardState, error?: string, silent = false): void {
   const current = runtimeRegistry.setServiceForwardStatus(hostId, serviceId, state, error);
   emitStatus(hostId, serviceId, current.status, current.pid, current.error, silent);
+}
+
+interface HostServiceRefreshEntry {
+  service: ServiceConfig;
+  result: HostServiceStatusResult;
+}
+
+function serviceStatusChangeWithSilent(change: ServiceStatusChange, silent: boolean): ServiceStatusChange {
+  return silent ? { ...change, silent: true } : change;
+}
+
+async function refreshHostServicesRuntime(
+  hostId: string,
+  requestedServiceIds: readonly string[],
+  silent: boolean,
+): Promise<void> {
+  const initialHost = getStore().findHostById(hostId);
+  if (!initialHost) throw new Error('Host not found.');
+  const requested = new Set(requestedServiceIds);
+  const initialServiceIds = initialHost.services
+    .filter((service) => requested.has(service.id))
+    .map((service) => service.id);
+  if (initialServiceIds.length === 0) return;
+
+  await serviceOperationQueue.runMany(
+    initialServiceIds.map((serviceId) => serviceKey(hostId, serviceId)),
+    async () => {
+      try {
+        const queryHost = getStore().findHostById(hostId);
+        if (!queryHost) return;
+        const queryServices = queryHost.services.filter((service) => requested.has(service.id));
+        if (queryServices.length === 0) return;
+
+        const results = await checkHostServicesStatus(queryHost, queryServices);
+        const resultByServiceId = new Map(results.map((result) => [result.serviceId, result]));
+        await runS3SharedDataMutation(async () => {
+          const currentHost = getStore().findHostById(hostId);
+          if (!currentHost || !hasSameServiceStatusEndpoint(queryHost, currentHost)) return;
+          const currentServices = new Map(currentHost.services.map((service) => [service.id, service]));
+          const entries: HostServiceRefreshEntry[] = [];
+          for (const queriedService of queryServices) {
+            const service = currentServices.get(queriedService.id);
+            const result = resultByServiceId.get(queriedService.id);
+            if (!service || !result
+              || service.startCommand !== queriedService.startCommand
+              || service.port !== queriedService.port) {
+              continue;
+            }
+            entries.push({ service, result });
+          }
+          if (entries.length === 0) return;
+
+          let hasPidSets = false;
+          for (const { service, result } of entries) {
+            if (result.pid && result.pid !== service.pid) {
+              service.pid = result.pid;
+              hasPidSets = true;
+            }
+          }
+          if (hasPidSets) await getStore().upsertHost(currentHost);
+
+          const completed: HostServiceRefreshEntry[] = [];
+          for (const entry of entries) {
+            const { service, result } = entry;
+            try {
+              const hasForward = Boolean(service.forwardLocalPort) && service.port > 0;
+              if (result.status === 'stopped') {
+                await portForwardManager.stop(serviceForwardKey(hostId, service.id));
+                runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'none');
+              } else if (result.status === 'running' && hasForward) {
+                try {
+                  await portForwardManager.start(serviceForwardKey(hostId, service.id), currentHost, service);
+                  runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'ok');
+                } catch (error) {
+                  logRuntimeError('port-forward:start', error, {
+                    hostId,
+                    serviceId: service.id,
+                    localPort: service.forwardLocalPort,
+                    remotePort: service.port,
+                  });
+                  runtimeRegistry.setServiceForwardStatus(
+                    hostId,
+                    service.id,
+                    'error',
+                    error instanceof Error ? error.message : String(error)
+                  );
+                }
+              } else if (!hasForward) {
+                runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'none');
+              }
+              completed.push(entry);
+            } catch (error) {
+              logRuntimeError('service:refresh-host-item', error, {
+                hostId,
+                serviceId: service.id,
+                silent,
+              });
+            }
+          }
+
+          let hasPidClears = false;
+          for (const { service, result } of completed) {
+            if (result.status === 'stopped' && service.pid !== undefined) {
+              service.pid = undefined;
+              hasPidClears = true;
+            }
+          }
+          if (hasPidClears) await getStore().upsertHost(currentHost);
+
+          const changes = completed.map(({ service, result }) => serviceStatusChangeWithSilent(
+            runtimeRegistry.setServiceStatus(hostId, service.id, result.status, service.pid, result.error),
+            silent
+          ));
+          if (changes.length > 0) {
+            broadcast(IPC_CHANNELS.serviceStatusBatchChanged, { changes });
+          }
+        });
+      } catch (error) {
+        logRuntimeError('service:refresh-host', error, {
+          hostId,
+          serviceCount: initialServiceIds.length,
+          silent,
+        });
+        throw error;
+      }
+    }
+  );
 }
 
 function logRuntimeError(scope: string, error: unknown, context?: Record<string, unknown>): void {
@@ -2242,65 +2393,34 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(
+    IPC_CHANNELS.refreshHostServices,
+    async (
+      _event,
+      payload: { hostId: string; serviceIds: string[] } & ServiceRefreshOptions
+    ) => {
+      const host = getStore().findHostById(payload.hostId);
+      if (!host) throw new Error('Host not found.');
+      if (!Array.isArray(payload.serviceIds) || payload.serviceIds.length > host.services.length) {
+        throw new Error('Service status request is invalid.');
+      }
+      const knownServiceIds = new Set(host.services.map((service) => service.id));
+      const serviceIds = [...new Set(payload.serviceIds)];
+      if (serviceIds.some((serviceId) => typeof serviceId !== 'string' || !knownServiceIds.has(serviceId))) {
+        throw new Error('Service not found.');
+      }
+      await refreshHostServicesRuntime(payload.hostId, serviceIds, Boolean(payload.silent));
+    }
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.refreshService,
     async (_event, payload: { hostId: string; serviceId: string } & ServiceRefreshOptions) => {
-      return serviceOperationQueue.run(serviceKey(payload.hostId, payload.serviceId), async () => {
-        try {
-          const host = getStore().findHostById(payload.hostId);
-          if (!host) throw new Error('Host not found.');
-          const service = host.services.find((item) => item.id === payload.serviceId);
-          if (!service) throw new Error('Service not found.');
-          const currentState = runtimeRegistry.getServiceStatus(host.id, service.id, service.pid);
-
-          const result = await checkServiceStatus(host, service);
-          if (currentState?.status === 'starting' && result.status === 'stopped') {
-            emitStatus(host.id, service.id, 'starting', service.pid);
-            return;
-          }
-          if (result.pid && result.pid !== service.pid) {
-            if (await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, result.pid)) {
-              service.pid = result.pid;
-            }
-          }
-          if (result.status === 'running' && service.forwardLocalPort && service.port > 0) {
-            try {
-              await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-              emitForwardStatus(host.id, service.id, 'ok', undefined, Boolean(payload.silent));
-            } catch (error) {
-              logRuntimeError('port-forward:start', error, {
-                hostId: host.id,
-                serviceId: service.id,
-                localPort: service.forwardLocalPort,
-                remotePort: service.port,
-              });
-              emitForwardStatus(
-                host.id,
-                service.id,
-                'error',
-                error instanceof Error ? error.message : String(error),
-                Boolean(payload.silent)
-              );
-            }
-          } else if (!service.forwardLocalPort || service.port === 0) {
-            emitForwardStatus(host.id, service.id, 'none', undefined, Boolean(payload.silent));
-          }
-          if (result.status === 'stopped' && service.pid) {
-            await portForwardManager.stop(serviceForwardKey(host.id, service.id));
-            emitForwardStatus(host.id, service.id, 'none', undefined, Boolean(payload.silent));
-            if (await persistServicePidIfCurrent(host.id, service.id, service.startCommand, service.port, undefined)) {
-              service.pid = undefined;
-            }
-          }
-          emitStatus(host.id, service.id, result.status, service.pid, result.error, Boolean(payload.silent));
-        } catch (error) {
-          logRuntimeError('service:refresh', error, {
-            hostId: payload.hostId,
-            serviceId: payload.serviceId,
-            silent: Boolean(payload.silent),
-          });
-          throw error;
-        }
-      });
+      const host = getStore().findHostById(payload.hostId);
+      if (!host) throw new Error('Host not found.');
+      if (!host.services.some((service) => service.id === payload.serviceId)) {
+        throw new Error('Service not found.');
+      }
+      await refreshHostServicesRuntime(payload.hostId, [payload.serviceId], Boolean(payload.silent));
     }
   );
 
@@ -2687,8 +2807,8 @@ function wireKubernetesBroadcast(): void {
   kubernetesRuntime?.onListChanged((snapshot: KubernetesListSnapshot) => {
     broadcast(IPC_CHANNELS.kubernetesListChanged, snapshot);
   });
-  kubernetesRuntime?.onLogChanged((state: KubernetesLogState) => {
-    broadcast(IPC_CHANNELS.kubernetesLogChanged, state);
+  kubernetesRuntime?.onLogChanged((update: KubernetesLogUpdate) => {
+    broadcast(IPC_CHANNELS.kubernetesLogChanged, update);
   });
   kubernetesRuntime?.onTerminalChanged((state: KubernetesTerminalState) => {
     broadcast(IPC_CHANNELS.kubernetesTerminalChanged, state);

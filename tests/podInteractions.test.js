@@ -88,7 +88,34 @@ function createManager(fakeClient, options = {}) {
     client: () => fakeClient,
     createId: () => `interaction-${++identifier}`,
     terminalReadyTimeoutMs: options.terminalReadyTimeoutMs ?? 0,
+    logBatchDelayMs: options.logBatchDelayMs ?? 0,
   });
+}
+
+function collectLogStates(manager) {
+  const states = [];
+  let current;
+  manager.onLogChanged((update) => {
+    if (update.kind === 'reset') {
+      current = {
+        ...update.state,
+        lines: [...update.state.lines],
+        ...(update.state.deployment ? { deployment: { ...update.state.deployment } } : {}),
+      };
+    } else {
+      assert.ok(current, 'append updates require an earlier reset');
+      assert.equal(update.baseRevision, current.revision);
+      current.lines.splice(0, update.removeLeading);
+      current.lines.push(...update.lines);
+      current.revision = update.revision;
+    }
+    states.push({
+      ...current,
+      lines: [...current.lines],
+      ...(current.deployment ? { deployment: { ...current.deployment } } : {}),
+    });
+  });
+  return states;
 }
 
 function deferred() {
@@ -145,6 +172,148 @@ test('PodInteractionManager opens following logs with the 500-line initial tail'
   assert.equal(fakeClient.closedLogCount, 1);
 });
 
+test('PodInteractionManager batches live Pod lines for the production 32 ms window', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let callbacks;
+  const manager = createManager({
+    async openPodLog(_input, nextCallbacks) {
+      callbacks = nextCallbacks;
+      return createHandle();
+    },
+  }, { logBatchDelayMs: 32 });
+  const updates = [];
+  manager.onLogChanged((update) => updates.push(update));
+  const opened = await manager.openLogs(POD_INPUT);
+  updates.length = 0;
+
+  callbacks.onLine('one');
+  callbacks.onLine('two');
+  callbacks.onLine('three');
+  context.mock.timers.tick(31);
+  assert.equal(updates.length, 0);
+  context.mock.timers.tick(1);
+
+  assert.deepEqual(updates, [{
+    kind: 'append',
+    sessionId: opened.sessionId,
+    ...POD_INPUT,
+    scope: 'pod',
+    following: true,
+    baseRevision: 0,
+    revision: 1,
+    removeLeading: 0,
+    lines: ['one', 'two', 'three'],
+  }]);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager merges one bounded Deployment batch and resets only for late insertion', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const streams = [];
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      return {
+        name: 'api',
+        pods: [
+          { uid: 'pod-a', podName: 'api-a' },
+          { uid: 'pod-b', podName: 'api-b' },
+        ],
+      };
+    },
+    async openPodLog(input, callbacks) {
+      streams.push({ input, callbacks });
+      return createHandle();
+    },
+  }, { logBatchDelayMs: 32 });
+  const updates = [];
+  manager.onLogChanged((update) => updates.push(update));
+  const opened = await manager.openLogs(POD_INPUT);
+  updates.length = 0;
+
+  streams[0].callbacks.onLine('2026-07-15T08:00:02.000Z second');
+  streams[1].callbacks.onLine('2026-07-15T08:00:01.000Z first');
+  context.mock.timers.tick(32);
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].lines, [
+    '2026-07-15T08:00:01.000Z [api-b] first',
+    '2026-07-15T08:00:02.000Z [api-a] second',
+  ]);
+
+  streams[0].callbacks.onLine('2026-07-15T08:00:00.000Z late');
+  context.mock.timers.tick(32);
+  assert.equal(updates[1].kind, 'reset');
+  assert.deepEqual(updates[1].state.lines, [
+    '2026-07-15T08:00:00.000Z [api-a] late',
+    '2026-07-15T08:00:01.000Z [api-b] first',
+    '2026-07-15T08:00:02.000Z [api-a] second',
+  ]);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager cancels a pending live-log timer when the session closes', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let callbacks;
+  const manager = createManager({
+    async openPodLog(_input, nextCallbacks) {
+      callbacks = nextCallbacks;
+      return createHandle();
+    },
+  }, { logBatchDelayMs: 32 });
+  const updates = [];
+  manager.onLogChanged((update) => updates.push(update));
+  const opened = await manager.openLogs(POD_INPUT);
+  updates.length = 0;
+  callbacks.onLine('must not escape');
+  await manager.closeLogs(opened.sessionId);
+  context.mock.timers.tick(32);
+  assert.deepEqual(updates, []);
+});
+
+test('PodInteractionManager lets a current batch flush while an older generation is still opening', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const staleHandle = deferred();
+  const staleStarted = deferred();
+  const streams = [];
+  let calls = 0;
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      return {
+        name: 'api',
+        pods: [{ uid: 'pod-current', podName: POD_INPUT.podName }],
+      };
+    },
+    async openPodLog(input, callbacks) {
+      calls += 1;
+      streams.push({ input, callbacks });
+      if (calls === 2) {
+        staleStarted.resolve();
+        return staleHandle.promise;
+      }
+      return createHandle();
+    },
+  }, { logBatchDelayMs: 32 });
+  const updates = [];
+  manager.onLogChanged((update) => updates.push(update));
+
+  const opened = await manager.openLogs(POD_INPUT);
+  await manager.setLogFollowing(opened.sessionId, false);
+  const staleResume = manager.setLogFollowing(opened.sessionId, true);
+  await staleStarted.promise;
+
+  await manager.setLogScope(opened.sessionId, 'pod');
+  updates.length = 0;
+  streams[2].callbacks.onLine('current generation line');
+
+  const staleFailure = assert.rejects(staleResume, /closed before/i);
+  staleHandle.resolve(createHandle());
+  await staleFailure;
+  context.mock.timers.tick(32);
+
+  assert.equal(updates.at(-1)?.kind, 'append');
+  assert.deepEqual(updates.at(-1)?.lines, ['current generation line']);
+  await manager.closeLogs(opened.sessionId);
+});
+
 test('PodInteractionManager defaults Deployment-owned Pods to bounded aggregate container logs', async () => {
   const streams = [];
   const manager = createManager({
@@ -183,7 +352,6 @@ test('PodInteractionManager defaults Deployment-owned Pods to bounded aggregate 
 
 test('PodInteractionManager Clear drops the Deployment aggregate backing buffer permanently', async () => {
   const streams = [];
-  const states = [];
   const manager = createManager({
     async resolvePodDeploymentLogTargets() {
       return {
@@ -199,7 +367,7 @@ test('PodInteractionManager Clear drops the Deployment aggregate backing buffer 
       return createHandle();
     },
   });
-  manager.onLogChanged((state) => states.push(state));
+  const states = collectLogStates(manager);
   const opened = await manager.openLogs(POD_INPUT);
   streams[0].callbacks.onLine('2026-07-15T08:00:00.000Z before clear');
 
@@ -255,9 +423,50 @@ test('PodInteractionManager switches Deployment logs to the current Pod and fenc
   assert.equal(streams.length, 5);
 });
 
+test('PodInteractionManager keeps the newest pending batch when an older scope generation fails', async () => {
+  const staleOpen = deferred();
+  const currentOpen = deferred();
+  const streams = [];
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      return {
+        name: 'api',
+        pods: [{ uid: 'pod-current', podName: POD_INPUT.podName }],
+      };
+    },
+    async openPodLog(input, callbacks) {
+      streams.push({ input, callbacks });
+      if (streams.length === 2) return staleOpen.promise;
+      if (streams.length === 3) return currentOpen.promise;
+      return createHandle();
+    },
+  });
+  const opened = await manager.openLogs(POD_INPUT);
+
+  const staleScopeChange = manager.setLogScope(opened.sessionId, 'pod');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(streams.length, 2, 'the stale scope stream is opening');
+
+  const paused = await manager.setLogFollowing(opened.sessionId, false);
+  assert.equal(paused.following, false);
+  const currentResume = manager.setLogFollowing(opened.sessionId, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(streams.length, 3, 'a newer generation owns the resumed stream');
+  streams[2].callbacks.onLine('newest generation line');
+
+  const staleFailure = assert.rejects(staleScopeChange, /stale transport failed/i);
+  staleOpen.reject(new Error('stale transport failed'));
+  await staleFailure;
+  currentOpen.resolve(createHandle());
+
+  const resumed = await currentResume;
+  assert.equal(resumed.following, true);
+  assert.deepEqual(resumed.lines, ['newest generation line']);
+  await manager.closeLogs(opened.sessionId);
+});
+
 test('PodInteractionManager rolls a failed Deployment scope refresh back to a coherent paused Pod state', async () => {
   const streams = [];
-  const states = [];
   let resolutions = 0;
   const manager = createManager({
     async resolvePodDeploymentLogTargets() {
@@ -277,7 +486,7 @@ test('PodInteractionManager rolls a failed Deployment scope refresh back to a co
       return createHandle();
     },
   });
-  manager.onLogChanged((state) => states.push(state));
+  const states = collectLogStates(manager);
   const opened = await manager.openLogs(POD_INPUT);
   await manager.setLogScope(opened.sessionId, 'pod');
   const podStream = streams.at(-1);
@@ -305,7 +514,6 @@ test('PodInteractionManager rolls a failed Deployment scope refresh back to a co
 
 test('PodInteractionManager emits a coherent stopped rollback when the requested scope stream cannot open', async () => {
   const streams = [];
-  const states = [];
   const manager = createManager({
     async resolvePodDeploymentLogTargets() {
       return {
@@ -322,7 +530,7 @@ test('PodInteractionManager emits a coherent stopped rollback when the requested
       return createHandle();
     },
   });
-  manager.onLogChanged((state) => states.push(state));
+  const states = collectLogStates(manager);
   const opened = await manager.openLogs(POD_INPUT);
   streams[0].callbacks.onLine('2026-07-15T08:00:00.000Z retained aggregate line');
 
@@ -370,6 +578,40 @@ test('PodInteractionManager pause remains authoritative when an aggregate stream
   assert.deepEqual(paused.lines, ['2026-07-15T08:00:00.000Z [api-a] before pause']);
 });
 
+test('PodInteractionManager does not advance the Resume cursor past a discarded failed batch', async () => {
+  const inputs = [];
+  let calls = 0;
+  const baseline = '2026-07-15T08:00:00.000Z baseline';
+  const discarded = '2026-07-15T08:00:01.000Z discarded';
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      return {
+        name: 'api',
+        pods: [{ uid: 'pod-current', podName: POD_INPUT.podName }],
+      };
+    },
+    async openPodLog(input, callbacks) {
+      calls += 1;
+      inputs.push(input);
+      if (calls === 1) callbacks.onLine(baseline);
+      if (calls === 2) {
+        callbacks.onLine(discarded);
+        throw new Error('resume stream failed');
+      }
+      return createHandle();
+    },
+  });
+
+  const opened = await manager.openLogs(POD_INPUT);
+  await manager.setLogFollowing(opened.sessionId, false);
+  await assert.rejects(manager.setLogFollowing(opened.sessionId, true), /resume stream failed/i);
+  const resumed = await manager.setLogFollowing(opened.sessionId, true);
+
+  assert.equal(inputs[2].sinceTime, '2026-07-15T08:00:00.000Z');
+  assert.deepEqual(resumed.lines, [`${baseline.slice(0, 24)} [${POD_INPUT.podName}] baseline`]);
+  await manager.closeLogs(opened.sessionId);
+});
+
 test('PodInteractionManager emits monotonic log revisions for appended lines, older loads, Follow changes, and Clear', async () => {
   const streams = [];
   let calls = 0;
@@ -384,15 +626,14 @@ test('PodInteractionManager emits monotonic log revisions for appended lines, ol
       return createHandle();
     },
   });
-  const revisions = [];
-  manager.onLogChanged((state) => revisions.push(state.revision));
+  const states = collectLogStates(manager);
 
   const opened = await manager.openLogs(POD_INPUT);
   assert.equal(opened.revision, 0);
-  assert.deepEqual(revisions, [0]);
+  assert.deepEqual(states.map((state) => state.revision), [0]);
 
   streams[0].callbacks.onLine('first');
-  assert.equal(revisions.at(-1), 1);
+  assert.equal(states.at(-1).revision, 1);
   const older = await manager.loadOlderLogs(opened.sessionId);
   assert.equal(older.revision, 2);
   const paused = await manager.setLogFollowing(opened.sessionId, false);
@@ -401,7 +642,7 @@ test('PodInteractionManager emits monotonic log revisions for appended lines, ol
   assert.equal(cleared.revision, 4);
   const resumed = await manager.setLogFollowing(opened.sessionId, true);
   assert.equal(resumed.revision, 5);
-  assert.deepEqual(revisions, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(states.map((state) => state.revision), [0, 1, 2, 3, 4, 5]);
 });
 
 test('PodInteractionManager publishes bounded follow-log and terminal-output events without late delivery after disposal', async () => {
@@ -421,9 +662,8 @@ test('PodInteractionManager publishes bounded follow-log and terminal-output eve
       };
     },
   });
-  const logStates = [];
+  const logStates = collectLogStates(manager);
   const terminalOutput = [];
-  manager.onLogChanged((state) => logStates.push(state));
   manager.onTerminalOutput((event) => terminalOutput.push(event));
 
   const logs = await manager.openLogs(POD_INPUT);

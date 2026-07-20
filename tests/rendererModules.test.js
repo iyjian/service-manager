@@ -91,31 +91,96 @@ test('compiled Proxy traffic contract keeps Mihomo controller data in the main p
   assert.doesNotMatch(proxyPage, /trafficReadout\.innerHTML/);
 });
 
-test('compiled renderer marks automatic service refreshes silent and does not toast silent status errors', async () => {
+test('compiled renderer batches automatic service refreshes by host, keeps them silent, and preserves the single-service bridge', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
 
-  assert.match(renderer, /refreshService\(host\.id, service\.id, \{ silent \}\)/);
+  assert.match(renderer, /MAX_CONCURRENT_HOST_SERVICE_REFRESHES = 4/);
+  assert.match(renderer, /Promise\.all\(Array\.from\(\{ length: workerCount \}, \(\) => refreshNextHost\(\)\)\)/);
+  assert.match(renderer, /const serviceIds = host\.services\.map\(\(service\) => service\.id\)/);
+  assert.match(renderer, /refreshHostServices\(host\.id, serviceIds, \{ silent \}\)/);
+  assert.doesNotMatch(renderer, /refreshService\(host\.id, service\.id, \{ silent \}\)/);
   assert.match(renderer, /!change\.silent && change\.status === 'error'/);
+  assert.match(preload, /refreshHostServices: \(hostId, serviceIds, options\)/);
+  assert.match(preload, /invoke\('service:refresh-host', \{ hostId, serviceIds, \.\.\.options \}\)/);
   assert.match(preload, /refreshService: \(hostId, serviceId, options\)/);
 });
 
-test('compiled main preserves silent refreshes through every forward-status re-emission', async () => {
+test('compiled host service refresh uses one batch IPC and fans changes into exact rAF-coalesced rows', async () => {
+  const dist = path.join(__dirname, '..', 'dist');
+  const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+
+  const batchBridgeStart = preload.indexOf('onServiceStatusChanged:');
+  const batchBridgeEnd = preload.indexOf('onForwardStatusChanged:', batchBridgeStart);
+  const batchBridge = preload.slice(batchBridgeStart, batchBridgeEnd);
+  assert.ok(batchBridgeStart >= 0 && batchBridgeEnd > batchBridgeStart);
+  assert.match(batchBridge, /for \(const change of batch\.changes\)\s*listener\(change\)/);
+  assert.match(batchBridge, /ipcRenderer\.on\('service:status-batch', wrappedBatch\)/);
+  assert.match(batchBridge, /ipcRenderer\.removeListener\('service:status-batch', wrappedBatch\)/);
+  assert.match(batchBridge, /ipcRenderer\.on\('service:status', wrapped\)/);
+
+  const batchRuntimeStart = main.indexOf('async function refreshHostServicesRuntime');
+  const batchRuntimeEnd = main.indexOf('function logRuntimeError', batchRuntimeStart);
+  const batchRuntime = main.slice(batchRuntimeStart, batchRuntimeEnd);
+  assert.ok(batchRuntimeStart >= 0 && batchRuntimeEnd > batchRuntimeStart);
+  assert.match(batchRuntime, /serviceOperationQueue\.runMany\(/);
+  assert.match(batchRuntime, /checkHostServicesStatus\)\(queryHost, queryServices\)/);
+  assert.match(batchRuntime, /await runS3SharedDataMutation\(async \(\) =>/);
+  assert.match(batchRuntime, /if \(result\.status === 'stopped'\) \{[\s\S]*?portForwardManager\.stop\(/);
+  assert.match(batchRuntime, /runtimeRegistry\.setServiceForwardStatus\(/);
+  assert.match(batchRuntime, /runtimeRegistry\.setServiceStatus\(/);
+  assert.equal(
+    (batchRuntime.match(/broadcast\(IPC_CHANNELS\.serviceStatusBatchChanged, \{ changes \}\)/g) ?? []).length,
+    1
+  );
+  assert.doesNotMatch(batchRuntime, /emit(?:Forward)?Status\(/);
+  assert.doesNotMatch(batchRuntime, /broadcast\(IPC_CHANNELS\.serviceStatusChanged/);
+
+  const batchHandlerStart = main.indexOf('IPC_CHANNELS.refreshHostServices');
+  const batchHandlerEnd = main.indexOf('IPC_CHANNELS.refreshService', batchHandlerStart);
+  const batchHandler = main.slice(batchHandlerStart, batchHandlerEnd);
+  assert.ok(batchHandlerStart >= 0 && batchHandlerEnd > batchHandlerStart);
+  assert.match(batchHandler, /refreshHostServicesRuntime\(payload\.hostId, serviceIds, Boolean\(payload\.silent\)\)/);
+
+  const serviceRowStart = renderer.indexOf('function replaceRenderedServiceRow');
+  const serviceRowEnd = renderer.indexOf('function flushRuntimeStatusDomUpdates', serviceRowStart);
+  const serviceRow = renderer.slice(serviceRowStart, serviceRowEnd);
+  assert.ok(serviceRowStart >= 0 && serviceRowEnd > serviceRowStart);
+  assert.match(serviceRow, /currentRow\.replaceWith\(createServiceRuntimeRow\(host, service\)\)/);
+  assert.match(serviceRow, /panel\.classList\.contains\('host-panel-collapsed'\)/);
+  assert.doesNotMatch(serviceRow, /renderSafely\(/);
+
+  const coalescerStart = renderer.indexOf('function flushRuntimeStatusDomUpdates');
+  const coalescerEnd = renderer.indexOf('function renderPageStats', coalescerStart);
+  const coalescer = renderer.slice(coalescerStart, coalescerEnd);
+  assert.ok(coalescerStart >= 0 && coalescerEnd > coalescerStart);
+  assert.match(coalescer, /pendingRuntimeStatusDomUpdates\.clear\(\)/);
+  assert.match(coalescer, /window\.requestAnimationFrame\(flushRuntimeStatusDomUpdates\)/);
+  assert.match(coalescer, /renderSafely\('runtime-status-fallback-render'\)/);
+
+  const serviceChangeStart = renderer.indexOf('window.serviceApi.onServiceStatusChanged');
+  const serviceChangeEnd = renderer.indexOf('window.serviceApi.onForwardStatusChanged', serviceChangeStart);
+  const serviceChangeHandler = renderer.slice(serviceChangeStart, serviceChangeEnd);
+  assert.ok(serviceChangeStart >= 0 && serviceChangeEnd > serviceChangeStart);
+  assert.match(serviceChangeHandler, /scheduleRuntimeStatusDomUpdate\(\{[\s\S]*?kind: 'service'/);
+  assert.doesNotMatch(serviceChangeHandler, /renderSafely\(/);
+});
+
+test('compiled main delegates the single-service refresh compatibility path to the fenced batch core', async () => {
   const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
   const refreshStart = main.indexOf('IPC_CHANNELS.refreshService');
   const refreshEnd = main.indexOf('IPC_CHANNELS.startService', refreshStart);
   const refreshHandler = main.slice(refreshStart, refreshEnd);
-  const forwardReemissions = refreshHandler.match(/emitForwardStatus\([^;]*?\);/g) ?? [];
 
   assert.match(
-    main,
-    /function emitForwardStatus\(hostId, serviceId, state, error, silent = false\) \{[\s\S]*?emitStatus\(hostId, serviceId, current\.status, current\.pid, current\.error, silent\);/
+    refreshHandler,
+    /refreshHostServicesRuntime\(payload\.hostId, \[payload\.serviceId\], Boolean\(payload\.silent\)\)/
   );
-  assert.equal(forwardReemissions.length, 4);
-  for (const reemission of forwardReemissions) {
-    assert.match(reemission, /, Boolean\(payload\.silent\)\);$/);
-  }
+  assert.doesNotMatch(refreshHandler, /checkServiceStatus\(/);
+  assert.doesNotMatch(refreshHandler, /emit(?:Forward)?Status\(/);
 });
 
 test('compiled main routes every normal quit through the asynchronous coordinator', async () => {

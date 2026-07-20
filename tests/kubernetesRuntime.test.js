@@ -222,7 +222,10 @@ function createRuntime(options = {}) {
       interactionListeners.output.add(listener);
       return () => interactionListeners.output.delete(listener);
     },
-    emitLog(state) { interactionListeners.logs.forEach((listener) => listener(state)); },
+    emitLog(update) {
+      const normalized = update?.kind ? update : { kind: 'reset', state: update };
+      interactionListeners.logs.forEach((listener) => listener(normalized));
+    },
     emitTerminal(state) { interactionListeners.terminals.forEach((listener) => listener(state)); },
     emitTerminalOutput(event) { interactionListeners.output.forEach((listener) => listener(event)); },
     async disposePageScoped() {
@@ -1060,25 +1063,41 @@ test('KubernetesRuntime publishes the relisted active view after a 410 Watch rec
   await runtime.shutdown();
 });
 
-test('KubernetesRuntime forwards interaction stream events and detaches subscriptions during page disposal', async () => {
+test('KubernetesRuntime forwards incremental interaction events without command-result rebroadcasts and detaches on disposal', async () => {
   const { runtime, fakeInteractions } = createRuntime();
   const logs = [];
   const terminalOutput = [];
-  runtime.onLogChanged((state) => logs.push(state));
+  runtime.onLogChanged((update) => logs.push(update));
   runtime.onTerminalOutput((event) => terminalOutput.push(event));
 
   const opened = await runtime.openLogs(POD_TARGET);
   assert.equal(opened.revision, 0);
+  assert.equal(logs.length, 0, 'the invoke result is not broadcast a second time');
   await runtime.openTerminal(POD_TARGET);
-  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['followed'], following: true, hasOlder: true, revision: 4 });
+  fakeInteractions.emitLog({
+    sessionId: 'log-1', ...POD_TARGET, lines: ['followed'], following: true,
+    hasOlder: true, scope: 'pod', revision: 4,
+  });
   fakeInteractions.emitTerminalOutput({ id: 'terminal-1', data: 'hello' });
-  assert.deepEqual(logs.at(-1).lines, ['followed']);
-  assert.equal(logs.at(-1).revision, 4);
+  assert.equal(logs.at(-1).kind, 'reset');
+  assert.deepEqual(logs.at(-1).state.lines, ['followed']);
+  assert.equal(logs.at(-1).state.revision, 4);
   assert.deepEqual(terminalOutput.at(-1), { id: 'terminal-1', data: 'hello' });
+
+  const append = {
+    kind: 'append', sessionId: 'log-1', ...POD_TARGET, scope: 'pod', following: true,
+    baseRevision: 4, revision: 5, removeLeading: 0, lines: ['next'],
+  };
+  fakeInteractions.emitLog(append);
+  append.lines[0] = 'mutated';
+  assert.deepEqual(logs.at(-1).lines, ['next'], 'the runtime copies the bounded append payload');
 
   const received = logs.length + terminalOutput.length;
   await runtime.deactivatePage();
-  fakeInteractions.emitLog({ sessionId: 'log-1', ...POD_TARGET, lines: ['late'], following: true, hasOlder: true, revision: 5 });
+  fakeInteractions.emitLog({
+    sessionId: 'log-1', ...POD_TARGET, lines: ['late'], following: true,
+    hasOlder: true, scope: 'pod', revision: 6,
+  });
   fakeInteractions.emitTerminalOutput({ id: 'terminal-1', data: 'late' });
   assert.equal(logs.length + terminalOutput.length, received);
 });

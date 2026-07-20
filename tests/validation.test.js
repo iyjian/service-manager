@@ -35,7 +35,7 @@ test('validateHostDraft allows private key path without pasted private key conte
   assert.equal(host.privateKeyPath, '/Users/alice/.ssh/id_ed25519');
 });
 
-test('preserveServiceRuntimeFields keeps pid only when runtime shape is unchanged', () => {
+test('preserveServiceRuntimeFields keeps pid only when the SSH endpoint and runtime shape are unchanged', () => {
   const previous = validateHostDraft({
     id: 'host-1',
     name: 'dev',
@@ -57,7 +57,25 @@ test('preserveServiceRuntimeFields keeps pid only when runtime shape is unchange
     ...previous,
     services: [{ id: 'svc-1', name: 'api', startCommand: 'node server.js', port: 3000 }],
   });
+  const changedEndpoint = validateHostDraft({
+    ...previous,
+    sshHost: 'replacement.example.com',
+    services: [{ id: 'svc-1', name: 'api', startCommand: 'yarn dev', port: 3000 }],
+  });
+  const changedJumpChain = validateHostDraft({
+    ...previous,
+    jumpHosts: [{
+      sshHost: 'jump.example.com',
+      sshPort: 22,
+      username: 'alice',
+      authType: 'password',
+      password: 'jump-secret',
+    }],
+    services: [{ id: 'svc-1', name: 'api', startCommand: 'yarn dev', port: 3000 }],
+  });
 
   assert.equal(preserveServiceRuntimeFields(previous, unchanged).services[0].pid, 1234);
   assert.equal(preserveServiceRuntimeFields(previous, changed).services[0].pid, undefined);
+  assert.equal(preserveServiceRuntimeFields(previous, changedEndpoint).services[0].pid, undefined);
+  assert.equal(preserveServiceRuntimeFields(previous, changedJumpChain).services[0].pid, undefined);
 });

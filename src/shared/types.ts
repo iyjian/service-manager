@@ -161,6 +161,10 @@ export interface ServiceStatusChange {
   forwardError?: string;
 }
 
+export interface ServiceStatusChangeBatch {
+  changes: ServiceStatusChange[];
+}
+
 export interface ServiceRefreshOptions {
   silent?: boolean;
 }
@@ -265,6 +269,35 @@ export interface KubernetesLogState {
   /** Monotonic per-session update version for stale renderer-event fencing. */
   revision: number;
 }
+
+/** A complete, infrequent replacement of one renderer log session. */
+export interface KubernetesLogResetUpdate {
+  kind: 'reset';
+  state: KubernetesLogState;
+}
+
+/**
+ * One ordered live-log batch. The renderer applies it only when its current
+ * revision exactly matches `baseRevision` and `revision` is exactly the next
+ * integer; resets recover a gap or every other incompatible state shape.
+ */
+export interface KubernetesLogAppendUpdate {
+  kind: 'append';
+  sessionId: string;
+  podName: string;
+  namespace: string;
+  container: string;
+  scope: KubernetesLogScope;
+  following: boolean;
+  startTime?: string;
+  baseRevision: number;
+  revision: number;
+  /** Number of current leading lines to discard before appending `lines`. */
+  removeLeading: number;
+  lines: string[];
+}
+
+export type KubernetesLogUpdate = KubernetesLogResetUpdate | KubernetesLogAppendUpdate;
 
 /** Renderer-safe contract for one bounded Pod log viewer. */
 export interface KubernetesLogApi {
@@ -509,7 +542,7 @@ export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
   stopAllPortForwards(): Promise<void>;
   listPortForwards(): Promise<KubernetesPortForwardState[]>;
   onListChanged(listener: (snapshot: KubernetesListSnapshot) => void): () => void;
-  onLogChanged(listener: (state: KubernetesLogState) => void): () => void;
+  onLogChanged(listener: (update: KubernetesLogUpdate) => void): () => void;
   onTerminalChanged(listener: (state: KubernetesTerminalState) => void): () => void;
   onTerminalOutput(listener: (output: KubernetesTerminalOutput) => void): () => void;
   onPortForwardChanged(listener: (state: KubernetesPortForwardState) => void): () => void;
@@ -1023,6 +1056,7 @@ export interface ServiceApi {
   startForward: (hostId: string, forwardId: string) => Promise<void>;
   stopForward: (hostId: string, forwardId: string) => Promise<void>;
   refreshService: (hostId: string, serviceId: string, options?: ServiceRefreshOptions) => Promise<void>;
+  refreshHostServices: (hostId: string, serviceIds: string[], options?: ServiceRefreshOptions) => Promise<void>;
   getServiceLogs: (hostId: string, serviceId: string, query?: ServiceLogsQuery) => Promise<ServiceLogsResult>;
   importPrivateKey: () => Promise<PrivateKeyImportResult | null>;
   exportConfig: () => Promise<ConfigTransferResult | null>;

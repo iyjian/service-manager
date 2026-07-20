@@ -11,6 +11,8 @@ export interface SshResult {
   code: number;
 }
 
+export type SshRunner = (host: HostConfig, command: string) => Promise<SshResult>;
+
 export type SystemdSupportCheck = 'tools' | 'user-manager' | 'linger';
 
 export interface SystemdPreflightDiagnostic {
@@ -44,6 +46,13 @@ export interface SystemdServiceState {
   result?: string;
   mainPid?: number;
   invocationId?: string;
+}
+
+export interface HostServiceStatusResult {
+  serviceId: string;
+  status: ServiceStatus;
+  pid?: number;
+  error?: string;
 }
 
 async function connectTargetClient(host: HostConfig): Promise<{ targetClient: Client; jumpClients: Client[]; allClients: Client[] }> {
@@ -164,6 +173,52 @@ const UUID_SYSTEMD_UNIT_PATTERN = new RegExp(
   `^service-manager-(${CANONICAL_UUID_SOURCE})-(${CANONICAL_UUID_SOURCE})\\.service$`
 );
 
+const SYSTEMD_STATE_PROPERTIES = [
+  'Id',
+  'LoadState',
+  'ActiveState',
+  'SubState',
+  'Result',
+  'MainPID',
+  'InvocationID',
+];
+
+export function buildHostServicesStatusCommand(host: HostConfig, services: ServiceConfig[]): string {
+  if (services.length === 0) {
+    throw new Error('At least one service is required for a host status query.');
+  }
+
+  const patterns = new Set<string>();
+  for (const service of services) {
+    if (CANONICAL_UUID_PATTERN.test(service.id)) {
+      patterns.add(buildSystemdUnitSearchPattern(service));
+    } else {
+      patterns.add(buildSystemdUnitName(host, service));
+    }
+  }
+
+  const listCommand = [
+    'systemctl --user list-units --all --type=service --full --plain --no-legend',
+    ...[...patterns].map(shellQuoteSingle),
+  ].join(' ');
+  const showCommand = [
+    'systemctl --user show "${units[@]}" --no-pager',
+    ...SYSTEMD_STATE_PROPERTIES.map((property) => `--property=${property}`),
+  ].join(' ');
+  const script = [
+    `list_output="$(${listCommand})" || exit $?`,
+    'units=()',
+    'while read -r unit next _; do',
+    '  if [[ "$unit" != *.service && "$next" = *.service ]]; then unit="$next"; fi',
+    '  if [ -n "$unit" ]; then units+=("$unit"); fi',
+    'done <<< "$list_output"',
+    'if [ "${#units[@]}" -eq 0 ]; then exit 0; fi',
+    showCommand,
+  ].join('\n');
+
+  return `bash -lc ${shellQuoteSingle(script)}`;
+}
+
 export function selectSystemdUnitName(
   host: HostConfig,
   service: ServiceConfig,
@@ -264,6 +319,24 @@ export function parseSystemdState(raw: string): SystemdServiceState {
   return state;
 }
 
+export function parseSystemdUnitStates(raw: string): Map<string, SystemdServiceState> {
+  const states = new Map<string, SystemdServiceState>();
+
+  for (const block of raw.split(/\r?\n[\t ]*\r?\n/)) {
+    const unitLine = block
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('Id='));
+    const unit = unitLine?.slice('Id='.length).trim();
+    if (!unit) {
+      continue;
+    }
+    states.set(unit, parseSystemdState(block));
+  }
+
+  return states;
+}
+
 function isMissingUnitMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes('could not be found') || normalized.includes('not-found');
@@ -282,9 +355,20 @@ function formatCommandFailure(action: string, ret: SshResult): string {
 }
 
 const systemdSupportCache = new Map<string, { expiresAt: number; error?: string }>();
-const SYSTEMD_SUPPORT_CACHE_MS = 15_000;
+export const SYSTEMD_SUPPORT_SUCCESS_CACHE_MS = 5 * 60_000;
+export const SYSTEMD_SUPPORT_FAILURE_CACHE_MS = 15_000;
 const SYSTEMD_PREFLIGHT_RETRY_DELAY_MS = 500;
 const REQUIRED_SYSTEMD_TOOLS = ['systemd-run', 'systemctl', 'journalctl', 'loginctl'];
+
+export function systemdSupportCacheKey(host: HostConfig): string {
+  return JSON.stringify([
+    host.id,
+    host.sshHost,
+    host.sshPort,
+    host.username,
+    host.jumpHosts.map((jumpHost) => [jumpHost.sshHost, jumpHost.sshPort, jumpHost.username]),
+  ]);
+}
 
 function sanitizeSystemdSupportStderr(stderr: string): string {
   return sanitizeRuntimeDiagnosticString(stderr.trim()) || 'no diagnostic output';
@@ -375,11 +459,12 @@ function emitSystemdPreflightDiagnostic(event: SystemdPreflightDiagnostic): void
 async function runSystemdSupportCheck(
   host: HostConfig,
   check: SystemdSupportCheck,
-  command: string
+  command: string,
+  runner: SshRunner = runSsh
 ): Promise<SshResult> {
   const runProbe = async (attempt: number): Promise<SshResult> => {
     const startedAt = Date.now();
-    const result = await runSsh(host, command);
+    const result = await runner(host, command);
     if (!result.ok) {
       emitSystemdPreflightDiagnostic({
         hostId: host.id,
@@ -402,8 +487,8 @@ async function runSystemdSupportCheck(
   return firstResult;
 }
 
-async function ensureSystemdSupport(host: HostConfig): Promise<void> {
-  const cacheKey = host.id;
+async function ensureSystemdSupport(host: HostConfig, runner: SshRunner = runSsh): Promise<void> {
+  const cacheKey = systemdSupportCacheKey(host);
   const cached = systemdSupportCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     if (cached.error) {
@@ -428,43 +513,46 @@ async function ensureSystemdSupport(host: HostConfig): Promise<void> {
         '  exit 127',
         'fi',
       ].join('\n')
-    )}`
+    )}`,
+    runner
   );
   if (!toolsRet.ok) {
     const error = classifySystemdSupportFailure('tools', toolsRet);
-    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
+    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_FAILURE_CACHE_MS, error });
     throw new Error(error);
   }
 
   const userManagerRet = await runSystemdSupportCheck(
     host,
     'user-manager',
-    `bash -lc ${shellQuoteSingle('systemctl --user show-environment >/dev/null')}`
+    `bash -lc ${shellQuoteSingle('systemctl --user show-environment >/dev/null')}`,
+    runner
   );
   if (!userManagerRet.ok) {
     const error = classifySystemdSupportFailure('user-manager', userManagerRet);
-    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
+    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_FAILURE_CACHE_MS, error });
     throw new Error(error);
   }
 
   const lingerRet = await runSystemdSupportCheck(
     host,
     'linger',
-    `bash -lc ${shellQuoteSingle('loginctl show-user "$USER" -p Linger --value')}`
+    `bash -lc ${shellQuoteSingle('loginctl show-user "$USER" -p Linger --value')}`,
+    runner
   );
   if (!lingerRet.ok) {
     const error = classifySystemdSupportFailure('linger', lingerRet);
-    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
+    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_FAILURE_CACHE_MS, error });
     throw new Error(error);
   }
   if (lingerRet.stdout.trim() !== 'yes') {
     const error =
       'Remote host requires systemd user lingering for this SSH account. Please run `sudo loginctl enable-linger <username>` on the remote host so services survive after SSH disconnects.';
-    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS, error });
+    systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_FAILURE_CACHE_MS, error });
     throw new Error(error);
   }
 
-  systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_CACHE_MS });
+  systemdSupportCache.set(cacheKey, { expiresAt: Date.now() + SYSTEMD_SUPPORT_SUCCESS_CACHE_MS });
 }
 
 async function resolveSystemdUnitName(host: HostConfig, service: ServiceConfig): Promise<ResolvedSystemdUnitName> {
@@ -566,6 +654,93 @@ function buildSystemdFailureMessage(unit: string, state: SystemdServiceState): s
   return `systemd unit ${unit} failed (${result}).`;
 }
 
+export function systemdServiceStateToStatus(
+  unit: string,
+  state: SystemdServiceState,
+  service: ServiceConfig
+): Omit<HostServiceStatusResult, 'serviceId'> {
+  if (!state.exists || state.activeState === 'inactive') {
+    return { status: 'stopped' };
+  }
+  if (state.activeState === 'active') {
+    return { status: 'running', pid: state.mainPid };
+  }
+  if (state.activeState === 'activating') {
+    return { status: 'starting', pid: state.mainPid };
+  }
+  if (state.activeState === 'deactivating') {
+    return { status: 'stopping', pid: state.mainPid ?? service.pid };
+  }
+  if (state.activeState === 'failed') {
+    return {
+      status: 'error',
+      pid: state.mainPid,
+      error: buildSystemdFailureMessage(unit, state),
+    };
+  }
+
+  return {
+    status: 'unknown',
+    pid: state.mainPid,
+    error: `Unknown systemd state: ${state.activeState ?? 'unknown'}/${state.subState ?? 'unknown'}`,
+  };
+}
+
+export function mapHostServiceStatuses(
+  host: HostConfig,
+  services: ServiceConfig[],
+  statesByUnit: ReadonlyMap<string, SystemdServiceState>
+): HostServiceStatusResult[] {
+  const unitNames = [...statesByUnit.keys()];
+
+  return services.map((service) => {
+    try {
+      const resolved = selectSystemdUnitName(host, service, unitNames);
+      const state = resolved.exists
+        ? statesByUnit.get(resolved.unit) ?? { exists: false }
+        : { exists: false };
+      return {
+        serviceId: service.id,
+        ...systemdServiceStateToStatus(resolved.unit, state, service),
+      };
+    } catch (error) {
+      return {
+        serviceId: service.id,
+        status: 'error',
+        pid: service.pid,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+export async function checkHostServicesStatus(
+  host: HostConfig,
+  services: ServiceConfig[],
+  runner: SshRunner = runSsh
+): Promise<HostServiceStatusResult[]> {
+  if (services.length === 0) {
+    return [];
+  }
+
+  try {
+    await ensureSystemdSupport(host, runner);
+    const result = await runner(host, buildHostServicesStatusCommand(host, services));
+    if (!result.ok) {
+      throw new Error(formatCommandFailure('systemctl list/show managed services', result));
+    }
+    return mapHostServiceStatuses(host, services, parseSystemdUnitStates(result.stdout));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return services.map((service) => ({
+      serviceId: service.id,
+      status: 'error',
+      pid: service.pid,
+      error: message,
+    }));
+  }
+}
+
 export async function startService(host: HostConfig, service: ServiceConfig): Promise<StartResult> {
   try {
     const { unit, state: current } = await resolveSystemdServiceState(host, service);
@@ -656,31 +831,7 @@ export async function checkServiceStatus(
 ): Promise<{ status: ServiceStatus; pid?: number; error?: string }> {
   try {
     const { unit, state } = await resolveSystemdServiceState(host, service);
-    if (!state.exists || state.activeState === 'inactive') {
-      return { status: 'stopped' };
-    }
-    if (state.activeState === 'active') {
-      return { status: 'running', pid: state.mainPid };
-    }
-    if (state.activeState === 'activating') {
-      return { status: 'starting', pid: state.mainPid };
-    }
-    if (state.activeState === 'deactivating') {
-      return { status: 'stopping', pid: state.mainPid ?? service.pid };
-    }
-    if (state.activeState === 'failed') {
-      return {
-        status: 'error',
-        pid: state.mainPid,
-        error: buildSystemdFailureMessage(unit, state),
-      };
-    }
-
-    return {
-      status: 'unknown',
-      pid: state.mainPid,
-      error: `Unknown systemd state: ${state.activeState ?? 'unknown'}/${state.subState ?? 'unknown'}`,
-    };
+    return systemdServiceStateToStatus(unit, state, service);
   } catch (error) {
     return {
       status: 'error',

@@ -4,17 +4,52 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  SYSTEMD_SUPPORT_FAILURE_CACHE_MS,
+  SYSTEMD_SUPPORT_SUCCESS_CACHE_MS,
+  buildHostServicesStatusCommand,
   buildManagedShellLauncher,
   buildSystemdUnitListCommand,
   buildSystemdUnitName,
   buildSystemdUnitSearchPattern,
+  checkHostServicesStatus,
   classifySystemdSupportFailure,
+  mapHostServiceStatuses,
   parseSystemdState,
+  parseSystemdUnitStates,
   parseSystemdUnitNames,
   selectSystemdUnitName,
   shellQuoteSingle,
   shouldRetrySystemdSupportCheck,
 } = require('../dist/main/serviceRuntime');
+
+function host(id = 'host-1') {
+  return {
+    id,
+    name: 'Development',
+    sshHost: 'example.test',
+    sshPort: 22,
+    username: 'developer',
+    authType: 'password',
+    password: 'secret',
+    jumpHosts: [],
+    forwards: [],
+    services: [],
+  };
+}
+
+function service(id, pid) {
+  return {
+    id,
+    name: id,
+    startCommand: `run ${id}`,
+    port: 3000,
+    pid,
+  };
+}
+
+function sshResult(stdout = '') {
+  return { ok: true, stdout, stderr: '', code: 0 };
+}
 
 test('shellQuoteSingle quotes single quotes safely for shell commands', () => {
   assert.equal(shellQuoteSingle("cd '/tmp/app' && yarn dev"), `'cd '"'"'/tmp/app'"'"' && yarn dev'`);
@@ -152,6 +187,130 @@ test('buildSystemdUnitSearchPattern ignores host id and sanitizes service id', (
   );
 });
 
+test('buildHostServicesStatusCommand lists target patterns and batches all states into one systemctl show', () => {
+  const targetHost = host('11111111-1111-4111-8111-111111111111');
+  const uuidService = service('33333333-3333-4333-8333-333333333333');
+  const importedService = service('imported/service');
+  const command = buildHostServicesStatusCommand(targetHost, [uuidService, importedService]);
+
+  assert.equal((command.match(/systemctl --user list-units/g) ?? []).length, 1);
+  assert.equal((command.match(/systemctl --user show/g) ?? []).length, 1);
+  assert.match(command, /service-manager-\*-33333333-3333-4333-8333-333333333333\.service/);
+  assert.match(command, /service-manager-11111111-1111-4111-8111-111111111111-imported_service\.service/);
+  assert.match(command, /\$\{units\[@\]\}/);
+  assert.match(command, /--property=Id/);
+  assert.match(command, /--property=InvocationID/);
+  assert.throws(
+    () => buildHostServicesStatusCommand(targetHost, []),
+    /At least one service is required/
+  );
+});
+
+test('parseSystemdUnitStates parses bounded property blocks by systemd Id', () => {
+  const states = parseSystemdUnitStates([
+    'Id=service-manager-host-api.service',
+    'LoadState=loaded',
+    'ActiveState=active',
+    'SubState=running',
+    'Result=success',
+    'MainPID=1234',
+    'InvocationID=one',
+    '',
+    'Id=service-manager-host-worker.service',
+    'LoadState=loaded',
+    'ActiveState=failed',
+    'SubState=failed',
+    'Result=exit-code',
+    'MainPID=0',
+    'InvocationID=two',
+    '',
+  ].join('\n'));
+
+  assert.deepEqual(states.get('service-manager-host-api.service'), {
+    exists: true,
+    activeState: 'active',
+    subState: 'running',
+    result: 'success',
+    mainPid: 1234,
+    invocationId: 'one',
+  });
+  assert.deepEqual(states.get('service-manager-host-worker.service'), {
+    exists: true,
+    activeState: 'failed',
+    subState: 'failed',
+    result: 'exit-code',
+    mainPid: undefined,
+    invocationId: 'two',
+  });
+});
+
+test('mapHostServiceStatuses preserves lifecycle mappings, missing units, and old-host UUID ownership', () => {
+  const targetHost = host('11111111-1111-4111-8111-111111111111');
+  const running = service('33333333-3333-4333-8333-333333333333');
+  const missing = service('missing');
+  const stopping = service('stopping', 2200);
+  const failed = service('failed', 3300);
+  const unknown = service('unknown');
+  const oldHost = { ...targetHost, id: '22222222-2222-4222-8222-222222222222' };
+  const states = new Map([
+    [buildSystemdUnitName(oldHost, running), { exists: true, activeState: 'active', mainPid: 1100 }],
+    [buildSystemdUnitName(targetHost, stopping), { exists: true, activeState: 'deactivating' }],
+    [buildSystemdUnitName(targetHost, failed), {
+      exists: true,
+      activeState: 'failed',
+      subState: 'failed',
+      result: 'exit-code',
+    }],
+    [buildSystemdUnitName(targetHost, unknown), {
+      exists: true,
+      activeState: 'reloading',
+      subState: 'reload',
+      mainPid: 4400,
+    }],
+  ]);
+
+  const results = mapHostServiceStatuses(targetHost, [running, missing, stopping, failed, unknown], states);
+
+  assert.deepEqual(results[0], { serviceId: running.id, status: 'running', pid: 1100 });
+  assert.deepEqual(results[1], { serviceId: missing.id, status: 'stopped' });
+  assert.deepEqual(results[2], { serviceId: stopping.id, status: 'stopping', pid: 2200 });
+  assert.equal(results[3].serviceId, failed.id);
+  assert.equal(results[3].status, 'error');
+  assert.match(results[3].error, /failed \(exit-code\)/);
+  assert.deepEqual(results[4], {
+    serviceId: unknown.id,
+    status: 'unknown',
+    pid: 4400,
+    error: 'Unknown systemd state: reloading/reload',
+  });
+});
+
+test('mapHostServiceStatuses isolates ambiguous migrated units to their matching service', () => {
+  const targetHost = host('11111111-1111-4111-8111-111111111111');
+  const ambiguous = service('33333333-3333-4333-8333-333333333333', 99);
+  const healthy = service('healthy');
+  const states = new Map([
+    [buildSystemdUnitName(host('22222222-2222-4222-8222-222222222222'), ambiguous), {
+      exists: true,
+      activeState: 'active',
+      mainPid: 1,
+    }],
+    [buildSystemdUnitName(host('44444444-4444-4444-8444-444444444444'), ambiguous), {
+      exists: true,
+      activeState: 'active',
+      mainPid: 2,
+    }],
+    [buildSystemdUnitName(targetHost, healthy), { exists: true, activeState: 'active', mainPid: 3 }],
+  ]);
+
+  const results = mapHostServiceStatuses(targetHost, [ambiguous, healthy], states);
+
+  assert.equal(results[0].status, 'error');
+  assert.equal(results[0].pid, 99);
+  assert.match(results[0].error, /Multiple systemd units match service ID/);
+  assert.deepEqual(results[1], { serviceId: 'healthy', status: 'running', pid: 3 });
+});
+
 test('parseSystemdUnitNames extracts the unit column and ignores blank output', () => {
   const units = parseSystemdUnitNames([
     'service-manager-old-host-service-1.service loaded active running Service Manager',
@@ -250,6 +409,107 @@ test('selectSystemdUnitName rejects UUID suffixes on noncanonical candidate name
     unit: `service-manager-11111111-1111-4111-8111-111111111111-${serviceId}.service`,
     exists: false,
   });
+});
+
+test('checkHostServicesStatus performs one combined status exec and reuses the longer positive preflight cache', async () => {
+  const targetHost = host('batch-success-host');
+  const api = service('api', 90);
+  const unit = buildSystemdUnitName(targetHost, api);
+  const calls = [];
+  const runner = async (_host, command) => {
+    calls.push(command);
+    if (command.includes('loginctl show-user')) {
+      return sshResult('yes\n');
+    }
+    if (command.includes('list_output=')) {
+      return sshResult([
+        `Id=${unit}`,
+        'LoadState=loaded',
+        'ActiveState=active',
+        'SubState=running',
+        'Result=success',
+        'MainPID=1234',
+        'InvocationID=abc',
+      ].join('\n'));
+    }
+    return sshResult();
+  };
+
+  const first = await checkHostServicesStatus(targetHost, [api], runner);
+  assert.deepEqual(first, [{ serviceId: 'api', status: 'running', pid: 1234 }]);
+  assert.equal(calls.length, 4);
+  const firstStatusCalls = calls.filter((command) => command.includes('list_output='));
+  assert.equal(firstStatusCalls.length, 1);
+  assert.equal((firstStatusCalls[0].match(/systemctl --user list-units/g) ?? []).length, 1);
+  assert.equal((firstStatusCalls[0].match(/systemctl --user show/g) ?? []).length, 1);
+
+  const second = await checkHostServicesStatus(targetHost, [api], runner);
+  assert.deepEqual(second, first);
+  assert.equal(calls.length, 5);
+  assert.equal(calls.filter((command) => command.includes('list_output=')).length, 2);
+
+  const editedEndpoint = { ...targetHost, sshHost: 'other.example.test' };
+  const third = await checkHostServicesStatus(editedEndpoint, [api], runner);
+  assert.deepEqual(third, first);
+  assert.equal(calls.length, 9);
+  assert.equal(calls.filter((command) => command.includes('list_output=')).length, 3);
+  assert.ok(SYSTEMD_SUPPORT_SUCCESS_CACHE_MS > SYSTEMD_SUPPORT_FAILURE_CACHE_MS);
+});
+
+test('checkHostServicesStatus caches preflight failures briefly and returns one error per service', async () => {
+  const targetHost = host('batch-failure-host');
+  const api = service('api', 91);
+  const worker = service('worker', 92);
+  let calls = 0;
+  const runner = async () => {
+    calls += 1;
+    return { ok: false, stdout: '', stderr: 'systemctl', code: 127 };
+  };
+
+  const first = await checkHostServicesStatus(targetHost, [api, worker], runner);
+  const second = await checkHostServicesStatus(targetHost, [api, worker], runner);
+
+  assert.equal(calls, 1);
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.map((result) => [result.serviceId, result.status, result.pid]), [
+    ['api', 'error', 91],
+    ['worker', 'error', 92],
+  ]);
+  assert.match(first[0].error, /missing required systemd tools: systemctl/i);
+  assert.equal(SYSTEMD_SUPPORT_FAILURE_CACHE_MS, 15_000);
+});
+
+test('checkHostServicesStatus skips SSH for an empty host batch and fans out status command failure', async () => {
+  const emptyHost = host('batch-empty-host');
+  let emptyCalls = 0;
+  assert.deepEqual(await checkHostServicesStatus(emptyHost, [], async () => {
+    emptyCalls += 1;
+    return sshResult();
+  }), []);
+  assert.equal(emptyCalls, 0);
+
+  const targetHost = host('batch-command-failure-host');
+  const api = service('api', 101);
+  const worker = service('worker', 102);
+  let calls = 0;
+  const runner = async (_host, command) => {
+    calls += 1;
+    if (command.includes('loginctl show-user')) {
+      return sshResult('yes\n');
+    }
+    if (command.includes('list_output=')) {
+      return { ok: false, stdout: '', stderr: 'Failed to connect to bus', code: 1 };
+    }
+    return sshResult();
+  };
+
+  const results = await checkHostServicesStatus(targetHost, [api, worker], runner);
+  assert.equal(calls, 4);
+  assert.deepEqual(results.map((result) => [result.serviceId, result.status, result.pid]), [
+    ['api', 'error', 101],
+    ['worker', 'error', 102],
+  ]);
+  assert.match(results[0].error, /systemctl list\/show managed services failed/);
 });
 
 test('buildManagedShellLauncher launches command through login shell', () => {

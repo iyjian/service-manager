@@ -7,7 +7,7 @@ import type {
   KubernetesApi,
   KubernetesListSnapshot,
   KubernetesLogScope,
-  KubernetesLogState,
+  KubernetesLogUpdate,
   KubernetesNamespaceScope,
   KubernetesPodTarget,
   KubernetesPortForwardInput,
@@ -32,6 +32,7 @@ import type {
   S3SyncSettingsDraft,
   SettingsApi,
   ServiceStatusChange,
+  ServiceStatusChangeBatch,
   TunnelStatusChange,
   TriliumImportApplyInput,
   TriliumImportPrepareInput,
@@ -63,6 +64,8 @@ const api: ServiceApi = {
     ipcRenderer.invoke('forward:stop', { hostId, forwardId }),
   refreshService: (hostId: string, serviceId: string, options) =>
     ipcRenderer.invoke('service:refresh', { hostId, serviceId, ...options }),
+  refreshHostServices: (hostId: string, serviceIds: string[], options) =>
+    ipcRenderer.invoke('service:refresh-host', { hostId, serviceIds, ...options }),
   getServiceLogs: (hostId: string, serviceId: string, query) =>
     ipcRenderer.invoke('service:logs', { hostId, serviceId, query }),
   importPrivateKey: () => ipcRenderer.invoke('auth:import-private-key'),
@@ -76,9 +79,16 @@ const api: ServiceApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, change: ServiceStatusChange): void => {
       listener(change);
     };
+    const wrappedBatch = (_event: Electron.IpcRendererEvent, batch: ServiceStatusChangeBatch): void => {
+      for (const change of batch.changes) listener(change);
+    };
 
     ipcRenderer.on('service:status', wrapped);
-    return () => ipcRenderer.removeListener('service:status', wrapped);
+    ipcRenderer.on('service:status-batch', wrappedBatch);
+    return () => {
+      ipcRenderer.removeListener('service:status', wrapped);
+      ipcRenderer.removeListener('service:status-batch', wrappedBatch);
+    };
   },
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, change: TunnelStatusChange): void => {
@@ -243,7 +253,7 @@ const kubernetesApi: KubernetesApi = {
   deactivatePage: () => ipcRenderer.invoke('kubernetes:deactivate-page'),
   onStateChanged: (listener: (state: KubernetesState) => void) => subscribe('kubernetes:state', listener),
   onListChanged: (listener: (snapshot: KubernetesListSnapshot) => void) => subscribe('kubernetes:list', listener),
-  onLogChanged: (listener: (state: KubernetesLogState) => void) => subscribe('kubernetes:log', listener),
+  onLogChanged: (listener: (update: KubernetesLogUpdate) => void) => subscribe('kubernetes:log', listener),
   onTerminalChanged: (listener: (state: KubernetesTerminalState) => void) => subscribe('kubernetes:terminal', listener),
   onTerminalOutput: (listener: (output: KubernetesTerminalOutput) => void) => subscribe('kubernetes:terminal-output', listener),
   onPortForwardChanged: (listener: (state: KubernetesPortForwardState) => void) => subscribe('kubernetes:port-forward', listener),

@@ -94,6 +94,7 @@ const serviceLogContent = requireElement<HTMLDivElement>('#service-log-content')
 
 const LOG_FETCH_CHUNK_LINES = 200;
 const APP_MEMORY_REFRESH_INTERVAL_MS = 5000;
+const MAX_CONCURRENT_HOST_SERVICE_REFRESHES = 4;
 
 type LogLoadReason = 'refresh' | 'older';
 
@@ -1357,16 +1358,23 @@ async function refreshAllServices(silent = false): Promise<void> {
   if (isAutoRefreshing) return;
   isAutoRefreshing = true;
   try {
-    for (const host of hosts) {
-      for (const service of host.services) {
-        if (service.status === 'starting' || service.status === 'stopping') continue;
+    const refreshHosts = [...hosts];
+    let nextHostIndex = 0;
+    const refreshNextHost = async (): Promise<void> => {
+      while (nextHostIndex < refreshHosts.length) {
+        const host = refreshHosts[nextHostIndex++];
+        const serviceIds = host.services.map((service) => service.id);
+        if (serviceIds.length === 0) continue;
+
         try {
-          await window.serviceApi.refreshService(host.id, service.id, { silent });
+          await window.serviceApi.refreshHostServices(host.id, serviceIds, { silent });
         } catch (error) {
           if (!silent) setMessage((error as Error).message, 'error');
         }
       }
-    }
+    };
+    const workerCount = Math.min(MAX_CONCURRENT_HOST_SERVICE_REFRESHES, refreshHosts.length);
+    await Promise.all(Array.from({ length: workerCount }, () => refreshNextHost()));
   } finally {
     isAutoRefreshing = false;
   }

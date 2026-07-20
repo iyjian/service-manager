@@ -74,6 +74,15 @@ class FakeElement {
     return child;
   }
 
+  insertBefore(child, reference) {
+    child.remove();
+    const index = this.children.indexOf(reference);
+    child.parentElement = this;
+    if (index < 0) this.children.push(child);
+    else this.children.splice(index, 0, child);
+    return child;
+  }
+
   replaceChildren(...children) {
     for (const child of this.children) child.parentElement = null;
     this.children = [];
@@ -101,6 +110,7 @@ class FakeElement {
     const inlineHeight = Number.parseFloat(this.style.height);
     return { height: Number.isFinite(inlineHeight) ? inlineHeight : this.rectHeight };
   }
+  focus() { global.document.activeElement = this; }
   scrollIntoView() {}
 }
 
@@ -152,6 +162,11 @@ function findByClassName(root, className) {
     if (found) return found;
   }
   return undefined;
+}
+
+function descendantText(root) {
+  if ((root.children ?? []).length === 0) return root.textContent ?? '';
+  return root.children.map(descendantText).join('');
 }
 
 async function withWorkspaceDom(
@@ -283,6 +298,36 @@ test('workspace rejects stale log revisions and old terminal final events after 
   assert.equal(state.applyLog({
     sessionId: 'unknown', ...target, lines: ['ignored'], following: true, hasOlder: false, revision: 99,
   }), false);
+});
+
+test('workspace state applies live append batches through its bounded mutable log buffer', async () => {
+  const { createKubernetesWorkspaceState } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const target = { namespace: 'apps', podName: 'api', container: 'web' };
+  const state = createKubernetesWorkspaceState();
+  const tab = state.open('logs', target).tab;
+  assert.equal(state.bindLog(tab.id, {
+    sessionId: 'log-append', ...target, lines: ['one', 'two'],
+    following: true, hasOlder: false, scope: 'pod', revision: 4,
+  }), true);
+
+  const applied = state.applyLogAppend({
+    kind: 'append', sessionId: 'log-append', ...target, scope: 'pod', following: true,
+    baseRevision: 4, revision: 5, removeLeading: 1, lines: ['three'],
+  });
+  assert.equal(applied.status, 'applied');
+  assert.deepEqual(applied.removedLines, ['one']);
+  assert.deepEqual(applied.tab?.log?.lines, ['two', 'three']);
+  assert.deepEqual(state.logForSession('log-append')?.lines, ['two', 'three']);
+
+  assert.equal(state.applyLogAppend({
+    kind: 'append', sessionId: 'log-append', ...target, scope: 'pod', following: true,
+    baseRevision: 7, revision: 8, removeLeading: 0, lines: ['gap'],
+  }).status, 'recover');
+  assert.equal(state.applyLogAppend({
+    kind: 'append', sessionId: 'log-append', ...target, scope: 'pod', following: true,
+    baseRevision: 5, revision: 7, removeLeading: 0, lines: ['skipped revision'],
+  }).status, 'recover');
+  assert.deepEqual(state.logForSession('log-append')?.lines, ['two', 'three']);
 });
 
 test('workspace disposal closes each live log and terminal session once through the direct seam', async () => {
@@ -975,6 +1020,12 @@ test('log start time reloads a paused second-precision snapshot and Resume clear
     await Promise.resolve();
     assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, localValue);
 
+    startTime.value = 'invalid';
+    startTime.focus();
+    startTime.listeners.get('change')();
+    assert.equal(startTime.value, localValue, 'an invalid focused edit restores the authoritative snapshot time');
+    assert.equal(startTimeCalls.length, 1);
+
     findByAriaLabel(pane, 'Resume log follow').listeners.get('click')();
     assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, '');
     await Promise.resolve();
@@ -1092,14 +1143,17 @@ test('workspace keeps a newer stopped rollback authoritative after a scope-switc
     assert.equal(findByClassName(pane, 'kubernetes-log-scope-switch').disabled, true);
 
     workspace.onLogChanged({
-      sessionId: 'log-api',
-      ...target,
-      lines: ['retained'],
-      following: false,
-      hasOlder: true,
-      revision: 2,
-      scope: 'pod',
-      deployment: { name: 'api', podCount: 2 },
+      kind: 'reset',
+      state: {
+        sessionId: 'log-api',
+        ...target,
+        lines: ['retained'],
+        following: false,
+        hasOlder: true,
+        revision: 2,
+        scope: 'pod',
+        deployment: { name: 'api', podCount: 2 },
+      },
     });
     scopeResult.reject(new Error('scope transport failed'));
     await Promise.resolve();
@@ -1167,4 +1221,217 @@ test('pausing logs restores the exact attached viewport after optimistic and con
     assert.equal(output.scrollTop, 137, 'confirmation rerender preserves the paused viewport too');
     await workspace.dispose();
   }, { deferAnimationFrames: true, clampDetachedPreScroll: true });
+});
+
+test('incremental log appends retain the toolbar, search field, pre, and unaffected line DOM', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['one', 'two'],
+        following: true, hasOlder: false, scope: 'pod', revision: 1,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: async () => assert.fail('not used'),
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
+    const search = findByClassName(pane, 'kubernetes-log-search-field');
+    const output = findByClassName(pane, 'kubernetes-log-output');
+    const retainedLine = output.children[1];
+    const removedLine = output.children[0];
+    search.focus();
+
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 1, revision: 2, removeLeading: 1, lines: ['\x1b[31mred\x1b[0m'],
+    });
+
+    assert.equal(findByClassName(pane, 'kubernetes-log-toolbar'), toolbar);
+    assert.equal(findByClassName(pane, 'kubernetes-log-search-field'), search);
+    assert.equal(findByClassName(pane, 'kubernetes-log-output'), output);
+    assert.equal(global.document.activeElement, search);
+    assert.equal(output.children[0], retainedLine, 'unaffected retained lines are not rebuilt');
+    assert.equal(removedLine.parentElement, null);
+    assert.equal(descendantText(output), 'two\nred');
+    assert.equal(output.children[1].children[0].className, 'ansi-fg-31');
+
+    search.value = 'red';
+    search.listeners.get('input')();
+    assert.equal(findByClassName(pane, 'kubernetes-log-toolbar'), toolbar);
+    assert.equal(findByClassName(pane, 'kubernetes-log-search-field'), search);
+    assert.equal(findByClassName(pane, 'kubernetes-log-output'), output);
+    assert.equal(global.document.activeElement, search);
+    assert.equal(descendantText(output), 'red');
+
+    const startTime = findByClassName(pane, 'kubernetes-log-start-time-input');
+    startTime.value = '2026-07-20T12:34:56';
+    startTime.focus();
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 2, revision: 3, removeLeading: 0, lines: ['not visible'],
+    });
+    assert.equal(startTime.value, '2026-07-20T12:34:56', 'live appends preserve an in-progress Since edit');
+    assert.equal(descendantText(output), 'red');
+    assert.equal(findByClassName(pane, 'kubernetes-log-status').children[1].textContent, '1 of 3 lines');
+    await workspace.dispose();
+  });
+});
+
+test('log append fencing rejects stale and wrong-source batches and recovers revision gaps', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const recoveryCalls = [];
+    const recoveryStates = [
+      { lines: ['recovered gap'], revision: 7 },
+      { lines: ['recovered source'], revision: 8 },
+    ];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['base'],
+        following: true, hasOlder: false, scope: 'pod', revision: 5,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: async () => assert.fail('not used'),
+      setLogFollowing: async (id, following) => {
+        recoveryCalls.push([id, following]);
+        const recovered = recoveryStates.shift();
+        assert.ok(recovered);
+        return {
+          sessionId: id, ...target, ...recovered,
+          following, hasOlder: false, scope: 'pod',
+        };
+      },
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const toolbar = findByClassName(pane, 'kubernetes-log-toolbar');
+    const search = findByClassName(pane, 'kubernetes-log-search-field');
+    const output = findByClassName(pane, 'kubernetes-log-output');
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 4, revision: 6, removeLeading: 0, lines: ['stale'],
+    });
+    assert.equal(descendantText(output), 'base');
+    assert.deepEqual(recoveryCalls, []);
+
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 6, revision: 7, removeLeading: 0, lines: ['gap'],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(recoveryCalls, [['log-api', true]]);
+    assert.equal(descendantText(output), 'recovered gap');
+    assert.equal(findByClassName(pane, 'kubernetes-log-toolbar'), toolbar);
+    assert.equal(findByClassName(pane, 'kubernetes-log-search-field'), search);
+    assert.equal(findByClassName(pane, 'kubernetes-log-output'), output, 'a reset rebuilds only pre content');
+
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'deployment', following: true,
+      baseRevision: 7, revision: 8, removeLeading: 0, lines: ['wrong source'],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(recoveryCalls, [['log-api', true], ['log-api', true]]);
+    assert.equal(descendantText(output), 'recovered source');
+
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 8, revision: 9, removeLeading: 0, lines: ['exact'],
+    });
+    assert.equal(descendantText(output), 'recovered source\nexact');
+    await workspace.dispose();
+  });
+});
+
+test('pre-bind log batches replay in order and a queued revision gap recovers from a full state', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const opened = deferred();
+    const recovered = deferred();
+    const recoveryCalls = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: () => opened.promise,
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: async () => assert.fail('not used'),
+      setLogFollowing: async (id, following) => {
+        recoveryCalls.push([id, following]);
+        return recovered.promise;
+      },
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    const openPromise = workspace.openLogs(target);
+    const loadingOutput = findByClassName(pane, 'kubernetes-log-output');
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 1, revision: 2, removeLeading: 0, lines: ['second'],
+    });
+    workspace.onLogChanged({
+      kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
+      baseRevision: 3, revision: 4, removeLeading: 0, lines: ['missing predecessor'],
+    });
+    opened.resolve({
+      sessionId: 'log-api', ...target, lines: ['first'],
+      following: true, hasOlder: false, scope: 'pod', revision: 1,
+    });
+    await openPromise;
+    assert.equal(findByClassName(pane, 'kubernetes-log-output'), loadingOutput);
+    assert.equal(descendantText(loadingOutput), 'first\nsecond', 'the exact pre-bind batch replays before recovery');
+    recovered.resolve({
+      sessionId: 'log-api', ...target, lines: ['authoritative'],
+      following: true, hasOlder: false, scope: 'pod', revision: 4,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(recoveryCalls, [['log-api', true]]);
+    assert.equal(descendantText(loadingOutput), 'authoritative');
+    await workspace.dispose();
+  });
 });

@@ -6,6 +6,7 @@ import type {
   KubernetesCustomResourceDefinition,
   KubernetesLogState,
   KubernetesLogScope,
+  KubernetesLogUpdate,
   KubernetesNamespaceScope,
   KubernetesPodEnvironment,
   KubernetesPodTarget,
@@ -107,7 +108,7 @@ export interface KubernetesInteractions {
   startPortForward(input: RuntimePortForwardInput): Promise<KubernetesPortForwardState>;
   stopPortForward(id: string): Promise<void>;
   listPortForwards(): KubernetesPortForwardState[];
-  onLogChanged(listener: (state: KubernetesLogState) => void): () => void;
+  onLogChanged(listener: (update: KubernetesLogUpdate) => void): () => void;
   onTerminalChanged(listener: (state: KubernetesTerminalState) => void): () => void;
   onTerminalOutput(listener: (output: KubernetesTerminalOutput) => void): () => void;
   disposePageScoped(): Promise<void>;
@@ -135,7 +136,7 @@ export interface KubernetesRuntimeOptions {
 
 type StateListener = (state: KubernetesState) => void;
 type ListListener = (snapshot: RendererKubernetesListSnapshot) => void;
-type LogListener = (state: KubernetesLogState) => void;
+type LogListener = (update: KubernetesLogUpdate) => void;
 type TerminalListener = (state: KubernetesTerminalState) => void;
 type TerminalOutputListener = (output: KubernetesTerminalOutput) => void;
 type PortForwardListener = (state: KubernetesPortForwardState) => void;
@@ -255,6 +256,12 @@ function copyLogState(state: KubernetesLogState): KubernetesLogState {
     lines: [...state.lines],
     ...(state.deployment ? { deployment: { ...state.deployment } } : {}),
   };
+}
+
+function copyLogUpdate(update: KubernetesLogUpdate): KubernetesLogUpdate {
+  return update.kind === 'reset'
+    ? { kind: 'reset', state: copyLogState(update.state) }
+    : { ...update, lines: [...update.lines] };
 }
 
 function copyTerminalState(state: KubernetesTerminalState): KubernetesTerminalState {
@@ -886,7 +893,6 @@ export class KubernetesRuntime {
     this.assertConnected();
     try {
       const state = await this.ensureInteractions().openLogs(target);
-      this.emitLog(state);
       return copyLogState(state);
     } catch (error) {
       this.onOperationFailure(error);
@@ -897,7 +903,6 @@ export class KubernetesRuntime {
   public async loadOlderLogs(id: string): Promise<KubernetesLogState> {
     const sessionId = assertText(id, 'log session ID');
     const state = await this.ensureInteractions().loadOlderLogs(sessionId);
-    this.emitLog(state);
     return copyLogState(state);
   }
 
@@ -908,7 +913,6 @@ export class KubernetesRuntime {
     }
     try {
       const state = await this.ensureInteractions().setLogScope(sessionId, scope);
-      this.emitLog(state);
       return copyLogState(state);
     } catch (error) {
       this.onOperationFailure(error);
@@ -922,7 +926,6 @@ export class KubernetesRuntime {
       throw new Error('Kubernetes log following must be true or false.');
     }
     const state = await this.ensureInteractions().setLogFollowing(sessionId, following);
-    this.emitLog(state);
     return copyLogState(state);
   }
 
@@ -931,7 +934,6 @@ export class KubernetesRuntime {
     const startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
     try {
       const state = await this.ensureInteractions().setLogStartTime(sessionId, startTime);
-      this.emitLog(state);
       return copyLogState(state);
     } catch (error) {
       this.onOperationFailure(error);
@@ -942,7 +944,6 @@ export class KubernetesRuntime {
   public async clearLogs(id: string): Promise<KubernetesLogState> {
     const sessionId = assertText(id, 'log session ID');
     const state = this.ensureInteractions().clearLogs(sessionId);
-    this.emitLog(state);
     return copyLogState(state);
   }
 
@@ -1297,9 +1298,9 @@ export class KubernetesRuntime {
       return;
     }
     this.interactionSubscriptions = [
-      interactions.onLogChanged((state) => {
+      interactions.onLogChanged((update) => {
         if (!this.disposed && this.interactions === interactions) {
-          this.emitLog(state);
+          this.emitLog(update);
         }
       }),
       interactions.onTerminalChanged((state) => {
@@ -1826,9 +1827,9 @@ export class KubernetesRuntime {
     return projectSnapshotWindow(snapshot, viewQuery, this.rendererRange);
   }
 
-  private emitLog(state: KubernetesLogState): void {
+  private emitLog(update: KubernetesLogUpdate): void {
     for (const listener of this.logListeners) {
-      listener(copyLogState(state));
+      listener(copyLogUpdate(update));
     }
   }
 
