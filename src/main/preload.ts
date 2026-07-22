@@ -4,6 +4,7 @@ import type {
   Note,
   NoteDraft,
   NotesApi,
+  NotesFlushRequest,
   KubernetesApi,
   KubernetesListSnapshot,
   KubernetesLogScope,
@@ -120,10 +121,22 @@ const notesApi: NotesApi = {
   uploadImage: (input) => ipcRenderer.invoke('notes:image:upload', input),
   loadImage: (reference) => ipcRenderer.invoke('notes:image:load', reference),
   onFlushRequested: (listener) => {
-    const handler = (_event: Electron.IpcRendererEvent, requestId: unknown): void => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const { requestId, persistentApplyId } = value as {
+        requestId?: unknown;
+        persistentApplyId?: unknown;
+      };
       if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;
+      if (persistentApplyId !== undefined
+        && (typeof persistentApplyId !== 'string'
+          || persistentApplyId.length === 0
+          || persistentApplyId.length > 128)) return;
+      const request: NotesFlushRequest = {
+        ...(typeof persistentApplyId === 'string' ? { persistentApplyId } : {}),
+      };
       void Promise.resolve()
-        .then(listener)
+        .then(() => listener(request))
         .then(
           () => ipcRenderer.send('notes:flush-result', { requestId, ok: true }),
           () => ipcRenderer.send('notes:flush-result', { requestId, ok: false }),
@@ -131,6 +144,16 @@ const notesApi: NotesApi = {
     };
     ipcRenderer.on('notes:flush-request', handler);
     return () => ipcRenderer.removeListener('notes:flush-request', handler);
+  },
+  onPersistentApplyReleased: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, persistentApplyId: unknown): void => {
+      if (typeof persistentApplyId !== 'string'
+        || persistentApplyId.length === 0
+        || persistentApplyId.length > 128) return;
+      listener(persistentApplyId);
+    };
+    ipcRenderer.on('notes:persistent-apply-release', handler);
+    return () => ipcRenderer.removeListener('notes:persistent-apply-release', handler);
   },
 };
 

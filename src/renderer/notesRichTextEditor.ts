@@ -66,7 +66,7 @@ export type RichTextToolbarCommand =
 export interface NotesRichTextEditorOptions {
   host: HTMLElement;
   toolbar: HTMLElement;
-  onUpdate: (content: string) => void;
+  onChange: () => void;
   onError: (message: string) => void;
   onRequestImage: (file?: File, position?: number) => void;
 }
@@ -1982,7 +1982,7 @@ export function convertTriliumHtmlToRichText(
 export class NotesRichTextEditor {
   private readonly editor: Editor;
   private readonly toolbar: HTMLElement;
-  private readonly onUpdate: (content: string) => void;
+  private readonly onChange: () => void;
   private readonly onError: (message: string) => void;
   private readonly slashMenu!: NotesRichTextSlashMenu;
   private readonly bubbleMenu!: NotesRichTextBubbleMenu;
@@ -1992,11 +1992,12 @@ export class NotesRichTextEditor {
   private readonly overlayRoot: HTMLElement;
   private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT;
   private restoringCanonicalContent = false;
+  private viewSyncFrame?: number;
 
   public constructor(options: NotesRichTextEditorOptions) {
     this.toolbar = options.toolbar;
     this.host = options.host;
-    this.onUpdate = options.onUpdate;
+    this.onChange = options.onChange;
     this.onError = options.onError;
     const overlayRoot = options.toolbar.parentElement;
     if (!overlayRoot) throw new Error('The Rich Text editor overlay root is missing.');
@@ -2046,44 +2047,20 @@ export class NotesRichTextEditor {
         },
       },
       onUpdate: () => {
-        this.emitUpdate();
-        this.updateEmptyState();
-        this.bubbleMenu?.sync();
-        this.imageBubbleMenu?.sync();
-        this.tableControls?.sync();
-        this.slashMenu?.sync();
+        this.onChange();
+        this.queueViewSync();
       },
       onSelectionUpdate: () => {
-        this.updateToolbarState();
-        this.bubbleMenu?.sync();
-        this.imageBubbleMenu?.sync();
-        this.tableControls?.sync();
-        this.slashMenu?.sync();
+        this.queueViewSync();
       },
       onTransaction: () => {
-        this.updateToolbarState();
-        this.updateEmptyState();
-        this.bubbleMenu?.sync();
-        this.imageBubbleMenu?.sync();
-        this.tableControls?.sync();
-        this.slashMenu?.sync();
+        this.queueViewSync();
       },
       onFocus: () => {
-        this.updateToolbarState();
-        this.bubbleMenu?.sync();
-        this.imageBubbleMenu?.sync();
-        this.tableControls?.sync();
-        this.slashMenu?.sync();
+        this.queueViewSync();
       },
       onBlur: () => {
-        window.requestAnimationFrame(() => {
-          if (this.editor.isDestroyed) return;
-          this.updateToolbarState();
-          this.bubbleMenu?.sync();
-          this.imageBubbleMenu?.sync();
-          this.tableControls?.sync();
-          this.slashMenu?.sync();
-        });
+        this.queueViewSync();
       },
     });
     this.slashMenu = new NotesRichTextSlashMenu(this.editor, this.overlayRoot, options.onRequestImage);
@@ -2126,7 +2103,15 @@ export class NotesRichTextEditor {
   }
 
   public getContent(): string {
-    return normalizeEditorContent(this.editor.getJSON());
+    try {
+      const content = normalizeEditorContent(this.editor.getJSON());
+      this.lastCanonicalContent = content;
+      return content;
+    } catch (error) {
+      this.restoreLastCanonicalContent();
+      safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be saved.');
+      throw error;
+    }
   }
 
   public getPlainText(): string {
@@ -2183,6 +2168,7 @@ export class NotesRichTextEditor {
   }
 
   public destroy(): void {
+    if (this.viewSyncFrame !== undefined) window.cancelAnimationFrame(this.viewSyncFrame);
     this.toolbar.removeEventListener('click', this.handleToolbarClick);
     this.host.removeEventListener('scroll', this.handleViewportChange);
     window.removeEventListener('resize', this.handleViewportChange);
@@ -2210,6 +2196,20 @@ export class NotesRichTextEditor {
     this.tableControls.sync();
     this.slashMenu.sync();
   };
+
+  private queueViewSync(): void {
+    if (this.editor.isDestroyed || this.viewSyncFrame !== undefined) return;
+    this.viewSyncFrame = window.requestAnimationFrame(() => {
+      this.viewSyncFrame = undefined;
+      if (this.editor.isDestroyed) return;
+      this.updateToolbarState();
+      this.updateEmptyState();
+      this.bubbleMenu.sync();
+      this.imageBubbleMenu.sync();
+      this.tableControls.sync();
+      this.slashMenu.sync();
+    });
+  }
 
   private commandChain(command: RichTextToolbarCommand, chain: ChainedCommands): ChainedCommands {
     switch (command) {
@@ -2328,18 +2328,6 @@ export class NotesRichTextEditor {
     editorElement.classList.toggle('is-editor-empty', showRootPlaceholder);
     if (showRootPlaceholder) editorElement.dataset.placeholder = "Press '/' for commands";
     else delete editorElement.dataset.placeholder;
-  }
-
-  private emitUpdate(): void {
-    if (this.restoringCanonicalContent) return;
-    try {
-      const content = this.getContent();
-      this.onUpdate(content);
-      this.lastCanonicalContent = content;
-    } catch (error) {
-      this.restoreLastCanonicalContent();
-      safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be saved.');
-    }
   }
 
   private restoreLastCanonicalContent(): void {

@@ -165,6 +165,7 @@ const IPC_CHANNELS = {
   notesImageLoad: 'notes:image:load',
   notesFlushRequest: 'notes:flush-request',
   notesFlushResult: 'notes:flush-result',
+  notesPersistentApplyRelease: 'notes:persistent-apply-release',
   uiPreferencesGet: 'settings:ui:get',
   uiPreferencesSave: 'settings:ui:save',
   uiPreferencesNotesSidebarWidthSave: 'settings:ui:notes-sidebar-width:save',
@@ -751,7 +752,18 @@ async function restoreNotesWorkspace(
   }
 }
 
-function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
+function rendererNotesWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((window) =>
+    !window.isDestroyed()
+    && !window.webContents.isDestroyed()
+    && !window.webContents.isLoadingMainFrame()
+  );
+}
+
+function requestRendererNotesFlush(
+  window: BrowserWindow,
+  persistentApplyId?: string,
+): Promise<void> {
   if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
   const requestId = randomUUID();
   return new Promise<void>((resolve, reject) => {
@@ -767,7 +779,10 @@ function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
       reject,
     });
     try {
-      window.webContents.send(IPC_CHANNELS.notesFlushRequest, requestId);
+      window.webContents.send(IPC_CHANNELS.notesFlushRequest, {
+        requestId,
+        ...(persistentApplyId ? { persistentApplyId } : {}),
+      });
     } catch {
       clearTimeout(timeout);
       pendingRendererNotesFlushes.delete(requestId);
@@ -777,12 +792,47 @@ function requestRendererNotesFlush(window: BrowserWindow): Promise<void> {
 }
 
 async function flushRendererNotes(): Promise<void> {
-  const windows = BrowserWindow.getAllWindows().filter((window) =>
-    !window.isDestroyed()
-    && !window.webContents.isDestroyed()
-    && !window.webContents.isLoadingMainFrame()
-  );
+  const windows = rendererNotesWindows();
   await Promise.all(windows.map((window) => requestRendererNotesFlush(window)));
+}
+
+interface RendererNotesPersistentApply {
+  id: string;
+  windows: BrowserWindow[];
+}
+
+function releaseRendererNotesPersistentApply(apply: RendererNotesPersistentApply): void {
+  for (const window of apply.windows) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+    try {
+      window.webContents.send(IPC_CHANNELS.notesPersistentApplyRelease, apply.id);
+    } catch {
+      // A renderer disappearing during release cannot retain an interactive lock.
+    }
+  }
+}
+
+async function prepareRendererNotesPersistentApply(): Promise<RendererNotesPersistentApply> {
+  const apply = { id: randomUUID(), windows: rendererNotesWindows() };
+  try {
+    await Promise.all(apply.windows.map((window) => requestRendererNotesFlush(window, apply.id)));
+    return apply;
+  } catch (error) {
+    releaseRendererNotesPersistentApply(apply);
+    throw error;
+  }
+}
+
+function publishPersistentDataReload(
+  source: 's3' | 'trilium',
+  apply: RendererNotesPersistentApply,
+): void {
+  persistentDataGeneration += 1;
+  broadcast(IPC_CHANNELS.persistentDataReloaded, {
+    generation: persistentDataGeneration,
+    source,
+    persistentApplyId: apply.id,
+  });
 }
 
 function serviceKey(hostId: string, serviceId: string): string {
@@ -1581,86 +1631,99 @@ async function applyS3SharedAppData(
   data: S3SharedAppDataV2,
   expectedLocal?: S3SharedAppDataV2,
 ): Promise<boolean> {
-  // The network reconciliation can finish while a renderer draft is still in
-  // its short debounce window. Force that draft through the ordinary Notes
-  // mutation queue before the final expected-local check and cloud apply.
-  await flushRendererNotes();
-  return runS3SharedDataMutation(async () => {
-    if (expectedLocal) {
-      const currentShared = await collectS3SharedAppDataUnlocked();
-      if (!isDeepStrictEqual(currentShared, expectedLocal)) return false;
-    }
+  // Freeze before flushing so a keystroke cannot land between the final
+  // expected-local check and the whole-workspace replacement.
+  const rendererApply = await prepareRendererNotesPersistentApply();
+  let reloadOwnsRelease = false;
+  let changed = false;
+  try {
+    const applied = await runS3SharedDataMutation(async () => {
+      if (expectedLocal) {
+        const currentShared = await collectS3SharedAppDataUnlocked();
+        if (!isDeepStrictEqual(currentShared, expectedLocal)) return false;
+      }
 
-    const currentHosts = getStore().listHosts();
-    const currentNotes = getNotesStore().exportSnapshot();
-    const currentNoteTombstones = getNotesStore().exportTombstones();
-    const currentNotesTree = getNotesTreeStore().snapshot();
-    const currentExpandedNoteIds = getNotesTreeViewStore().snapshot().expandedNoteIds;
-    const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
-    const staged = stageS3SharedAppDataForLocalApply(data, {
-      hosts: currentHosts,
-      proxy: currentProxy,
-    });
-    const nextHosts = validateS3AppliedHosts(staged.hosts, currentHosts);
-    const hostsChanged = !isDeepStrictEqual(currentHosts, nextHosts);
-    const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes)
-      || !isDeepStrictEqual(currentNoteTombstones, staged.noteTombstones);
-    const notesTreeChanged = !isDeepStrictEqual(currentNotesTree, staged.notesTree);
-    const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
-    if (!hostsChanged && !notesChanged && !notesTreeChanged && !proxyChanged) return true;
+      const currentHosts = getStore().listHosts();
+      const currentNotes = getNotesStore().exportSnapshot();
+      const currentNoteTombstones = getNotesStore().exportTombstones();
+      const currentNotesTree = getNotesTreeStore().snapshot();
+      const currentExpandedNoteIds = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
+      const staged = stageS3SharedAppDataForLocalApply(data, {
+        hosts: currentHosts,
+        proxy: currentProxy,
+      });
+      const nextHosts = validateS3AppliedHosts(staged.hosts, currentHosts);
+      const hostsChanged = !isDeepStrictEqual(currentHosts, nextHosts);
+      const notesChanged = !isDeepStrictEqual(currentNotes, staged.notes)
+        || !isDeepStrictEqual(currentNoteTombstones, staged.noteTombstones);
+      const notesTreeChanged = !isDeepStrictEqual(currentNotesTree, staged.notesTree);
+      const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
+      changed = hostsChanged || notesChanged || notesTreeChanged || proxyChanged;
+      if (!changed) return true;
 
-    if (hostsChanged) await stopAndClearHostRuntime(currentHosts);
-    try {
-      if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes, staged.noteTombstones);
-      if (notesChanged || notesTreeChanged) {
-        const activeNoteIds = staged.notes.notes.map((note) => note.id);
-        await getNotesTreeStore().replaceSnapshot(staged.notesTree, activeNoteIds);
-        await getNotesTreeViewStore().replaceActiveIds(activeNoteIds);
-      }
-      if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
-      if (hostsChanged) await getStore().replaceHosts(nextHosts);
-    } catch (error) {
-      const rollbackErrors: unknown[] = [];
-      let notesRollbackIncomplete = false;
-      if (notesChanged) {
-        await getNotesStore().replaceSnapshot(currentNotes, currentNoteTombstones)
-          .catch((rollback) => {
-            notesRollbackIncomplete = true;
-            rollbackErrors.push(rollback);
-          });
-      }
-      if (notesChanged || notesTreeChanged) {
-        const activeNoteIds = currentNotes.notes.map((note) => note.id);
-        await getNotesTreeStore().replaceSnapshot(currentNotesTree, activeNoteIds)
-          .catch((rollback) => {
-            notesRollbackIncomplete = true;
-            rollbackErrors.push(rollback);
-          });
-        await getNotesTreeViewStore().save(currentExpandedNoteIds, activeNoteIds)
-          .catch((rollback) => {
-            notesRollbackIncomplete = true;
-            rollbackErrors.push(rollback);
-          });
-      }
-      if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(currentProxy).catch((rollback) => rollbackErrors.push(rollback));
-      if (hostsChanged) await getStore().replaceHosts(currentHosts).catch((rollback) => rollbackErrors.push(rollback));
       if (hostsChanged) {
-        syncKnownForwards(currentHosts);
-        for (const host of currentHosts) await autoStartHostRules(host);
+        await stopAndClearHostRuntime(currentHosts);
       }
-      if (rollbackErrors.length > 0) {
-        if (notesRollbackIncomplete) notesWorkspaceUnsafe = true;
-        throw new Error('Cloud data could not be applied and the local rollback was incomplete. Restart the application before editing data.');
+      try {
+        if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes, staged.noteTombstones);
+        if (notesChanged || notesTreeChanged) {
+          const activeNoteIds = staged.notes.notes.map((note) => note.id);
+          await getNotesTreeStore().replaceSnapshot(staged.notesTree, activeNoteIds);
+          await getNotesTreeViewStore().replaceActiveIds(activeNoteIds);
+        }
+        if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
+        if (hostsChanged) await getStore().replaceHosts(nextHosts);
+      } catch (error) {
+        const rollbackErrors: unknown[] = [];
+        let notesRollbackIncomplete = false;
+        if (notesChanged) {
+          await getNotesStore().replaceSnapshot(currentNotes, currentNoteTombstones)
+            .catch((rollback) => {
+              notesRollbackIncomplete = true;
+              rollbackErrors.push(rollback);
+            });
+        }
+        if (notesChanged || notesTreeChanged) {
+          const activeNoteIds = currentNotes.notes.map((note) => note.id);
+          await getNotesTreeStore().replaceSnapshot(currentNotesTree, activeNoteIds)
+            .catch((rollback) => {
+              notesRollbackIncomplete = true;
+              rollbackErrors.push(rollback);
+            });
+          await getNotesTreeViewStore().save(currentExpandedNoteIds, activeNoteIds)
+            .catch((rollback) => {
+              notesRollbackIncomplete = true;
+              rollbackErrors.push(rollback);
+            });
+        }
+        if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(currentProxy).catch((rollback) => rollbackErrors.push(rollback));
+        if (hostsChanged) await getStore().replaceHosts(currentHosts).catch((rollback) => rollbackErrors.push(rollback));
+        if (hostsChanged) {
+          syncKnownForwards(currentHosts);
+          for (const host of currentHosts) await autoStartHostRules(host);
+        }
+        if (rollbackErrors.length > 0) {
+          if (notesRollbackIncomplete) notesWorkspaceUnsafe = true;
+          throw new Error('Cloud data could not be applied and the local rollback was incomplete. Restart the application before editing data.');
+        }
+        throw error;
       }
-      throw error;
-    }
 
-    if (hostsChanged) {
-      syncKnownForwards(nextHosts);
-      for (const host of nextHosts) await autoStartHostRules(host);
+      if (hostsChanged) {
+        syncKnownForwards(nextHosts);
+        for (const host of nextHosts) await autoStartHostRules(host);
+      }
+      return true;
+    });
+    if (applied && changed) {
+      publishPersistentDataReload('s3', rendererApply);
+      reloadOwnsRelease = true;
     }
-    return true;
-  });
+    return applied;
+  } finally {
+    if (!reloadOwnsRelease) releaseRendererNotesPersistentApply(rendererApply);
+  }
 }
 
 function registerIpcHandlers(): void {
@@ -2032,81 +2095,83 @@ function registerIpcHandlers(): void {
         total: 1,
         message: 'Applying imported Notes…',
       });
-      await flushRendererNotes();
-      if (session.s3ImageTarget) {
-        const settings = await getS3SyncRuntime().getSettings();
-        if (notesImageTarget(settings) !== session.s3ImageTarget) {
-          throw new Error('S3 settings changed after the Trilium images were imported. Start the import again.');
-        }
-      }
-      const applied = await runS3SharedDataMutation(async () => {
-        assertNotesWorkspaceSafe();
-        const previousNotes = getNotesStore().exportSnapshot();
-        const previousTombstones = getNotesStore().exportTombstones();
-        const previousTree = getNotesTreeStore().snapshot();
-        const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
-        const convertedHtml = Object.fromEntries(input.convertedNotes.map((note) => [note.noteId, note.content]));
-        const merged = mergeTriliumImport({
-          plan: session.plan,
-          convertedHtml,
-          notes: previousNotes,
-          tombstones: previousTombstones,
-          tree: previousTree,
-        });
-        const notesChanged = !isDeepStrictEqual(previousNotes, merged.notes)
-          || !isDeepStrictEqual(previousTombstones, merged.tombstones);
-        const treeChanged = !isDeepStrictEqual(previousTree, merged.tree);
-        if (notesChanged || treeChanged) {
-          try {
-            if (notesChanged) await getNotesStore().replaceSnapshot(merged.notes, merged.tombstones);
-            if (notesChanged || treeChanged) {
-              const activeIds = merged.notes.notes.map((note) => note.id);
-              await getNotesTreeStore().replaceSnapshot(merged.tree, activeIds);
-              await getNotesTreeViewStore().replaceActiveIds(activeIds);
-            }
-          } catch (error) {
-            await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
-            throw error;
+      const rendererApply = await prepareRendererNotesPersistentApply();
+      let reloadOwnsRelease = false;
+      try {
+        if (session.s3ImageTarget) {
+          const settings = await getS3SyncRuntime().getSettings();
+          if (notesImageTarget(settings) !== session.s3ImageTarget) {
+            throw new Error('S3 settings changed after the Trilium images were imported. Start the import again.');
           }
-          s3SyncRuntime?.markLocalChange();
         }
-        return { summary: merged.summary, changed: notesChanged || treeChanged };
-      });
-
-      const result: TriliumImportResult = {
-        total: applied.summary.imported,
-        created: applied.summary.created,
-        updated: applied.summary.updated,
-        unchanged: applied.summary.unchanged,
-        placeholderCount: applied.summary.placeholders,
-        cloneCount: applied.summary.clones,
-        embeddedImageCount: input.convertedNotes.reduce(
-          (total, note) => total + note.embeddedImageCount,
-          0,
-        ),
-        imagePlaceholderCount: input.convertedNotes.reduce(
-          (total, note) => total + note.imagePlaceholderCount,
-          0,
-        ),
-        plainTextFallbackCount: input.convertedNotes.filter(
-          (note) => note.usedPlainTextFallback,
-        ).length,
-      };
-      if (applied.changed) {
-        persistentDataGeneration += 1;
-        broadcast(IPC_CHANNELS.persistentDataReloaded, {
-          generation: persistentDataGeneration,
-          source: 'trilium',
+        const applied = await runS3SharedDataMutation(async () => {
+          assertNotesWorkspaceSafe();
+          const previousNotes = getNotesStore().exportSnapshot();
+          const previousTombstones = getNotesStore().exportTombstones();
+          const previousTree = getNotesTreeStore().snapshot();
+          const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
+          const convertedHtml = Object.fromEntries(input.convertedNotes.map((note) => [note.noteId, note.content]));
+          const merged = mergeTriliumImport({
+            plan: session.plan,
+            convertedHtml,
+            notes: previousNotes,
+            tombstones: previousTombstones,
+            tree: previousTree,
+          });
+          const notesChanged = !isDeepStrictEqual(previousNotes, merged.notes)
+            || !isDeepStrictEqual(previousTombstones, merged.tombstones);
+          const treeChanged = !isDeepStrictEqual(previousTree, merged.tree);
+          if (notesChanged || treeChanged) {
+            try {
+              if (notesChanged) await getNotesStore().replaceSnapshot(merged.notes, merged.tombstones);
+              if (notesChanged || treeChanged) {
+                const activeIds = merged.notes.notes.map((note) => note.id);
+                await getNotesTreeStore().replaceSnapshot(merged.tree, activeIds);
+                await getNotesTreeViewStore().replaceActiveIds(activeIds);
+              }
+            } catch (error) {
+              await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
+              throw error;
+            }
+            s3SyncRuntime?.markLocalChange();
+          }
+          return { summary: merged.summary, changed: notesChanged || treeChanged };
         });
+
+        const result: TriliumImportResult = {
+          total: applied.summary.imported,
+          created: applied.summary.created,
+          updated: applied.summary.updated,
+          unchanged: applied.summary.unchanged,
+          placeholderCount: applied.summary.placeholders,
+          cloneCount: applied.summary.clones,
+          embeddedImageCount: input.convertedNotes.reduce(
+            (total, note) => total + note.embeddedImageCount,
+            0,
+          ),
+          imagePlaceholderCount: input.convertedNotes.reduce(
+            (total, note) => total + note.imagePlaceholderCount,
+            0,
+          ),
+          plainTextFallbackCount: input.convertedNotes.filter(
+            (note) => note.usedPlainTextFallback,
+          ).length,
+        };
+        if (applied.changed) {
+          publishPersistentDataReload('trilium', rendererApply);
+          reloadOwnsRelease = true;
+        }
+        sendTriliumImportProgress(event.sender, {
+          requestId: input.requestId,
+          phase: 'complete',
+          completed: 1,
+          total: 1,
+          message: `Imported ${result.total} Notes.`,
+        });
+        return result;
+      } finally {
+        if (!reloadOwnsRelease) releaseRendererNotesPersistentApply(rendererApply);
       }
-      sendTriliumImportProgress(event.sender, {
-        requestId: input.requestId,
-        phase: 'complete',
-        completed: 1,
-        total: 1,
-        message: `Imported ${result.total} Notes.`,
-      });
-      return result;
     })();
     try {
       return await trackTriliumImportTask(task);
@@ -2995,13 +3060,6 @@ app.whenReady()
       snapshotProvider: collectS3SharedAppData,
       snapshotApplier: applyS3SharedAppData,
       onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),
-      onDataApplied: () => {
-        persistentDataGeneration += 1;
-        broadcast(IPC_CHANNELS.persistentDataReloaded, {
-          generation: persistentDataGeneration,
-          source: 's3',
-        });
-      },
     });
 
     powerMonitor.on('resume', () => s3SyncRuntime?.checkForRemoteChanges());

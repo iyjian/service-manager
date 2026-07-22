@@ -550,6 +550,7 @@ class NotesPage {
   private sidebarKeyboardSaveTimer: number | undefined;
   private searchRenderTimer: number | undefined;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
+  private readonly persistentApplyIds = new Set<string>();
 
   constructor() {
     this.codeEditor = new EditorView({
@@ -559,7 +560,7 @@ class NotesPage {
     this.richTextEditor = new NotesRichTextEditor({
       host: this.richTextHost,
       toolbar: this.richTextToolbar,
-      onUpdate: (content) => this.updateSelectedRichTextContent(content),
+      onChange: () => this.updateSelectedRichTextContent(),
       onError: (message) => setMessage(message, 'error'),
       onRequestImage: (file, position) => {
         if (file) void this.uploadImageFile(file, position);
@@ -774,12 +775,32 @@ class NotesPage {
     this.requestEditorMeasure();
   }
 
-  async reload(): Promise<void> {
-    // A user can type during the short main-process apply window after the
-    // final pre-apply flush. Freeze this page and recover every such draft
-    // with its last persisted Note as a compare-and-swap base. If the cloud
-    // changed or deleted that base, preserve the late draft as a Conflict
-    // Note instead of overwriting the newly applied cloud value.
+  async lockForPersistentApply(persistentApplyId: string): Promise<void> {
+    this.persistentApplyIds.add(persistentApplyId);
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
+    this.pageRoot.inert = true;
+    this.selectionVersion += 1;
+    try {
+      await this.flush();
+    } catch (error) {
+      this.releasePersistentApply(persistentApplyId);
+      throw error;
+    }
+  }
+
+  releasePersistentApply(persistentApplyId: string): void {
+    this.persistentApplyIds.delete(persistentApplyId);
+    if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
+  }
+
+  async reload(persistentApplyId?: string): Promise<void> {
+    // Current persistent applies freeze Notes before their final flush, so the
+    // matching reload has no possible late draft to recover. Keep the recovery
+    // path for reload events from older or otherwise uncoordinated producers.
+    const coordinatedApply = Boolean(
+      persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
+    );
     this.cancelSearchRender();
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
@@ -789,7 +810,8 @@ class NotesPage {
     let selectedAfterRecovery: string | undefined;
     let conflictCount = 0;
     try {
-      const pending = this.notes
+      if (!coordinatedApply && this.selectedId) this.captureEditorContent(this.selectedId);
+      const pending = coordinatedApply ? [] : this.notes
         .filter((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))
         .map((note): NoteDraftRecoveryInput => {
           const expectedNote = this.persistedNotes.get(note.id);
@@ -834,7 +856,8 @@ class NotesPage {
         );
       }
     } finally {
-      this.pageRoot.inert = false;
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      else if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
     }
   }
 
@@ -1301,29 +1324,43 @@ class NotesPage {
     if (this.replacingEditorDocument) return;
     const note = this.selectedNote();
     if (!note || note.language === 'richtext') return;
-    note.content = this.codeEditor.state.doc.toString();
     this.updateEditorEmptyState();
-    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
+    this.markNoteEdited(note, false, false);
   }
 
-  private updateSelectedRichTextContent(content: string): void {
+  private updateSelectedRichTextContent(): void {
     if (this.replacingEditorDocument) return;
     const note = this.selectedNote();
     if (!note || note.language !== 'richtext') return;
-    note.content = content;
-    this.updateEditorEmptyState();
-    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
+    this.markNoteEdited(note, false, false);
   }
 
-  private markNoteEdited(note: Note, refreshSearchResults: boolean): void {
+  private markNoteEdited(
+    note: Note,
+    refreshSearchResults: boolean,
+    refreshSearchEntry = true,
+  ): void {
     const wasDirty = this.isDirty(note.id);
     const hadSaveError = this.saveErrorNoteIds.delete(note.id);
-    this.refreshNoteSearchEntry(note);
+    if (refreshSearchEntry) this.refreshNoteSearchEntry(note);
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     if (this.selectedId === note.id) this.setSaveStatus('Saving…', 'saving');
     if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
     if (refreshSearchResults) this.queueSearchRender();
     this.scheduleSave(note.id);
+  }
+
+  private captureEditorContent(id: string): void {
+    const note = this.notesById.get(id);
+    if (!note || this.editorNoteId !== id || this.selectedId !== id) return;
+    const content = note.language === 'richtext'
+      ? this.richTextEditor.getContent()
+      : this.codeEditor.state.doc.toString();
+    if (note.content === content) return;
+    note.content = content;
+    this.refreshNoteSearchEntry(note);
+    this.updateEditorEmptyState();
+    if (this.searchInput.value.trim()) this.queueSearchRender();
   }
 
   private async changeSelectedLanguage(): Promise<void> {
@@ -1334,6 +1371,13 @@ class NotesPage {
     const targetLanguage = this.languageSelect.value as NoteLanguage;
     if (!(targetLanguage in noteLanguageExtensions) || targetLanguage === sourceLanguage) {
       this.languageSelect.value = sourceLanguage;
+      return;
+    }
+    try {
+      this.captureEditorContent(note.id);
+    } catch (error) {
+      this.languageSelect.value = sourceLanguage;
+      this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
       return;
     }
 
@@ -1475,6 +1519,16 @@ class NotesPage {
   private flushNote(id: string): Promise<void> {
     this.clearSaveTimer(id);
     const note = this.notesById.get(id);
+    try {
+      this.captureEditorContent(id);
+    } catch (error) {
+      if (note && !this.deletedIds.has(id)) {
+        this.saveErrorNoteIds.add(id);
+        this.updateListSaveIndicator(id);
+        if (this.selectedId === id) this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+      }
+      return this.saveQueues.get(id) ?? Promise.resolve();
+    }
     const version = this.editVersions.get(id) ?? 0;
     const completedVersion = this.persistedVersions.get(id) ?? 0;
     const queuedVersion = this.queuedVersions.get(id) ?? 0;
@@ -1609,6 +1663,7 @@ class NotesPage {
     const note = this.selectedNote();
     if (!note) return;
     try {
+      this.captureEditorContent(note.id);
       const content = note.language === 'richtext'
         ? extractRichTextPlainText(note.content)
         : note.content;
@@ -1898,7 +1953,12 @@ export function applyNotesSidebarWidth(width: number): void {
 export function registerNotesPage(): void {
   page ??= new NotesPage();
   if (!flushListenerRegistered) {
-    window.notesApi.onFlushRequested(() => page?.flush() ?? Promise.resolve());
+    window.notesApi.onFlushRequested((request) => request.persistentApplyId
+      ? page?.lockForPersistentApply(request.persistentApplyId) ?? Promise.resolve()
+      : page?.flush() ?? Promise.resolve());
+    window.notesApi.onPersistentApplyReleased((persistentApplyId) => {
+      page?.releasePersistentApply(persistentApplyId);
+    });
     flushListenerRegistered = true;
   }
   registerPage({
@@ -1914,6 +1974,6 @@ export function flushNotesPage(): Promise<void> {
   return page?.flush() ?? Promise.resolve();
 }
 
-export function reloadNotesPage(): Promise<void> {
-  return page?.reload() ?? Promise.resolve();
+export function reloadNotesPage(persistentApplyId?: string): Promise<void> {
+  return page?.reload(persistentApplyId) ?? Promise.resolve();
 }

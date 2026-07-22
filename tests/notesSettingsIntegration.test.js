@@ -75,6 +75,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(preload, /loadImage:\s*\(reference\)\s*=>\s*[^\n]*invoke\('notes:image:load', reference\)/);
   assert.match(preload, /ipcRenderer\.on\('notes:flush-request', handler\)/);
   assert.match(preload, /ipcRenderer\.send\('notes:flush-result', \{ requestId, ok: true \}\)/);
+  assert.match(preload, /ipcRenderer\.on\('notes:persistent-apply-release', handler\)/);
   assert.match(preload, /exposeInMainWorld\('notesApi', notesApi\)/);
 
   for (const handler of [
@@ -139,7 +140,9 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /export function resolveNoteTreeDropPlacement\(/);
   assert.match(notesPage, /await this\.flushAllPendingSaves\(\);[\s\S]*?const editVersionBaseline = new Map\(this\.editVersions\)[\s\S]*?this\.applyWorkspace\(workspace, editVersionBaseline\)/);
   assert.match(notesPage, /This will permanently delete \$\{preview\.expectedIds\.length\} Notes in this subtree\./);
-  assert.match(main, /await flushRendererNotes\(\);\s*return runS3SharedDataMutation/);
+  assert.match(main, /const rendererApply = await prepareRendererNotesPersistentApply\(\)/);
+  assert.match(main, /publishPersistentDataReload\('s3', rendererApply\)/);
+  assert.match(main, /if \(!reloadOwnsRelease\)\s+releaseRendererNotesPersistentApply\(rendererApply\)/);
   assert.match(main, /sameNoteIds\(deletedIds, input\.expectedIds\)/);
   assert.match(main, /status: 'changed'[\s\S]*?preview: noteDeletePreview\(input\.id\)/);
   assert.match(main, /getNotesStore\(\)\.deleteMany\(deletedIds\)/);
@@ -385,9 +388,9 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   const s3BranchStart = persistentReload.indexOf(':', triliumBranchStart);
   const branchEnd = persistentReload.indexOf(';', s3BranchStart);
   assert.ok(sourceCheck >= 0 && triliumBranchStart > sourceCheck && s3BranchStart > triliumBranchStart && branchEnd > s3BranchStart);
-  assert.match(persistentReload.slice(triliumBranchStart + 1, s3BranchStart), /reloadNotesPage\(\)/);
+  assert.match(persistentReload.slice(triliumBranchStart + 1, s3BranchStart), /reloadNotesPage\(event\.persistentApplyId\)/);
   assert.doesNotMatch(persistentReload.slice(triliumBranchStart + 1, s3BranchStart), /loadHosts\(\)/);
-  assert.match(persistentReload.slice(s3BranchStart + 1, branchEnd), /Promise\.all\(\[loadHosts\(\), reloadNotesPage\(\)\]\)/);
+  assert.match(persistentReload.slice(s3BranchStart + 1, branchEnd), /Promise\.all\(\[loadHosts\(\), reloadNotesPage\(event\.persistentApplyId\)\]\)/);
   assert.match(settingsDialog, /window\.settingsApi\.syncAllDataToS3\(\)/);
   assert.match(settingsDialog, /window\.settingsApi\.testS3Connection\(currentS3TestDraft\(\)\)/);
   assert.match(settingsDialog, /window\.settingsApi\.onS3SyncStateChanged\(renderSyncState\)/);

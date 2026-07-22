@@ -399,7 +399,9 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /throw new Error\('Some notes could not be saved\. Fix the save error before syncing\.'\)/);
   assert.match(source, /const restoreFocusId = focusId \?\? activeItem\?\.dataset\.noteId/);
   assert.match(source, /if \(!this\.selectedId\) this\.newButton\.focus\(\)/);
-  assert.match(source, /window\.notesApi\.onFlushRequested\(\(\) => page\?\.flush\(\) \?\? Promise\.resolve\(\)\)/);
+  assert.match(source, /window\.notesApi\.onFlushRequested\(\(request\) => request\.persistentApplyId/);
+  assert.match(source, /page\?\.lockForPersistentApply\(request\.persistentApplyId\)/);
+  assert.match(source, /window\.notesApi\.onPersistentApplyReleased\(\(persistentApplyId\)/);
   assert.match(source, /name\.textContent = note\.name \|\| 'Untitled'/);
   assert.match(source, /this\.saveStatus\.textContent = text/);
   assert.match(source, /private async deleteNote\(id: string\)/);
@@ -449,7 +451,7 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
   assert.match(source, /this\.nameInput\.value = note\.name/);
   assert.match(source, /this\.codeEditor\.setState\(this\.createEditorState\(note\.content, note\.language\)\)/);
   assert.match(source, /this\.replaceEditorDocument\(note\.content\)/);
-  assert.match(source, /note\.content = this\.codeEditor\.state\.doc\.toString\(\)/);
+  assert.match(source, /const content = note\.language === 'richtext'[\s\S]*?this\.codeEditor\.state\.doc\.toString\(\)/);
   assert.match(source, /new NotesRichTextEditor\(\{/);
   assert.match(source, /this\.replaceRichTextDocument\(note\.content\)/);
   assert.match(source, /note\.content = content/);
@@ -459,6 +461,28 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
   assert.match(source, /this\.codeEditor\.dispatch\(\{/);
   assert.doesNotMatch(source, /tagsInput|normalizeTags/);
   assert.match(source, /tags: \[\.\.\.note\.tags\]/);
+});
+
+test('Notes editor input marks dirty without serializing the complete document until capture', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const codeUpdateStart = source.indexOf('  private updateSelectedCodeContent(): void {');
+  const richUpdateStart = source.indexOf('  private updateSelectedRichTextContent(): void {');
+  const markEditedStart = source.indexOf('  private markNoteEdited(', richUpdateStart);
+  const captureStart = source.indexOf('  private captureEditorContent(', markEditedStart);
+  const languageStart = source.indexOf('  private async changeSelectedLanguage(', captureStart);
+  assert.ok(codeUpdateStart >= 0 && richUpdateStart > codeUpdateStart);
+  assert.ok(markEditedStart > richUpdateStart && captureStart > markEditedStart && languageStart > captureStart);
+
+  const codeUpdate = source.slice(codeUpdateStart, richUpdateStart);
+  const richUpdate = source.slice(richUpdateStart, markEditedStart);
+  const capture = source.slice(captureStart, languageStart);
+  assert.doesNotMatch(codeUpdate, /doc\.toString\(\)/);
+  assert.doesNotMatch(richUpdate, /getContent\(\)|normalizeRichTextContent|JSON\.stringify/);
+  assert.match(codeUpdate, /this\.markNoteEdited\(note, false, false\)/);
+  assert.match(richUpdate, /this\.markNoteEdited\(note, false, false\)/);
+  assert.match(capture, /this\.richTextEditor\.getContent\(\)/);
+  assert.match(capture, /this\.codeEditor\.state\.doc\.toString\(\)/);
+  assert.match(source, /private flushNote\(id: string\)[\s\S]*?this\.captureEditorContent\(id\)/);
 });
 
 test('Notes rich text mode searches readable content, confirms lossy changes, and uploads images through narrow IPC', async () => {

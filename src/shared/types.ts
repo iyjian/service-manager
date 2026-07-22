@@ -775,6 +775,11 @@ export type NoteImageLoadResult =
   | { status: 'loaded'; bytes: Uint8Array; mimeType: NoteImageMimeType }
   | { status: 'not-configured' | 'missing' | 'error' };
 
+export interface NotesFlushRequest {
+  /** Keeps the Notes page inert until the matching apply reload or release. */
+  persistentApplyId?: string;
+}
+
 export interface NotesApi {
   listNotes: () => Promise<Note[]>;
   getWorkspace: () => Promise<NotesWorkspaceSnapshot>;
@@ -787,7 +792,8 @@ export interface NotesApi {
   recoverDrafts: (input: NoteDraftRecoveryInput[]) => Promise<NoteDraftRecoveryResult>;
   uploadImage: (input: NoteImageUploadInput) => Promise<NoteImageUploadResult>;
   loadImage: (reference: NoteImageReference) => Promise<NoteImageLoadResult>;
-  onFlushRequested: (listener: () => void | Promise<void>) => () => void;
+  onFlushRequested: (listener: (request: NotesFlushRequest) => void | Promise<void>) => () => void;
+  onPersistentApplyReleased: (listener: (persistentApplyId: string) => void) => () => void;
 }
 
 export interface UiPreferences {
@@ -992,6 +998,8 @@ export interface S3SyncState {
 export interface PersistentDataReloaded {
   generation: number;
   source: 's3' | 'trilium';
+  /** Present when Notes was frozen before this whole-workspace apply. */
+  persistentApplyId?: string;
 }
 
 export interface SettingsApi {

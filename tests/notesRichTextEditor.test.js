@@ -97,7 +97,8 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
   assert.match(source, /normalizeRichTextContent\(\s*value === undefined \|\| value === null \? EMPTY_RICH_TEXT_CONTENT : value/);
   assert.match(source, /setContent\(parseRichTextContent\(normalized\), \{/);
   assert.match(source, /normalizeRichTextContent\(stripTiptapLinkDefaults\(value\)\)/);
-  assert.match(source, /return normalizeEditorContent\(this\.editor\.getJSON\(\)\)/);
+  assert.match(source, /const content = normalizeEditorContent\(this\.editor\.getJSON\(\)\)/);
+  assert.match(source, /this\.lastCanonicalContent = content;\s*return content/);
   assert.match(source, /extractRichTextPlainText\(this\.getContent\(\)\)/);
   assert.match(source, /type: 's3Image',\s*attrs: reference/);
 
@@ -330,14 +331,37 @@ test('Tiptap Link uses the canonical absolute-http policy and never opens a brow
   assert.doesNotMatch(strip, /delete\s+result\.attrs\.(?:target|rel|href)/);
 });
 
-test('invalid editor updates roll back to the latest successfully emitted canonical content', async () => {
+test('invalid editor capture rolls back to the latest canonical content', async () => {
   const source = await readEditorSource();
   assert.match(source, /private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT/);
   assert.match(source, /private restoringCanonicalContent = false/);
   assert.match(source, /this\.lastCanonicalContent = normalized/);
-  assert.match(source, /if \(this\.restoringCanonicalContent\) return/);
-  assert.match(source, /const content = this\.getContent\(\);[\s\S]*?this\.onUpdate\(content\);[\s\S]*?this\.lastCanonicalContent = content/);
-  assert.match(source, /catch \(error\) \{[\s\S]*?this\.restoreLastCanonicalContent\(\);[\s\S]*?safelyReport/);
+  assert.match(source, /public getContent\(\): string \{[\s\S]*?catch \(error\) \{[\s\S]*?this\.restoreLastCanonicalContent\(\);[\s\S]*?safelyReport/);
   assert.match(source, /private restoreLastCanonicalContent\(\): void \{[\s\S]*?parseRichTextContent\(this\.lastCanonicalContent\)[\s\S]*?emitUpdate: false[\s\S]*?errorOnInvalidContent: true/);
   assert.match(source, /finally \{\s*this\.restoringCanonicalContent = false/);
+});
+
+test('rich text input defers canonical capture and coalesces editor chrome to one animation frame', async () => {
+  const source = await readEditorSource();
+  const updateStart = source.indexOf('      onUpdate: () => {');
+  const selectionStart = source.indexOf('      onSelectionUpdate: () => {', updateStart);
+  const queueStart = source.indexOf('  private queueViewSync(): void {');
+  const commandStart = source.indexOf('  private commandChain(', queueStart);
+  assert.ok(updateStart >= 0 && selectionStart > updateStart);
+  assert.ok(queueStart > selectionStart && commandStart > queueStart);
+
+  const update = source.slice(updateStart, selectionStart);
+  const queue = source.slice(queueStart, commandStart);
+  assert.match(update, /this\.onChange\(\);\s*this\.queueViewSync\(\)/);
+  assert.doesNotMatch(update, /getContent\(\)|getJSON\(\)|normalizeEditorContent/);
+  assert.match(queue, /if \(this\.editor\.isDestroyed \|\| this\.viewSyncFrame !== undefined\) return/);
+  assert.equal((queue.match(/window\.requestAnimationFrame/g) ?? []).length, 1);
+  for (const call of [
+    'updateToolbarState',
+    'updateEmptyState',
+    'bubbleMenu.sync',
+    'imageBubbleMenu.sync',
+    'tableControls.sync',
+    'slashMenu.sync',
+  ]) assert.match(queue, new RegExp(`this\\.${call.replace('.', '\\.')}`));
 });

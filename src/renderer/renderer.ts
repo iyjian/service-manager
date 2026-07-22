@@ -2547,8 +2547,8 @@ window.serviceApi.onUpdateStateChanged((state) => {
 
 window.settingsApi.onPersistentDataReloaded((event) => {
   const reload = event.source === 'trilium'
-    ? reloadNotesPage()
-    : Promise.all([loadHosts(), reloadNotesPage()]).then(() => undefined);
+    ? reloadNotesPage(event.persistentApplyId)
+    : Promise.all([loadHosts(), reloadNotesPage(event.persistentApplyId)]).then(() => undefined);
   void reload.catch((error) => {
     reportRendererError('persistent-data-reloaded', error, 'Persistent data changed, but the page could not be refreshed.');
   });
