@@ -1,6 +1,6 @@
 {
   "name": "service-manager",
-  "version": "0.3.33",
+  "version": "0.3.34",
   "description": "Desktop service manager built with Electron and TypeScript",
   "main": "dist/main/bootstrap.js",
   "packageManager": "pnpm@9.1.2",
