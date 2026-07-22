@@ -324,6 +324,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
   assert.match(html, /id="nav-settings-btn"[^>]*aria-label="Settings"/);
+  assert.match(html, /id="nav-settings-btn"[\s\S]*?<svg class="nav-settings-icon"[^>]*viewBox="0 0 24 24"[\s\S]*?<circle cx="12" cy="12" r="3"><\/circle>/);
   assert.match(styles, /\.nav-settings-button\{margin-top:auto;order:99\}/);
   assert.match(styles, /\.host-dialog\.settings-dialog\{width:min\(540px,calc\(100vw - 32px\)\)/);
   assert.match(styles, /\.dialog-panel\.settings-panel\{[^}]*height:min\(600px,calc\(100dvh - 32px\)\)[^}]*max-height:min\(600px,calc\(100dvh - 32px\)\)[^}]*grid-template-rows:auto auto minmax\(0,1fr\) auto/);
