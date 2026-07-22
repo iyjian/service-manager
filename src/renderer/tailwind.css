@@ -835,6 +835,7 @@
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox'] {
+    font: inherit;
     appearance: none;
     -webkit-appearance: none;
     border-style: solid;
@@ -843,7 +844,7 @@
     height: 1.2em;
     margin: 0 0.3rem 0 0;
     position: relative;
-    top: calc((1.78em - 1.2em) / 2);
+    top: calc((1.78em - 1.2em) / 2 - 0.5px);
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox']::before {
@@ -1137,7 +1138,7 @@
     @apply text-zinc-400;
   }
 
-  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div {
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror li[data-task-item][data-checked='true'] > div > p {
     @apply text-zinc-500;
   }
 

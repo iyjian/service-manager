@@ -214,9 +214,28 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(taskItemRule[1], /align-items:flex-start/);
   assert.match(taskItemRule[1], /margin-top:1rem/);
   assert.match(taskItemRule[1], /margin-bottom:1rem/);
-  assert.match(styles, /li\[data-task-item\] input\[type=checkbox\][^{]*\{[^}]*appearance:none[^}]*border-style:solid[^}]*display:grid[^}]*place-content:center/);
-  assert.match(styles, /li\[data-task-item\] input\[type=checkbox\][^{]*\{[^}]*width:1\.2em[^}]*height:1\.2em[^}]*top:(?:\.29em|calc\(\(1\.78em - 1\.2em\)\/2\))/);
+  const taskCheckboxRules = [...styles.matchAll(/li\[data-task-item\] input\[type=checkbox\][^{]*\{([^}]*)\}/g)];
+  assert.ok(taskCheckboxRules.length > 0);
+  const taskCheckboxDeclarations = taskCheckboxRules.map((match) => match[1]).join(';');
+  assert.match(taskCheckboxDeclarations, /font:inherit/);
+  assert.match(taskCheckboxDeclarations, /appearance:none[^}]*border-style:solid[^}]*display:grid[^}]*place-content:center/);
+  assert.match(
+    taskCheckboxDeclarations,
+    /width:1\.2em[^}]*height:1\.2em[^}]*top:calc\((?:\.29em|\(1\.78em - 1\.2em\)\/2) - (?:0?\.5px)\)/,
+  );
+  assert.doesNotMatch(
+    taskCheckboxDeclarations,
+    /top:(?:5px|\.29em|calc\(\.29em\)|calc\(\(1\.78em - 1\.2em\)\/2\)(?:;|$))/,
+  );
   assert.match(styles, /li\[data-task-item\]>div>p\{margin:0\}/);
+  assert.match(
+    styles,
+    /\.notes-content\[data-theme=dark\] \.notes-richtext-content \.ProseMirror li\[data-task-item\]\[data-checked=true\]>div>p\{[^}]*color:/,
+  );
+  assert.doesNotMatch(
+    styles,
+    /\.notes-content\[data-theme=dark\] \.notes-richtext-content \.ProseMirror li\[data-task-item\]\[data-checked=true\]>div\{[^}]*color:/,
+  );
   assert.match(styles, /\.notes-content\{[^}]*height:100%[^}]*min-height:0[^}]*overflow:hidden/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*min-height:0[^}]*overflow:auto/);
