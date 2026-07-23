@@ -188,7 +188,7 @@ async function createRuntime(t, options) {
     createRevision: options.createRevision ?? createRevisionFactory(options.clientId),
     createObjectId: options.createObjectId ?? createObjectIdFactory(options.clientId),
     createClientId: () => options.clientId,
-    createRandomBytes: (size) => Buffer.alloc(size, size),
+    createRandomBytes: options.createRandomBytes ?? ((size) => Buffer.alloc(size, size)),
     onStateChanged: (next) => {
       const snapshot = clone(next);
       syncStates.push(snapshot);
@@ -421,6 +421,61 @@ test('S3 runtime keeps Notes image upload and load on the configured private tar
     await work.runtime.loadNoteImage({ ...uploaded.reference, objectId: 'invalid' }),
     { status: 'error' },
   );
+});
+
+test('S3 runtime deduplicates equal attachment loads and caps active attachment transfers', async (t) => {
+  const s3 = new MemoryS3();
+  let randomValue = 0;
+  let releaseAttachmentReads;
+  const attachmentReadGate = new Promise((resolve) => { releaseAttachmentReads = resolve; });
+  let holdAttachmentReads = false;
+  let attachmentGets = 0;
+  const work = await createRuntime(t, {
+    clientId: 'notes-attachment-client',
+    data: sharedData(),
+    createRandomBytes: (size) => Buffer.alloc(size, (randomValue += 1) & 0xff),
+    fetchImpl: async (url, options = {}) => {
+      if ((options.method ?? 'GET') === 'GET' && String(url).includes('/v4/attachments/')) {
+        attachmentGets += 1;
+        if (holdAttachmentReads) await attachmentReadGate;
+      }
+      return s3.fetch(url, options);
+    },
+  });
+  const references = [];
+  for (const [index, contents] of ['one', 'two', 'three'].entries()) {
+    const uploaded = await work.runtime.uploadNoteAttachment({
+      bytes: new Uint8Array(Buffer.from(contents)),
+      fileName: `attachment-${index + 1}.txt`,
+      mimeType: 'text/plain',
+    });
+    assert.equal(uploaded.status, 'uploaded');
+    references.push(uploaded.reference);
+  }
+
+  holdAttachmentReads = true;
+  const first = work.runtime.loadNoteAttachment(references[0]);
+  const duplicate = work.runtime.loadNoteAttachment(references[0]);
+  const second = work.runtime.loadNoteAttachment(references[1]);
+  await waitFor(() => attachmentGets === 2, 'two attachment reads should occupy the bounded transfer slots');
+  assert.deepEqual(await work.runtime.loadNoteAttachment(references[2]), { status: 'error' });
+  assert.equal(attachmentGets, 2);
+
+  releaseAttachmentReads();
+  const [firstResult, duplicateResult, secondResult] = await Promise.all([first, duplicate, second]);
+  assert.equal(firstResult.status, 'loaded');
+  assert.equal(duplicateResult.status, 'loaded');
+  assert.equal(secondResult.status, 'loaded');
+  assert.equal(Buffer.from(firstResult.bytes).toString('utf8'), 'one');
+  assert.equal(Buffer.from(duplicateResult.bytes).toString('utf8'), 'one');
+  assert.equal(Buffer.from(secondResult.bytes).toString('utf8'), 'two');
+  assert.equal(attachmentGets, 2);
+
+  holdAttachmentReads = false;
+  const third = await work.runtime.loadNoteAttachment(references[2]);
+  assert.equal(third.status, 'loaded');
+  assert.equal(Buffer.from(third.bytes).toString('utf8'), 'three');
+  assert.equal(attachmentGets, 3);
 });
 
 test('S3 runtime reports Notes image storage as unavailable until Endpoint, Bucket, AK, and SK are saved', async (t) => {

@@ -218,6 +218,85 @@ test('Notes tree resolves before, inside, and after drops while rejecting self-d
   assert.equal(isValidNoteTreeParent(nodes, 'missing', null), false);
 });
 
+test('Note Language search keeps the product order and matches labels or useful aliases', async () => {
+  const { NOTE_LANGUAGE_OPTIONS, filterNoteLanguageOptions } = await import(
+    path.join(distRenderer, 'notesPage.js')
+  );
+  assert.deepEqual(
+    NOTE_LANGUAGE_OPTIONS.map(({ value, label }) => [value, label]),
+    [
+      ['richtext', 'Rich Text'],
+      ['markdown', 'Markdown'],
+      ['bash', 'Bash'],
+      ['javascript', 'JavaScript'],
+      ['typescript', 'TypeScript'],
+      ['sql', 'SQL'],
+      ['json', 'JSON'],
+      ['yaml', 'YAML'],
+      ['text', 'Plain Text'],
+    ],
+  );
+  assert.deepEqual(filterNoteLanguageOptions('').map(({ value }) => value), NOTE_LANGUAGE_OPTIONS.map(({ value }) => value));
+  assert.deepEqual(filterNoteLanguageOptions('RICH document').map(({ value }) => value), ['richtext']);
+  assert.deepEqual(filterNoteLanguageOptions('md').map(({ value }) => value), ['markdown']);
+  assert.deepEqual(filterNoteLanguageOptions('shell').map(({ value }) => value), ['bash']);
+  assert.deepEqual(filterNoteLanguageOptions('TS').map(({ value }) => value), ['typescript']);
+  assert.deepEqual(filterNoteLanguageOptions('yml').map(({ value }) => value), ['yaml']);
+  assert.deepEqual(filterNoteLanguageOptions('txt').map(({ value }) => value), ['text']);
+  assert.deepEqual(filterNoteLanguageOptions('not-a-language'), []);
+});
+
+test('Note Language switch fences reject stale selection, edits, and workspace generations', async () => {
+  const { isNoteLanguageSwitchFenceCurrent } = await import(path.join(distRenderer, 'notesPage.js'));
+  const fence = {
+    noteId: 'note-a',
+    sourceLanguage: 'markdown',
+    editVersion: 3,
+    selectionVersion: 7,
+    workspaceGeneration: 11,
+  };
+
+  assert.equal(isNoteLanguageSwitchFenceCurrent(fence, { ...fence }), true);
+  for (const [field, value] of [
+    ['noteId', 'note-b'],
+    ['sourceLanguage', 'richtext'],
+    ['editVersion', 4],
+    ['selectionVersion', 8],
+    ['workspaceGeneration', 12],
+  ]) {
+    assert.equal(isNoteLanguageSwitchFenceCurrent(fence, { ...fence, [field]: value }), false, field);
+  }
+});
+
+test('Note Language filtering keeps exactly one preferred roving tab stop', async () => {
+  const {
+    filterNoteLanguageOptions,
+    noteLanguageRovingTabStop,
+  } = await import(path.join(distRenderer, 'notesPage.js'));
+
+  assert.equal(noteLanguageRovingTabStop(filterNoteLanguageOptions(''), 'markdown'), 'markdown');
+  assert.equal(noteLanguageRovingTabStop(filterNoteLanguageOptions('ts'), 'markdown'), 'typescript');
+  assert.equal(noteLanguageRovingTabStop(filterNoteLanguageOptions('not-a-language'), 'markdown'), undefined);
+});
+
+test('Note Language popup owns search, keyboard navigation, focus return, and explicit mode changes', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /this\.languageToggle\.addEventListener\('click', \(event\) => this\.toggleLanguageMenu\(event\)\)/);
+  assert.match(source, /this\.languageSearch\.addEventListener\('input',[\s\S]*?this\.renderLanguageOptions\(\)/);
+  assert.match(source, /option\.tabIndex = item\.value === tabStop \? 0 : -1/);
+  assert.match(source, /option\.setAttribute\('role', 'option'\)/);
+  assert.match(source, /option\.setAttribute\('aria-selected', String\(item\.value === selectedLanguage\)\)/);
+  assert.match(source, /private openLanguageMenu\(\): void \{[\s\S]*?this\.languageFilter = ''[\s\S]*?this\.languageSearch\.focus\(\)/);
+  assert.match(source, /private handleLanguageMenuKeyDown\(event: KeyboardEvent\): void \{[\s\S]*?event\.key === 'Escape'[\s\S]*?ArrowDown[\s\S]*?ArrowUp[\s\S]*?Home[\s\S]*?End/);
+  assert.match(source, /this\.languageControl\.addEventListener\('focusout',[\s\S]*?requestAnimationFrame[\s\S]*?document\.activeElement[\s\S]*?this\.closeLanguageMenu\(\)/);
+  assert.match(source, /private focusLanguageOption\([\s\S]*?candidate\.tabIndex = candidate === option \? 0 : -1[\s\S]*?option\.focus\(\)/);
+  assert.match(source, /if \(!this\.languageControl\.contains\(source\)\) this\.closeLanguageMenu\(\)/);
+  assert.match(source, /private async changeSelectedLanguage\(targetLanguage: NoteLanguage\): Promise<void>[\s\S]*?const switchFence: NoteLanguageSwitchFence[\s\S]*?isNoteLanguageSwitchFenceCurrent\(switchFence/);
+  assert.match(source, /restoreLanguageToggle[\s\S]*?this\.switchingLanguage = false[\s\S]*?this\.languageToggle\.focus\(\)/);
+  assert.doesNotMatch(source, /languageSelect|querySelector<.*>\('#note-language'\)/);
+});
+
 test('Notes maps every language choice to the intended CodeMirror parser', async () => {
   const { EditorState, language, noteLanguageExtension } = await loadNoteLanguageModules();
   const expectedLanguages = new Map([
@@ -390,7 +469,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
-  assert.match(source, /hide\(\): void \{\s*void this\.flush\(\)\.catch\(\(\) => undefined\);/);
+  assert.match(source, /hide\(\): void \{\s*this\.closeLanguageMenu\(\);\s*this\.closeDownloadMenu\(\);\s*this\.closeMarkdownOutline\(\);\s*if \(this\.attachmentPreviewDialog\.open\) this\.attachmentPreviewDialog\.close\(\);\s*void this\.flush\(\)\.catch\(\(\) => undefined\);/);
   assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?this\.finishSidebarResize\(\)[\s\S]*?this\.flushQueuedSidebarWidthSave\(\)[\s\S]*?this\.waitForSidebarWidthSaves\(\)/);
   assert.match(source, /private async selectNote\(id: string\): Promise<void>/);
   assert.match(source, /await this\.flushNote\(previousId\);\s*if \(this\.isDirty\(previousId\)\)/);
@@ -424,16 +503,90 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
 
   assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(note\.id\)[\s\S]*?> baselineVersion/);
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
-  assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline\)/);
+  assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline, true\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
-  assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*void this\.selectNote\(note\.id\);\s*if \(childNodes\.length > 0 && !searchActive\) \{\s*void this\.toggleTreeExpanded\(note\.id\);/);
-  assert.match(source, /if \(childNodes\.length > 0 && !searchActive\) \{\s*button\.setAttribute\('aria-expanded', String\(this\.expandedNoteIds\.has\(note\.id\)\)\);/);
+  assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*void this\.selectNote\(note\.id\);\s*if \(hasChildren && !searchActive\) \{\s*void this\.toggleTreeExpanded\(note\.id\);/);
+  assert.match(source, /if \(hasChildren && !searchActive\) \{\s*button\.setAttribute\('aria-expanded', String\(this\.expandedNoteIds\.has\(note\.id\)\)\);/);
   assert.match(source, /toggleButton\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*void this\.toggleTreeExpanded\(note\.id\);/);
   assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);
   assert.match(source, /if \(!isValidNoteTreeParent\(this\.treeNodes, noteId, parentId\)\)/);
   assert.match(source, /event\.key === 'ArrowRight' \|\| event\.key === 'ArrowLeft'/);
   assert.match(source, /if \(!this\.expandedNoteIds\.has\(noteId\)\) void this\.toggleTreeExpanded\(noteId\)/);
   assert.match(source, /else if \(node\?\.parentId\) items\.find\(\(candidate\) => candidate\.dataset\.noteId === node\.parentId\)\?\.focus\(\)/);
+});
+
+test('Notes tree distinguishes folders from leaf Notes and the title looks like text until interaction', async () => {
+  const [source, styles] = await Promise.all([
+    readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8'),
+    readFile(path.join(distRenderer, 'tailwind.css'), 'utf8'),
+  ]);
+
+  assert.match(source, /const folderNoteIds = new Set\([\s\S]*?treeNode\.parentId[\s\S]*?typeof parentId === 'string'/);
+  assert.match(source, /const hasChildren = folderNoteIds\.has\(note\.id\)/);
+  assert.match(source, /typeIcon\.className = 'notes-tree-type-icon'/);
+  assert.match(source, /typeIcon\.dataset\.type = hasChildren \? 'folder' : 'note'/);
+  assert.match(source, /this\.expandedNoteIds\.has\(note\.id\)[\s\S]*?'M2\.25 4\.75h4l1\.25 1\.5h6\.25v6\.5H2\.25z[\s\S]*?'M4 2\.5h5l3 3v8H4z/);
+  assert.doesNotMatch(source, /this\.expandedNoteIds\.has\(note\.id\) && !searchActive/);
+  assert.match(styles, /\.notes-tree-type-icon\{[^}]*display:inline-flex[^}]*height:1rem[^}]*width:1rem/);
+  assert.match(styles, /\.notes-tree-type-icon\[data-type=folder\]\{[^}]*color:/);
+
+  assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*border-color:transparent[^}]*background-color:transparent[^}]*font-weight:600[^}]*box-shadow:/);
+  assert.match(styles, /\.notes-editor-toolbar \.notes-name-input:hover\{[^}]*border-color:/);
+  assert.match(styles, /\.notes-editor-toolbar \.notes-name-input:focus,\.notes-editor-toolbar \.notes-name-input:hover\{[^}]*background-color:/);
+  assert.match(source, /this\.nameInput\.addEventListener\('input', \(\) => this\.updateSelectedMetadata\(\)\)/);
+});
+
+test('Notes page connects Markdown tooling, attachment actions, and PDF or Markdown downloads', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /import \{[\s\S]*?applyMarkdownFormat,[\s\S]*?extractMarkdownOutline,[\s\S]*?getMarkdownStats,[\s\S]*?renderMarkdownToSafeHtml,[\s\S]*?\} from '\.\/notesMarkdown\.js'/);
+  assert.match(source, /const edit = applyMarkdownFormat\([\s\S]*?changes: edit\.change,[\s\S]*?anchor: edit\.selection\.from, head: edit\.selection\.to/);
+  for (const command of ['bold', 'italic', 'strike', 'code', 'heading1', 'heading2', 'heading3', 'link', 'quote', 'bullet', 'numbered', 'task', 'table', 'horizontalRule']) {
+    assert.match(source, new RegExp(`${command}: \\{ command:`));
+  }
+  assert.match(source, /DOMParser\(\)\.parseFromString\([\s\S]*?renderMarkdownToSafeHtml\(markdown\)/);
+  assert.match(source, /const headings = extractMarkdownOutline\(this\.codeEditor\.state\.doc\.toString\(\)\)/);
+  assert.match(source, /this\.markdownDocumentStatsText = `\$\{stats\.words\} words · \$\{stats\.characters\} characters · \$\{stats\.lines\} lines/);
+  assert.match(source, /this\.markdownStatus\.textContent = `\$\{this\.markdownDocumentStatsText\}\$\{selectionText\}`/);
+
+  assert.match(source, /onRequestAttachment: \(file, position\) => \{[\s\S]*?this\.uploadAttachmentFile\(file, position\)[\s\S]*?this\.attachmentInput\.click\(\)/);
+  assert.match(source, /NOTE_ATTACHMENT_MAX_BYTES = 25 \* 1024 \* 1024/);
+  assert.match(source, /window\.notesApi\.uploadAttachment\(\{[\s\S]*?normalizeNoteAttachmentFileName\(file\.name\)[\s\S]*?application\/octet-stream/);
+  assert.match(source, /this\.richTextEditor\.insertAttachment\(result\.reference, capturedPosition\)/);
+  assert.match(source, /if \(action === 'view'\) \{\s*await this\.openAttachmentPreview\(reference, opener\);\s*return;/);
+  assert.match(source, /const expectedKind = noteAttachmentPreviewKind\(reference\)/);
+  assert.match(source, /this\.attachmentPreviewDialog\.showModal\(\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
+  assert.match(source, /result\.preview\.kind === 'text'[\s\S]*?this\.attachmentPreviewText\.textContent = result\.preview\.text/);
+  assert.match(source, /result\.preview\.kind === 'pdf' \? 'application\/pdf'[\s\S]*?URL\.createObjectURL\(new Blob/);
+  assert.match(source, /this\.attachmentPreviewPdf\.src = `\$\{objectUrl\}#toolbar=0&navpanes=0`/);
+  assert.match(source, /removeAttribute\('src'\)[\s\S]*?URL\.revokeObjectURL\(this\.attachmentPreviewObjectUrl\)/);
+  assert.match(source, /request !== this\.attachmentPreviewRequest \|\| !this\.attachmentPreviewDialog\.open/);
+  assert.match(source, /if \(opener\?\.isConnected\) opener\.focus\(\)/);
+  assert.match(source, /window\.notesApi\.downloadAttachment\(reference\)/);
+
+  const downloadStart = source.indexOf('  private async handleDownloadMenuClick(event: Event): Promise<void> {');
+  const downloadEnd = source.indexOf('  private async copySelectedNote(): Promise<void> {', downloadStart);
+  assert.ok(downloadStart >= 0 && downloadEnd > downloadStart);
+  const download = source.slice(downloadStart, downloadEnd);
+  assert.match(download, /format !== 'pdf' && format !== 'markdown'/);
+  assert.match(download, /this\.captureEditorContent\(note\.id\)[\s\S]*?await this\.flushNote\(note\.id\)[\s\S]*?window\.notesApi\.exportNote\(\{/);
+  assert.match(download, /language: current\.language,[\s\S]*?content: current\.content,[\s\S]*?format/);
+  assert.match(download, /format === 'pdf' \? 'PDF' : 'Markdown'/);
+  assert.match(download, /result\.canOpen \? `\$\{label\} saved\. Click to open\.` : `\$\{label\} saved\.`/);
+  assert.match(download, /result\.canOpen \? 'open-note-export' : undefined/);
+  assert.doesNotMatch(download, /result\.path/);
+  assert.match(download, /this\.noteExportInFlight = true;[\s\S]*?this\.updateDownloadButtonState\(\)[\s\S]*?finally \{[\s\S]*?this\.noteExportInFlight = false;[\s\S]*?this\.updateDownloadButtonState\(\)/);
+
+  const showEditorModeStart = source.indexOf('  private showEditorMode(language: NoteLanguage): void {');
+  const updateDownloadStateStart = source.indexOf('  private updateDownloadButtonState(): void {', showEditorModeStart);
+  const saveStatusStart = source.indexOf('  private setSaveStatus(', updateDownloadStateStart);
+  assert.ok(showEditorModeStart >= 0 && updateDownloadStateStart > showEditorModeStart && saveStatusStart > updateDownloadStateStart);
+  const showEditorMode = source.slice(showEditorModeStart, updateDownloadStateStart);
+  const updateDownloadState = source.slice(updateDownloadStateStart, saveStatusStart);
+  assert.match(showEditorMode, /this\.updateDownloadButtonState\(\)/);
+  assert.doesNotMatch(showEditorMode, /downloadButton\.disabled\s*=/);
+  assert.match(updateDownloadState, /this\.downloadButton\.disabled = this\.noteExportInFlight \|\| !exportable/);
+  assert.match(updateDownloadState, /aria-busy/);
 });
 
 test('Notes page keeps user content in form values and reconfigurable CodeMirror state created through DOM APIs', async () => {
@@ -466,14 +619,15 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
 test('Notes editor input marks dirty without serializing the complete document until capture', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
   const codeUpdateStart = source.indexOf('  private updateSelectedCodeContent(): void {');
+  const codeUpdateEnd = source.indexOf('  private markdownActive(): boolean {', codeUpdateStart);
   const richUpdateStart = source.indexOf('  private updateSelectedRichTextContent(): void {');
   const markEditedStart = source.indexOf('  private markNoteEdited(', richUpdateStart);
   const captureStart = source.indexOf('  private captureEditorContent(', markEditedStart);
   const languageStart = source.indexOf('  private async changeSelectedLanguage(', captureStart);
-  assert.ok(codeUpdateStart >= 0 && richUpdateStart > codeUpdateStart);
+  assert.ok(codeUpdateStart >= 0 && codeUpdateEnd > codeUpdateStart && richUpdateStart > codeUpdateEnd);
   assert.ok(markEditedStart > richUpdateStart && captureStart > markEditedStart && languageStart > captureStart);
 
-  const codeUpdate = source.slice(codeUpdateStart, richUpdateStart);
+  const codeUpdate = source.slice(codeUpdateStart, codeUpdateEnd);
   const richUpdate = source.slice(richUpdateStart, markEditedStart);
   const capture = source.slice(captureStart, languageStart);
   assert.doesNotMatch(codeUpdate, /doc\.toString\(\)/);
@@ -496,6 +650,41 @@ test('Notes rich text mode searches readable content, confirms lossy changes, an
   assert.match(source, /window\.notesApi\.uploadImage\(\{/);
   assert.match(source, /Configure S3 in Settings before adding images\./);
   assert.match(source, /NOTE_IMAGE_MAX_BYTES = 10 \* 1024 \* 1024/);
-  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference, position\)/);
+  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference, capturedPosition\)/);
   assert.match(source, /onRequestImage: \(file, position\) => \{[\s\S]*?this\.uploadImageFile\(file, position\)[\s\S]*?this\.imageInput\.click\(\)/);
+});
+
+test('Notes workspace mutations capture deferred editor content and preserve newer selection intent', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const moveStart = source.indexOf('  private async moveNote(');
+  const createStart = source.indexOf('  private async createNote(', moveStart);
+  const downloadStart = source.indexOf('  private toggleDownloadMenu(', createStart);
+  const deleteStart = source.indexOf('  private async deleteNote(');
+  const listKeydownStart = source.indexOf('  private handleListKeydown(', deleteStart);
+  assert.ok(moveStart >= 0 && createStart > moveStart && downloadStart > createStart);
+  assert.ok(deleteStart > downloadStart && listKeydownStart > deleteStart);
+
+  const move = source.slice(moveStart, createStart);
+  const create = source.slice(createStart, downloadStart);
+  const deletion = source.slice(deleteStart, listKeydownStart);
+  assert.match(move, /await window\.notesApi\.moveNote\([\s\S]*?this\.captureActiveEditorContent\(\);[\s\S]*?this\.applyWorkspace/);
+  assert.match(create, /const selectionIntentVersion = this\.selectionVersion/);
+  assert.match(create, /await window\.notesApi\.createNote\([\s\S]*?this\.captureActiveEditorContent\(\);[\s\S]*?this\.applyWorkspace/);
+  assert.match(create, /selectionIntentVersion === this\.selectionVersion/);
+  assert.match(create, /committedSelectionVersion !== this\.selectionVersion \|\| this\.selectedId !== note\.id/);
+  assert.match(deletion, /this\.captureActiveEditorContent\(\);[\s\S]*?let optimisticSelectionVersion/);
+  assert.match(deletion, /optimisticSelectionVersion === this\.selectionVersion/g);
+  assert.match(source, /const selectionVersion = \+\+this\.selectionVersion;\s*if \(id === this\.selectedId\) return/);
+});
+
+test('Notes flush owns active uploads and captured insertion positions are edit and workspace fenced', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  assert.match(source, /private readonly editorUploadTasks = new Set<Promise<void>>\(\)/);
+  assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?await this\.waitForEditorUploads\(\);[\s\S]*?this\.flushAllPendingSaves\(\)/);
+  assert.match(source, /private async waitForEditorUploads\(\): Promise<void> \{[\s\S]*?Promise\.allSettled\(\[\.\.\.this\.editorUploadTasks\]\)/);
+  assert.match(source, /this\.pageRoot\.inert = true;[\s\S]*?await this\.flush\(\)/);
+  assert.match(source, /await this\.waitForEditorUploads\(\);\s*this\.workspaceMutationGeneration \+= 1/);
+  assert.match(source, /const insertionFence = \{[\s\S]*?editVersion:[\s\S]*?selectionVersion:[\s\S]*?workspaceGeneration:/g);
+  assert.match(source, /insertionFence\.workspaceGeneration !== this\.workspaceMutationGeneration/g);
+  assert.match(source, /insertionFence\.editVersion === \(this\.editVersions\.get\(destination\.id\) \?\? 0\)[\s\S]*?insertionFence\.selectionVersion === this\.selectionVersion/g);
 });

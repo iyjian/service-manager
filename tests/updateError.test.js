@@ -78,6 +78,19 @@ test('compiled renderer keeps page toasts visible for exactly ten seconds and ma
   const renderer = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'renderer.js'), 'utf8');
 
   assert.match(renderer, /const PAGE_TOAST_DURATION_MS = 10_?000;/);
-  assert.match(renderer, /window\.setTimeout\(\(\) => \{[\s\S]{0,180}\}, PAGE_TOAST_DURATION_MS\);/);
+  assert.match(renderer, /window\.setTimeout\(\(\) => \{[\s\S]{0,320}\}, PAGE_TOAST_DURATION_MS\);/);
   assert.match(renderer, /pageMessageCloseButton\.addEventListener\('click', \(\) => setMessage\(''\)\)/);
+});
+
+test('compiled renderer clears stale toast actions and opens only the last Note export capability', async () => {
+  const renderer = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'renderer.js'), 'utf8');
+  const html = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'), 'utf8');
+
+  assert.match(html, /id="page-message-text"[^>]*type="button"[^>]*disabled/);
+  assert.match(renderer, /function configurePageMessageAction\(action\)[\s\S]*?pageMessageTextElement\.disabled = !actionable/);
+  assert.match(renderer, /let pageMessageGeneration = 0/);
+  assert.match(renderer, /const generation = \+\+pageMessageGeneration[\s\S]*?pageMessageGeneration !== generation[\s\S]*?pageMessageGeneration \+= 1/);
+  assert.match(renderer, /configurePageMessageAction\(text \? action : undefined\)[\s\S]*?renderMessage\(pageMessageView/);
+  assert.match(renderer, /window\.setTimeout\(\(\) => \{[\s\S]*?configurePageMessageAction\(\)[\s\S]*?renderMessage\(pageMessageView, '', 'default'\)/);
+  assert.match(renderer, /pageMessageTextElement\.addEventListener\('click'[\s\S]*?const generation = pageMessageGeneration[\s\S]*?notesApi\.openLastExport\(\)[\s\S]*?pageMessageGeneration !== generation/);
 });

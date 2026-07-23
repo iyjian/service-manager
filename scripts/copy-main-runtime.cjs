@@ -5,6 +5,8 @@ const root = join(__dirname, '..');
 mkdirSync(join(root, 'dist', 'main'), { recursive: true });
 for (const runtime of [
   { shared: 'noteRichText.js', main: 'noteRichText.cjs', label: 'rich text' },
+  { shared: 'noteExport.js', main: 'noteExport.cjs', label: 'Note export' },
+  { shared: 'notesMarkdown.js', main: 'notesMarkdown.cjs', label: 'Markdown tools' },
   { shared: 'sentryPrivacy.js', main: 'sentryPrivacy.cjs', label: 'Sentry privacy' },
 ]) {
   const sharedRuntime = join(root, 'dist', 'shared', runtime.shared);

@@ -55,13 +55,19 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /normalizedNameChanged = current\.name !== saved\.name[\s\S]*?if \(normalizedNameChanged && current\) \{[\s\S]*?this\.updateListNoteName\(current\)[\s\S]*?this\.queueSearchRender\(\)[\s\S]*?\}\s*this\.updateListSaveIndicator\(id\)/);
   assert.match(notesPage, /if \(this\.saveStatus\.textContent === text && this\.saveStatus\.dataset\.state === state\)\s*return/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);
-  for (const language of ['markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
-    assert.match(html, new RegExp(`<option value="${language}"`));
-  }
   assert.match(
     html,
-    /<select id="note-language"[^>]*>\s*<option value="richtext">Rich Text<\/option>\s*<option value="markdown">Markdown<\/option>/,
+    /id="note-language-toggle"[\s\S]*?aria-haspopup="dialog"[\s\S]*?aria-controls="note-language-menu"[\s\S]*?aria-expanded="false"/,
   );
+  assert.match(html, /id="note-language-search"[^>]*type="search"[^>]*aria-controls="note-language-options"/);
+  assert.match(html, /id="note-language-options"[^>]*role="listbox"[^>]*aria-label="Language choices"/);
+  assert.doesNotMatch(html, /<select id="note-language"/);
+  assert.match(notesPage, /\{ value: 'richtext', label: 'Rich Text'[\s\S]*?\{ value: 'markdown', label: 'Markdown'/);
+  for (const language of ['richtext', 'markdown', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text']) {
+    assert.match(notesPage, new RegExp(`value: '${language}'`));
+  }
+  assert.match(notesPage, /filterNoteLanguageOptions\(query\)[\s\S]*?terms\.every\(\(term\) => searchable\.includes\(term\)\)/);
+  assert.match(notesPage, /handleLanguageMenuKeyDown\(event\)[\s\S]*?ArrowDown[\s\S]*?ArrowUp[\s\S]*?Home[\s\S]*?End/);
 
   assert.match(preload, /listNotes:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:list'\)/);
   assert.match(preload, /getWorkspace:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:workspace'\)/);
@@ -166,21 +172,128 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(codeMirrorVendor, /const basicSetup/);
 });
 
-test('rich text validation has distinct CommonJS main and ESM renderer artifacts', async () => {
-  const [sharedRuntime, mainRuntime, rendererRuntime, notesPage, packageManifest] = await Promise.all([
-    readFile(path.join(distRoot, 'shared', 'noteRichText.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'noteRichText.cjs'), 'utf8'),
-    readFile(path.join(rendererRoot, 'noteRichText.js'), 'utf8'),
+test('compiled Notes exposes file cards, the six-dot command handle, and PDF or Markdown downloads', async () => {
+  const { html, styles, renderer, notesPage, preload, main } = await readIntegrationFiles();
+  const richTextEditor = await readFile(path.join(rendererRoot, 'notesRichTextEditor.js'), 'utf8');
+
+  assert.match(html, /id="note-copy-btn"[\s\S]*?id="note-download-btn"/);
+  assert.match(html, /id="note-download-btn"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
+  assert.match(html, /id="note-download-menu"[^>]*role="menu"[^>]*aria-label="Download Note"[\s\S]*?data-note-export-format="pdf"[\s\S]*?data-note-export-format="markdown"/);
+  assert.match(html, /id="note-richtext-attachment-input"[^>]*type="file"[^>]*aria-hidden="true"/);
+  assert.match(html, /id="note-attachment-preview-dialog"[^>]*aria-labelledby="note-attachment-preview-title"[^>]*aria-describedby="note-attachment-preview-meta"/);
+  const previewFrame = html.match(/<iframe\s+id="note-attachment-preview-pdf"[\s\S]*?<\/iframe>/)?.[0] ?? '';
+  assert.match(previewFrame, /referrerpolicy="no-referrer"/);
+  assert.doesNotMatch(previewFrame, /sandbox=/);
+  assert.match(html, /id="note-attachment-preview-text"[^>]*tabindex="0"[^>]*role="document"/);
+  assert.match(styles, /\.notes-download-menu\{[^}]*position:absolute[^}]*z-index:50[^}]*display:grid/);
+  assert.match(styles, /\.notes-richtext-block-handle\{[^}]*display:inline-flex[^}]*height:1\.75rem[^}]*width:1\.25rem[^}]*align-items:center[^}]*justify-content:center[^}]*border-width:0[^}]*background-color:transparent/);
+  assert.match(styles, /\.notes-richtext-block-handle>svg\{[^}]*height:18px[^}]*width:18px[^}]*flex-shrink:0/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror \.notes-richtext-attachment\{[^}]*display:grid[^}]*align-items:center/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror \.notes-richtext-attachment\{[^}]*min-height:60px[^}]*border-color:rgb\(212 212 216[^}]*background-color:rgb\(244 244 245/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror \.notes-richtext-attachment\{[^}]*-webkit-user-select:none[^}]*user-select:none/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror \.notes-richtext-attachment\{[^}]*grid-template-columns:36px minmax\(0,1fr\)[^}]*max-width:100%[^}]*width:270px/);
+  assert.match(styles, /\.notes-richtext-attachment-type\{[^}]*height:2\.25rem[^}]*width:2\.25rem/);
+  assert.match(styles, /\.notes-richtext-attachment-type-image\{[^}]*height:100%[^}]*width:100%[^}]*object-fit:contain[^}]*pointer-events:none/);
+  assert.match(styles, /\.notes-richtext-attachment-action\{[^}]*height:1\.75rem[^}]*width:1\.75rem/);
+  assert.match(styles, /\.notes-richtext-attachment-actions\{[^}]*display:flex/);
+  assert.match(styles, /\.notes-richtext-attachment-footer\{[^}]*margin-top:auto[^}]*display:flex[^}]*align-items:center[^}]*justify-content:flex-end/);
+  assert.match(styles, /\.note-attachment-preview-dialog\{[^}]*height:min\(78vh,720px\)[^}]*width:min\(920px,calc\(100vw - 32px\)\)/);
+  assert.match(html, /id="page-message-text"[^>]*type="button"[^>]*class="message-text"[^>]*disabled/);
+  assert.match(styles, /\.message-toast\[data-actionable=true\] \.message-text\{[^}]*cursor:pointer[^}]*text-decoration-line:underline/);
+
+  assert.match(richTextEditor, /title: 'File',[\s\S]*?requestAttachment\(undefined, range\.from\)/);
+  assert.match(richTextEditor, /class NotesRichTextBlockHandle[\s\S]*?createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)[\s\S]*?viewBox', '0 0 20 20'/);
+  assert.match(richTextEditor, /writingLeft - buttonBounds\.width - 4/);
+  assert.match(richTextEditor, /className = 'notes-richtext-attachment'/);
+  assert.match(richTextEditor, /NOTE_ATTACHMENT_ICON_SOURCES = \{[\s\S]*?pdf: '\.\.\/\.\.\/assets\/note-file-icons\/pdf\.svg'[\s\S]*?file: '\.\.\/\.\.\/assets\/note-file-icons\/file\.svg'/);
+  assert.match(richTextEditor, /icon\.replaceChildren\(createAttachmentTypeIcon\(kind\)\)/);
+  assert.doesNotMatch(richTextEditor, /pdf: 'PDF'[\s\S]*?document: 'DOC'/);
+  assert.match(richTextEditor, /noteAttachmentPreviewKind\(reference\) \? \[createActionButton\('view', reference\)\] : \[\]/);
+  assert.match(richTextEditor, /createActionButton\('download', reference\)/);
+  assert.match(richTextEditor, /footer\.append\(metadata, actions\)[\s\S]*?copy\.append\(name, footer\)[\s\S]*?dom\.append\(icon, copy\)/);
+  assert.match(richTextEditor, /metadata\.textContent = attachmentSize\(reference\.byteLength\)/);
+  assert.doesNotMatch(richTextEditor, /metadata\.textContent[^\n]*reference\.mimeType/);
+  assert.match(notesPage, /window\.notesApi\.uploadAttachment\(\{/);
+  assert.match(notesPage, /window\.notesApi\.exportNote\(\{/);
+  assert.match(notesPage, /format !== 'pdf' && format !== 'markdown'/);
+  assert.match(notesPage, /result\.canOpen \? `\$\{label\} saved\. Click to open\.`[\s\S]*?result\.canOpen \? 'open-note-export' : undefined/);
+  assert.match(notesPage, /attachmentPreviewDialog\.showModal\(\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
+  assert.match(notesPage, /attachmentPreviewText\.textContent = result\.preview\.text/);
+  assert.match(notesPage, /URL\.createObjectURL\(new Blob/);
+  assert.match(notesPage, /attachmentPreviewPdf\.src = `\$\{objectUrl\}#toolbar=0&navpanes=0`/);
+  assert.match(notesPage, /URL\.revokeObjectURL\(this\.attachmentPreviewObjectUrl\)/);
+
+  assert.match(preload, /uploadAttachment:\s*\(input\)\s*=>[^\n]*invoke\('notes:attachment:upload', input\)/);
+  assert.match(preload, /viewAttachment:\s*\(reference\)\s*=>[^\n]*invoke\('notes:attachment:view', reference\)/);
+  assert.match(preload, /downloadAttachment:\s*\(reference\)\s*=>[^\n]*invoke\('notes:attachment:download', reference\)/);
+  assert.match(preload, /exportNote:\s*\(input\)\s*=>[^\n]*invoke\('notes:export', input\)/);
+  assert.match(preload, /openLastExport:\s*\(\)\s*=>[^\n]*invoke\('notes:export:open-last'\)/);
+  for (const handler of ['notesAttachmentUpload', 'notesAttachmentView', 'notesAttachmentDownload', 'notesExport', 'notesExportOpenLast']) {
+    assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
+  }
+  const previewHandlerStart = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesAttachmentView');
+  const previewHandlerEnd = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesAttachmentDownload', previewHandlerStart);
+  assert.ok(previewHandlerStart >= 0 && previewHandlerEnd > previewHandlerStart);
+  const previewHandler = main.slice(previewHandlerStart, previewHandlerEnd);
+  assert.match(previewHandler, /parseNoteAttachmentReference[\s\S]*?noteAttachmentPreviewKind[\s\S]*?loadNoteAttachment[\s\S]*?createNotesAttachmentPreview/);
+  assert.match(previewHandler, /status: 'loaded', preview/);
+  assert.doesNotMatch(previewHandler, /shell\.openPath|writeFile|sessionData|path:/);
+  assert.doesNotMatch(main, /NOTES_ATTACHMENT_PREVIEW_MAX_FILES|notes-attachment-previews/);
+  assert.match(main, /will-frame-navigate[\s\S]*?about:blank[\s\S]*?blob:file:\/\/\/[\s\S]*?preventDefault/);
+  assert.match(main, /notesAttachmentDownload[\s\S]*?showSaveDialog[\s\S]*?loadNoteAttachment/);
+  assert.match(main, /notesExport[\s\S]*?createSafeNoteFilename\)[\s\S]*?input\.format === 'markdown'[\s\S]*?richTextToMarkdown\)[\s\S]*?renderMarkdownToSafeHtml\)[\s\S]*?richTextToSafeHtml\)/);
+  assert.match(main, /NOTE_EXPORT_OPEN_TTL_MS = 60_?000/);
+  assert.match(main, /const rendererExportGenerations = new Map\(\)/);
+  assert.match(main, /function deleteRecentNoteExport\(senderId\)[\s\S]*?clearTimeout\(target\.timeout\)[\s\S]*?recentNoteExports\.delete\(senderId\)/);
+  assert.match(main, /function invalidateRendererExportState\(senderId\)[\s\S]*?rendererExportGenerations\.set\(senderId, generation \+ 1\)/);
+  assert.match(main, /registerRecentNoteExport\([\s\S]*?\.extname\([\s\S]*?\.lstat\([\s\S]*?!stats\.isFile\(\) \|\| stats\.isSymbolicLink\(\)/);
+  assert.match(main, /registerRecentNoteExport\([\s\S]*?rendererExportGenerations\.get\(senderId\) !== rendererGeneration[\s\S]*?setTimeout\([\s\S]*?NOTE_EXPORT_OPEN_TTL_MS[\s\S]*?timeout\.unref\(\)/);
+  assert.match(main, /takeRecentNoteExport\([\s\S]*?deleteRecentNoteExport\(senderId\)[\s\S]*?target\.expiresAt <= Date\.now\(\)[\s\S]*?\.lstat\([\s\S]*?target\.rendererGeneration !== rendererExportGenerations\.get\(senderId\)[\s\S]*?stats\.dev !== target\.device[\s\S]*?stats\.ino !== target\.inode/);
+  assert.match(main, /rendererExportGenerations\.set\(rendererId, 0\)[\s\S]*?render-process-gone[\s\S]*?did-start-navigation[\s\S]*?isMainFrame[\s\S]*?invalidateRendererExportState\(rendererId\)/);
+  assert.match(main, /notesExport[\s\S]*?const rendererGeneration = rendererExportGenerations\.get\(senderId\)[\s\S]*?registerRecentNoteExport\(\s*senderId,\s*rendererGeneration/);
+  assert.match(main, /notesExportOpenLast[\s\S]*?takeRecentNoteExport\(event\.sender\.id\)[\s\S]*?shell\.openPath\(filePath\)[\s\S]*?if \(openError\)[\s\S]*?status: 'opened'/);
+  assert.match(renderer, /value\.action === 'open-note-export'[\s\S]*?setMessage\(value\.text, level, action\)/);
+  assert.match(renderer, /pageMessageTextElement\.addEventListener\('click'[\s\S]*?const generation = pageMessageGeneration[\s\S]*?notesApi\.openLastExport\(\)[\s\S]*?pageMessageGeneration !== generation[\s\S]*?result\.status === 'opened'/);
+  assert.match(main, /NOTES_PDF_RENDER_TIMEOUT_MS = 30_?000/);
+  assert.match(main, /NOTES_PDF_MAX_DOCUMENT_BYTES = 6 \* 1024 \* 1024/);
+  assert.match(main, /NOTES_PDF_MAX_OUTPUT_BYTES = 64 \* 1024 \* 1024/);
+  assert.match(main, /function assertNotePdfComplexity\([\s\S]*?Buffer\.byteLength\([\s\S]*?NOTES_PDF_MAX_STRUCTURAL_BLOCKS[\s\S]*?NOTES_PDF_MAX_TABLE_ROWS[\s\S]*?NOTES_PDF_MAX_APPROXIMATE_PAGES/);
+  assert.match(main, /function withNotePdfRenderTimeout\([\s\S]*?Promise\.race\([\s\S]*?NOTES_PDF_RENDER_TIMEOUT_MS[\s\S]*?clearTimeout/);
+  assert.match(main, /function runNotePdfExportTask\([\s\S]*?if \(notesPdfExportActive\)[\s\S]*?notesPdfExportActive = true[\s\S]*?finally[\s\S]*?notesPdfExportActive = false/);
+  assert.match(main, /const printWindow = new [\s\S]*?BrowserWindow\([\s\S]*?try \{\s*printWindow\.webContents\.setWindowOpenHandler/);
+  assert.match(main, /renderNotePdf\([\s\S]*?withNotePdfRenderTimeout\([\s\S]*?loadURL\([\s\S]*?printToPDF\([\s\S]*?Buffer\.isBuffer\(pdf\)[\s\S]*?NOTES_PDF_MAX_OUTPUT_BYTES[\s\S]*?finally[\s\S]*?printWindow\.destroy\(\)/);
+  assert.match(main, /return input\.format === 'pdf'[\s\S]*?runNotePdfExportTask\(performExport\)[\s\S]*?performExport\(\)/);
+  assert.match(main, /const rendererWindows = new Set\(\)/);
+  assert.match(main, /rendererWindows\.add\(window\)[\s\S]*?rendererWindows\.delete\(window\)/);
+  assert.match(main, /function rendererNotesWindows\(\) \{\s*return \[\.\.\.rendererWindows\]\.filter/);
+  assert.match(main, /function primaryRendererWindow\(\)[\s\S]*?rendererWindows\.has\(focused\)/);
+  assert.doesNotMatch(main, /BrowserWindow\.getAllWindows\(\)/);
+});
+
+test('Notes shared validators and export tools have distinct CommonJS main and ESM renderer artifacts', async () => {
+  const [notesPage, packageManifest, copyMainRuntime, copyRenderer] = await Promise.all([
     readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8'),
     readFile(path.join(projectRoot, 'package.json'), 'utf8'),
+    readFile(path.join(projectRoot, 'scripts', 'copy-main-runtime.cjs'), 'utf8'),
+    readFile(path.join(projectRoot, 'scripts', 'copy-renderer.cjs'), 'utf8'),
   ]);
 
-  assert.match(sharedRuntime, /["']use strict["']/);
-  assert.match(mainRuntime, /["']use strict["']/);
-  assert.doesNotMatch(sharedRuntime, /^export\s/m);
-  assert.doesNotMatch(mainRuntime, /^export\s/m);
-  assert.match(rendererRuntime, /^export\s/m);
+  for (const runtime of ['noteRichText', 'noteExport', 'notesMarkdown']) {
+    const [sharedRuntime, mainRuntime, rendererRuntime] = await Promise.all([
+      readFile(path.join(distRoot, 'shared', `${runtime}.js`), 'utf8'),
+      readFile(path.join(mainRoot, `${runtime}.cjs`), 'utf8'),
+      readFile(path.join(rendererRoot, `${runtime}.js`), 'utf8'),
+    ]);
+    assert.match(sharedRuntime, /["']use strict["']/, `${runtime} shared runtime`);
+    assert.match(mainRuntime, /["']use strict["']/, `${runtime} main runtime`);
+    assert.doesNotMatch(sharedRuntime, /^export\s/m, `${runtime} shared runtime must stay CommonJS`);
+    assert.doesNotMatch(mainRuntime, /^export\s/m, `${runtime} main runtime must stay CommonJS`);
+    assert.match(rendererRuntime, /^export\s/m, `${runtime} renderer runtime must stay ESM`);
+    assert.match(copyMainRuntime, new RegExp(`shared: '${runtime}\\.js', main: '${runtime}\\.cjs'`));
+    assert.match(copyRenderer, new RegExp(`shared: '${runtime}\\.js', main: '${runtime}\\.cjs', renderer: '${runtime}\\.js'`));
+  }
   assert.match(notesPage, /from '\.\/noteRichText\.js'/);
+  assert.match(notesPage, /from '\.\/notesMarkdown\.js'/);
   assert.match(packageManifest, /"build:main": "tsc -p tsconfig\.main\.json && node scripts\/copy-main-runtime\.cjs"/);
 });
 
@@ -239,7 +352,12 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-content\{[^}]*height:100%[^}]*min-height:0[^}]*overflow:hidden/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*min-height:0[^}]*overflow:auto/);
-  assert.match(styles, /\.notes-editor-toolbar \.notes-language-select\{[^}]*width:8rem/);
+  assert.match(styles, /\.notes-language-control\{[^}]*position:relative[^}]*width:9rem[^}]*flex-shrink:0/);
+  assert.match(styles, /\.notes-language-toggle\{[^}]*height:2rem[^}]*width:100%[^}]*justify-content:space-between/);
+  assert.match(styles, /\.notes-language-menu\{[^}]*position:absolute[^}]*z-index:50[^}]*display:grid[^}]*width:14rem[^}]*max-height:272px[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(styles, /\.notes-language-search-wrap\{[^}]*display:flex[^}]*height:1\.75rem[^}]*border-color:rgb\(228 228 231/);
+  assert.match(styles, /\.notes-language-options\{[^}]*min-height:0[^}]*overflow-y:auto/);
+  assert.match(styles, /\.notes-language-option\[aria-selected=true\]\{[^}]*background-color:rgb\(244 244 245/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
   assert.doesNotMatch(styles, /@media \(max-width:640px\)\{\.notes-page\{/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
@@ -316,6 +434,46 @@ test('Notes local UI and code fonts are packaged with their licenses', async () 
   assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
   assert.match(uiLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.match(codeLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.ok(packageJson.build.files.includes('assets/**/*'));
+});
+
+test('Notes file-type icons are packaged locally with their upstream licenses', async () => {
+  const iconRoot = path.join(projectRoot, 'assets', 'note-file-icons');
+  const iconNames = [
+    'pdf', 'document', 'spreadsheet', 'presentation', 'archive',
+    'image', 'audio', 'video', 'code', 'file',
+  ];
+  const [icons, vscodeLicense, materialLicense, sources, packageJson] = await Promise.all([
+    Promise.all(iconNames.map(async (name) => ({
+      name,
+      source: await readFile(path.join(iconRoot, `${name}.svg`), 'utf8'),
+      metadata: await stat(path.join(iconRoot, `${name}.svg`)),
+    }))),
+    readFile(path.join(iconRoot, 'LICENSE-vscode-icons.txt'), 'utf8'),
+    readFile(path.join(iconRoot, 'LICENSE-material-icon-theme.txt'), 'utf8'),
+    readFile(path.join(iconRoot, 'SOURCES.md'), 'utf8'),
+    readFile(path.join(projectRoot, 'package.json'), 'utf8').then(JSON.parse),
+  ]);
+
+  assert.ok(icons.every(({ metadata }) => metadata.isFile() && metadata.size > 100));
+  for (const { name, source } of icons) {
+    assert.match(source, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 32 32">/, name);
+    assert.doesNotMatch(source, /<script|https?:\/\/(?!www\.w3\.org)/i, name);
+  }
+  assert.match(vscodeLicense, /Copyright \(c\) 2016 Roberto Huertas/);
+  assert.match(materialLicense, /Copyright \(c\) 2025 Material Extensions/);
+  for (const sourceId of [
+    'vscode-icons:file-type-pdf2',
+    'vscode-icons:file-type-word',
+    'vscode-icons:file-type-excel',
+    'vscode-icons:file-type-powerpoint',
+    'vscode-icons:file-type-image',
+    'vscode-icons:file-type-json',
+    'material-icon-theme:audio',
+    'material-icon-theme:video',
+  ]) {
+    assert.match(sources, new RegExp(sourceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 

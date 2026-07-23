@@ -338,17 +338,36 @@
           <div id="notes-editor" class="notes-editor hidden">
             <div class="notes-editor-toolbar">
               <input id="note-name" class="input notes-name-input" type="text" maxlength="200" placeholder="Note name" aria-label="Note name" />
-              <select id="note-language" class="input notes-language-select" aria-label="Language">
-                <option value="richtext">Rich Text</option>
-                <option value="markdown">Markdown</option>
-                <option value="bash">Bash</option>
-                <option value="javascript">JavaScript</option>
-                <option value="typescript">TypeScript</option>
-                <option value="sql">SQL</option>
-                <option value="json">JSON</option>
-                <option value="yaml">YAML</option>
-                <option value="text">Plain Text</option>
-              </select>
+              <div id="note-language-control" class="notes-language-control">
+                <button
+                  id="note-language-toggle"
+                  type="button"
+                  class="btn btn-secondary notes-language-toggle"
+                  aria-label="Note Language"
+                  aria-haspopup="dialog"
+                  aria-controls="note-language-menu"
+                  aria-expanded="false"
+                >
+                  <span id="note-language-value" class="notes-language-value">Rich Text</span>
+                  <svg class="notes-language-chevron" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 4.5 3 3 3-3"></path></svg>
+                </button>
+                <div id="note-language-menu" class="notes-language-menu hidden" role="dialog" aria-label="Note Languages">
+                  <label class="notes-language-search-wrap">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+                    <input
+                      id="note-language-search"
+                      class="notes-language-search"
+                      type="search"
+                      placeholder="Filter Languages"
+                      aria-label="Filter Note Languages"
+                      aria-controls="note-language-options"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </label>
+                  <div id="note-language-options" class="notes-language-options" role="listbox" aria-label="Language choices"></div>
+                </div>
+              </div>
               <button id="note-copy-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="5.25" y="5.25" width="7.25" height="7.25" rx="1"></rect>
@@ -356,9 +375,51 @@
                 </svg>
                 <span id="note-copy-label">Copy</span>
               </button>
+              <div class="notes-download-wrap">
+                <button id="note-download-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn" aria-haspopup="menu" aria-expanded="false">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25v7.25"></path><path d="m5.25 7 2.75 2.75L10.75 7"></path><path d="M3 12.75h10"></path></svg>
+                  <span>Download</span>
+                  <svg class="notes-download-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 6 3 3 3-3"></path></svg>
+                </button>
+                <div id="note-download-menu" class="notes-download-menu hidden" role="menu" aria-label="Download Note">
+                  <button type="button" role="menuitem" data-note-export-format="pdf"><span class="notes-export-badge" data-kind="pdf">PDF</span><span>PDF document</span></button>
+                  <button type="button" role="menuitem" data-note-export-format="markdown"><span class="notes-export-badge" data-kind="markdown">MD</span><span>Markdown file</span></button>
+                </div>
+              </div>
             </div>
             <div id="note-content" class="notes-content" data-empty="true" data-language="markdown" data-mode="code">
-              <div id="note-code-content" class="notes-code-content"></div>
+              <section id="note-code-editor" class="notes-code-editor">
+                <div id="note-markdown-toolbar" class="notes-markdown-toolbar hidden" role="toolbar" aria-label="Markdown formatting">
+                  <button type="button" data-markdown-command="bold" aria-label="Bold" title="Bold (Ctrl/⌘ B)"><strong>B</strong></button>
+                  <button type="button" data-markdown-command="italic" aria-label="Italic" title="Italic (Ctrl/⌘ I)"><em>I</em></button>
+                  <button type="button" data-markdown-command="strike" aria-label="Strikethrough" title="Strikethrough"><s>S</s></button>
+                  <button type="button" data-markdown-command="code" aria-label="Inline code" title="Inline code"><span>&lt;/&gt;</span></button>
+                  <span class="notes-markdown-divider" aria-hidden="true"></span>
+                  <button type="button" data-markdown-command="heading1" aria-label="Heading 1" title="Heading 1">H1</button>
+                  <button type="button" data-markdown-command="heading2" aria-label="Heading 2" title="Heading 2">H2</button>
+                  <button type="button" data-markdown-command="heading3" aria-label="Heading 3" title="Heading 3">H3</button>
+                  <button type="button" data-markdown-command="link" aria-label="Link" title="Link (Ctrl/⌘ K)">↗</button>
+                  <button type="button" data-markdown-command="quote" aria-label="Quote" title="Quote">❞</button>
+                  <button type="button" data-markdown-command="bullet" aria-label="Bullet list" title="Bullet list">•≡</button>
+                  <button type="button" data-markdown-command="numbered" aria-label="Numbered list" title="Numbered list">1≡</button>
+                  <button type="button" data-markdown-command="task" aria-label="Task list" title="Task list">☑</button>
+                  <button type="button" data-markdown-command="table" aria-label="Insert table" title="Insert table">▦</button>
+                  <button type="button" data-markdown-command="horizontalRule" aria-label="Horizontal rule" title="Horizontal rule">―</button>
+                  <span class="notes-markdown-toolbar-spacer"></span>
+                  <div class="notes-markdown-outline-wrap">
+                    <button id="note-markdown-outline-btn" type="button" aria-label="Document outline" title="Document outline" aria-haspopup="menu" aria-expanded="false">☷</button>
+                    <div id="note-markdown-outline-menu" class="notes-markdown-outline-menu hidden" role="menu" aria-label="Document outline"></div>
+                  </div>
+                  <button type="button" data-markdown-view="focus" aria-label="Focus mode" title="Focus mode (F8)" aria-pressed="false">Focus</button>
+                  <button type="button" data-markdown-view="typewriter" aria-label="Typewriter mode" title="Typewriter mode (F9)" aria-pressed="false">Typewriter</button>
+                  <button type="button" data-markdown-view="preview" aria-label="Toggle preview" title="Toggle split preview" aria-pressed="false">Preview</button>
+                </div>
+                <div id="note-code-layout" class="notes-code-layout">
+                  <div id="note-code-content" class="notes-code-content"></div>
+                  <article id="note-markdown-preview" class="notes-markdown-preview hidden" aria-label="Markdown preview"></article>
+                </div>
+                <div id="note-markdown-status" class="notes-markdown-status hidden" aria-live="polite"></div>
+              </section>
               <section id="note-richtext-editor" class="notes-richtext-editor hidden" aria-label="Rich text editor">
                 <div id="note-richtext-toolbar" class="notes-richtext-toolbar hidden" role="toolbar" aria-label="Selected text formatting">
                   <button type="button" class="notes-richtext-block-trigger" data-richtext-block-trigger aria-label="Change block type" title="Change block type" aria-haspopup="listbox" aria-expanded="false">
@@ -386,6 +447,7 @@
                 </div>
                 <div id="note-richtext-content" class="notes-richtext-content"></div>
                 <input id="note-richtext-image-input" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" aria-hidden="true" />
+                <input id="note-richtext-attachment-input" class="hidden" type="file" tabindex="-1" aria-hidden="true" />
               </section>
             </div>
           </div>
@@ -396,7 +458,7 @@
     </div>
 
     <div id="page-message" class="message-banner message-toast message-default hidden" role="status" aria-live="polite">
-      <span id="page-message-text" class="message-text"></span>
+      <button id="page-message-text" type="button" class="message-text" disabled></button>
       <button
         id="page-message-close-btn"
         type="button"
@@ -406,6 +468,38 @@
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
       </button>
     </div>
+
+    <dialog
+      id="note-attachment-preview-dialog"
+      class="note-attachment-preview-dialog"
+      aria-labelledby="note-attachment-preview-title"
+      aria-describedby="note-attachment-preview-meta"
+    >
+      <section class="note-attachment-preview-panel">
+        <header class="note-attachment-preview-head">
+          <span id="note-attachment-preview-badge" class="note-attachment-preview-badge" aria-hidden="true">FILE</span>
+          <div class="note-attachment-preview-heading">
+            <h2 id="note-attachment-preview-title">File preview</h2>
+            <p id="note-attachment-preview-meta"></p>
+          </div>
+          <button id="note-attachment-preview-close" type="button" class="icon-btn" aria-label="Close file preview" autofocus>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"></path></svg>
+          </button>
+        </header>
+        <div id="note-attachment-preview-body" class="note-attachment-preview-body" aria-busy="false">
+          <p id="note-attachment-preview-loading" class="note-attachment-preview-message" role="status">Loading preview…</p>
+          <p id="note-attachment-preview-error" class="note-attachment-preview-message note-attachment-preview-error hidden" role="alert"></p>
+          <img id="note-attachment-preview-image" class="note-attachment-preview-image hidden" alt="" />
+          <iframe
+            id="note-attachment-preview-pdf"
+            class="note-attachment-preview-pdf hidden"
+            title="PDF attachment preview"
+            referrerpolicy="no-referrer"
+          ></iframe>
+          <pre id="note-attachment-preview-text" class="note-attachment-preview-text hidden" tabindex="0" role="document"></pre>
+        </div>
+      </section>
+    </dialog>
 
     <dialog id="settings-dialog" class="host-dialog settings-dialog" aria-labelledby="settings-title">
       <form id="settings-form" class="dialog-panel settings-panel form-stack" novalidate>

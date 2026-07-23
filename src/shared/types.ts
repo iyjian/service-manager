@@ -775,6 +775,56 @@ export type NoteImageLoadResult =
   | { status: 'loaded'; bytes: Uint8Array; mimeType: NoteImageMimeType }
   | { status: 'not-configured' | 'missing' | 'error' };
 
+export interface NoteAttachmentReference {
+  objectId: string;
+  assetKey: string;
+  ciphertextSha256: string;
+  contentSha256: string;
+  fileName: string;
+  mimeType: string;
+  byteLength: number;
+}
+
+export interface NoteAttachmentUploadInput {
+  bytes: Uint8Array;
+  fileName: string;
+  mimeType?: string;
+}
+
+export type NoteAttachmentUploadResult =
+  | { status: 'uploaded'; reference: NoteAttachmentReference }
+  | { status: 'not-configured' };
+
+export type NoteAttachmentPreviewKind = 'pdf' | 'image' | 'text';
+
+export type NoteAttachmentPreview =
+  | { kind: 'pdf'; bytes: Uint8Array }
+  | { kind: 'image'; bytes: Uint8Array; mimeType: NoteImageMimeType }
+  | { kind: 'text'; text: string };
+
+export type NoteAttachmentPreviewResult =
+  | { status: 'loaded'; preview: NoteAttachmentPreview }
+  | { status: 'not-configured' | 'missing' | 'error' };
+
+export type NoteAttachmentDownloadResult =
+  | { status: 'saved' }
+  | { status: 'cancelled' | 'not-configured' | 'missing' | 'error' };
+
+export interface NoteExportInput {
+  title: string;
+  language: 'richtext' | 'markdown';
+  content: string;
+  format: 'pdf' | 'markdown';
+}
+
+export type NoteExportResult =
+  | { status: 'saved'; canOpen: boolean }
+  | { status: 'cancelled' };
+
+export type NoteExportOpenResult =
+  | { status: 'opened' }
+  | { status: 'unavailable' };
+
 export interface NotesFlushRequest {
   /** Keeps the Notes page inert until the matching apply reload or release. */
   persistentApplyId?: string;
@@ -792,6 +842,11 @@ export interface NotesApi {
   recoverDrafts: (input: NoteDraftRecoveryInput[]) => Promise<NoteDraftRecoveryResult>;
   uploadImage: (input: NoteImageUploadInput) => Promise<NoteImageUploadResult>;
   loadImage: (reference: NoteImageReference) => Promise<NoteImageLoadResult>;
+  uploadAttachment: (input: NoteAttachmentUploadInput) => Promise<NoteAttachmentUploadResult>;
+  viewAttachment: (reference: NoteAttachmentReference) => Promise<NoteAttachmentPreviewResult>;
+  downloadAttachment: (reference: NoteAttachmentReference) => Promise<NoteAttachmentDownloadResult>;
+  exportNote: (input: NoteExportInput) => Promise<NoteExportResult>;
+  openLastExport: () => Promise<NoteExportOpenResult>;
   onFlushRequested: (listener: (request: NotesFlushRequest) => void | Promise<void>) => () => void;
   onPersistentApplyReleased: (listener: (persistentApplyId: string) => void) => () => void;
 }

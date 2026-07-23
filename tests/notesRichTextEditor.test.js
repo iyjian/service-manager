@@ -87,6 +87,7 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
     'focus',
     'requestMeasure',
     'insertImage',
+    'insertAttachment',
     'run',
     'runToolbarCommand',
     'destroy',
@@ -146,12 +147,15 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
     'Code',
     'Table',
     'Image',
+    'File',
   ];
   assert.deepEqual(
     [...slashSource.matchAll(/title: '([^']+)'/g)].map((match) => match[1]),
     expectedTitles,
   );
   assert.doesNotMatch(slashSource, /feedback|youtube|twitter|ask\s*ai/i);
+  assert.match(slashSource, /title: 'File',[\s\S]*?searchTerms: \['attachment', 'upload', 'document'\],[\s\S]*?icon: 'file'/);
+  assert.match(slashSource, /deleteRange\(range\)\.run\(\);\s*window\.requestAnimationFrame\(\(\) => requestAttachment\(undefined, range\.from\)\)/);
   assert.match(source, /class NotesRichTextSlashMenu/);
   assert.match(source, /if \(editor\.isActive\('codeBlock'\)\) return undefined/);
   assert.match(source, /event\.key === 'ArrowDown'/);
@@ -168,6 +172,92 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /Tab: \(\) => this\.editor\.commands\.sinkListItem\(this\.name\)/);
   assert.match(source, /'Shift-Tab': \(\) => this\.editor\.commands\.liftListItem\(this\.name\)/);
   assert.match(source, /aria-label', 'Mark task complete'/);
+});
+
+test('six-dot block handle opens the same slash command menu on the active editing line', async () => {
+  const source = await readEditorSource();
+  const handleStart = source.indexOf('class NotesRichTextBlockHandle');
+  const handleEnd = source.indexOf('class NotesRichTextBubbleMenu', handleStart);
+  assert.ok(handleStart >= 0 && handleEnd > handleStart);
+  const handle = source.slice(handleStart, handleEnd);
+
+  assert.match(handle, /private readonly element = document\.createElement\('button'\)/);
+  assert.match(handle, /className = 'notes-richtext-block-handle hidden'/);
+  assert.match(handle, /setAttribute\('aria-label', 'Open block commands'\)/);
+  assert.match(handle, /setAttribute\('aria-haspopup', 'listbox'\)/);
+  assert.match(handle, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)/);
+  assert.match(handle, /icon\.setAttribute\('viewBox', '0 0 20 20'\)/);
+  assert.match(handle, /M5 3\.25a1\.5 1\.5[\s\S]*?m7 0a1\.5 1\.5/);
+  assert.match(handle, /iconPath\.setAttribute\('fill', 'currentColor'\)/);
+  assert.doesNotMatch(handle, /grid-cols-2|createElement\('span'\)/);
+  assert.match(handle, /this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
+  assert.match(handle, /this\.element\.addEventListener\('keydown',[\s\S]*?this\.menu\.handleKeyDown\(event\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?event\.stopPropagation\(\)/);
+  assert.match(handle, /const cursor = this\.editor\.view\.coordsAtPos\(this\.editor\.state\.selection\.head\)/);
+  assert.match(handle, /const editableBounds = this\.editor\.view\.dom\.getBoundingClientRect\(\)/);
+  assert.match(handle, /getComputedStyle\(this\.editor\.view\.dom\)\.paddingLeft/);
+  assert.match(handle, /writingLeft - buttonBounds\.width - 4/);
+  assert.match(handle, /const lineMiddle = \(cursor\.top \+ cursor\.bottom\) \/ 2 - overlayBounds\.top/);
+  assert.match(handle, /this\.element\.style\.top = `\$\{top\}px`/);
+
+  assert.match(source, /public openForCurrentBlock\(trigger: HTMLElement\): void \{[\s\S]*?this\.manualSelection = \{ from: selection\.from, to: selection\.to \}[\s\S]*?this\.items = this\.commandItems/);
+  assert.match(source, /const cursor = this\.manualTrigger\?\.getBoundingClientRect\(\)[\s\S]*?\?\? this\.editor\.view\.coordsAtPos\(this\.range\.to\)/);
+  assert.doesNotMatch(source, /manualAnchor/);
+  assert.match(handle, /if \(menuOpen\) this\.menu\.repositionCurrentBlock\(\)/);
+  assert.match(source, /this\.blockHandle = new NotesRichTextBlockHandle\(this\.editor, this\.overlayRoot, this\.slashMenu\)/);
+  assert.match(source, /this\.blockHandle\.sync\(\)/);
+  assert.match(source, /this\.blockHandle\.destroy\(\)/);
+});
+
+test('rich text attachment cards show compact metadata and only supported preview actions', async () => {
+  const source = await readEditorSource();
+  const extensionStart = source.indexOf('function createS3AttachmentExtension(');
+  const extensionEnd = source.indexOf('function createNotesRichTextExtensions(', extensionStart);
+  assert.ok(extensionStart >= 0 && extensionEnd > extensionStart);
+  const extension = source.slice(extensionStart, extensionEnd);
+
+  assert.match(extension, /name: 's3Attachment',[\s\S]*?group: 'block',[\s\S]*?atom: true,[\s\S]*?selectable: true/);
+  for (const attribute of [
+    'objectId', 'assetKey', 'ciphertextSha256', 'contentSha256',
+    'fileName', 'mimeType', 'byteLength',
+  ]) assert.match(extension, new RegExp(`${attribute}: \\{ default: null \\}`));
+  assert.match(extension, /parseHTML\(\) \{\s*return \[\];\s*\}/);
+  assert.match(extension, /notes-richtext-attachment-serialized/);
+  assert.match(extension, /dom\.className = 'notes-richtext-attachment'/);
+  assert.match(extension, /dom\.contentEditable = 'false'/);
+  assert.match(extension, /icon\.className = 'notes-richtext-attachment-type'/);
+  assert.match(extension, /footer\.className = 'notes-richtext-attachment-footer'/);
+  assert.match(extension, /footer\.append\(metadata, actions\)/);
+  assert.match(extension, /copy\.append\(name, footer\)/);
+  assert.match(extension, /dom\.append\(icon, copy\)/);
+  assert.match(extension, /name\.textContent = reference\.fileName/);
+  assert.match(extension, /name\.title = reference\.fileName/);
+  assert.match(extension, /metadata\.textContent = attachmentSize\(reference\.byteLength\)/);
+  assert.doesNotMatch(extension, /metadata\.textContent[^\n]*reference\.mimeType/);
+  assert.match(extension, /icon\.replaceChildren\(createAttachmentTypeIcon\(kind\)\)/);
+  assert.doesNotMatch(extension, /pdf: 'PDF'[\s\S]*?document: 'DOC'/);
+  assert.match(extension, /noteAttachmentPreviewKind\(reference\) \? \[createActionButton\('view', reference\)\] : \[\]/);
+  assert.match(extension, /createActionButton\('download', reference\)/);
+  assert.match(extension, /button\.setAttribute\('aria-label', `\$\{actionLabel\} \$\{reference\.fileName\}`\)/);
+  assert.match(extension, /onAction\(action, parseNoteAttachmentReference\(node\.attrs\), button\)/);
+  assert.doesNotMatch(extension, /button\.addEventListener\('mousedown'/);
+  assert.match(extension, /dom\.addEventListener\('click',[\s\S]*?getPos\(\)[\s\S]*?editor\.commands\.setNodeSelection\(position\)/);
+  assert.match(extension, /selectNode: \(\) => dom\.classList\.add\('ProseMirror-selectednode'\)/);
+  assert.match(extension, /deselectNode: \(\) => dom\.classList\.remove\('ProseMirror-selectednode'\)/);
+  assert.match(extension, /stopEvent: \(event\) => event\.target instanceof window\.Node && actions\.contains\(event\.target\)/);
+  assert.doesNotMatch(extension, /setAttribute\([^\n]*(?:assetKey|ciphertextSha256|contentSha256|objectId)/);
+
+  assert.match(source, /NOTE_ATTACHMENT_ICON_SOURCES: Readonly<Record<NoteAttachmentIconKind, string>> = \{[\s\S]*?pdf: '\.\.\/\.\.\/assets\/note-file-icons\/pdf\.svg'[\s\S]*?file: '\.\.\/\.\.\/assets\/note-file-icons\/file\.svg'/);
+  assert.match(source, /function createAttachmentTypeIcon\(kind: NoteAttachmentIconKind\): HTMLImageElement \{[\s\S]*?image\.alt = ''[\s\S]*?image\.draggable = false/);
+  const iconStart = source.indexOf('export function noteAttachmentIconKind(');
+  const iconEnd = source.indexOf('function attachmentSize(', iconStart);
+  const iconClassifier = source.slice(iconStart, iconEnd);
+  assert.ok(iconStart >= 0 && iconEnd > iconStart);
+  for (const kind of ['pdf', 'document', 'spreadsheet', 'presentation', 'archive', 'image', 'audio', 'video', 'code', 'file']) {
+    assert.match(iconClassifier, new RegExp(`return '${kind}'`));
+  }
+  assert.match(source, /public insertAttachment\(value: NoteAttachmentReference, position\?: number\): boolean/);
+  assert.match(source, /const content = \{ type: 's3Attachment', attrs: reference \}/);
+  assert.match(source, /createS3AttachmentExtension\(onError, onAttachmentAction\)/);
 });
 
 test('empty To-do does not inherit the empty-editor slash hint', async () => {
@@ -303,10 +393,12 @@ test('selected S3 images expose a single icon-only alignment bubble menu', async
   assert.match(source, /this\.imageBubbleMenu\.destroy\(\)/);
 });
 
-test('rich text routes pasted and dropped image files through the existing S3 upload flow', async () => {
+test('rich text routes pasted and dropped images or other files through the matching S3 upload flow', async () => {
   const source = await readEditorSource();
-  assert.match(source, /handlePaste: \(view, event\) => \{[\s\S]*?firstImageFile\(event\.clipboardData\?\.files\)[\s\S]*?options\.onRequestImage\(file, view\.state\.selection\.to\)/);
-  assert.match(source, /handleDrop: \(view, event, _slice, moved\) => \{[\s\S]*?firstImageFile\(event\.dataTransfer\?\.files\)[\s\S]*?view\.posAtCoords\([\s\S]*?options\.onRequestImage\(file, position\)/);
+  assert.match(source, /function isSupportedImageFile\(file: File\): boolean \{\s*return file\.type === 'image\/png'\s*\|\| file\.type === 'image\/jpeg'\s*\|\| file\.type === 'image\/webp';\s*\}/);
+  assert.match(source, /handlePaste: \(view, event\) => \{[\s\S]*?firstSupportedImageFile\(event\.clipboardData\?\.files\)[\s\S]*?isSupportedImageFile\(file\)[\s\S]*?options\.onRequestImage\(file, view\.state\.selection\.to\)[\s\S]*?options\.onRequestAttachment\(file, view\.state\.selection\.to\)/);
+  assert.match(source, /handleDrop: \(view, event, _slice, moved\) => \{[\s\S]*?firstSupportedImageFile\(event\.dataTransfer\?\.files\)[\s\S]*?view\.posAtCoords\([\s\S]*?isSupportedImageFile\(file\)[\s\S]*?options\.onRequestImage\(file, position\)[\s\S]*?options\.onRequestAttachment\(file, position\)/);
+  assert.doesNotMatch(source, /file\.type\.startsWith\('image\/'\)/);
   assert.match(source, /insertAt !== undefined[\s\S]*?insertContentAt\(insertAt, content\)[\s\S]*?insertContent\(content\)/);
 });
 

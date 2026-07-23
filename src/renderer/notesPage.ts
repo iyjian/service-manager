@@ -1,5 +1,6 @@
 import type {
   Note,
+  NoteAttachmentReference,
   NoteDeletePreview,
   NoteDraft,
   NoteDraftRecoveryInput,
@@ -27,15 +28,28 @@ import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
   EMPTY_RICH_TEXT_CONTENT,
   extractRichTextPlainText,
+  normalizeNoteAttachmentFileName,
   normalizeRichTextContent,
+  noteAttachmentPreviewKind,
   parseRichTextContent,
 } from './noteRichText.js';
 import { registerPage } from './nav.js';
 import { NotesRichTextEditor } from './notesRichTextEditor.js';
+import {
+  applyMarkdownFormat,
+  extractMarkdownOutline,
+  getMarkdownStats,
+  renderMarkdownToSafeHtml,
+  type MarkdownFormatCommand,
+} from './notesMarkdown.js';
+
+export { normalizeNoteAttachmentFileName };
 
 const NOTE_SAVE_DEBOUNCE_MS = 250;
 const NOTE_SEARCH_DEBOUNCE_MS = 120;
 const NOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const NOTE_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
+const MAX_CONCURRENT_NOTE_ASSET_UPLOADS = 2;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
 const MIN_NOTES_SIDEBAR_WIDTH = 240;
 const MAX_NOTES_SIDEBAR_WIDTH = 520;
@@ -45,6 +59,12 @@ const NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS = 180;
 export function clampNotesSidebarWidth(value: number): number {
   const rounded = Number.isFinite(value) ? Math.round(value) : DEFAULT_NOTES_SIDEBAR_WIDTH;
   return Math.min(MAX_NOTES_SIDEBAR_WIDTH, Math.max(MIN_NOTES_SIDEBAR_WIDTH, rounded));
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
 }
 
 const bashLanguage = StreamLanguage.define(shell);
@@ -65,6 +85,67 @@ const markdownFenceLanguages: Readonly<Record<string, Language>> = {
   yaml: yamlLanguage,
   yml: yamlLanguage,
 };
+
+export interface NoteLanguageOption {
+  value: NoteLanguage;
+  label: string;
+  keywords: readonly string[];
+}
+
+export const NOTE_LANGUAGE_OPTIONS: readonly NoteLanguageOption[] = Object.freeze([
+  { value: 'richtext', label: 'Rich Text', keywords: ['rich', 'formatted', 'wysiwyg', 'document'] },
+  { value: 'markdown', label: 'Markdown', keywords: ['markdown', 'md'] },
+  { value: 'bash', label: 'Bash', keywords: ['bash', 'shell', 'sh'] },
+  { value: 'javascript', label: 'JavaScript', keywords: ['javascript', 'js'] },
+  { value: 'typescript', label: 'TypeScript', keywords: ['typescript', 'ts'] },
+  { value: 'sql', label: 'SQL', keywords: ['sql', 'database', 'query'] },
+  { value: 'json', label: 'JSON', keywords: ['json', 'data'] },
+  { value: 'yaml', label: 'YAML', keywords: ['yaml', 'yml'] },
+  { value: 'text', label: 'Plain Text', keywords: ['plain', 'text', 'txt'] },
+]);
+
+export function filterNoteLanguageOptions(query: string): readonly NoteLanguageOption[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return NOTE_LANGUAGE_OPTIONS;
+  return NOTE_LANGUAGE_OPTIONS.filter((option) => {
+    const searchable = `${option.label} ${option.value} ${option.keywords.join(' ')}`.toLocaleLowerCase();
+    return terms.every((term) => searchable.includes(term));
+  });
+}
+
+export interface NoteLanguageSwitchFence {
+  noteId: string;
+  sourceLanguage: NoteLanguage;
+  editVersion: number;
+  selectionVersion: number;
+  workspaceGeneration: number;
+}
+
+export function isNoteLanguageSwitchFenceCurrent(
+  expected: NoteLanguageSwitchFence,
+  current: NoteLanguageSwitchFence,
+): boolean {
+  return expected.noteId === current.noteId
+    && expected.sourceLanguage === current.sourceLanguage
+    && expected.editVersion === current.editVersion
+    && expected.selectionVersion === current.selectionVersion
+    && expected.workspaceGeneration === current.workspaceGeneration;
+}
+
+export function noteLanguageRovingTabStop(
+  options: readonly NoteLanguageOption[],
+  selectedLanguage: NoteLanguage | undefined,
+): NoteLanguage | undefined {
+  return options.find((option) => option.value === selectedLanguage)?.value ?? options[0]?.value;
+}
+
+function isNoteLanguage(value: string | undefined): value is NoteLanguage {
+  return NOTE_LANGUAGE_OPTIONS.some((option) => option.value === value);
+}
+
+function noteLanguageLabel(language: NoteLanguage): string {
+  return NOTE_LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? 'Plain Text';
+}
 
 const noteLanguageExtensions: Readonly<Record<NoteLanguage, Extension>> = {
   markdown: markdown({
@@ -258,8 +339,20 @@ function appendImageToRichTextContent(content: string, reference: NoteImageRefer
   });
 }
 
-function setMessage(text: string, level: 'default' | 'success' | 'error' = 'default'): void {
-  window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text, level } }));
+function appendAttachmentToRichTextContent(content: string, reference: NoteAttachmentReference): string {
+  const document = parseRichTextContent(content);
+  return normalizeRichTextContent({
+    ...document,
+    content: [...(document.content ?? []), { type: 's3Attachment', attrs: reference }],
+  });
+}
+
+function setMessage(
+  text: string,
+  level: 'default' | 'success' | 'error' = 'default',
+  action?: 'open-note-export',
+): void {
+  window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text, level, action } }));
 }
 
 /**
@@ -497,18 +590,45 @@ class NotesPage {
   private readonly emptyState = requireElement<HTMLElement>('#notes-empty');
   private readonly editor = requireElement<HTMLElement>('#notes-editor');
   private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
-  private readonly languageSelect = requireElement<HTMLSelectElement>('#note-language');
+  private readonly languageControl = requireElement<HTMLElement>('#note-language-control');
+  private readonly languageToggle = requireElement<HTMLButtonElement>('#note-language-toggle');
+  private readonly languageValue = requireElement<HTMLElement>('#note-language-value');
+  private readonly languageMenu = requireElement<HTMLElement>('#note-language-menu');
+  private readonly languageSearch = requireElement<HTMLInputElement>('#note-language-search');
+  private readonly languageOptions = requireElement<HTMLElement>('#note-language-options');
   private readonly contentHost = requireElement<HTMLElement>('#note-content');
+  private readonly codeEditorShell = requireElement<HTMLElement>('#note-code-editor');
+  private readonly codeLayout = requireElement<HTMLElement>('#note-code-layout');
   private readonly codeContentHost = requireElement<HTMLElement>('#note-code-content');
+  private readonly markdownToolbar = requireElement<HTMLElement>('#note-markdown-toolbar');
+  private readonly markdownPreview = requireElement<HTMLElement>('#note-markdown-preview');
+  private readonly markdownStatus = requireElement<HTMLElement>('#note-markdown-status');
+  private readonly markdownOutlineButton = requireElement<HTMLButtonElement>('#note-markdown-outline-btn');
+  private readonly markdownOutlineMenu = requireElement<HTMLElement>('#note-markdown-outline-menu');
   private readonly richTextShell = requireElement<HTMLElement>('#note-richtext-editor');
   private readonly richTextHost = requireElement<HTMLElement>('#note-richtext-content');
   private readonly richTextToolbar = requireElement<HTMLElement>('#note-richtext-toolbar');
   private readonly imageInput = requireElement<HTMLInputElement>('#note-richtext-image-input');
+  private readonly attachmentInput = requireElement<HTMLInputElement>('#note-richtext-attachment-input');
+  private readonly attachmentPreviewDialog = requireElement<HTMLDialogElement>('#note-attachment-preview-dialog');
+  private readonly attachmentPreviewTitle = requireElement<HTMLElement>('#note-attachment-preview-title');
+  private readonly attachmentPreviewMeta = requireElement<HTMLElement>('#note-attachment-preview-meta');
+  private readonly attachmentPreviewBadge = requireElement<HTMLElement>('#note-attachment-preview-badge');
+  private readonly attachmentPreviewBody = requireElement<HTMLElement>('#note-attachment-preview-body');
+  private readonly attachmentPreviewLoading = requireElement<HTMLElement>('#note-attachment-preview-loading');
+  private readonly attachmentPreviewError = requireElement<HTMLElement>('#note-attachment-preview-error');
+  private readonly attachmentPreviewImage = requireElement<HTMLImageElement>('#note-attachment-preview-image');
+  private readonly attachmentPreviewPdf = requireElement<HTMLIFrameElement>('#note-attachment-preview-pdf');
+  private readonly attachmentPreviewText = requireElement<HTMLElement>('#note-attachment-preview-text');
+  private readonly attachmentPreviewCloseButton = requireElement<HTMLButtonElement>('#note-attachment-preview-close');
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
   private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
+  private readonly downloadButton = requireElement<HTMLButtonElement>('#note-download-btn');
+  private readonly downloadMenu = requireElement<HTMLElement>('#note-download-menu');
   private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
   private readonly languageCompartment = new Compartment();
   private readonly themeCompartment = new Compartment();
+  private readonly editorAttributesCompartment = new Compartment();
   private readonly codeEditor: EditorView;
   private readonly richTextEditor: NotesRichTextEditor;
 
@@ -539,10 +659,24 @@ class NotesPage {
   private editorNoteId: string | undefined;
   private replacingEditorDocument = false;
   private switchingLanguage = false;
-  private uploadingImage = false;
+  private languageFilter = '';
+  private noteExportInFlight = false;
+  private attachmentPreviewRequest = 0;
+  private attachmentPreviewObjectUrl: string | undefined;
+  private attachmentPreviewOpener: HTMLButtonElement | undefined;
+  private readonly editorUploadTasks = new Set<Promise<void>>();
+  private pendingImagePosition: number | undefined;
+  private pendingAttachmentPosition: number | undefined;
+  private markdownPreviewEnabled = false;
+  private markdownFocusMode = false;
+  private markdownTypewriterMode = false;
+  private markdownUiFrame: number | undefined;
+  private markdownCenterSelectionOnNextFrame = false;
+  private markdownDocumentStatsText = '0 words · 0 characters · 0 lines';
   private editorTheme: 'light' | 'dark' = 'light';
   private draggingNoteId: string | undefined;
   private selectionVersion = 0;
+  private workspaceMutationGeneration = 0;
   private saveGeneration = 0;
   private sidebarWidth = DEFAULT_NOTES_SIDEBAR_WIDTH;
   private sidebarResizeDrag: { pointerId: number; startX: number; startWidth: number } | undefined;
@@ -564,7 +698,20 @@ class NotesPage {
       onError: (message) => setMessage(message, 'error'),
       onRequestImage: (file, position) => {
         if (file) void this.uploadImageFile(file, position);
-        else this.imageInput.click();
+        else {
+          this.pendingImagePosition = position;
+          this.imageInput.click();
+        }
+      },
+      onRequestAttachment: (file, position) => {
+        if (file) void this.uploadAttachmentFile(file, position);
+        else {
+          this.pendingAttachmentPosition = position;
+          this.attachmentInput.click();
+        }
+      },
+      onAttachmentAction: (action, reference, opener) => {
+        void this.runAttachmentAction(action, reference, opener);
       },
     });
     this.contentHost.dataset.theme = this.editorTheme;
@@ -590,9 +737,52 @@ class NotesPage {
     });
 
     this.nameInput.addEventListener('input', () => this.updateSelectedMetadata());
-    this.languageSelect.addEventListener('change', () => void this.changeSelectedLanguage());
+    this.languageToggle.addEventListener('click', (event) => this.toggleLanguageMenu(event));
+    this.languageToggle.addEventListener('keydown', (event) => this.handleLanguageToggleKeyDown(event));
+    this.languageSearch.addEventListener('input', () => {
+      this.languageFilter = this.languageSearch.value;
+      this.renderLanguageOptions();
+    });
+    this.languageMenu.addEventListener('keydown', (event) => this.handleLanguageMenuKeyDown(event));
+    this.languageOptions.addEventListener('click', (event) => this.handleLanguageOptionClick(event));
+    this.languageControl.addEventListener('focusout', () => {
+      window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (!(active instanceof window.Node) || !this.languageControl.contains(active)) {
+          this.closeLanguageMenu();
+        }
+      });
+    });
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
+    this.downloadButton.addEventListener('click', (event) => this.toggleDownloadMenu(event));
+    this.downloadMenu.addEventListener('click', (event) => void this.handleDownloadMenuClick(event));
+    this.downloadMenu.addEventListener('keydown', (event) => this.handlePopupMenuKeyDown(
+      event,
+      this.downloadMenu,
+      this.downloadButton,
+      () => this.closeDownloadMenu(),
+    ));
     this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
+    this.attachmentInput.addEventListener('change', () => void this.uploadSelectedAttachment());
+    this.attachmentPreviewCloseButton.addEventListener('click', () => this.attachmentPreviewDialog.close());
+    this.attachmentPreviewDialog.addEventListener('close', () => this.handleAttachmentPreviewClosed());
+    this.attachmentPreviewDialog.addEventListener('click', (event) => {
+      if (event.target === this.attachmentPreviewDialog) this.attachmentPreviewDialog.close();
+    });
+    window.addEventListener('beforeunload', () => this.clearAttachmentPreviewContent());
+    this.markdownToolbar.addEventListener('click', (event) => this.handleMarkdownToolbarClick(event));
+    this.markdownOutlineButton.addEventListener('click', (event) => this.toggleMarkdownOutline(event));
+    this.markdownOutlineMenu.addEventListener('click', (event) => this.handleMarkdownOutlineClick(event));
+    this.markdownOutlineMenu.addEventListener('keydown', (event) => this.handlePopupMenuKeyDown(
+      event,
+      this.markdownOutlineMenu,
+      this.markdownOutlineButton,
+      () => this.closeMarkdownOutline(),
+    ));
+    this.codeEditor.dom.addEventListener('keydown', this.handleMarkdownKeyDown);
+    this.codeEditor.dom.addEventListener('click', this.handleMarkdownEditorClick);
+    this.codeEditor.scrollDOM.addEventListener('scroll', this.syncMarkdownPreviewScroll, { passive: true });
+    document.addEventListener('pointerdown', this.handleNotesPopupOutsidePointerDown, true);
     this.sidebarResizeHandle.addEventListener('pointerdown', this.handleSidebarResizePointerDown);
     this.sidebarResizeHandle.addEventListener('pointermove', this.handleSidebarResizePointerMove);
     this.sidebarResizeHandle.addEventListener('pointerup', this.handleSidebarResizePointerEnd);
@@ -606,6 +796,10 @@ class NotesPage {
   }
 
   hide(): void {
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
     void this.flush().catch(() => undefined);
   }
 
@@ -614,6 +808,7 @@ class NotesPage {
     this.finishSidebarResize();
     this.flushQueuedSidebarWidthSave();
     try {
+      await this.waitForEditorUploads();
       await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
     } finally {
       this.flushSearchRender();
@@ -810,6 +1005,8 @@ class NotesPage {
     let selectedAfterRecovery: string | undefined;
     let conflictCount = 0;
     try {
+      await this.waitForEditorUploads();
+      this.workspaceMutationGeneration += 1;
       if (!coordinatedApply && this.selectedId) this.captureEditorContent(this.selectedId);
       const pending = coordinatedApply ? [] : this.notes
         .filter((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))
@@ -928,6 +1125,7 @@ class NotesPage {
   private applyWorkspace(
     workspace: NotesWorkspaceSnapshot,
     editVersionBaseline?: ReadonlyMap<string, number>,
+    preservePersistedBases = false,
   ): void {
     const localNotes = new Map(this.notes.map((note) => [note.id, note]));
     this.notes = workspace.notes.map((note) => {
@@ -942,7 +1140,9 @@ class NotesPage {
     });
     this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
     this.expandedNoteIds = new Set(workspace.expandedNoteIds);
-    for (const note of workspace.notes) this.persistedNotes.set(note.id, cloneNote(note));
+    if (!preservePersistedBases) {
+      for (const note of workspace.notes) this.persistedNotes.set(note.id, cloneNote(note));
+    }
     const activeIds = new Set(this.notes.map((note) => note.id));
     for (const note of this.notes) {
       if (!this.editVersions.has(note.id)) this.editVersions.set(note.id, 0);
@@ -1062,6 +1262,11 @@ class NotesPage {
         depth: 0,
       }))
       : this.visibleTreeRows(children);
+    const folderNoteIds = new Set(
+      this.treeNodes
+        .map((treeNode) => treeNode.parentId)
+        .filter((parentId): parentId is string => typeof parentId === 'string'),
+    );
     this.list.replaceChildren();
     this.renderedRowsById.clear();
 
@@ -1074,8 +1279,9 @@ class NotesPage {
       this.renderedRowsById.set(note.id, row);
 
       const childNodes = children.get(note.id) ?? [];
+      const hasChildren = folderNoteIds.has(note.id);
       let toggle: HTMLElement;
-      if (childNodes.length > 0 && !searchActive) {
+      if (hasChildren && !searchActive) {
         const toggleButton = document.createElement('button');
         toggleButton.type = 'button';
         toggleButton.className = 'notes-tree-toggle';
@@ -1099,17 +1305,27 @@ class NotesPage {
       button.className = 'notes-list-item';
       button.dataset.noteId = note.id;
       button.setAttribute('aria-current', note.id === this.selectedId ? 'true' : 'false');
-      if (childNodes.length > 0 && !searchActive) {
+      if (hasChildren && !searchActive) {
         button.setAttribute('aria-expanded', String(this.expandedNoteIds.has(note.id)));
       }
 
       const nameRow = document.createElement('span');
       nameRow.className = 'notes-list-item-name-row';
 
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'notes-tree-type-icon';
+      typeIcon.dataset.type = hasChildren ? 'folder' : 'note';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.appendChild(createTreeIcon(hasChildren
+        ? (this.expandedNoteIds.has(note.id)
+          ? 'M2.25 4.75h4l1.25 1.5h6.25v6.5H2.25z M2.25 4.75V3.25h4l1.25 1.5h4.25'
+          : 'M2.25 3.25h4l1.25 1.5h6.25v8H2.25z')
+        : 'M4 2.5h5l3 3v8H4z M9 2.5v3h3 M6 8h4 M6 10.5h4'));
+
       const name = document.createElement('span');
       name.className = 'notes-list-item-name';
       name.textContent = note.name || 'Untitled';
-      nameRow.appendChild(name);
+      nameRow.append(typeIcon, name);
 
       this.renderListSaveIndicator(
         nameRow,
@@ -1129,7 +1345,7 @@ class NotesPage {
 
       button.addEventListener('click', () => {
         void this.selectNote(note.id);
-        if (childNodes.length > 0 && !searchActive) {
+        if (hasChildren && !searchActive) {
           void this.toggleTreeExpanded(note.id);
         }
       });
@@ -1248,6 +1464,8 @@ class NotesPage {
     this.emptyState.classList.toggle('hidden', Boolean(note));
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
+      this.closeLanguageMenu();
+      this.updateLanguageControl(undefined);
       this.editorNoteId = undefined;
       this.showEditorMode('markdown');
       this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
@@ -1257,8 +1475,9 @@ class NotesPage {
     }
 
     this.nameInput.value = note.name;
-    this.languageSelect.value = note.language;
+    this.updateLanguageControl(note.language);
     const noteChanged = this.editorNoteId !== note.id;
+    if (noteChanged) this.closeLanguageMenu();
     if (noteChanged) {
       this.editorNoteId = note.id;
       if (note.language === 'richtext') {
@@ -1283,8 +1502,9 @@ class NotesPage {
   }
 
   private async selectNote(id: string): Promise<void> {
-    if (id === this.selectedId || !this.notes.some((note) => note.id === id)) return;
+    if (!this.notes.some((note) => note.id === id)) return;
     const selectionVersion = ++this.selectionVersion;
+    if (id === this.selectedId) return;
     const previousId = this.selectedId;
     if (previousId) {
       await this.flushNote(previousId);
@@ -1328,6 +1548,236 @@ class NotesPage {
     this.markNoteEdited(note, false, false);
   }
 
+  private markdownActive(): boolean {
+    return this.selectedNote()?.language === 'markdown' && this.editorNoteId === this.selectedId;
+  }
+
+  private applyMarkdownCommand(commandValue: string): void {
+    if (!this.markdownActive()) return;
+    const commandMap: Readonly<Record<string, { command: MarkdownFormatCommand; headingLevel?: 1 | 2 | 3 }>> = {
+      bold: { command: 'bold' },
+      italic: { command: 'italic' },
+      strike: { command: 'strike' },
+      code: { command: 'inlineCode' },
+      heading1: { command: 'heading', headingLevel: 1 },
+      heading2: { command: 'heading', headingLevel: 2 },
+      heading3: { command: 'heading', headingLevel: 3 },
+      link: { command: 'link' },
+      quote: { command: 'quote' },
+      bullet: { command: 'bullet' },
+      numbered: { command: 'numbered' },
+      task: { command: 'task' },
+      table: { command: 'table' },
+      horizontalRule: { command: 'hr' },
+    };
+    const mapped = commandMap[commandValue];
+    if (!mapped) return;
+    const selection = this.codeEditor.state.selection.main;
+    const edit = applyMarkdownFormat(
+      this.codeEditor.state.doc.toString(),
+      { from: selection.from, to: selection.to },
+      mapped.command,
+      {
+        ...(mapped.headingLevel ? { headingLevel: mapped.headingLevel } : {}),
+        ...(mapped.command === 'table' ? { tableColumns: 3, tableRows: 2 } : {}),
+      },
+    );
+    this.codeEditor.dispatch({
+      changes: edit.change,
+      selection: { anchor: edit.selection.from, head: edit.selection.to },
+      scrollIntoView: true,
+    });
+    this.codeEditor.focus();
+  }
+
+  private readonly handleMarkdownKeyDown = (event: KeyboardEvent): void => {
+    if (!this.markdownActive()) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    let command: string | undefined;
+    if (modifier && !event.altKey && event.code === 'KeyB') command = 'bold';
+    else if (modifier && !event.altKey && event.code === 'KeyI') command = 'italic';
+    else if (modifier && !event.altKey && event.code === 'KeyK') command = 'link';
+    else if (modifier && event.shiftKey && event.code === 'Digit7') command = 'numbered';
+    else if (modifier && event.shiftKey && event.code === 'Digit8') command = 'bullet';
+    else if (modifier && event.shiftKey && event.code === 'KeyX') command = 'strike';
+    else if (modifier && event.altKey && /^Digit[123]$/.test(event.code)) {
+      command = `heading${event.code.slice(-1)}`;
+    }
+    if (command) {
+      event.preventDefault();
+      this.applyMarkdownCommand(command);
+      return;
+    }
+    if (event.key === 'F8') {
+      event.preventDefault();
+      this.setMarkdownViewMode('focus', !this.markdownFocusMode);
+    } else if (event.key === 'F9') {
+      event.preventDefault();
+      this.setMarkdownViewMode('typewriter', !this.markdownTypewriterMode);
+    }
+  };
+
+  private readonly handleMarkdownEditorClick = (event: MouseEvent): void => {
+    if (!this.markdownActive()) return;
+    const position = this.codeEditor.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (position === null) return;
+    const line = this.codeEditor.state.doc.lineAt(position);
+    const match = /^(\s*[-+*]\s+\[)([ xX])(\])/.exec(line.text);
+    if (!match) return;
+    const checkboxFrom = line.from + match[1].length - 1;
+    const checkboxTo = checkboxFrom + 3;
+    if (position < checkboxFrom || position > checkboxTo) return;
+    event.preventDefault();
+    const statePosition = line.from + match[1].length;
+    this.codeEditor.dispatch({
+      changes: { from: statePosition, to: statePosition + 1, insert: match[2].toLocaleLowerCase() === 'x' ? ' ' : 'x' },
+      selection: { anchor: statePosition + 1 },
+    });
+    this.codeEditor.focus();
+  };
+
+  private handleMarkdownToolbarClick(event: Event): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const command = source.closest<HTMLElement>('[data-markdown-command]')?.dataset.markdownCommand;
+    if (command) {
+      event.preventDefault();
+      this.applyMarkdownCommand(command);
+      return;
+    }
+    const view = source.closest<HTMLElement>('[data-markdown-view]')?.dataset.markdownView;
+    if (view === 'focus' || view === 'typewriter' || view === 'preview') {
+      event.preventDefault();
+      const enabled = view === 'focus'
+        ? !this.markdownFocusMode
+        : view === 'typewriter'
+          ? !this.markdownTypewriterMode
+          : !this.markdownPreviewEnabled;
+      this.setMarkdownViewMode(view, enabled);
+    }
+  }
+
+  private setMarkdownViewMode(view: 'focus' | 'typewriter' | 'preview', enabled: boolean): void {
+    if (view === 'focus') this.markdownFocusMode = enabled;
+    else if (view === 'typewriter') this.markdownTypewriterMode = enabled;
+    else this.markdownPreviewEnabled = enabled;
+    this.codeEditorShell.dataset.focusMode = String(this.markdownFocusMode);
+    this.codeEditorShell.dataset.typewriterMode = String(this.markdownTypewriterMode);
+    this.codeLayout.dataset.preview = String(this.markdownPreviewEnabled);
+    for (const button of Array.from(this.markdownToolbar.querySelectorAll<HTMLElement>('[data-markdown-view]'))) {
+      const active = button.dataset.markdownView === 'focus'
+        ? this.markdownFocusMode
+        : button.dataset.markdownView === 'typewriter'
+          ? this.markdownTypewriterMode
+          : this.markdownPreviewEnabled;
+      button.setAttribute('aria-pressed', String(active));
+      button.dataset.active = String(active);
+    }
+    this.markdownPreview.classList.toggle('hidden', !this.markdownPreviewEnabled);
+    const note = this.selectedNote();
+    if (note?.language === 'markdown') this.captureEditorContent(note.id);
+    this.queueMarkdownViewportUpdate(this.markdownTypewriterMode);
+    this.codeEditor.requestMeasure();
+  }
+
+  private queueMarkdownViewportUpdate(centerSelection = false): void {
+    this.markdownCenterSelectionOnNextFrame ||= centerSelection;
+    if (this.markdownUiFrame !== undefined) return;
+    this.markdownUiFrame = window.requestAnimationFrame(() => {
+      this.markdownUiFrame = undefined;
+      const shouldCenterSelection = this.markdownCenterSelectionOnNextFrame;
+      this.markdownCenterSelectionOnNextFrame = false;
+      if (shouldCenterSelection && this.markdownActive()) {
+        this.codeEditor.dispatch({
+          effects: EditorView.scrollIntoView(this.codeEditor.state.selection.main.head, { y: 'center' }),
+        });
+      }
+    });
+  }
+
+  private updateMarkdownUi(markdown: string): void {
+    if (!this.markdownActive()) return;
+    const stats = getMarkdownStats(markdown);
+    this.markdownDocumentStatsText = `${stats.words} words · ${stats.characters} characters · ${stats.lines} lines`;
+    this.updateMarkdownSelectionStats();
+    if (this.markdownPreviewEnabled) {
+      const parsed = new DOMParser().parseFromString(
+        `<!doctype html><body>${renderMarkdownToSafeHtml(markdown)}</body>`,
+        'text/html',
+      );
+      this.markdownPreview.replaceChildren(...Array.from(parsed.body.childNodes));
+      this.syncMarkdownPreviewScroll();
+    }
+  }
+
+  private updateMarkdownSelectionStats(): void {
+    if (!this.markdownActive()) return;
+    const selection = this.codeEditor.state.selection.main;
+    const selected = selection.empty
+      ? ''
+      : this.codeEditor.state.doc.sliceString(selection.from, selection.to);
+    const selectionText = selected ? ` · ${getMarkdownStats(selected).words} selected` : '';
+    this.markdownStatus.textContent = `${this.markdownDocumentStatsText}${selectionText}`;
+  }
+
+  private readonly syncMarkdownPreviewScroll = (): void => {
+    if (!this.markdownPreviewEnabled || !this.markdownActive()) return;
+    const source = this.codeEditor.scrollDOM;
+    const sourceRange = Math.max(1, source.scrollHeight - source.clientHeight);
+    const targetRange = Math.max(0, this.markdownPreview.scrollHeight - this.markdownPreview.clientHeight);
+    this.markdownPreview.scrollTop = (source.scrollTop / sourceRange) * targetRange;
+  };
+
+  private toggleMarkdownOutline(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const opening = this.markdownOutlineMenu.classList.contains('hidden');
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    if (!opening) {
+      this.closeMarkdownOutline();
+      return;
+    }
+    const headings = extractMarkdownOutline(this.codeEditor.state.doc.toString());
+    const nodes: HTMLElement[] = headings.map((heading) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('role', 'menuitem');
+      button.dataset.markdownOutlineOffset = String(heading.offset);
+      button.style.setProperty('--markdown-outline-level', String(heading.level));
+      button.textContent = heading.text;
+      return button;
+    });
+    if (nodes.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = 'No headings yet.';
+      nodes.push(empty);
+    }
+    this.markdownOutlineMenu.replaceChildren(...nodes);
+    this.markdownOutlineMenu.classList.remove('hidden');
+    this.markdownOutlineButton.setAttribute('aria-expanded', 'true');
+    this.markdownOutlineMenu.querySelector<HTMLButtonElement>('button')?.focus();
+  }
+
+  private handleMarkdownOutlineClick(event: Event): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const item = source.closest<HTMLElement>('[data-markdown-outline-offset]');
+    const offset = Number(item?.dataset.markdownOutlineOffset);
+    if (!Number.isInteger(offset) || offset < 0 || offset > this.codeEditor.state.doc.length) return;
+    this.closeMarkdownOutline();
+    this.codeEditor.dispatch({
+      selection: { anchor: offset },
+      effects: EditorView.scrollIntoView(offset, { y: 'center' }),
+    });
+    this.codeEditor.focus();
+  }
+
+  private closeMarkdownOutline(): void {
+    this.markdownOutlineMenu.classList.add('hidden');
+    this.markdownOutlineButton.setAttribute('aria-expanded', 'false');
+  }
+
   private updateSelectedRichTextContent(): void {
     if (this.replacingEditorDocument) return;
     const note = this.selectedNote();
@@ -1356,6 +1806,7 @@ class NotesPage {
     const content = note.language === 'richtext'
       ? this.richTextEditor.getContent()
       : this.codeEditor.state.doc.toString();
+    if (note.language === 'markdown') this.updateMarkdownUi(content);
     if (note.content === content) return;
     note.content = content;
     this.refreshNoteSearchEntry(note);
@@ -1363,20 +1814,170 @@ class NotesPage {
     if (this.searchInput.value.trim()) this.queueSearchRender();
   }
 
-  private async changeSelectedLanguage(): Promise<void> {
+  private captureActiveEditorContent(): void {
+    if (this.selectedId) this.captureEditorContent(this.selectedId);
+  }
+
+  private updateLanguageControl(language: NoteLanguage | undefined): void {
+    const label = language ? noteLanguageLabel(language) : 'Language';
+    this.languageValue.textContent = label;
+    this.languageValue.title = label;
+    this.languageToggle.title = language ? `Note Language: ${label}` : 'Note Language';
+    this.languageToggle.setAttribute('aria-label', language ? `Note Language, ${label}` : 'Note Language');
+    this.languageToggle.setAttribute('aria-busy', String(this.switchingLanguage));
+    this.languageToggle.disabled = !language || this.switchingLanguage;
+    this.languageSearch.disabled = !language || this.switchingLanguage;
+    if (this.languageToggle.disabled) this.closeLanguageMenu();
+    else if (!this.languageMenu.classList.contains('hidden')) this.renderLanguageOptions();
+  }
+
+  private renderLanguageOptions(): void {
+    const selectedLanguage = this.selectedNote()?.language;
+    const options = filterNoteLanguageOptions(this.languageFilter);
+    const tabStop = noteLanguageRovingTabStop(options, selectedLanguage);
+    const nodes: HTMLElement[] = options.map((item) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'notes-language-option';
+      option.dataset.noteLanguage = item.value;
+      option.tabIndex = item.value === tabStop ? 0 : -1;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(item.value === selectedLanguage));
+      option.title = item.label;
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      const check = createTreeIcon('m3.5 8.25 2.5 2.5 6.5-6.5');
+      check.classList.add('notes-language-option-check');
+      option.append(label, check);
+      return option;
+    });
+    if (nodes.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'notes-language-empty';
+      empty.setAttribute('role', 'status');
+      empty.textContent = 'No matching languages';
+      nodes.push(empty);
+    }
+    this.languageOptions.replaceChildren(...nodes);
+  }
+
+  private openLanguageMenu(): void {
+    if (this.languageToggle.disabled) return;
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    this.languageFilter = '';
+    this.languageSearch.value = '';
+    this.renderLanguageOptions();
+    this.languageMenu.classList.remove('hidden');
+    this.languageToggle.setAttribute('aria-expanded', 'true');
+    window.requestAnimationFrame(() => {
+      if (!this.languageMenu.classList.contains('hidden')) this.languageSearch.focus();
+    });
+  }
+
+  private closeLanguageMenu(restoreFocus = false): void {
+    this.languageMenu.classList.add('hidden');
+    this.languageToggle.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && !this.languageToggle.disabled) this.languageToggle.focus();
+  }
+
+  private toggleLanguageMenu(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.languageToggle.disabled) return;
+    if (this.languageMenu.classList.contains('hidden')) this.openLanguageMenu();
+    else this.closeLanguageMenu();
+  }
+
+  private handleLanguageToggleKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && !this.languageMenu.classList.contains('hidden')) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLanguageMenu(true);
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.openLanguageMenu();
+  }
+
+  private handleLanguageMenuKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLanguageMenu(true);
+      return;
+    }
+    const options = Array.from(
+      this.languageOptions.querySelectorAll<HTMLButtonElement>('.notes-language-option:not(:disabled)'),
+    );
+    if (options.length === 0) return;
+    if (event.target === this.languageSearch) {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const selected = options.find((option) => option.getAttribute('aria-selected') === 'true');
+      const next = event.key === 'ArrowDown' ? selected ?? options[0] : options[options.length - 1];
+      event.preventDefault();
+      event.stopPropagation();
+      if (next) this.focusLanguageOption(next, options);
+      return;
+    }
+    const source = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('.notes-language-option')
+      : null;
+    if (!source || !this.languageOptions.contains(source)
+      || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const current = options.indexOf(source);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowUp'
+          ? (current - 1 + options.length) % options.length
+          : (current + 1) % options.length;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = options[nextIndex];
+    if (next) this.focusLanguageOption(next, options);
+  }
+
+  private focusLanguageOption(
+    option: HTMLButtonElement,
+    options = Array.from(
+      this.languageOptions.querySelectorAll<HTMLButtonElement>('.notes-language-option:not(:disabled)'),
+    ),
+  ): void {
+    for (const candidate of options) candidate.tabIndex = candidate === option ? 0 : -1;
+    option.focus();
+  }
+
+  private handleLanguageOptionClick(event: Event): void {
+    const source = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('.notes-language-option')
+      : null;
+    if (!source || !this.languageOptions.contains(source)) return;
+    const targetLanguage = source.dataset.noteLanguage;
+    if (!isNoteLanguage(targetLanguage)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeLanguageMenu();
+    this.languageToggle.focus();
+    void this.changeSelectedLanguage(targetLanguage);
+  }
+
+  private async changeSelectedLanguage(targetLanguage: NoteLanguage): Promise<void> {
     if (this.switchingLanguage) return;
     const note = this.selectedNote();
     if (!note) return;
     const sourceLanguage = note.language;
-    const targetLanguage = this.languageSelect.value as NoteLanguage;
     if (!(targetLanguage in noteLanguageExtensions) || targetLanguage === sourceLanguage) {
-      this.languageSelect.value = sourceLanguage;
+      this.updateLanguageControl(sourceLanguage);
       return;
     }
     try {
       this.captureEditorContent(note.id);
     } catch (error) {
-      this.languageSelect.value = sourceLanguage;
+      this.updateLanguageControl(sourceLanguage);
       this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
       return;
     }
@@ -1394,8 +1995,16 @@ class NotesPage {
       }
     }
 
+    const switchFence: NoteLanguageSwitchFence = {
+      noteId: note.id,
+      sourceLanguage,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
+    let restoreLanguageToggle = false;
     this.switchingLanguage = true;
-    this.languageSelect.disabled = true;
+    this.updateLanguageControl(sourceLanguage);
     try {
       if (crossesRichTextBoundary && hasContent) {
         const leavingRichText = sourceLanguage === 'richtext';
@@ -1412,13 +2021,19 @@ class NotesPage {
           cancelLabel: 'Cancel',
         });
         if (!confirmed) {
-          this.languageSelect.value = sourceLanguage;
+          restoreLanguageToggle = true;
           return;
         }
       }
 
       const current = this.selectedNote();
-      if (!current || current.id !== note.id || current.language !== sourceLanguage) return;
+      if (!current || !isNoteLanguageSwitchFenceCurrent(switchFence, {
+        noteId: current.id,
+        sourceLanguage: current.language,
+        editVersion: this.editVersions.get(current.id) ?? 0,
+        selectionVersion: this.selectionVersion,
+        workspaceGeneration: this.workspaceMutationGeneration,
+      })) return;
       if (targetLanguage === 'richtext') {
         current.content = plainTextToRichTextContent(current.content);
       } else if (sourceLanguage === 'richtext') {
@@ -1430,23 +2045,62 @@ class NotesPage {
       if (targetLanguage === 'richtext') this.richTextEditor.focus();
       else this.codeEditor.focus();
     } catch (error) {
-      this.languageSelect.value = sourceLanguage;
+      restoreLanguageToggle = true;
       this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
     } finally {
       this.switchingLanguage = false;
-      this.languageSelect.disabled = false;
+      const current = this.selectedNote();
+      this.updateLanguageControl(current?.language);
+      if (restoreLanguageToggle
+        && current
+        && !this.pageRoot.inert
+        && !this.languageToggle.disabled
+        && isNoteLanguageSwitchFenceCurrent(switchFence, {
+          noteId: current.id,
+          sourceLanguage: current.language,
+          editVersion: this.editVersions.get(current.id) ?? 0,
+          selectionVersion: this.selectionVersion,
+          workspaceGeneration: this.workspaceMutationGeneration,
+        })) {
+        this.languageToggle.focus();
+      }
     }
   }
 
   private async uploadSelectedImage(): Promise<void> {
     const file = this.imageInput.files?.[0];
     this.imageInput.value = '';
+    const position = this.pendingImagePosition;
+    this.pendingImagePosition = undefined;
     if (!file) return;
-    await this.uploadImageFile(file);
+    await this.uploadImageFile(file, position);
   }
 
-  private async uploadImageFile(file: File, position?: number): Promise<void> {
-    if (this.uploadingImage) return;
+  private trackEditorUpload(task: Promise<void>): Promise<void> {
+    this.editorUploadTasks.add(task);
+    void task.then(
+      () => this.editorUploadTasks.delete(task),
+      () => this.editorUploadTasks.delete(task),
+    );
+    return task;
+  }
+
+  private async waitForEditorUploads(): Promise<void> {
+    while (this.editorUploadTasks.size > 0) {
+      await Promise.allSettled([...this.editorUploadTasks]);
+    }
+  }
+
+  private uploadImageFile(file: File, position?: number): Promise<void> {
+    return this.trackEditorUpload(this.performImageUpload(file, position));
+  }
+
+  private async performImageUpload(file: File, position?: number): Promise<void> {
+    if (this.pageRoot.inert) return;
+    if (this.editorUploadTasks.size >= MAX_CONCURRENT_NOTE_ASSET_UPLOADS) {
+      setMessage('Wait for an active Notes upload to finish before adding another file.', 'error');
+      return;
+    }
     const note = this.selectedNote();
     if (!note || note.language !== 'richtext') return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
@@ -1458,7 +2112,12 @@ class NotesPage {
       return;
     }
 
-    this.uploadingImage = true;
+    const insertionFence = {
+      noteId: note.id,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const alt = file.name
@@ -1475,6 +2134,10 @@ class NotesPage {
         setMessage('Configure S3 in Settings before adding images.', 'error');
         return;
       }
+      if (insertionFence.workspaceGeneration !== this.workspaceMutationGeneration) {
+        setMessage('The image was uploaded after the Notes workspace changed and was not inserted.', 'error');
+        return;
+      }
 
       const destination = this.notesById.get(note.id);
       if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
@@ -1482,7 +2145,12 @@ class NotesPage {
         return;
       }
       if (this.selectedId === destination.id) {
-        if (!this.richTextEditor.insertImage(result.reference, position)) {
+        const capturedPosition = insertionFence.noteId === this.selectedId
+          && insertionFence.editVersion === (this.editVersions.get(destination.id) ?? 0)
+          && insertionFence.selectionVersion === this.selectionVersion
+          ? position
+          : undefined;
+        if (!this.richTextEditor.insertImage(result.reference, capturedPosition)) {
           throw new Error('The uploaded image could not be inserted.');
         }
       } else {
@@ -1492,9 +2160,210 @@ class NotesPage {
       setMessage('Image added.', 'success');
     } catch (error) {
       setMessage(`Unable to add image: ${toErrorMessage(error)}`, 'error');
-    } finally {
-      this.uploadingImage = false;
     }
+  }
+
+  private async uploadSelectedAttachment(): Promise<void> {
+    const file = this.attachmentInput.files?.[0];
+    this.attachmentInput.value = '';
+    const position = this.pendingAttachmentPosition;
+    this.pendingAttachmentPosition = undefined;
+    if (!file) return;
+    await this.uploadAttachmentFile(file, position);
+  }
+
+  private uploadAttachmentFile(file: File, position?: number): Promise<void> {
+    return this.trackEditorUpload(this.performAttachmentUpload(file, position));
+  }
+
+  private async performAttachmentUpload(file: File, position?: number): Promise<void> {
+    if (this.pageRoot.inert) return;
+    if (this.editorUploadTasks.size >= MAX_CONCURRENT_NOTE_ASSET_UPLOADS) {
+      setMessage('Wait for an active Notes upload to finish before adding another file.', 'error');
+      return;
+    }
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    if (file.size < 1 || file.size > NOTE_ATTACHMENT_MAX_BYTES) {
+      setMessage('A Notes attachment must be between 1 byte and 25 MiB.', 'error');
+      return;
+    }
+
+    const insertionFence = {
+      noteId: note.id,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
+    try {
+      const result = await window.notesApi.uploadAttachment({
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        fileName: normalizeNoteAttachmentFileName(file.name),
+        mimeType: file.type || 'application/octet-stream',
+      });
+      if (result.status === 'not-configured') {
+        setMessage('Configure S3 in Settings before adding file attachments.', 'error');
+        return;
+      }
+      if (insertionFence.workspaceGeneration !== this.workspaceMutationGeneration) {
+        setMessage('The file was uploaded after the Notes workspace changed and was not inserted.', 'error');
+        return;
+      }
+      const destination = this.notesById.get(note.id);
+      if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
+        setMessage('The file was uploaded, but its Note is no longer available.', 'error');
+        return;
+      }
+      if (this.selectedId === destination.id) {
+        const capturedPosition = insertionFence.noteId === this.selectedId
+          && insertionFence.editVersion === (this.editVersions.get(destination.id) ?? 0)
+          && insertionFence.selectionVersion === this.selectionVersion
+          ? position
+          : undefined;
+        if (!this.richTextEditor.insertAttachment(result.reference, capturedPosition)) {
+          throw new Error('The uploaded file could not be inserted.');
+        }
+      } else {
+        destination.content = appendAttachmentToRichTextContent(destination.content, result.reference);
+        this.markNoteEdited(destination, Boolean(this.searchInput.value.trim()));
+      }
+      setMessage('File attached.', 'success');
+    } catch (error) {
+      setMessage(`Unable to attach file: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async runAttachmentAction(
+    action: 'view' | 'download',
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ): Promise<void> {
+    if (action === 'view') {
+      await this.openAttachmentPreview(reference, opener);
+      return;
+    }
+    try {
+      const result = await window.notesApi.downloadAttachment(reference);
+      if (result.status === 'saved') {
+        setMessage('Attachment downloaded.', 'success');
+      } else if (result.status === 'not-configured') {
+        setMessage('Configure S3 in Settings to access this attachment.', 'error');
+      } else if (result.status === 'missing') {
+        setMessage('The attachment is unavailable in S3.', 'error');
+      } else if (result.status === 'error') {
+        setMessage('The attachment could not be downloaded.', 'error');
+      }
+    } catch (error) {
+      setMessage(`Unable to download attachment: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async openAttachmentPreview(
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ): Promise<void> {
+    const expectedKind = noteAttachmentPreviewKind(reference);
+    if (!expectedKind) {
+      setMessage('This file is available for download only.', 'error');
+      return;
+    }
+
+    const request = ++this.attachmentPreviewRequest;
+    this.clearAttachmentPreviewContent();
+    this.attachmentPreviewOpener = opener;
+    this.attachmentPreviewTitle.textContent = reference.fileName;
+    this.attachmentPreviewMeta.textContent = formatAttachmentSize(reference.byteLength);
+    this.attachmentPreviewBadge.textContent = ({ pdf: 'PDF', image: 'IMG', text: 'TXT' } as const)[expectedKind];
+    this.attachmentPreviewBody.dataset.kind = expectedKind;
+    this.attachmentPreviewBody.setAttribute('aria-busy', 'true');
+    this.attachmentPreviewLoading.classList.remove('hidden');
+
+    try {
+      if (!this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.showModal();
+      const result = await window.notesApi.viewAttachment(reference);
+      if (request !== this.attachmentPreviewRequest || !this.attachmentPreviewDialog.open) return;
+      this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+      this.attachmentPreviewLoading.classList.add('hidden');
+      if (result.status !== 'loaded') {
+        this.showAttachmentPreviewError(
+          result.status === 'not-configured'
+            ? 'Configure S3 in Settings to preview this file.'
+            : result.status === 'missing'
+              ? 'This file is unavailable in S3.'
+              : 'This file could not be previewed safely. Download it to inspect it.',
+        );
+        return;
+      }
+      if (result.preview.kind !== expectedKind) {
+        this.showAttachmentPreviewError('This file could not be previewed safely. Download it to inspect it.');
+        return;
+      }
+      if (result.preview.kind === 'text') {
+        this.attachmentPreviewText.textContent = result.preview.text;
+        this.attachmentPreviewText.classList.remove('hidden');
+        return;
+      }
+      const mediaType = result.preview.kind === 'pdf' ? 'application/pdf' : result.preview.mimeType;
+      const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(result.preview.bytes)], { type: mediaType }));
+      if (request !== this.attachmentPreviewRequest || !this.attachmentPreviewDialog.open) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      this.attachmentPreviewObjectUrl = objectUrl;
+      if (result.preview.kind === 'image') {
+        this.attachmentPreviewImage.alt = reference.fileName;
+        this.attachmentPreviewImage.src = objectUrl;
+        this.attachmentPreviewImage.classList.remove('hidden');
+      } else {
+        this.attachmentPreviewPdf.src = `${objectUrl}#toolbar=0&navpanes=0`;
+        this.attachmentPreviewPdf.classList.remove('hidden');
+      }
+    } catch (error) {
+      if (request !== this.attachmentPreviewRequest) return;
+      if (!this.attachmentPreviewDialog.open) {
+        this.attachmentPreviewRequest += 1;
+        this.clearAttachmentPreviewContent();
+        this.attachmentPreviewOpener = undefined;
+        if (opener.isConnected) opener.focus();
+        setMessage(`Unable to open the file preview: ${toErrorMessage(error)}`, 'error');
+        return;
+      }
+      this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+      this.attachmentPreviewLoading.classList.add('hidden');
+      this.showAttachmentPreviewError(`Unable to preview this file: ${toErrorMessage(error)}`);
+    }
+  }
+
+  private showAttachmentPreviewError(message: string): void {
+    this.attachmentPreviewError.textContent = message;
+    this.attachmentPreviewError.classList.remove('hidden');
+  }
+
+  private clearAttachmentPreviewContent(): void {
+    this.attachmentPreviewImage.removeAttribute('src');
+    this.attachmentPreviewImage.alt = '';
+    this.attachmentPreviewPdf.removeAttribute('src');
+    this.attachmentPreviewText.textContent = '';
+    this.attachmentPreviewImage.classList.add('hidden');
+    this.attachmentPreviewPdf.classList.add('hidden');
+    this.attachmentPreviewText.classList.add('hidden');
+    this.attachmentPreviewError.classList.add('hidden');
+    this.attachmentPreviewError.textContent = '';
+    this.attachmentPreviewLoading.classList.add('hidden');
+    this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+    delete this.attachmentPreviewBody.dataset.kind;
+    if (this.attachmentPreviewObjectUrl) {
+      URL.revokeObjectURL(this.attachmentPreviewObjectUrl);
+      this.attachmentPreviewObjectUrl = undefined;
+    }
+  }
+
+  private handleAttachmentPreviewClosed(): void {
+    this.attachmentPreviewRequest += 1;
+    this.clearAttachmentPreviewContent();
+    const opener = this.attachmentPreviewOpener;
+    this.attachmentPreviewOpener = undefined;
+    if (opener?.isConnected) opener.focus();
   }
 
   private scheduleSave(id: string): void {
@@ -1614,6 +2483,7 @@ class NotesPage {
       return;
     }
     try {
+      await this.waitForEditorUploads();
       await this.flushAllPendingSaves();
       const editVersionBaseline = new Map(this.editVersions);
       const workspace = await window.notesApi.moveNote({
@@ -1621,6 +2491,7 @@ class NotesPage {
         parentId,
         ...(beforeNoteId ? { beforeNoteId } : {}),
       });
+      this.captureActiveEditorContent();
       this.applyWorkspace(workspace, editVersionBaseline);
       this.renderList(noteId);
     } catch (error) {
@@ -1633,29 +2504,146 @@ class NotesPage {
     if (this.creating) return;
     await this.ensureLoaded();
     if (!this.loaded) return;
+    const selectionIntentVersion = this.selectionVersion;
     this.creating = true;
     this.newButton.disabled = true;
     try {
+      await this.waitForEditorUploads();
       await this.flushAllPendingSaves();
       const editVersionBaseline = new Map(this.editVersions);
       const previousIds = new Set(this.notes.map((note) => note.id));
       const workspace = await window.notesApi.createNote({ parentId });
       const note = workspace.notes.find((candidate) => !previousIds.has(candidate.id));
       if (!note) throw new Error('The new Note was not returned.');
+      this.captureActiveEditorContent();
       this.applyWorkspace(workspace, editVersionBaseline);
-      this.selectedId = note.id;
-      this.searchInput.value = '';
+      const selectCreatedNote = selectionIntentVersion === this.selectionVersion;
+      let committedSelectionVersion = this.selectionVersion;
+      if (selectCreatedNote) {
+        this.selectedId = note.id;
+        this.searchInput.value = '';
+        committedSelectionVersion = ++this.selectionVersion;
+      }
       this.render();
-      this.setSaveStatus('Saved', 'saved');
-      window.requestAnimationFrame(() => {
-        this.nameInput.focus();
-        this.nameInput.select();
-      });
+      const selected = this.selectedNote();
+      const selectedDirty = Boolean(selected && this.isDirty(selected.id));
+      this.setSaveStatus(
+        selected ? selectedDirty ? 'Saving…' : 'Saved' : '',
+        selectedDirty ? 'saving' : 'saved',
+      );
+      if (selectCreatedNote) {
+        window.requestAnimationFrame(() => {
+          if (committedSelectionVersion !== this.selectionVersion || this.selectedId !== note.id) return;
+          this.nameInput.focus();
+          this.nameInput.select();
+        });
+      }
     } catch (error) {
       setMessage(`Unable to create Note: ${toErrorMessage(error)}`, 'error');
     } finally {
       this.creating = false;
       this.newButton.disabled = false;
+    }
+  }
+
+  private toggleDownloadMenu(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.downloadButton.disabled) return;
+    const opening = this.downloadMenu.classList.contains('hidden');
+    this.closeLanguageMenu();
+    this.closeMarkdownOutline();
+    if (!opening) {
+      this.closeDownloadMenu();
+      return;
+    }
+    this.downloadMenu.classList.remove('hidden');
+    this.downloadButton.setAttribute('aria-expanded', 'true');
+    this.downloadMenu.querySelector<HTMLButtonElement>('button')?.focus();
+  }
+
+  private closeDownloadMenu(): void {
+    this.downloadMenu.classList.add('hidden');
+    this.downloadButton.setAttribute('aria-expanded', 'false');
+  }
+
+  private handlePopupMenuKeyDown(
+    event: KeyboardEvent,
+    menu: HTMLElement,
+    trigger: HTMLButtonElement,
+    close: () => void,
+  ): void {
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      trigger.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'));
+    if (items.length === 0) return;
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowUp'
+          ? current <= 0 ? items.length - 1 : current - 1
+          : current < 0 || current >= items.length - 1 ? 0 : current + 1;
+    event.preventDefault();
+    event.stopPropagation();
+    items[next]?.focus();
+  }
+
+  private readonly handleNotesPopupOutsidePointerDown = (event: PointerEvent): void => {
+    const source = event.target;
+    if (!(source instanceof window.Node)) return;
+    if (!this.languageControl.contains(source)) this.closeLanguageMenu();
+    if (!this.downloadMenu.contains(source) && !this.downloadButton.contains(source)) this.closeDownloadMenu();
+    if (!this.markdownOutlineMenu.contains(source) && !this.markdownOutlineButton.contains(source)) {
+      this.closeMarkdownOutline();
+    }
+  };
+
+  private async handleDownloadMenuClick(event: Event): Promise<void> {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const item = source.closest<HTMLElement>('[data-note-export-format]');
+    const format = item?.dataset.noteExportFormat;
+    if ((format !== 'pdf' && format !== 'markdown') || this.noteExportInFlight) return;
+    this.closeDownloadMenu();
+    const note = this.selectedNote();
+    if (!note || (note.language !== 'richtext' && note.language !== 'markdown')) return;
+    this.noteExportInFlight = true;
+    this.updateDownloadButtonState();
+    try {
+      this.captureEditorContent(note.id);
+      await this.flushNote(note.id);
+      const current = this.notesById.get(note.id);
+      if (!current || (current.language !== 'richtext' && current.language !== 'markdown')) return;
+      const result = await window.notesApi.exportNote({
+        title: current.name || 'Untitled',
+        language: current.language,
+        content: current.content,
+        format,
+      });
+      if (result.status === 'saved') {
+        const label = format === 'pdf' ? 'PDF' : 'Markdown';
+        setMessage(
+          result.canOpen ? `${label} saved. Click to open.` : `${label} saved.`,
+          'success',
+          result.canOpen ? 'open-note-export' : undefined,
+        );
+      }
+    } catch (error) {
+      setMessage(`Unable to download Note: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.noteExportInFlight = false;
+      this.updateDownloadButtonState();
+      if (!this.downloadButton.disabled) this.downloadButton.focus();
     }
   }
 
@@ -1685,6 +2673,7 @@ class NotesPage {
     this.renderList(id);
 
     try {
+      await this.waitForEditorUploads();
       await this.flushAllPendingSaves();
       let promptUsesUpdatedScope = false;
       let pendingPreview: NoteDeletePreview | null | undefined;
@@ -1732,15 +2721,18 @@ class NotesPage {
           .find((candidate) => !confirmedPreview.expectedIds.includes(candidate))
           ?? [...visibleBeforeDelete.slice(0, deletedIndex)].reverse()
             .find((candidate) => !confirmedPreview.expectedIds.includes(candidate));
+        this.captureActiveEditorContent();
         const selectedBeforeDelete = this.selectedId;
         const editVersionBaseline = new Map(this.editVersions);
         for (const noteId of confirmedPreview.expectedIds) {
           this.deletedIds.add(noteId);
           this.clearSaveTimer(noteId);
         }
+        let optimisticSelectionVersion: number | undefined;
         if (this.selectedId && this.deletedIds.has(this.selectedId)) {
           this.selectedId = focusAfterDelete
             ?? this.treeNodes.find((node) => !this.deletedIds.has(node.noteId))?.noteId;
+          optimisticSelectionVersion = ++this.selectionVersion;
         }
         this.render();
 
@@ -1750,21 +2742,32 @@ class NotesPage {
             expectedIds: confirmedPreview.expectedIds,
           });
           if (result.status === 'changed') {
+            this.captureActiveEditorContent();
             for (const noteId of confirmedPreview.expectedIds) this.deletedIds.delete(noteId);
-            this.selectedId = selectedBeforeDelete;
+            if (optimisticSelectionVersion !== undefined
+              && optimisticSelectionVersion === this.selectionVersion
+              && selectedBeforeDelete
+              && this.notesById.has(selectedBeforeDelete)) {
+              this.selectedId = selectedBeforeDelete;
+              this.selectionVersion += 1;
+            }
             this.render();
             pendingPreview = result.preview;
             promptUsesUpdatedScope = true;
             continue;
           }
 
+          this.captureActiveEditorContent();
           this.applyWorkspace({
             notes: this.notes.filter((note) => !result.deletedIds.includes(note.id)),
             tree: result.tree,
             expandedNoteIds: result.expandedNoteIds,
-          }, editVersionBaseline);
+          }, editVersionBaseline, true);
           for (const deletedId of result.deletedIds) this.deletedIds.delete(deletedId);
-          if (!this.selectedId) this.selectedId = focusAfterDelete ?? this.treeNodes[0]?.noteId;
+          if (!this.selectedId) {
+            this.selectedId = focusAfterDelete ?? this.treeNodes[0]?.noteId;
+            this.selectionVersion += 1;
+          }
           this.render();
           this.renderList(focusAfterDelete ?? this.selectedId);
           if (!this.selectedId) this.newButton.focus();
@@ -1781,11 +2784,18 @@ class NotesPage {
           );
           return;
         } catch (error) {
+          this.captureActiveEditorContent();
           for (const noteId of confirmedPreview.expectedIds) {
             this.deletedIds.delete(noteId);
             if (this.isDirty(noteId)) this.scheduleSave(noteId);
           }
-          this.selectedId = selectedBeforeDelete;
+          if (optimisticSelectionVersion !== undefined
+            && optimisticSelectionVersion === this.selectionVersion
+            && selectedBeforeDelete
+            && this.notesById.has(selectedBeforeDelete)) {
+            this.selectedId = selectedBeforeDelete;
+            this.selectionVersion += 1;
+          }
           this.render();
           throw error;
         }
@@ -1855,14 +2865,18 @@ class NotesPage {
         this.themeCompartment.of(editorThemeExtensions(this.editorTheme)),
         this.languageCompartment.of(noteLanguageExtension(language)),
         EditorView.lineWrapping,
-        EditorView.contentAttributes.of({
+        this.editorAttributesCompartment.of(EditorView.contentAttributes.of({
           'aria-label': 'Note content',
           'aria-multiline': 'true',
-          spellcheck: 'false',
-        }),
+          spellcheck: language === 'markdown' ? 'true' : 'false',
+        })),
         EditorView.updateListener.of((update) => {
-          if (!update.docChanged || this.replacingEditorDocument) return;
-          this.updateSelectedCodeContent();
+          if ((!update.docChanged && !update.selectionSet) || this.replacingEditorDocument) return;
+          if (update.docChanged) this.updateSelectedCodeContent();
+          if (update.selectionSet) {
+            this.updateMarkdownSelectionStats();
+            if (this.markdownTypewriterMode) this.queueMarkdownViewportUpdate(true);
+          }
         }),
       ],
     });
@@ -1873,7 +2887,14 @@ class NotesPage {
     if (language === this.editorLanguage) return;
     this.editorLanguage = language;
     this.codeEditor.dispatch({
-      effects: this.languageCompartment.reconfigure(noteLanguageExtension(language)),
+      effects: [
+        this.languageCompartment.reconfigure(noteLanguageExtension(language)),
+        this.editorAttributesCompartment.reconfigure(EditorView.contentAttributes.of({
+          'aria-label': 'Note content',
+          'aria-multiline': 'true',
+          spellcheck: language === 'markdown' ? 'true' : 'false',
+        })),
+      ],
     });
   }
 
@@ -1911,11 +2932,27 @@ class NotesPage {
 
   private showEditorMode(language: NoteLanguage): void {
     const richText = language === 'richtext';
+    const markdown = language === 'markdown';
     this.codeContentHost.classList.toggle('hidden', richText);
+    this.codeEditorShell.classList.toggle('hidden', richText);
     this.richTextShell.classList.toggle('hidden', !richText);
+    this.markdownToolbar.classList.toggle('hidden', !markdown);
+    this.markdownStatus.classList.toggle('hidden', !markdown);
+    this.markdownPreview.classList.toggle('hidden', !markdown || !this.markdownPreviewEnabled);
+    this.codeLayout.dataset.preview = String(markdown && this.markdownPreviewEnabled);
+    this.updateDownloadButtonState();
+    if (!markdown) this.closeMarkdownOutline();
     this.contentHost.dataset.mode = richText ? 'richtext' : 'code';
     this.contentHost.dataset.language = language;
     if (!richText) this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
+    if (markdown) this.updateMarkdownUi(this.selectedNote()?.content ?? '');
+  }
+
+  private updateDownloadButtonState(): void {
+    const note = this.selectedNote();
+    const exportable = note?.language === 'richtext' || note?.language === 'markdown';
+    this.downloadButton.disabled = this.noteExportInFlight || !exportable;
+    this.downloadButton.setAttribute('aria-busy', String(this.noteExportInFlight));
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {

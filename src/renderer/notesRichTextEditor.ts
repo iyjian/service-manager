@@ -16,11 +16,14 @@ import {
   extractRichTextPlainText,
   isAllowedRichTextLinkHref,
   normalizeRichTextContent,
+  noteAttachmentPreviewKind,
+  parseNoteAttachmentReference,
   parseNoteImageNodeAttributes,
   parseNoteImageReference,
   parseRichTextContent,
   RICH_TEXT_LIMITS,
   type NoteImageAlignment,
+  type NoteAttachmentReference,
   type NoteImageNodeAttributes,
   type NoteImageReference,
   type RichTextNode,
@@ -69,6 +72,12 @@ export interface NotesRichTextEditorOptions {
   onChange: () => void;
   onError: (message: string) => void;
   onRequestImage: (file?: File, position?: number) => void;
+  onRequestAttachment: (file?: File, position?: number) => void;
+  onAttachmentAction: (
+    action: 'view' | 'download',
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ) => void;
 }
 
 type NotesImageLoadResult =
@@ -116,6 +125,8 @@ interface SlashCommandItem {
   run: (editor: Editor, range: SlashCommandRange) => void;
 }
 
+let slashMenuIdSequence = 0;
+
 type EditorIconName =
   | 'text'
   | 'todo'
@@ -127,6 +138,7 @@ type EditorIconName =
   | 'quote'
   | 'code'
   | 'image'
+  | 'file'
   | 'table';
 
 interface RichTextBlockItem {
@@ -191,6 +203,7 @@ const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2
   quote: ['M3 5.5h3v3H4.25a2 2 0 0 1-2 2', 'M9.5 5.5h3v3h-1.75a2 2 0 0 1-2 2'],
   code: ['m5.25 4-3.5 4 3.5 4', 'm10.75 4 3.5 4-3.5 4', 'm9.5 2.75-3 10.5'],
   image: ['M2.5 3.25h11v9.5h-11z', 'm3.5 11 3-3 2.25 2.25L10.5 8.5l2 2', 'M5.25 6.25h.01'],
+  file: ['M4 2.25h5l3 3v8.5H4z', 'M9 2.25v3h3', 'M6 8h4', 'M6 10.5h4'],
   table: [
     'M3.75 2.5h8.5c.69 0 1.25.56 1.25 1.25v8.5c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25v-8.5c0-.69.56-1.25 1.25-1.25z',
     'M8 2.5v11',
@@ -244,8 +257,14 @@ function createStrokeIcon(pathDataItems: readonly string[]): SVGSVGElement {
   return icon;
 }
 
-function firstImageFile(files: FileList | null | undefined): File | undefined {
-  return Array.from(files ?? []).find((file) => file.type.startsWith('image/'));
+function isSupportedImageFile(file: File): boolean {
+  return file.type === 'image/png'
+    || file.type === 'image/jpeg'
+    || file.type === 'image/webp';
+}
+
+function firstSupportedImageFile(files: FileList | null | undefined): File | undefined {
+  return Array.from(files ?? []).find(isSupportedImageFile);
 }
 
 function hasFormattableSelection(editor: Editor): boolean {
@@ -485,17 +504,22 @@ function findSlashCommandRange(editor: Editor): { range: SlashCommandRange; quer
 
 class NotesRichTextSlashMenu {
   private readonly element = document.createElement('div');
+  public readonly elementId = `notes-richtext-slash-menu-${++slashMenuIdSequence}`;
   private readonly commandItems: readonly SlashCommandItem[];
   private items: readonly SlashCommandItem[] = [];
   private range: SlashCommandRange | undefined;
   private selectedIndex = 0;
   private suppressedQuery: string | undefined;
   private currentQuery: string | undefined;
+  private manualOpen = false;
+  private manualTrigger: HTMLElement | undefined;
+  private manualSelection: { from: number; to: number } | undefined;
 
   public constructor(
     private readonly editor: Editor,
     private readonly overlayRoot: HTMLElement,
     requestImage: (file?: File, position?: number) => void,
+    requestAttachment: (file?: File, position?: number) => void,
   ) {
     this.commandItems = [
       {
@@ -551,7 +575,15 @@ class NotesRichTextSlashMenu {
           window.requestAnimationFrame(() => requestImage(undefined, range.from));
         },
       },
+      {
+        title: 'File', description: 'Upload a file attachment.', searchTerms: ['attachment', 'upload', 'document'], icon: 'file',
+        run: (editor, range) => {
+          editor.chain().focus().deleteRange(range).run();
+          window.requestAnimationFrame(() => requestAttachment(undefined, range.from));
+        },
+      },
     ];
+    this.element.id = this.elementId;
     this.element.className = 'notes-richtext-slash-menu hidden';
     this.element.setAttribute('role', 'listbox');
     this.element.setAttribute('aria-label', 'Insert block');
@@ -563,10 +595,22 @@ class NotesRichTextSlashMenu {
       const index = Number(item?.dataset.slashCommandIndex);
       if (Number.isInteger(index)) this.select(index);
     });
+    document.addEventListener('pointerdown', this.handleOutsidePointerDown, true);
     this.overlayRoot.append(this.element);
   }
 
   public sync(): void {
+    if (this.manualOpen) {
+      const selection = this.editor.state.selection;
+      if (!this.manualSelection
+        || selection.from !== this.manualSelection.from
+        || selection.to !== this.manualSelection.to) {
+        this.hide();
+        return;
+      }
+      this.position();
+      return;
+    }
     const found = findSlashCommandRange(this.editor);
     if (!found) {
       this.suppressedQuery = undefined;
@@ -612,16 +656,47 @@ class NotesRichTextSlashMenu {
   }
 
   public destroy(): void {
+    document.removeEventListener('pointerdown', this.handleOutsidePointerDown, true);
     this.element.remove();
   }
 
+  public openForCurrentBlock(trigger: HTMLElement): void {
+    const selection = this.editor.state.selection;
+    this.manualOpen = true;
+    this.manualTrigger = trigger;
+    this.manualSelection = { from: selection.from, to: selection.to };
+    this.range = { from: selection.from, to: selection.from };
+    this.items = this.commandItems;
+    this.selectedIndex = 0;
+    this.currentQuery = '';
+    this.render();
+  }
+
+  public isOpenForCurrentBlock(): boolean {
+    return this.manualOpen && !this.element.classList.contains('hidden');
+  }
+
+  public closeCurrentBlock(): void {
+    if (this.manualOpen) this.hide();
+  }
+
+  public repositionCurrentBlock(): void {
+    if (this.manualOpen) this.position();
+  }
+
   private hide(): void {
+    this.manualOpen = false;
+    this.manualTrigger = undefined;
+    this.manualSelection = undefined;
     this.range = undefined;
     this.items = [];
     this.currentQuery = undefined;
     this.selectedIndex = 0;
     this.element.replaceChildren();
     this.element.classList.add('hidden');
+    this.editor.view.dom.removeAttribute('aria-controls');
+    this.editor.view.dom.removeAttribute('aria-activedescendant');
+    this.editor.view.dom.removeAttribute('aria-expanded');
   }
 
   private render(): void {
@@ -629,6 +704,7 @@ class NotesRichTextSlashMenu {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'notes-richtext-slash-item';
+      button.id = `${this.elementId}-option-${index}`;
       button.dataset.slashCommandIndex = String(index);
       button.setAttribute('role', 'option');
       button.setAttribute('aria-selected', String(index === this.selectedIndex));
@@ -654,6 +730,8 @@ class NotesRichTextSlashMenu {
     }
     this.element.replaceChildren(...children);
     this.element.classList.remove('hidden');
+    this.editor.view.dom.setAttribute('aria-controls', this.elementId);
+    this.editor.view.dom.setAttribute('aria-expanded', 'true');
     this.element.scrollTop = 0;
     this.position();
     this.updateSelection();
@@ -666,7 +744,11 @@ class NotesRichTextSlashMenu {
     }
 
     const selected = options[this.selectedIndex];
-    if (!selected) return;
+    if (!selected) {
+      this.editor.view.dom.removeAttribute('aria-activedescendant');
+      return;
+    }
+    this.editor.view.dom.setAttribute('aria-activedescendant', selected.id);
     const styles = window.getComputedStyle(this.element);
     this.element.scrollTop = revealMenuItemScrollTop({
       scrollTop: this.element.scrollTop,
@@ -682,7 +764,8 @@ class NotesRichTextSlashMenu {
   private position(): void {
     if (!this.range || this.element.classList.contains('hidden')) return;
     const overlayBounds = this.overlayRoot.getBoundingClientRect();
-    const cursor = this.editor.view.coordsAtPos(this.range.to);
+    const cursor = this.manualTrigger?.getBoundingClientRect()
+      ?? this.editor.view.coordsAtPos(this.range.to);
     const menuBounds = this.element.getBoundingClientRect();
     const inset = 8;
     const left = Math.max(inset, Math.min(cursor.left - overlayBounds.left, overlayBounds.width - menuBounds.width - inset));
@@ -700,6 +783,103 @@ class NotesRichTextSlashMenu {
     if (!item || !range) return;
     this.hide();
     item.run(this.editor, range);
+  }
+
+  private readonly handleOutsidePointerDown = (event: PointerEvent): void => {
+    if (!this.manualOpen) return;
+    const source = event.target;
+    if (source instanceof window.Node
+      && (this.element.contains(source) || this.manualTrigger?.contains(source))) return;
+    this.hide();
+  };
+}
+
+class NotesRichTextBlockHandle {
+  private readonly element = document.createElement('button');
+
+  public constructor(
+    private readonly editor: Editor,
+    private readonly overlayRoot: HTMLElement,
+    private readonly menu: NotesRichTextSlashMenu,
+  ) {
+    this.element.type = 'button';
+    this.element.className = 'notes-richtext-block-handle hidden';
+    this.element.setAttribute('aria-label', 'Open block commands');
+    this.element.setAttribute('aria-haspopup', 'listbox');
+    this.element.setAttribute('aria-controls', this.menu.elementId);
+    this.element.setAttribute('aria-expanded', 'false');
+    this.element.title = 'Block commands';
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 20 20');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.setAttribute('focusable', 'false');
+    const iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    iconPath.setAttribute(
+      'd',
+      'M5 3.25a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0M5 10a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m-7 6.75a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0',
+    );
+    iconPath.setAttribute('fill', 'currentColor');
+    icon.append(iconPath);
+    this.element.append(icon);
+    this.element.addEventListener('mousedown', (event) => event.preventDefault());
+    this.element.addEventListener('click', () => {
+      if (this.menu.isOpenForCurrentBlock()) {
+        this.menu.closeCurrentBlock();
+      } else {
+        this.menu.openForCurrentBlock(this.element);
+        // Pointer activation already retains the editor selection because the
+        // handle prevents mousedown focus. Keyboard activation can leave focus
+        // on the button, so explicitly restore the editor's slash-menu key path.
+        this.editor.commands.focus();
+      }
+      this.sync();
+    });
+    this.element.addEventListener('keydown', (event) => {
+      // Focus restoration may be scheduled by Tiptap. Keep the same Arrow,
+      // Escape, Enter, and Tab behavior usable while the handle still owns focus.
+      if (!this.menu.handleKeyDown(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.sync();
+    });
+    this.overlayRoot.append(this.element);
+  }
+
+  public sync(): void {
+    if (this.editor.isDestroyed) return;
+    const menuOpen = this.menu.isOpenForCurrentBlock();
+    const visible = this.editor.isFocused || menuOpen || document.activeElement === this.element;
+    this.element.classList.toggle('hidden', !visible);
+    this.element.setAttribute('aria-expanded', String(menuOpen));
+    if (!visible) return;
+    const overlayBounds = this.overlayRoot.getBoundingClientRect();
+    const cursor = this.editor.view.coordsAtPos(this.editor.state.selection.head);
+    const caretVisible = cursor.bottom > overlayBounds.top && cursor.top < overlayBounds.bottom;
+    if (!caretVisible && !menuOpen && document.activeElement !== this.element) {
+      this.element.classList.add('hidden');
+      return;
+    }
+    const buttonBounds = this.element.getBoundingClientRect();
+    const editableBounds = this.editor.view.dom.getBoundingClientRect();
+    const writingPadding = Number.parseFloat(window.getComputedStyle(this.editor.view.dom).paddingLeft) || 0;
+    const writingLeft = editableBounds.left - overlayBounds.left + writingPadding;
+    const inset = 2;
+    const left = Math.max(
+      inset,
+      Math.min(writingLeft - buttonBounds.width - 4, overlayBounds.width - buttonBounds.width - inset),
+    );
+    const lineMiddle = (cursor.top + cursor.bottom) / 2 - overlayBounds.top;
+    const top = Math.max(
+      inset,
+      Math.min(lineMiddle - buttonBounds.height / 2, overlayBounds.height - buttonBounds.height - inset),
+    );
+    this.element.style.left = `${left}px`;
+    this.element.style.top = `${top}px`;
+    if (menuOpen) this.menu.repositionCurrentBlock();
+  }
+
+  public destroy(): void {
+    this.element.remove();
   }
 }
 
@@ -1588,9 +1768,192 @@ function createS3ImageExtension(
   });
 }
 
+export type NoteAttachmentIconKind =
+  | 'pdf' | 'document' | 'spreadsheet' | 'presentation' | 'archive'
+  | 'image' | 'audio' | 'video' | 'code' | 'file';
+
+const NOTE_ATTACHMENT_ICON_SOURCES: Readonly<Record<NoteAttachmentIconKind, string>> = {
+  pdf: '../../assets/note-file-icons/pdf.svg',
+  document: '../../assets/note-file-icons/document.svg',
+  spreadsheet: '../../assets/note-file-icons/spreadsheet.svg',
+  presentation: '../../assets/note-file-icons/presentation.svg',
+  archive: '../../assets/note-file-icons/archive.svg',
+  image: '../../assets/note-file-icons/image.svg',
+  audio: '../../assets/note-file-icons/audio.svg',
+  video: '../../assets/note-file-icons/video.svg',
+  code: '../../assets/note-file-icons/code.svg',
+  file: '../../assets/note-file-icons/file.svg',
+};
+
+function createAttachmentTypeIcon(kind: NoteAttachmentIconKind): HTMLImageElement {
+  const image = document.createElement('img');
+  image.className = 'notes-richtext-attachment-type-image';
+  image.src = NOTE_ATTACHMENT_ICON_SOURCES[kind];
+  image.alt = '';
+  image.draggable = false;
+  image.decoding = 'async';
+  return image;
+}
+
+export function noteAttachmentIconKind(reference: Pick<NoteAttachmentReference, 'fileName' | 'mimeType'>): NoteAttachmentIconKind {
+  const extension = reference.fileName.slice(reference.fileName.lastIndexOf('.')).toLocaleLowerCase();
+  const mimeType = reference.mimeType.toLocaleLowerCase();
+  if (mimeType === 'application/pdf' || extension === '.pdf') return 'pdf';
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (/spreadsheet|excel|csv/.test(mimeType) || ['.csv', '.xls', '.xlsx', '.ods'].includes(extension)) {
+    return 'spreadsheet';
+  }
+  if (/presentation|powerpoint/.test(mimeType) || ['.key', '.odp', '.ppt', '.pptx'].includes(extension)) {
+    return 'presentation';
+  }
+  if (/word|document|opendocument\.text/.test(mimeType) || ['.doc', '.docx', '.odt', '.pages', '.rtf'].includes(extension)) {
+    return 'document';
+  }
+  if (/zip|compressed|archive|tar|gzip|7z/.test(mimeType)
+    || ['.7z', '.bz2', '.gz', '.rar', '.tar', '.tgz', '.xz', '.zip'].includes(extension)) return 'archive';
+  if (mimeType.startsWith('text/')
+    || ['.c', '.cpp', '.css', '.go', '.html', '.java', '.js', '.json', '.md', '.py', '.rs', '.sh', '.sql', '.ts', '.tsx', '.xml', '.yaml', '.yml'].includes(extension)) return 'code';
+  return 'file';
+}
+
+function attachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
+}
+
+function createAttachmentActionIcon(action: 'view' | 'download'): SVGSVGElement {
+  return createStrokeIcon(action === 'view'
+    ? ['M1.75 8s2.25-3.75 6.25-3.75S14.25 8 14.25 8 12 11.75 8 11.75 1.75 8 1.75 8', 'M8 6.25a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5']
+    : ['M8 2.25v7.25', 'm5.25 7 2.75 2.75L10.75 7', 'M3 12.75h10']);
+}
+
+function createS3AttachmentExtension(
+  onError: (message: string) => void,
+  onAction: (
+    action: 'view' | 'download',
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ) => void,
+) {
+  return Node.create({
+    name: 's3Attachment',
+    group: 'block',
+    atom: true,
+    selectable: true,
+    draggable: false,
+    addAttributes() {
+      return {
+        objectId: { default: null },
+        assetKey: { default: null },
+        ciphertextSha256: { default: null },
+        contentSha256: { default: null },
+        fileName: { default: null },
+        mimeType: { default: null },
+        byteLength: { default: null },
+      };
+    },
+    parseHTML() {
+      return [];
+    },
+    renderHTML() {
+      return ['span', { class: 'notes-richtext-attachment-serialized', 'aria-label': 'File attachment' }];
+    },
+    addNodeView() {
+      return ({ node, editor, getPos }) => {
+        const dom = document.createElement('article');
+        dom.className = 'notes-richtext-attachment';
+        dom.contentEditable = 'false';
+        const icon = document.createElement('span');
+        icon.className = 'notes-richtext-attachment-type';
+        icon.setAttribute('aria-hidden', 'true');
+        const copy = document.createElement('span');
+        copy.className = 'notes-richtext-attachment-copy';
+        const name = document.createElement('strong');
+        const metadata = document.createElement('small');
+        const footer = document.createElement('span');
+        footer.className = 'notes-richtext-attachment-footer';
+        const actions = document.createElement('span');
+        actions.className = 'notes-richtext-attachment-actions';
+        footer.append(metadata, actions);
+        copy.append(name, footer);
+        const createActionButton = (
+          action: 'view' | 'download',
+          reference: NoteAttachmentReference,
+        ): HTMLButtonElement => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'notes-richtext-attachment-action';
+          button.dataset.action = action;
+          const actionLabel = action === 'view' ? 'Preview' : 'Download';
+          button.setAttribute('aria-label', `${actionLabel} ${reference.fileName}`);
+          button.title = actionLabel;
+          button.append(createAttachmentActionIcon(action));
+          button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            try {
+              onAction(action, parseNoteAttachmentReference(node.attrs), button);
+            } catch {
+              safelyReport(onError, 'The file attachment is invalid.');
+            }
+          });
+          return button;
+        };
+        dom.append(icon, copy);
+
+        const render = (): void => {
+          const reference = parseNoteAttachmentReference(node.attrs);
+          const kind = noteAttachmentIconKind(reference);
+          dom.dataset.kind = kind;
+          icon.dataset.kind = kind;
+          icon.replaceChildren(createAttachmentTypeIcon(kind));
+          name.textContent = reference.fileName;
+          name.title = reference.fileName;
+          metadata.textContent = attachmentSize(reference.byteLength);
+          actions.replaceChildren(
+            ...(noteAttachmentPreviewKind(reference) ? [createActionButton('view', reference)] : []),
+            createActionButton('download', reference),
+          );
+          dom.setAttribute('aria-label', `Attachment: ${reference.fileName}`);
+        };
+        render();
+        dom.addEventListener('click', () => {
+          const position = getPos();
+          if (typeof position === 'number' && editor.isEditable) editor.commands.setNodeSelection(position);
+        });
+        return {
+          dom,
+          update(updatedNode) {
+            if (updatedNode.type.name !== 's3Attachment') return false;
+            node = updatedNode;
+            try {
+              render();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          selectNode: () => dom.classList.add('ProseMirror-selectednode'),
+          deselectNode: () => dom.classList.remove('ProseMirror-selectednode'),
+          stopEvent: (event) => event.target instanceof window.Node && actions.contains(event.target),
+          ignoreMutation: () => true,
+        };
+      };
+    },
+  });
+}
+
 function createNotesRichTextExtensions(
   onError: (message: string) => void,
   onLayoutChange: () => void,
+  onAttachmentAction: (
+    action: 'view' | 'download',
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ) => void,
   importImages?: readonly NoteImageNodeAttributes[],
   importToken?: string,
 ): Extensions {
@@ -1621,7 +1984,8 @@ function createNotesRichTextExtensions(
   createMathExtension(),
   createTaskListExtension(),
   createTaskItemExtension(),
-  createS3ImageExtension(onError, onLayoutChange, importImages, importToken)];
+  createS3ImageExtension(onError, onLayoutChange, importImages, importToken),
+  createS3AttachmentExtension(onError, onAttachmentAction)];
 }
 
 export interface TriliumHtmlConversionResult {
@@ -1953,6 +2317,7 @@ export function convertTriliumHtmlToRichText(
       createNotesRichTextExtensions(
         () => undefined,
         () => undefined,
+        () => undefined,
         adaptedImages.attributes,
         importToken,
       ),
@@ -1985,6 +2350,7 @@ export class NotesRichTextEditor {
   private readonly onChange: () => void;
   private readonly onError: (message: string) => void;
   private readonly slashMenu!: NotesRichTextSlashMenu;
+  private readonly blockHandle!: NotesRichTextBlockHandle;
   private readonly bubbleMenu!: NotesRichTextBubbleMenu;
   private readonly imageBubbleMenu!: NotesRichTextImageBubbleMenu;
   private readonly tableControls!: NotesRichTextTableControls;
@@ -2010,6 +2376,7 @@ export class NotesRichTextEditor {
       extensions: createNotesRichTextExtensions(
         this.onError,
         () => this.imageBubbleMenu?.sync(),
+        options.onAttachmentAction,
       ),
       injectCSS: false,
       editorProps: {
@@ -2030,19 +2397,23 @@ export class NotesRichTextEditor {
           return this.slashMenu?.handleKeyDown(event) ?? false;
         },
         handlePaste: (view, event) => {
-          const file = firstImageFile(event.clipboardData?.files);
+          const files = Array.from(event.clipboardData?.files ?? []);
+          const file = firstSupportedImageFile(event.clipboardData?.files) ?? files[0];
           if (!file) return false;
           event.preventDefault();
-          options.onRequestImage(file, view.state.selection.to);
+          if (isSupportedImageFile(file)) options.onRequestImage(file, view.state.selection.to);
+          else options.onRequestAttachment(file, view.state.selection.to);
           return true;
         },
         handleDrop: (view, event, _slice, moved) => {
           if (moved) return false;
-          const file = firstImageFile(event.dataTransfer?.files);
+          const files = Array.from(event.dataTransfer?.files ?? []);
+          const file = firstSupportedImageFile(event.dataTransfer?.files) ?? files[0];
           if (!file) return false;
           const position = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
           event.preventDefault();
-          options.onRequestImage(file, position);
+          if (isSupportedImageFile(file)) options.onRequestImage(file, position);
+          else options.onRequestAttachment(file, position);
           return true;
         },
       },
@@ -2063,7 +2434,13 @@ export class NotesRichTextEditor {
         this.queueViewSync();
       },
     });
-    this.slashMenu = new NotesRichTextSlashMenu(this.editor, this.overlayRoot, options.onRequestImage);
+    this.slashMenu = new NotesRichTextSlashMenu(
+      this.editor,
+      this.overlayRoot,
+      options.onRequestImage,
+      options.onRequestAttachment,
+    );
+    this.blockHandle = new NotesRichTextBlockHandle(this.editor, this.overlayRoot, this.slashMenu);
     this.bubbleMenu = new NotesRichTextBubbleMenu(
       this.editor,
       this.toolbar,
@@ -2096,6 +2473,7 @@ export class NotesRichTextEditor {
       this.imageBubbleMenu.sync();
       this.tableControls.sync();
       this.slashMenu.sync();
+      this.blockHandle.sync();
     } catch (error) {
       safelyReport(this.onError, error instanceof Error ? error.message : 'Rich text content could not be opened.');
       throw error;
@@ -2155,6 +2533,27 @@ export class NotesRichTextEditor {
     return inserted;
   }
 
+  public insertAttachment(value: NoteAttachmentReference, position?: number): boolean {
+    let reference: NoteAttachmentReference;
+    try {
+      reference = parseNoteAttachmentReference(value);
+    } catch (error) {
+      safelyReport(this.onError, error instanceof Error ? error.message : 'The file attachment reference is invalid.');
+      return false;
+    }
+    const content = { type: 's3Attachment', attrs: reference };
+    const insertAt = Number.isInteger(position)
+      && Number(position) >= 0
+      && Number(position) <= this.editor.state.doc.content.size
+      ? Number(position)
+      : undefined;
+    const inserted = insertAt !== undefined
+      ? this.editor.chain().focus().insertContentAt(insertAt, content).run()
+      : this.editor.chain().focus().insertContent(content).run();
+    this.updateToolbarState();
+    return inserted;
+  }
+
   public run(command: RichTextToolbarCommand): boolean {
     const completed = command === 'math'
       ? this.convertSelectionToMath()
@@ -2175,6 +2574,7 @@ export class NotesRichTextEditor {
     this.bubbleMenu.destroy();
     this.imageBubbleMenu.destroy();
     this.tableControls.destroy();
+    this.blockHandle.destroy();
     this.slashMenu.destroy();
     this.editor.destroy();
   }
@@ -2195,6 +2595,7 @@ export class NotesRichTextEditor {
     this.imageBubbleMenu.sync();
     this.tableControls.sync();
     this.slashMenu.sync();
+    this.blockHandle.sync();
   };
 
   private queueViewSync(): void {
@@ -2208,6 +2609,7 @@ export class NotesRichTextEditor {
       this.imageBubbleMenu.sync();
       this.tableControls.sync();
       this.slashMenu.sync();
+      this.blockHandle.sync();
     });
   }
 

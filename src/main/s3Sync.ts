@@ -12,6 +12,9 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   Note,
+  NoteAttachmentReference,
+  NoteAttachmentUploadInput,
+  NoteAttachmentUploadResult,
   NoteImageLoadResult,
   NoteImageReference,
   NoteImageUploadInput,
@@ -61,7 +64,14 @@ import {
   type S3SharedAppDataV2,
 } from './s3DataMerge';
 import { NOTES_IMAGE_LIMITS, NotesImageS3Store } from './notesImageS3';
-import { parseNoteImageReference } from '../shared/noteRichText';
+import {
+  parseNoteAttachmentReference,
+  parseNoteImageReference,
+} from '../shared/noteRichText';
+import {
+  NOTES_ATTACHMENT_LIMITS,
+  NotesAttachmentS3Store,
+} from './notesAttachmentS3';
 
 const SETTINGS_SCHEMA_VERSION = 6;
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -73,6 +83,7 @@ const AUTO_SYNC_DEBOUNCE_MS = 2_000;
 const AUTO_SYNC_INTERVAL_MS = 45_000;
 const MAX_RECONCILE_ATTEMPTS = 4;
 const MAX_LOCAL_RECOVERY_FILES = 20;
+const MAX_ACTIVE_NOTES_ATTACHMENT_TRANSFERS = 2;
 const MAX_ENDPOINT_LENGTH = 4_096;
 const MAX_REGION_LENGTH = 128;
 const MAX_ACCESS_KEY_LENGTH = 512;
@@ -918,6 +929,12 @@ export class S3SyncRuntime {
   private activeAbortController?: AbortController;
   private readonly activeConnectionTests = new Map<AbortController, Promise<void>>();
   private readonly activeNotesImageStores = new Set<NotesImageS3Store>();
+  private readonly activeNotesAttachmentStores = new Set<NotesAttachmentS3Store>();
+  private readonly activeNotesAttachmentLoads = new Map<string, Promise<
+    | { status: 'loaded'; bytes: Buffer; reference: NoteAttachmentReference }
+    | { status: 'not-configured' | 'missing' | 'error' }
+  >>();
+  private activeNotesAttachmentTransfers = 0;
   private debounceTimer?: NodeJS.Timeout;
   private intervalTimer?: NodeJS.Timeout;
   private dirtyGeneration = 0;
@@ -1241,6 +1258,66 @@ export class S3SyncRuntime {
     }
   }
 
+  public async uploadNoteAttachment(value: unknown): Promise<NoteAttachmentUploadResult> {
+    if (this.shuttingDown) throw new Error('Notes attachment upload was cancelled.');
+    const input = this.validateNoteAttachmentUploadInput(value);
+    const releaseTransfer = this.beginNotesAttachmentTransfer();
+    try {
+      const settings = await this.ensureSettings();
+      if (this.shuttingDown) throw new Error('Notes attachment upload was cancelled.');
+      const store = this.createNotesAttachmentStore(settings);
+      if (!store) return { status: 'not-configured' };
+      const target = `${settings.endpoint}\0${settings.bucket}`;
+      this.activeNotesAttachmentStores.add(store);
+      try {
+        const reference = await store.uploadAttachment(input.bytes, input.fileName, input.mimeType);
+        const current = await this.ensureSettings();
+        if (`${current.endpoint}\0${current.bucket}` !== target) {
+          throw new Error('S3 settings changed during the Notes attachment upload. Add the file again.');
+        }
+        return { status: 'uploaded', reference };
+      } finally {
+        await store.shutdown();
+        this.activeNotesAttachmentStores.delete(store);
+      }
+    } finally {
+      releaseTransfer();
+    }
+  }
+
+  public async loadNoteAttachment(value: unknown): Promise<
+    | { status: 'loaded'; bytes: Buffer; reference: NoteAttachmentReference }
+    | { status: 'not-configured' | 'missing' | 'error' }
+  > {
+    if (this.shuttingDown) return { status: 'error' };
+    let reference: NoteAttachmentReference;
+    try {
+      reference = parseNoteAttachmentReference(value);
+    } catch {
+      return { status: 'error' };
+    }
+    const loadKey = [
+      reference.objectId,
+      reference.assetKey,
+      reference.ciphertextSha256,
+      reference.contentSha256,
+      reference.fileName,
+      reference.mimeType,
+      String(reference.byteLength),
+    ].join('\0');
+    const existing = this.activeNotesAttachmentLoads.get(loadKey);
+    if (existing) return existing;
+    const request = this.loadNoteAttachmentOwned(reference);
+    this.activeNotesAttachmentLoads.set(loadKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.activeNotesAttachmentLoads.get(loadKey) === request) {
+        this.activeNotesAttachmentLoads.delete(loadKey);
+      }
+    }
+  }
+
   public async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
@@ -1250,6 +1327,7 @@ export class S3SyncRuntime {
     this.activeAbortController?.abort();
     for (const controller of this.activeConnectionTests.keys()) controller.abort();
     const imageShutdowns = [...this.activeNotesImageStores].map((store) => store.shutdown());
+    const attachmentShutdowns = [...this.activeNotesAttachmentStores].map((store) => store.shutdown());
     try {
       await this.syncPromise;
     } catch {
@@ -1258,7 +1336,55 @@ export class S3SyncRuntime {
     await this.operationQueue;
     await this.settingsMutationQueue;
     await Promise.allSettled(this.activeConnectionTests.values());
+    await Promise.allSettled(this.activeNotesAttachmentLoads.values());
     await Promise.allSettled(imageShutdowns);
+    await Promise.allSettled(attachmentShutdowns);
+  }
+
+  private beginNotesAttachmentTransfer(): () => void {
+    if (this.shuttingDown) {
+      throw new Error('Notes attachment storage is shutting down.');
+    }
+    if (this.activeNotesAttachmentTransfers >= MAX_ACTIVE_NOTES_ATTACHMENT_TRANSFERS) {
+      throw new Error('Too many Notes attachment transfers are active. Try again shortly.');
+    }
+    this.activeNotesAttachmentTransfers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeNotesAttachmentTransfers = Math.max(0, this.activeNotesAttachmentTransfers - 1);
+    };
+  }
+
+  private async loadNoteAttachmentOwned(reference: NoteAttachmentReference): Promise<
+    | { status: 'loaded'; bytes: Buffer; reference: NoteAttachmentReference }
+    | { status: 'not-configured' | 'missing' | 'error' }
+  > {
+    let releaseTransfer: (() => void) | undefined;
+    try {
+      releaseTransfer = this.beginNotesAttachmentTransfer();
+      const settings = await this.ensureSettings();
+      if (this.shuttingDown) return { status: 'error' };
+      const store = this.createNotesAttachmentStore(settings);
+      if (!store) return { status: 'not-configured' };
+      this.activeNotesAttachmentStores.add(store);
+      try {
+        const bytes = await store.downloadAttachment(reference);
+        return { status: 'loaded', bytes, reference };
+      } catch (error) {
+        return error instanceof Error && error.message === 'The S3 Notes attachment is unavailable.'
+          ? { status: 'missing' }
+          : { status: 'error' };
+      } finally {
+        await store.shutdown();
+        this.activeNotesAttachmentStores.delete(store);
+      }
+    } catch {
+      return { status: 'error' };
+    } finally {
+      releaseTransfer?.();
+    }
   }
 
   private validateNoteImageUploadInput(value: unknown): NoteImageUploadInput {
@@ -1281,6 +1407,36 @@ export class S3SyncRuntime {
       bytes: value.bytes,
       ...(value.mimeType !== undefined ? { mimeType: value.mimeType } : {}),
       ...(value.alt !== undefined ? { alt: value.alt } : {}),
+    };
+  }
+
+  private validateNoteAttachmentUploadInput(value: unknown): NoteAttachmentUploadInput {
+    if (!isRecord(value) || !(value.bytes instanceof Uint8Array)) {
+      throw new Error('The Notes attachment upload is invalid.');
+    }
+    if (Object.keys(value).some((key) => !['bytes', 'fileName', 'mimeType'].includes(key))) {
+      throw new Error('The Notes attachment upload is invalid.');
+    }
+    if (value.bytes.byteLength < 1 || value.bytes.byteLength > NOTES_ATTACHMENT_LIMITS.bytes) {
+      throw new Error(`A Notes attachment must not exceed ${NOTES_ATTACHMENT_LIMITS.bytes / (1024 * 1024)} MiB.`);
+    }
+    if (
+      typeof value.fileName !== 'string'
+      || value.fileName.length < 1
+      || value.fileName.length > NOTES_ATTACHMENT_LIMITS.fileNameCharacters
+    ) {
+      throw new Error('The Notes attachment file name is invalid.');
+    }
+    if (
+      value.mimeType !== undefined
+      && (typeof value.mimeType !== 'string' || value.mimeType.length > NOTES_ATTACHMENT_LIMITS.mimeTypeCharacters)
+    ) {
+      throw new Error('The Notes attachment type is invalid.');
+    }
+    return {
+      bytes: value.bytes,
+      fileName: value.fileName,
+      ...(value.mimeType !== undefined ? { mimeType: value.mimeType } : {}),
     };
   }
 
@@ -1307,6 +1463,30 @@ export class S3SyncRuntime {
       createRandomBytes: this.createRandomBytes,
       timeoutMs: this.timeoutMs,
       ...(signal ? { signal } : {}),
+    });
+  }
+
+  private createNotesAttachmentStore(
+    settings: PersistedS3SyncSettings,
+  ): NotesAttachmentS3Store | undefined {
+    if (
+      !settings.endpoint
+      || !settings.bucket
+      || !settings.encryptedAccessKeyId
+      || !settings.encryptedSecretAccessKey
+    ) {
+      return undefined;
+    }
+    const credentials = this.credentials(settings);
+    return new NotesAttachmentS3Store({
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
+      region: settings.region,
+      ...credentials,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      createRandomBytes: this.createRandomBytes,
+      timeoutMs: this.timeoutMs,
     });
   }
 

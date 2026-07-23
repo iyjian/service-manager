@@ -67,7 +67,7 @@ const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const saveHostButton = requireElement<HTMLButtonElement>('#save-host-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
 const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
-const pageMessageTextElement = requireElement<HTMLElement>('#page-message-text');
+const pageMessageTextElement = requireElement<HTMLButtonElement>('#page-message-text');
 const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
 const pageVersionElement = requireElement<HTMLElement>('#page-version');
 const pageStatsElement = requireElement<HTMLElement>('#page-stats');
@@ -116,6 +116,8 @@ let logLineLimit = LOG_FETCH_CHUNK_LINES;
 let logHasOlderHistory = true;
 let isLoadingOlderLogs = false;
 let pageMessageTimer: number | null = null;
+let pageMessageAction: PageMessageAction | undefined;
+let pageMessageGeneration = 0;
 const collapsedHostIds = new Set<string>();
 const PAGE_TOAST_DURATION_MS = 10_000;
 
@@ -129,6 +131,7 @@ let floatingTooltip: HTMLDivElement | null = null;
 let floatingTooltipAnchor: HTMLElement | null = null;
 
 type MessageLevel = 'default' | 'success' | 'error';
+type PageMessageAction = 'open-note-export';
 
 interface MessageView {
   root: HTMLElement;
@@ -321,12 +324,32 @@ function renderMessage(view: MessageView, text: string, level: MessageLevel): vo
   view.text.textContent = text;
 }
 
-export function setMessage(text: string, level: MessageLevel = 'default'): void {
+function configurePageMessageAction(action?: PageMessageAction): void {
+  pageMessageAction = action;
+  const actionable = action === 'open-note-export';
+  pageMessageTextElement.disabled = !actionable;
+  pageMessageElement.dataset.actionable = String(actionable);
+  if (actionable) {
+    pageMessageTextElement.title = 'Open downloaded file';
+    pageMessageTextElement.setAttribute('aria-label', 'Open downloaded Note file');
+  } else {
+    pageMessageTextElement.removeAttribute('title');
+    pageMessageTextElement.removeAttribute('aria-label');
+  }
+}
+
+export function setMessage(
+  text: string,
+  level: MessageLevel = 'default',
+  action?: PageMessageAction,
+): void {
+  const generation = ++pageMessageGeneration;
   if (pageMessageTimer !== null) {
     window.clearTimeout(pageMessageTimer);
     pageMessageTimer = null;
   }
 
+  configurePageMessageAction(text ? action : undefined);
   renderMessage(pageMessageView, text, level);
 
   if (!text) {
@@ -334,7 +357,10 @@ export function setMessage(text: string, level: MessageLevel = 'default'): void 
   }
 
   pageMessageTimer = window.setTimeout(() => {
+    if (pageMessageGeneration !== generation) return;
     pageMessageTimer = null;
+    pageMessageGeneration += 1;
+    configurePageMessageAction();
     renderMessage(pageMessageView, '', 'default');
   }, PAGE_TOAST_DURATION_MS);
 }
@@ -342,10 +368,13 @@ export function setMessage(text: string, level: MessageLevel = 'default'): void 
 window.addEventListener('service-manager:toast', (event) => {
   const detail = event instanceof CustomEvent ? event.detail : undefined;
   if (!detail || typeof detail !== 'object') return;
-  const value = detail as { text?: unknown; level?: unknown };
+  const value = detail as { text?: unknown; level?: unknown; action?: unknown };
   if (typeof value.text !== 'string') return;
   const level: MessageLevel = value.level === 'success' || value.level === 'error' ? value.level : 'default';
-  setMessage(value.text, level);
+  const action: PageMessageAction | undefined = value.action === 'open-note-export'
+    ? 'open-note-export'
+    : undefined;
+  setMessage(value.text, level, action);
 });
 
 function setHostDialogMessage(text: string, level: MessageLevel = 'default'): void {
@@ -2304,6 +2333,21 @@ pasteHostConfigButton.addEventListener('click', async () => {
   }
 });
 
+pageMessageTextElement.addEventListener('click', () => {
+  if (pageMessageAction !== 'open-note-export') return;
+  const generation = pageMessageGeneration;
+  configurePageMessageAction();
+  void window.notesApi.openLastExport().then((result) => {
+    if (pageMessageGeneration !== generation) return;
+    if (result.status === 'opened') {
+      setMessage('');
+    } else {
+      setMessage('The downloaded Note file is no longer available to open.', 'error');
+    }
+  }).catch((error) => {
+    if (pageMessageGeneration === generation) setMessage(toErrorMessage(error), 'error');
+  });
+});
 pageMessageCloseButton.addEventListener('click', () => setMessage(''));
 hostDialogMessageCloseButton.addEventListener('click', clearHostDialogMessage);
 closeHostDialogButton.addEventListener('click', closeHostDialog);

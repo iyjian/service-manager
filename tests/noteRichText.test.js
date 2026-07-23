@@ -6,7 +6,9 @@ const {
   RICH_TEXT_LIMITS,
   extractRichTextPlainText,
   isAllowedRichTextLinkHref,
+  normalizeNoteAttachmentFileName,
   normalizeRichTextContent,
+  parseNoteAttachmentReference,
   parseNoteImageNodeAttributes,
   parseNoteImageReference,
   parseRichTextContent,
@@ -22,6 +24,17 @@ const imageReference = (overrides = {}) => ({
   width: 640,
   height: 480,
   alt: 'Architecture diagram',
+  ...overrides,
+});
+
+const attachmentReference = (overrides = {}) => ({
+  objectId: Buffer.alloc(24, 0x4c).toString('base64url'),
+  assetKey: Buffer.alloc(32, 0x5d).toString('base64url'),
+  ciphertextSha256: 'c'.repeat(64),
+  contentSha256: 'd'.repeat(64),
+  fileName: 'service-report.pdf',
+  mimeType: 'application/pdf',
+  byteLength: 8192,
   ...overrides,
 });
 
@@ -657,6 +670,62 @@ test('s3Image node attributes canonicalize bounded display width and alignment i
       /image alignment is invalid/,
     );
   }
+});
+
+test('s3Attachment nodes retain one strict private-S3 file card reference and readable filename', () => {
+  const reference = attachmentReference();
+  assert.deepEqual(parseNoteAttachmentReference(reference), reference);
+  const normalized = normalizeRichTextContent({
+    type: 'doc',
+    content: [{ type: 's3Attachment', attrs: reference }],
+  });
+  assert.deepEqual(JSON.parse(normalized), {
+    type: 'doc',
+    content: [{ type: 's3Attachment', attrs: reference }],
+  });
+  assert.equal(extractRichTextPlainText(normalized), '[Attachment: service-report.pdf]');
+
+  for (const fileName of [
+    '../secret.txt',
+    'folder/file.txt',
+    'CON',
+    'trailing. ',
+    '.',
+    'invoice\u202Efdp.exe',
+    `${'界'.repeat(86)}.txt`,
+  ]) {
+    assert.throws(
+      () => parseNoteAttachmentReference(attachmentReference({ fileName })),
+      /file name is invalid/,
+      fileName,
+    );
+  }
+  assert.throws(
+    () => parseNoteAttachmentReference(attachmentReference({ src: 'https://example.test/file.pdf' })),
+    /unsupported field/,
+  );
+  assert.throws(
+    () => parseNoteAttachmentReference(attachmentReference({ mimeType: 'text/html\nunsafe' })),
+    /MIME type is invalid/,
+  );
+  assert.throws(
+    () => parseNoteAttachmentReference(attachmentReference({ byteLength: RICH_TEXT_LIMITS.attachmentBytes + 1 })),
+    /size is invalid/,
+  );
+
+  const normalizedAttachmentFileName = normalizeNoteAttachmentFileName(`${'界'.repeat(100)}\u2066.pdf`);
+  assert.ok(
+    Buffer.byteLength(normalizedAttachmentFileName, 'utf8') <= RICH_TEXT_LIMITS.attachmentFileNameBytes,
+  );
+  assert.ok(normalizedAttachmentFileName.endsWith('.pdf'));
+  assert.doesNotMatch(
+    normalizedAttachmentFileName,
+    /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/,
+  );
+  assert.deepEqual(
+    parseNoteAttachmentReference(attachmentReference({ fileName: normalizedAttachmentFileName })).fileName,
+    normalizedAttachmentFileName,
+  );
 });
 
 test('rich text allows only absolute http/https links with canonical safe attributes', () => {

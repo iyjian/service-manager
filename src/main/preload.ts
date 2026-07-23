@@ -120,6 +120,11 @@ const notesApi: NotesApi = {
   recoverDrafts: (input) => ipcRenderer.invoke('notes:recover-drafts', input),
   uploadImage: (input) => ipcRenderer.invoke('notes:image:upload', input),
   loadImage: (reference) => ipcRenderer.invoke('notes:image:load', reference),
+  uploadAttachment: (input) => ipcRenderer.invoke('notes:attachment:upload', input),
+  viewAttachment: (reference) => ipcRenderer.invoke('notes:attachment:view', reference),
+  downloadAttachment: (reference) => ipcRenderer.invoke('notes:attachment:download', reference),
+  exportNote: (input) => ipcRenderer.invoke('notes:export', input),
+  openLastExport: () => ipcRenderer.invoke('notes:export:open-last'),
   onFlushRequested: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return;

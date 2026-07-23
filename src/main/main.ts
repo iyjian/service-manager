@@ -2,10 +2,11 @@ import { flushSentry } from './sentry';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Stats } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import {
+  parseNoteAttachmentReference,
   parseNoteImageNodeAttributes,
   parseRichTextContent,
   type NoteImageReference,
@@ -21,6 +22,7 @@ import type {
   NoteDeletePreview,
   NoteDraft,
   NoteDraftRecoveryInput,
+  NoteExportInput,
   NotePlacementInput,
   NoteMoveInput,
   NoteTreeExpansionInput,
@@ -55,6 +57,15 @@ import type {
   KubernetesVncLaunchResult,
   KubernetesVncTarget,
 } from '../shared/types';
+import {
+  buildNotePrintDocument,
+  richTextToMarkdown,
+  richTextToSafeHtml,
+} from '../shared/noteExport';
+import {
+  createSafeNoteFilename,
+  renderMarkdownToSafeHtml,
+} from '../shared/notesMarkdown';
 import { ServiceStore } from './store';
 import {
   checkHostServicesStatus,
@@ -103,6 +114,10 @@ import { UiPreferencesStore } from './uiPreferencesStore';
 import { LlmSettingsStore } from './llmSettingsStore';
 import { fetchLlmModels } from './llmModels';
 import { S3SyncRuntime } from './s3Sync';
+import {
+  createNotesAttachmentPreview,
+  noteAttachmentPreviewKind,
+} from './notesAttachmentPreview';
 import {
   acquireUserDataInstanceLock,
   assertUserDataInstanceLockAvailable,
@@ -163,6 +178,11 @@ const IPC_CHANNELS = {
   notesRecoverDrafts: 'notes:recover-drafts',
   notesImageUpload: 'notes:image:upload',
   notesImageLoad: 'notes:image:load',
+  notesAttachmentUpload: 'notes:attachment:upload',
+  notesAttachmentView: 'notes:attachment:view',
+  notesAttachmentDownload: 'notes:attachment:download',
+  notesExport: 'notes:export',
+  notesExportOpenLast: 'notes:export:open-last',
   notesFlushRequest: 'notes:flush-request',
   notesFlushResult: 'notes:flush-result',
   notesPersistentApplyRelease: 'notes:persistent-apply-release',
@@ -255,6 +275,28 @@ let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
+const rendererWindows = new Set<BrowserWindow>();
+const NOTES_PDF_RENDER_TIMEOUT_MS = 30_000;
+const NOTES_PDF_MAX_DOCUMENT_BYTES = 6 * 1024 * 1024;
+const NOTES_PDF_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+const NOTES_PDF_MAX_STRUCTURAL_BLOCKS = 50_000;
+const NOTES_PDF_MAX_TABLE_ROWS = 10_000;
+const NOTES_PDF_MAX_APPROXIMATE_PAGES = 400;
+const NOTES_PDF_APPROXIMATE_CHARACTERS_PER_PAGE = 5_000;
+const NOTES_PDF_APPROXIMATE_BLOCKS_PER_PAGE = 80;
+const NOTES_PDF_APPROXIMATE_TABLE_ROWS_PER_PAGE = 40;
+const NOTE_EXPORT_OPEN_TTL_MS = 60_000;
+let notesPdfExportActive = false;
+const rendererExportGenerations = new Map<number, number>();
+const recentNoteExports = new Map<number, {
+  filePath: string;
+  format: NoteExportInput['format'];
+  device: number;
+  inode: number;
+  expiresAt: number;
+  rendererGeneration: number;
+  timeout: ReturnType<typeof setTimeout>;
+}>();
 let persistentDataGeneration = 0;
 let s3SharedDataMutationQueue: Promise<void> = Promise.resolve();
 let notesWorkspaceUnsafe = false;
@@ -290,7 +332,6 @@ let quitCoordinator: AppQuitCoordinator;
 const APP_DISPLAY_NAME = 'Service Manager';
 const APP_ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png');
 const FINAL_PROCESS_EXIT_DELAY_MS = 1_500;
-
 app.setName(APP_DISPLAY_NAME);
 app.setAboutPanelOptions({
   applicationName: APP_DISPLAY_NAME,
@@ -301,6 +342,112 @@ function getStore(): ServiceStore {
     throw new Error('Service store is not initialized.');
   }
   return store;
+}
+
+function attachmentActionFailure(status: 'not-configured' | 'missing' | 'error') {
+  return { status } as const;
+}
+
+function validateNoteExportInput(value: unknown): NoteExportInput {
+  if (
+    !isRecord(value)
+    || typeof value.title !== 'string'
+    || value.title.length > NOTE_LIMITS.nameCharacters
+    || typeof value.content !== 'string'
+    || value.content.length > NOTE_LIMITS.contentCharacters
+    || (value.language !== 'richtext' && value.language !== 'markdown')
+    || (value.format !== 'pdf' && value.format !== 'markdown')
+    || Object.keys(value).some((key) => !['title', 'language', 'content', 'format'].includes(key))
+  ) {
+    throw new Error('The Note export request is invalid.');
+  }
+  if (value.language === 'richtext') parseRichTextContent(value.content);
+  return value as unknown as NoteExportInput;
+}
+
+function assertNotePdfComplexity(documentHtml: string): void {
+  if (Buffer.byteLength(documentHtml, 'utf8') > NOTES_PDF_MAX_DOCUMENT_BYTES) {
+    throw new Error('This Note is too large to export as PDF. Download it as Markdown instead.');
+  }
+
+  let structuralBlocks = 0;
+  let tableRows = 0;
+  const structuralTag = /<(p|h[1-6]|li|blockquote|pre|table|tr|figure|article|hr)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = structuralTag.exec(documentHtml)) !== null) {
+    structuralBlocks += 1;
+    if (match[1].toLocaleLowerCase() === 'tr') tableRows += 1;
+    if (structuralBlocks > NOTES_PDF_MAX_STRUCTURAL_BLOCKS || tableRows > NOTES_PDF_MAX_TABLE_ROWS) {
+      throw new Error('This Note is too complex to export as PDF. Download it as Markdown instead.');
+    }
+  }
+
+  const approximatePages = Math.max(
+    1,
+    Math.ceil(documentHtml.length / NOTES_PDF_APPROXIMATE_CHARACTERS_PER_PAGE),
+    Math.ceil(structuralBlocks / NOTES_PDF_APPROXIMATE_BLOCKS_PER_PAGE),
+    Math.ceil(tableRows / NOTES_PDF_APPROXIMATE_TABLE_ROWS_PER_PAGE),
+  );
+  if (approximatePages > NOTES_PDF_MAX_APPROXIMATE_PAGES) {
+    throw new Error('This Note is too long to export as PDF. Download it as Markdown instead.');
+  }
+}
+
+async function withNotePdfRenderTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error('The Note PDF export timed out.'));
+        }, NOTES_PDF_RENDER_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function runNotePdfExportTask<T>(operation: () => Promise<T>): Promise<T> {
+  if (notesPdfExportActive) throw new Error('Another Note PDF export is already in progress.');
+  notesPdfExportActive = true;
+  try {
+    return await operation();
+  } finally {
+    notesPdfExportActive = false;
+  }
+}
+
+async function renderNotePdf(documentHtml: string): Promise<Buffer> {
+  assertNotePdfComplexity(documentHtml);
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      javascript: false,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  try {
+    printWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    printWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+    const pdf = await withNotePdfRenderTimeout((async () => {
+      await printWindow.loadURL(`data:text/html;base64,${Buffer.from(documentHtml, 'utf8').toString('base64')}`);
+      return printWindow.webContents.printToPDF({
+        pageSize: 'A4',
+        preferCSSPageSize: true,
+        printBackground: true,
+      });
+    })());
+    if (!Buffer.isBuffer(pdf) || pdf.byteLength < 1 || pdf.byteLength > NOTES_PDF_MAX_OUTPUT_BYTES) {
+      throw new Error('The generated Note PDF exceeds the supported size.');
+    }
+    return pdf;
+  } finally {
+    if (!printWindow.isDestroyed()) printWindow.destroy();
+  }
 }
 
 function getNotesStore(): NotesStore {
@@ -753,11 +900,126 @@ async function restoreNotesWorkspace(
 }
 
 function rendererNotesWindows(): BrowserWindow[] {
-  return BrowserWindow.getAllWindows().filter((window) =>
+  return [...rendererWindows].filter((window) =>
     !window.isDestroyed()
     && !window.webContents.isDestroyed()
     && !window.webContents.isLoadingMainFrame()
   );
+}
+
+function rendererWindowForSender(senderId: number): BrowserWindow | undefined {
+  return [...rendererWindows].find((window) =>
+    !window.isDestroyed()
+    && !window.webContents.isDestroyed()
+    && window.webContents.id === senderId
+  );
+}
+
+function deleteRecentNoteExport(senderId: number): void {
+  const target = recentNoteExports.get(senderId);
+  if (target) clearTimeout(target.timeout);
+  recentNoteExports.delete(senderId);
+}
+
+function invalidateRendererExportState(senderId: number): void {
+  deleteRecentNoteExport(senderId);
+  const generation = rendererExportGenerations.get(senderId);
+  if (generation !== undefined) rendererExportGenerations.set(senderId, generation + 1);
+}
+
+function clearExpiredNoteExports(now = Date.now()): void {
+  for (const [senderId, target] of recentNoteExports) {
+    if (
+      target.expiresAt <= now
+      || target.rendererGeneration !== rendererExportGenerations.get(senderId)
+      || !rendererWindowForSender(senderId)
+    ) {
+      deleteRecentNoteExport(senderId);
+    }
+  }
+}
+
+async function registerRecentNoteExport(
+  senderId: number,
+  rendererGeneration: number,
+  filePath: string,
+  format: NoteExportInput['format'],
+): Promise<boolean> {
+  deleteRecentNoteExport(senderId);
+  const expectedExtension = format === 'pdf' ? '.pdf' : '.md';
+  if (path.extname(filePath).toLocaleLowerCase() !== expectedExtension) return false;
+  let stats: Stats;
+  try {
+    stats = await fs.lstat(filePath);
+  } catch {
+    return false;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) return false;
+  clearExpiredNoteExports();
+  if (
+    rendererExportGenerations.get(senderId) !== rendererGeneration
+    || !rendererWindowForSender(senderId)
+  ) return false;
+  const expiresAt = Date.now() + NOTE_EXPORT_OPEN_TTL_MS;
+  const timeout = setTimeout(() => {
+    if (recentNoteExports.get(senderId)?.timeout === timeout) deleteRecentNoteExport(senderId);
+  }, NOTE_EXPORT_OPEN_TTL_MS);
+  timeout.unref();
+  recentNoteExports.set(senderId, {
+    filePath,
+    format,
+    device: stats.dev,
+    inode: stats.ino,
+    expiresAt,
+    rendererGeneration,
+    timeout,
+  });
+  return true;
+}
+
+async function takeRecentNoteExport(senderId: number): Promise<string | undefined> {
+  clearExpiredNoteExports();
+  const target = recentNoteExports.get(senderId);
+  deleteRecentNoteExport(senderId);
+  if (
+    !target
+    || target.expiresAt <= Date.now()
+    || target.rendererGeneration !== rendererExportGenerations.get(senderId)
+    || !rendererWindowForSender(senderId)
+  ) return undefined;
+  const expectedExtension = target.format === 'pdf' ? '.pdf' : '.md';
+  if (path.extname(target.filePath).toLocaleLowerCase() !== expectedExtension) return undefined;
+  let stats: Stats;
+  try {
+    stats = await fs.lstat(target.filePath);
+  } catch {
+    return undefined;
+  }
+  if (
+    target.expiresAt <= Date.now()
+    || target.rendererGeneration !== rendererExportGenerations.get(senderId)
+    || !rendererWindowForSender(senderId)
+    || !stats.isFile()
+    || stats.isSymbolicLink()
+    || stats.dev !== target.device
+    || stats.ino !== target.inode
+  ) return undefined;
+  return target.filePath;
+}
+
+function primaryRendererWindow(): BrowserWindow | null {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (
+    focused
+    && rendererWindows.has(focused)
+    && !focused.isDestroyed()
+    && !focused.webContents.isDestroyed()
+  ) {
+    return focused;
+  }
+  return [...rendererWindows].find((window) =>
+    !window.isDestroyed() && !window.webContents.isDestroyed()
+  ) ?? null;
 }
 
 function requestRendererNotesFlush(
@@ -1068,6 +1330,18 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
     },
   });
+  rendererWindows.add(window);
+  const rendererId = window.webContents.id;
+  rendererExportGenerations.set(rendererId, 0);
+  window.once('closed', () => {
+    rendererWindows.delete(window);
+    deleteRecentNoteExport(rendererId);
+    rendererExportGenerations.delete(rendererId);
+  });
+  window.webContents.on('render-process-gone', () => invalidateRendererExportState(rendererId));
+  window.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) invalidateRendererExportState(rendererId);
+  });
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const preventRemoteNavigation = (event: Electron.Event, url: string): void => {
@@ -1075,6 +1349,11 @@ function createWindow(): BrowserWindow {
   };
   window.webContents.on('will-navigate', preventRemoteNavigation);
   window.webContents.on('will-redirect', preventRemoteNavigation);
+  window.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame && event.url === rendererUrl) return;
+    if (!event.isMainFrame && (event.url === 'about:blank' || event.url.startsWith('blob:file:///'))) return;
+    event.preventDefault();
+  });
 
   window.on('unresponsive', () => {
     logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
@@ -1432,7 +1711,7 @@ function runFinalExitAction(action: () => void): void {
 }
 
 updater = new AppUpdater(
-  () => BrowserWindow.getAllWindows()[0] ?? null,
+  () => primaryRendererWindow(),
   () => { void quitCoordinator.request('install-update'); },
 );
 quitCoordinator = new AppQuitCoordinator({
@@ -1448,7 +1727,7 @@ quitCoordinator = new AppQuitCoordinator({
 });
 
 function broadcast(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
+  for (const win of rendererWindows) {
     if (win.isDestroyed() || win.webContents.isDestroyed()) {
       continue;
     }
@@ -1901,6 +2180,90 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.notesImageLoad, async (_event, reference: unknown) =>
     getS3SyncRuntime().loadNoteImage(reference)
   );
+  ipcMain.handle(IPC_CHANNELS.notesAttachmentUpload, async (_event, input: unknown) =>
+    getS3SyncRuntime().uploadNoteAttachment(input)
+  );
+  ipcMain.handle(IPC_CHANNELS.notesAttachmentView, async (_event, referenceValue: unknown) => {
+    const reference = parseNoteAttachmentReference(referenceValue);
+    if (!noteAttachmentPreviewKind(reference)) return { status: 'error' as const };
+    const loaded = await getS3SyncRuntime().loadNoteAttachment(reference);
+    if (loaded.status !== 'loaded') return attachmentActionFailure(loaded.status);
+    const preview = createNotesAttachmentPreview(reference, loaded.bytes);
+    return preview ? { status: 'loaded' as const, preview } : { status: 'error' as const };
+  });
+  ipcMain.handle(IPC_CHANNELS.notesAttachmentDownload, async (event, referenceValue: unknown) => {
+    const reference = parseNoteAttachmentReference(referenceValue);
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const options = {
+      title: 'Download Note Attachment',
+      defaultPath: path.join(app.getPath('downloads'), reference.fileName),
+    };
+    const result = parentWindow
+      ? await dialog.showSaveDialog(parentWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return { status: 'cancelled' as const };
+    const loaded = await getS3SyncRuntime().loadNoteAttachment(reference);
+    if (loaded.status !== 'loaded') return attachmentActionFailure(loaded.status);
+    await fs.writeFile(result.filePath, loaded.bytes, { mode: 0o600 });
+    return { status: 'saved' as const };
+  });
+  ipcMain.handle(IPC_CHANNELS.notesExport, async (event, inputValue: unknown) => {
+    const input = validateNoteExportInput(inputValue);
+    const extension = input.format === 'pdf' ? 'pdf' : 'md';
+    const senderId = event.sender.id;
+    const rendererGeneration = rendererExportGenerations.get(senderId);
+    const parentWindow = rendererWindowForSender(senderId);
+    if (rendererGeneration === undefined || !parentWindow) {
+      throw new Error('The Note export window is no longer available.');
+    }
+    deleteRecentNoteExport(senderId);
+    const options = {
+      title: `Download Note as ${input.format === 'pdf' ? 'PDF' : 'Markdown'}`,
+      defaultPath: path.join(app.getPath('downloads'), createSafeNoteFilename(input.title, extension)),
+      filters: [{
+        name: input.format === 'pdf' ? 'PDF Documents' : 'Markdown Files',
+        extensions: [extension],
+      }],
+    };
+    const performExport = async () => {
+      const result = parentWindow
+        ? await dialog.showSaveDialog(parentWindow, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { status: 'cancelled' as const };
+
+      if (input.format === 'markdown') {
+        const markdown = input.language === 'markdown'
+          ? input.content
+          : richTextToMarkdown(input.content);
+        await fs.writeFile(result.filePath, markdown, { encoding: 'utf8', mode: 0o600 });
+      } else {
+        const bodyHtml = input.language === 'markdown'
+          ? renderMarkdownToSafeHtml(input.content)
+          : richTextToSafeHtml(input.content);
+        const pdf = await renderNotePdf(buildNotePrintDocument(input.title, bodyHtml));
+        await fs.writeFile(result.filePath, pdf, { mode: 0o600 });
+      }
+      return {
+        status: 'saved' as const,
+        canOpen: await registerRecentNoteExport(
+          senderId,
+          rendererGeneration,
+          result.filePath,
+          input.format,
+        ),
+      };
+    };
+    return input.format === 'pdf'
+      ? runNotePdfExportTask(performExport)
+      : performExport();
+  });
+  ipcMain.handle(IPC_CHANNELS.notesExportOpenLast, async (event) => {
+    const filePath = await takeRecentNoteExport(event.sender.id);
+    if (!filePath) return { status: 'unavailable' as const };
+    const openError = await shell.openPath(filePath);
+    if (openError) throw new Error('Unable to open the exported Note file.');
+    return { status: 'opened' as const };
+  });
   ipcMain.on(IPC_CHANNELS.notesFlushResult, (event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.ok !== 'boolean') return;
     const pending = pendingRendererNotesFlushes.get(payload.requestId);
@@ -2573,7 +2936,7 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(IPC_CHANNELS.importPrivateKey, async (): Promise<PrivateKeyImportResult | null> => {
-    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const window = primaryRendererWindow();
     const sshDefaultDir = path.join(app.getPath('home'), '.ssh');
     let dialogDefaultPath = sshDefaultDir;
     try {
@@ -2582,12 +2945,19 @@ function registerIpcHandlers(): void {
       dialogDefaultPath = app.getPath('home');
     }
 
-    const result = await dialog.showOpenDialog(window, {
+    const result = window
+      ? await dialog.showOpenDialog(window, {
+        title: 'Import Private Key',
+        defaultPath: dialogDefaultPath,
+        properties: ['openFile'],
+        filters: [{ name: 'All Files', extensions: ['*'] }],
+      })
+      : await dialog.showOpenDialog({
       title: 'Import Private Key',
       defaultPath: dialogDefaultPath,
       properties: ['openFile'],
       filters: [{ name: 'All Files', extensions: ['*'] }],
-    });
+      });
 
     if (result.canceled || result.filePaths.length === 0) {
       return null;
@@ -2977,7 +3347,7 @@ if (!ownsSingleInstanceLock) {
   app.exit(0);
 } else {
   app.on('second-instance', () => {
-    const window = BrowserWindow.getAllWindows()[0];
+    const window = primaryRendererWindow();
     if (!window || window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
     window.show();
@@ -3083,7 +3453,7 @@ app.whenReady()
     );
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (!primaryRendererWindow()) {
         createWindow();
       }
     });

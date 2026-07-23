@@ -1,4 +1,6 @@
 import type {
+  NoteAttachmentReference,
+  NoteAttachmentPreviewKind,
   NoteImageAlignment,
   NoteImageMimeType,
   NoteImageNodeAttributes,
@@ -6,6 +8,8 @@ import type {
 } from './types';
 
 export type {
+  NoteAttachmentReference,
+  NoteAttachmentPreviewKind,
   NoteImageAlignment,
   NoteImageMimeType,
   NoteImageNodeAttributes,
@@ -23,6 +27,10 @@ export const RICH_TEXT_LIMITS = Object.freeze({
   linkTitleCharacters: 500,
   codeLanguageCharacters: 64,
   mathCharacters: 2_048,
+  attachmentFileNameCharacters: 255,
+  attachmentFileNameBytes: 255,
+  attachmentMimeTypeCharacters: 255,
+  attachmentBytes: 25 * 1024 * 1024,
   imageAltCharacters: 500,
   imageBytes: 10 * 1024 * 1024,
   imageDimension: 8_192,
@@ -32,6 +40,79 @@ export const RICH_TEXT_LIMITS = Object.freeze({
   tableCellWidth: 8_192,
 } as const);
 
+export const NOTE_ATTACHMENT_TEXT_PREVIEW_MAX_BYTES = 4 * 1024 * 1024;
+
+const NOTE_ATTACHMENT_PREVIEW_TEXT_EXTENSIONS = new Set([
+  '.c', '.cc', '.cpp', '.css', '.go', '.java', '.js', '.json', '.jsx', '.log', '.md',
+  '.mjs', '.py', '.rs', '.sql', '.text', '.toml', '.ts', '.tsx', '.txt', '.xml',
+  '.yaml', '.yml',
+]);
+const NOTE_ATTACHMENT_PREVIEW_TEXT_MIME_TYPES = new Set([
+  'application/octet-stream',
+  'application/javascript',
+  'application/json',
+  'application/toml',
+  'application/xml',
+  'application/yaml',
+  'text/css',
+  'text/javascript',
+  'text/markdown',
+  'text/plain',
+  'text/sql',
+  'text/toml',
+  'text/xml',
+  'text/yaml',
+]);
+const NOTE_ATTACHMENT_PREVIEW_IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, NoteImageMimeType>> = {
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
+
+function noteAttachmentExtension(fileName: string): string {
+  const offset = fileName.lastIndexOf('.');
+  return offset < 0 ? '' : fileName.slice(offset).toLocaleLowerCase();
+}
+
+/**
+ * Classifies only attachment formats that the main process can validate before
+ * handing inert preview content to the renderer. Metadata controls whether the
+ * View action is offered; decrypted bytes are always independently rechecked.
+ */
+export function noteAttachmentPreviewKind(
+  reference: Pick<NoteAttachmentReference, 'fileName' | 'mimeType' | 'byteLength'>,
+): NoteAttachmentPreviewKind | undefined {
+  if (!Number.isSafeInteger(reference.byteLength) || reference.byteLength <= 0) return undefined;
+  const extension = noteAttachmentExtension(reference.fileName);
+  const mimeType = reference.mimeType.toLocaleLowerCase();
+  if (extension === '.pdf'
+    && reference.byteLength <= RICH_TEXT_LIMITS.attachmentBytes
+    && (mimeType === 'application/pdf' || mimeType === 'application/octet-stream')) {
+    return 'pdf';
+  }
+  const imageMimeType = NOTE_ATTACHMENT_PREVIEW_IMAGE_MIME_BY_EXTENSION[extension];
+  if (imageMimeType
+    && reference.byteLength <= RICH_TEXT_LIMITS.imageBytes
+    && (mimeType === imageMimeType || mimeType === 'application/octet-stream')) {
+    return 'image';
+  }
+  if (reference.byteLength <= NOTE_ATTACHMENT_TEXT_PREVIEW_MAX_BYTES
+    && NOTE_ATTACHMENT_PREVIEW_TEXT_EXTENSIONS.has(extension)
+    && (NOTE_ATTACHMENT_PREVIEW_TEXT_MIME_TYPES.has(mimeType) || mimeType.startsWith('text/x-'))) {
+    return 'text';
+  }
+  return undefined;
+}
+
+/** Returns the canonical raster MIME type for a metadata-approved image preview. */
+export function noteAttachmentPreviewImageMimeType(
+  reference: Pick<NoteAttachmentReference, 'fileName' | 'mimeType' | 'byteLength'>,
+): NoteImageMimeType | undefined {
+  if (noteAttachmentPreviewKind(reference) !== 'image') return undefined;
+  return NOTE_ATTACHMENT_PREVIEW_IMAGE_MIME_BY_EXTENSION[noteAttachmentExtension(reference.fileName)];
+}
+
 export interface RichTextMark {
   type: 'bold' | 'italic' | 'strike' | 'underline' | 'code' | 'link' | 'textStyle' | 'highlight';
   attrs?: Record<string, string>;
@@ -39,7 +120,7 @@ export interface RichTextMark {
 
 export interface RichTextNode {
   type: string;
-  attrs?: Record<string, unknown> | NoteImageNodeAttributes;
+  attrs?: Record<string, unknown> | NoteImageNodeAttributes | NoteAttachmentReference;
   content?: RichTextNode[];
   marks?: RichTextMark[];
   text?: string;
@@ -67,6 +148,7 @@ const NODE_TYPES = new Set([
   'hardBreak',
   'math',
   's3Image',
+  's3Attachment',
   'table',
   'tableRow',
   'tableHeader',
@@ -93,6 +175,7 @@ const BLOCK_TYPES = new Set([
   'codeBlock',
   'horizontalRule',
   's3Image',
+  's3Attachment',
   'table',
 ]);
 const INLINE_TYPES = new Set(['text', 'hardBreak', 'math']);
@@ -119,6 +202,20 @@ const NOTE_IMAGE_REFERENCE_KEYS = new Set([
   'height',
   'alt',
 ]);
+const NOTE_ATTACHMENT_REFERENCE_KEYS = new Set([
+  'objectId',
+  'assetKey',
+  'ciphertextSha256',
+  'contentSha256',
+  'fileName',
+  'mimeType',
+  'byteLength',
+]);
+const ATTACHMENT_MIME_TYPE_PATTERN = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+const WINDOWS_RESERVED_ATTACHMENT_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const BIDI_CONTROL_CHARACTERS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+const BIDI_CONTROL_CHARACTERS_GLOBAL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const MAX_PRESERVED_ATTACHMENT_EXTENSION_BYTES = 32;
 const TEXT_STYLE_COLORS = new Set([
   '#9333EA',
   '#E00000',
@@ -139,6 +236,53 @@ const HIGHLIGHT_COLORS = new Set([
   '#FCE7F3',
   '#E4E4E7',
 ]);
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) as number;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  let bytes = 0;
+  let result = '';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) as number;
+    const characterBytes = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    if (bytes + characterBytes > maximumBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+function truncateAttachmentFileName(value: string): string {
+  const maximumBytes = RICH_TEXT_LIMITS.attachmentFileNameBytes;
+  if (utf8ByteLength(value) <= maximumBytes) return value;
+  const extensionOffset = value.lastIndexOf('.');
+  const extension = extensionOffset > 0 ? value.slice(extensionOffset) : '';
+  const extensionBytes = utf8ByteLength(extension);
+  if (extension && extensionBytes <= MAX_PRESERVED_ATTACHMENT_EXTENSION_BYTES) {
+    return `${truncateUtf8(value.slice(0, extensionOffset), maximumBytes - extensionBytes)}${extension}`;
+  }
+  return truncateUtf8(value, maximumBytes);
+}
+
+/** Normalizes a renderer-selected leaf name before it crosses the attachment IPC boundary. */
+export function normalizeNoteAttachmentFileName(value: string): string {
+  let normalized = value.normalize('NFC')
+    .replace(BIDI_CONTROL_CHARACTERS_GLOBAL, '_')
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
+    .trim()
+    .replace(/[. ]+$/g, '');
+  if (!normalized) return 'attachment';
+  if (WINDOWS_RESERVED_ATTACHMENT_NAME.test(normalized)) normalized = `_${normalized}`;
+  normalized = truncateAttachmentFileName(normalized).replace(/[. ]+$/g, '');
+  return normalized || 'attachment';
+}
 
 interface ValidationState {
   nodes: number;
@@ -260,6 +404,68 @@ export function parseNoteImageNodeAttributes(value: unknown): NoteImageNodeAttri
     attributes.alignment = value.alignment as NoteImageAlignment;
   }
   return attributes;
+}
+
+/** Validates the immutable private-S3 reference stored by an attachment card. */
+export function parseNoteAttachmentReference(value: unknown): NoteAttachmentReference {
+  if (!isRecord(value)) invalid('The rich text attachment reference is invalid.');
+  assertAllowedKeys(value, NOTE_ATTACHMENT_REFERENCE_KEYS, 'The rich text attachment reference');
+  const objectId = requiredString(
+    value.objectId,
+    OBJECT_ID_PATTERN,
+    'The rich text attachment object identity',
+  );
+  const assetKey = requiredString(
+    value.assetKey,
+    ASSET_KEY_PATTERN,
+    'The rich text attachment asset key',
+  );
+  const ciphertextSha256 = requiredString(
+    value.ciphertextSha256,
+    SHA256_PATTERN,
+    'The rich text attachment ciphertext digest',
+  );
+  const contentSha256 = requiredString(
+    value.contentSha256,
+    SHA256_PATTERN,
+    'The rich text attachment content digest',
+  );
+  if (
+    typeof value.fileName !== 'string'
+    || !value.fileName
+    || value.fileName !== value.fileName.trim()
+    || value.fileName.length > RICH_TEXT_LIMITS.attachmentFileNameCharacters
+    || utf8ByteLength(value.fileName) > RICH_TEXT_LIMITS.attachmentFileNameBytes
+    || value.fileName === '.'
+    || value.fileName === '..'
+    || /[\\/:*?"<>|\u0000-\u001f\u007f]/.test(value.fileName)
+    || BIDI_CONTROL_CHARACTERS.test(value.fileName)
+    || /[. ]$/.test(value.fileName)
+    || WINDOWS_RESERVED_ATTACHMENT_NAME.test(value.fileName)
+  ) {
+    invalid('The rich text attachment file name is invalid.');
+  }
+  if (
+    typeof value.mimeType !== 'string'
+    || value.mimeType.length > RICH_TEXT_LIMITS.attachmentMimeTypeCharacters
+    || !ATTACHMENT_MIME_TYPE_PATTERN.test(value.mimeType)
+  ) {
+    invalid('The rich text attachment MIME type is invalid.');
+  }
+  return {
+    objectId,
+    assetKey,
+    ciphertextSha256,
+    contentSha256,
+    fileName: value.fileName,
+    mimeType: value.mimeType.toLocaleLowerCase(),
+    byteLength: boundedInteger(
+      value.byteLength,
+      1,
+      RICH_TEXT_LIMITS.attachmentBytes,
+      'The rich text attachment size',
+    ),
+  };
 }
 
 function normalizeSafeLink(value: unknown): string {
@@ -636,6 +842,16 @@ function normalizeNode(
     return { type, attrs };
   }
 
+  if (type === 's3Attachment') {
+    assertAllowedKeys(value, new Set(['type', 'attrs']), 'A rich text attachment node');
+    const attrs = parseNoteAttachmentReference(value.attrs);
+    state.textCharacters += attrs.fileName.length;
+    if (state.textCharacters > RICH_TEXT_LIMITS.textCharacters) {
+      invalid('Rich text content contains too much text.');
+    }
+    return { type, attrs };
+  }
+
   if (type === 'table') {
     assertAllowedKeys(value, new Set(['type', 'content']), 'A rich text table node');
     if (
@@ -804,6 +1020,11 @@ function appendPlainText(node: RichTextNode, chunks: string[]): void {
   if (node.type === 's3Image') {
     const attrs = parseNoteImageNodeAttributes(node.attrs);
     if (attrs.alt) chunks.push(attrs.alt);
+    return;
+  }
+  if (node.type === 's3Attachment') {
+    const attrs = parseNoteAttachmentReference(node.attrs);
+    chunks.push(`[Attachment: ${attrs.fileName}]`);
     return;
   }
   if (node.type === 'horizontalRule') {

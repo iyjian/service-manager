@@ -16,6 +16,8 @@ const outDir = join(root, 'dist', 'renderer');
 const vendorDir = join(outDir, 'vendor');
 const dualTargetRuntimes = Object.freeze([
   { shared: 'noteRichText.js', main: 'noteRichText.cjs', renderer: 'noteRichText.js', label: 'rich text' },
+  { shared: 'noteExport.js', main: 'noteExport.cjs', renderer: 'noteExport.js', label: 'Note export' },
+  { shared: 'notesMarkdown.js', main: 'notesMarkdown.cjs', renderer: 'notesMarkdown.js', label: 'Markdown tools' },
   { shared: 'sentryPrivacy.js', main: 'sentryPrivacy.cjs', renderer: 'sentryPrivacy.js', label: 'Sentry privacy' },
 ]);
 
