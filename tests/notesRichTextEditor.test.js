@@ -9,6 +9,30 @@ async function readEditorSource() {
   return readFile(path.join(root, 'src', 'renderer', 'notesRichTextEditor.ts'), 'utf8');
 }
 
+async function readTailwindSource() {
+  return readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8');
+}
+
+test('rich text offscreen layout containment is limited to ordinary top-level paragraphs', async () => {
+  const styles = await readTailwindSource();
+  const ruleStart = styles.indexOf('  .notes-richtext-content .ProseMirror > p {');
+  const ruleEnd = styles.indexOf('\n  }', ruleStart);
+  assert.notEqual(ruleStart, -1);
+  assert.notEqual(ruleEnd, -1);
+
+  const rule = styles.slice(ruleStart, ruleEnd);
+  assert.match(rule, /content-visibility:\s*auto/);
+  assert.match(rule, /contain-intrinsic-block-size:\s*auto 1\.78em/);
+  assert.doesNotMatch(
+    styles,
+    /\.notes-richtext-content \.ProseMirror > \*\s*\{[^}]*content-visibility/s,
+  );
+  assert.doesNotMatch(
+    styles,
+    /\.notes-richtext-content \.ProseMirror > (?:ul|ol|blockquote|pre|figure|div|table)[^{]*\{[^}]*content-visibility/s,
+  );
+});
+
 test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () => {
   const source = await readEditorSource();
   assert.match(source, /import \{[\s\S]*?\bEditor,[\s\S]*?from '@tiptap\/core'/);

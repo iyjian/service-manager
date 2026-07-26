@@ -899,6 +899,16 @@
     @apply mb-0;
   }
 
+  /*
+   * Let Chromium skip layout and paint for ordinary offscreen prose in long
+   * Notes. Keep this scoped to top-level paragraphs: tables, lists, images,
+   * attachments, and other variable-height structural blocks stay eager.
+   */
+  .notes-richtext-content .ProseMirror > p {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 1.78em;
+  }
+
   .notes-richtext-content .ProseMirror p {
     @apply mb-6 mt-0;
   }
