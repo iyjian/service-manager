@@ -290,6 +290,12 @@ test('rich text uses a Novel-style selection-only formatter without Ask AI', asy
   assert.match(source, /class NotesRichTextBubbleMenu/);
   assert.match(source, /this\.editor\.isEditable && hasFormattableSelection\(this\.editor\)/);
   assert.match(source, /posToDOMRect\(this\.editor\.view, selection\.from, selection\.to\)/);
+  const bubbleStart = source.indexOf('class NotesRichTextBubbleMenu');
+  const bubbleSyncStart = source.indexOf('  public sync(): void {', bubbleStart);
+  const bubbleSyncEnd = source.indexOf('  public destroy(): void {', bubbleSyncStart);
+  const bubbleSync = source.slice(bubbleSyncStart, bubbleSyncEnd);
+  assert.ok(bubbleSync.indexOf('if (!hasTextSelection && !editingLink)') < bubbleSync.indexOf('this.updateBlockState()'));
+  assert.ok(bubbleSync.indexOf('if (!hasTextSelection && !editingLink)') < bubbleSync.indexOf('this.updateColorState()'));
   const blockItemsStart = source.indexOf('const RICH_TEXT_BLOCK_ITEMS:');
   const blockItemsEnd = source.indexOf('] as const;', blockItemsStart);
   assert.ok(blockItemsStart >= 0 && blockItemsEnd > blockItemsStart);
@@ -307,6 +313,7 @@ test('rich text uses a Novel-style selection-only formatter without Ask AI', asy
   assert.match(source, /event\.key !== 'Escape'/);
   assert.match(source, /case 'underline': return chain\.toggleUnderline\(\)/);
   assert.match(source, /case 'math': return chain/);
+  assert.match(source, /return this\.commandChain\(command, this\.editor\.can\(\)\.chain\(\)\)\.run\(\)/);
   assert.match(source, /isAllowedRichTextLinkHref\(href\)/);
   assert.match(source, /extendMarkRange\('link'\)\.unsetLink\(\)/);
   assert.match(source, /chain\.setLink\(\{ href \}\)\.run\(\)/);
@@ -448,6 +455,7 @@ test('rich text input defers canonical capture and coalesces editor chrome to on
   assert.doesNotMatch(update, /getContent\(\)|getJSON\(\)|normalizeEditorContent/);
   assert.match(queue, /if \(this\.editor\.isDestroyed \|\| this\.viewSyncFrame !== undefined\) return/);
   assert.equal((queue.match(/window\.requestAnimationFrame/g) ?? []).length, 1);
+  assert.match(queue, /if \(hasFormattableSelection\(this\.editor\)\) this\.updateToolbarState\(\)/);
   for (const call of [
     'updateToolbarState',
     'updateEmptyState',

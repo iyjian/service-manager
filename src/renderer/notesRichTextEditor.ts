@@ -977,8 +977,6 @@ class NotesRichTextBubbleMenu {
 
   public sync(): void {
     if (this.editor.isDestroyed) return;
-    this.updateBlockState();
-    this.updateColorState();
     const hasTextSelection = this.editor.isEditable && hasFormattableSelection(this.editor);
     const editingLink = !this.linkForm.classList.contains('hidden')
       && (this.toolbar.contains(document.activeElement) || this.editor.isFocused);
@@ -986,6 +984,8 @@ class NotesRichTextBubbleMenu {
       this.hide();
       return;
     }
+    this.updateBlockState();
+    this.updateColorState();
     this.toolbar.classList.remove('hidden');
     this.position();
   }
@@ -2603,7 +2603,7 @@ export class NotesRichTextEditor {
     this.viewSyncFrame = window.requestAnimationFrame(() => {
       this.viewSyncFrame = undefined;
       if (this.editor.isDestroyed) return;
-      this.updateToolbarState();
+      if (hasFormattableSelection(this.editor)) this.updateToolbarState();
       this.updateEmptyState();
       this.bubbleMenu.sync();
       this.imageBubbleMenu.sync();
@@ -2641,7 +2641,7 @@ export class NotesRichTextEditor {
       const latex = this.editor.state.doc.textBetween(selection.from, selection.to, ' ', ' ');
       return Boolean(latex) && latex.length <= RICH_TEXT_LIMITS.mathCharacters;
     }
-    return this.commandChain(command, this.editor.can().chain().focus()).run();
+    return this.commandChain(command, this.editor.can().chain()).run();
   }
 
   private isActive(command: RichTextToolbarCommand): boolean {
