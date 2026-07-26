@@ -11,6 +11,8 @@ import {
 import Image from '@tiptap/extension-image';
 import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { NodeSelection } from '@tiptap/pm/state';
 import {
   EMPTY_RICH_TEXT_CONTENT,
   extractRichTextPlainText,
@@ -794,8 +796,55 @@ class NotesRichTextSlashMenu {
   };
 }
 
+interface RichTextTopLevelBlock {
+  from: number;
+  to: number;
+  anchor: number;
+  node: ProseMirrorNode;
+  dom: HTMLElement;
+}
+
+function firstTextPosition(node: ProseMirrorNode, from: number): number {
+  let current = node;
+  let position = from;
+  while (!current.isTextblock && current.childCount > 0) {
+    current = current.firstChild!;
+    position += 1;
+  }
+  return current.isTextblock ? position + 1 : from;
+}
+
+function topLevelBlockAtPosition(editor: Editor, rawPosition: number): RichTextTopLevelBlock | undefined {
+  const doc = editor.state.doc;
+  if (doc.childCount === 0) return undefined;
+  const position = Math.max(0, Math.min(rawPosition, doc.content.size));
+  const resolved = doc.resolve(position);
+  let from: number | undefined;
+  if (resolved.depth > 0) {
+    from = resolved.before(1);
+  } else if (resolved.nodeAfter) {
+    from = resolved.pos;
+  } else if (resolved.nodeBefore) {
+    from = resolved.pos - resolved.nodeBefore.nodeSize;
+  }
+  if (from === undefined) return undefined;
+  const node = doc.nodeAt(from);
+  const dom = editor.view.nodeDOM(from);
+  if (!node || !(dom instanceof HTMLElement)) return undefined;
+  return {
+    from,
+    to: from + node.nodeSize,
+    anchor: firstTextPosition(node, from),
+    node,
+    dom,
+  };
+}
+
 class NotesRichTextBlockHandle {
   private readonly element = document.createElement('button');
+  private hoveredBlock: RichTextTopLevelBlock | undefined;
+  private dragging = false;
+  private suppressClick = false;
 
   public constructor(
     private readonly editor: Editor,
@@ -804,11 +853,12 @@ class NotesRichTextBlockHandle {
   ) {
     this.element.type = 'button';
     this.element.className = 'notes-richtext-block-handle hidden';
-    this.element.setAttribute('aria-label', 'Open block commands');
+    this.element.draggable = true;
+    this.element.setAttribute('aria-label', 'Drag block or open block commands');
     this.element.setAttribute('aria-haspopup', 'listbox');
     this.element.setAttribute('aria-controls', this.menu.elementId);
     this.element.setAttribute('aria-expanded', 'false');
-    this.element.title = 'Block commands';
+    this.element.title = 'Drag to move · Click for commands';
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('viewBox', '0 0 20 20');
     icon.setAttribute('aria-hidden', 'true');
@@ -821,15 +871,13 @@ class NotesRichTextBlockHandle {
     iconPath.setAttribute('fill', 'currentColor');
     icon.append(iconPath);
     this.element.append(icon);
-    this.element.addEventListener('mousedown', (event) => event.preventDefault());
     this.element.addEventListener('click', () => {
+      if (this.suppressClick) return;
+      this.selectActiveBlock();
       if (this.menu.isOpenForCurrentBlock()) {
         this.menu.closeCurrentBlock();
       } else {
         this.menu.openForCurrentBlock(this.element);
-        // Pointer activation already retains the editor selection because the
-        // handle prevents mousedown focus. Keyboard activation can leave focus
-        // on the button, so explicitly restore the editor's slash-menu key path.
         this.editor.commands.focus();
       }
       this.sync();
@@ -842,20 +890,29 @@ class NotesRichTextBlockHandle {
       event.stopPropagation();
       this.sync();
     });
+    this.element.addEventListener('dragstart', this.handleDragStart);
+    this.element.addEventListener('dragend', this.handleDragEnd);
+    this.overlayRoot.addEventListener('pointermove', this.handlePointerMove);
+    this.overlayRoot.addEventListener('pointerleave', this.handlePointerLeave);
     this.overlayRoot.append(this.element);
   }
 
   public sync(): void {
     if (this.editor.isDestroyed) return;
     const menuOpen = this.menu.isOpenForCurrentBlock();
-    const visible = this.editor.isFocused || menuOpen || document.activeElement === this.element;
+    const hoveredBlock = this.validHoveredBlock();
+    const target = hoveredBlock ?? this.selectionBlock();
+    const visible = Boolean(
+      target
+      && (hoveredBlock || this.editor.isFocused || menuOpen || document.activeElement === this.element),
+    );
     this.element.classList.toggle('hidden', !visible);
     this.element.setAttribute('aria-expanded', String(menuOpen));
-    if (!visible) return;
+    if (!visible || !target) return;
     const overlayBounds = this.overlayRoot.getBoundingClientRect();
-    const cursor = this.editor.view.coordsAtPos(this.editor.state.selection.head);
-    const caretVisible = cursor.bottom > overlayBounds.top && cursor.top < overlayBounds.bottom;
-    if (!caretVisible && !menuOpen && document.activeElement !== this.element) {
+    const anchor = this.blockAnchorBounds(target);
+    const anchorVisible = anchor.bottom > overlayBounds.top && anchor.top < overlayBounds.bottom;
+    if (!anchorVisible && !menuOpen && document.activeElement !== this.element) {
       this.element.classList.add('hidden');
       return;
     }
@@ -868,19 +925,152 @@ class NotesRichTextBlockHandle {
       inset,
       Math.min(writingLeft - buttonBounds.width - 4, overlayBounds.width - buttonBounds.width - inset),
     );
-    const lineMiddle = (cursor.top + cursor.bottom) / 2 - overlayBounds.top;
+    const lineMiddle = (anchor.top + anchor.bottom) / 2 - overlayBounds.top;
     const top = Math.max(
       inset,
       Math.min(lineMiddle - buttonBounds.height / 2, overlayBounds.height - buttonBounds.height - inset),
     );
     this.element.style.left = `${left}px`;
     this.element.style.top = `${top}px`;
+    this.element.dataset.blockType = target.node.type.name;
     if (menuOpen) this.menu.repositionCurrentBlock();
   }
 
   public destroy(): void {
+    this.overlayRoot.removeEventListener('pointermove', this.handlePointerMove);
+    this.overlayRoot.removeEventListener('pointerleave', this.handlePointerLeave);
+    this.element.removeEventListener('dragstart', this.handleDragStart);
+    this.element.removeEventListener('dragend', this.handleDragEnd);
+    if (!this.editor.isDestroyed) this.editor.view.dragging = null;
     this.element.remove();
   }
+
+  private selectionBlock(): RichTextTopLevelBlock | undefined {
+    const selection = this.editor.state.selection;
+    const position = selection instanceof NodeSelection ? selection.from : selection.head;
+    return topLevelBlockAtPosition(this.editor, position);
+  }
+
+  private validHoveredBlock(): RichTextTopLevelBlock | undefined {
+    const target = this.hoveredBlock;
+    if (!target || this.editor.state.doc.nodeAt(target.from) !== target.node) {
+      this.hoveredBlock = undefined;
+      return undefined;
+    }
+    return target;
+  }
+
+  private blockAtGutterPoint(clientX: number, clientY: number): RichTextTopLevelBlock | undefined {
+    const editableBounds = this.editor.view.dom.getBoundingClientRect();
+    if (clientY < editableBounds.top || clientY > editableBounds.bottom) return undefined;
+    const writingPadding = Number.parseFloat(
+      window.getComputedStyle(this.editor.view.dom).paddingLeft,
+    ) || 0;
+    const writingLeft = editableBounds.left + writingPadding;
+    const gutterLeft = editableBounds.left;
+    const gutterRight = writingLeft + 4;
+    if (clientX < gutterLeft || clientX > gutterRight) return undefined;
+    const position = this.editor.view.posAtCoords({
+      left: Math.min(editableBounds.right - 1, writingLeft + 1),
+      top: clientY,
+    })?.pos;
+    return position === undefined ? undefined : topLevelBlockAtPosition(this.editor, position);
+  }
+
+  private blockAnchorBounds(target: RichTextTopLevelBlock): {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+  } {
+    if (target.anchor > target.from) {
+      try {
+        return this.editor.view.coordsAtPos(target.anchor);
+      } catch {
+        // Atom blocks and custom node views use their DOM surface below.
+      }
+    }
+    const bounds = target.dom.getBoundingClientRect();
+    const lineHeight = Number.parseFloat(window.getComputedStyle(target.dom).lineHeight) || 24;
+    return {
+      top: bounds.top,
+      bottom: Math.min(bounds.bottom, bounds.top + lineHeight),
+      left: bounds.left,
+      right: bounds.right,
+    };
+  }
+
+  private selectActiveBlock(): void {
+    const target = this.validHoveredBlock() ?? this.selectionBlock();
+    if (!target) return;
+    if (target.anchor > target.from) {
+      this.editor.commands.setTextSelection(target.anchor);
+    } else {
+      this.editor.commands.setNodeSelection(target.from);
+    }
+  }
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.dragging || this.menu.isOpenForCurrentBlock()) return;
+    const source = event.target;
+    const target = source instanceof globalThis.Node && this.element.contains(source)
+      ? this.validHoveredBlock()
+      : this.blockAtGutterPoint(event.clientX, event.clientY);
+    if (target && this.hoveredBlock
+      && target.from === this.hoveredBlock.from
+      && target.node === this.hoveredBlock.node) return;
+    if (!target && !this.hoveredBlock) return;
+    this.hoveredBlock = target;
+    this.sync();
+  };
+
+  private readonly handlePointerLeave = (): void => {
+    if (this.dragging || this.menu.isOpenForCurrentBlock()) return;
+    this.hoveredBlock = undefined;
+    this.sync();
+  };
+
+  private readonly handleDragStart = (event: DragEvent): void => {
+    const target = this.validHoveredBlock() ?? this.selectionBlock();
+    const dataTransfer = event.dataTransfer;
+    if (!target || !dataTransfer || !this.editor.isEditable) {
+      event.preventDefault();
+      return;
+    }
+    this.menu.closeCurrentBlock();
+    const selection = NodeSelection.create(this.editor.state.doc, target.from);
+    this.editor.view.dispatch(this.editor.state.tr.setSelection(selection));
+    const serialized = this.editor.view.serializeForClipboard(selection.content());
+    dataTransfer.clearData();
+    dataTransfer.setData('text/html', serialized.dom.innerHTML);
+    dataTransfer.setData('text/plain', serialized.text);
+    dataTransfer.effectAllowed = 'copyMove';
+    this.editor.view.dragging = { slice: serialized.slice, move: true };
+    this.dragging = true;
+    this.suppressClick = true;
+    this.element.dataset.dragging = 'true';
+
+    const preview = target.dom.cloneNode(true);
+    if (preview instanceof HTMLElement) {
+      preview.classList.add('notes-richtext-block-drag-preview');
+      preview.removeAttribute('contenteditable');
+      preview.setAttribute('aria-hidden', 'true');
+      document.body.append(preview);
+      dataTransfer.setDragImage(preview, 12, 12);
+      window.setTimeout(() => preview.remove(), 0);
+    }
+  };
+
+  private readonly handleDragEnd = (): void => {
+    if (!this.editor.isDestroyed) this.editor.view.dragging = null;
+    this.dragging = false;
+    this.element.removeAttribute('data-dragging');
+    this.hoveredBlock = undefined;
+    window.setTimeout(() => {
+      this.suppressClick = false;
+    }, 0);
+    this.sync();
+  };
 }
 
 class NotesRichTextBubbleMenu {
@@ -1958,6 +2148,11 @@ function createNotesRichTextExtensions(
   importToken?: string,
 ): Extensions {
   return [StarterKit.configure({
+    dropcursor: {
+      color: '#3b82f6',
+      width: 2,
+      class: 'notes-richtext-block-dropcursor',
+    },
     link: {
       openOnClick: false,
       enableClickSelection: false,

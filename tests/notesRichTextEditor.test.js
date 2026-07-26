@@ -33,6 +33,14 @@ test('rich text offscreen layout containment is limited to ordinary top-level pa
   );
 });
 
+test('rich text code blocks keep selected text visible against their dark surface', async () => {
+  const styles = await readTailwindSource();
+  assert.match(
+    styles,
+    /\.notes-richtext-content \.ProseMirror pre code::selection\s*\{\s*@apply bg-blue-600 text-white;\s*\}/,
+  );
+});
+
 test('rich text adapter uses Tiptap with a JSON-only S3 image node', async () => {
   const source = await readEditorSource();
   assert.match(source, /import \{[\s\S]*?\bEditor,[\s\S]*?from '@tiptap\/core'/);
@@ -198,7 +206,7 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /aria-label', 'Mark task complete'/);
 });
 
-test('six-dot block handle opens the same slash command menu on the active editing line', async () => {
+test('six-dot block handle follows hovered blocks, opens commands, and owns native block dragging', async () => {
   const source = await readEditorSource();
   const handleStart = source.indexOf('class NotesRichTextBlockHandle');
   const handleEnd = source.indexOf('class NotesRichTextBubbleMenu', handleStart);
@@ -207,21 +215,39 @@ test('six-dot block handle opens the same slash command menu on the active editi
 
   assert.match(handle, /private readonly element = document\.createElement\('button'\)/);
   assert.match(handle, /className = 'notes-richtext-block-handle hidden'/);
-  assert.match(handle, /setAttribute\('aria-label', 'Open block commands'\)/);
+  assert.match(handle, /this\.element\.draggable = true/);
+  assert.match(handle, /setAttribute\('aria-label', 'Drag block or open block commands'\)/);
   assert.match(handle, /setAttribute\('aria-haspopup', 'listbox'\)/);
   assert.match(handle, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)/);
   assert.match(handle, /icon\.setAttribute\('viewBox', '0 0 20 20'\)/);
   assert.match(handle, /M5 3\.25a1\.5 1\.5[\s\S]*?m7 0a1\.5 1\.5/);
   assert.match(handle, /iconPath\.setAttribute\('fill', 'currentColor'\)/);
   assert.doesNotMatch(handle, /grid-cols-2|createElement\('span'\)/);
-  assert.match(handle, /this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
+  assert.match(handle, /this\.selectActiveBlock\(\)[\s\S]*?this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
   assert.match(handle, /this\.element\.addEventListener\('keydown',[\s\S]*?this\.menu\.handleKeyDown\(event\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?event\.stopPropagation\(\)/);
-  assert.match(handle, /const cursor = this\.editor\.view\.coordsAtPos\(this\.editor\.state\.selection\.head\)/);
+  assert.match(handle, /this\.overlayRoot\.addEventListener\('pointermove', this\.handlePointerMove\)/);
+  assert.match(handle, /this\.overlayRoot\.addEventListener\('pointerleave', this\.handlePointerLeave\)/);
+  assert.match(handle, /this\.blockAtGutterPoint\(event\.clientX, event\.clientY\)/);
+  assert.match(handle, /const gutterRight = writingLeft \+ 4/);
+  assert.match(handle, /this\.editor\.view\.posAtCoords\(\{[\s\S]*?left:[\s\S]*?top: clientY/);
+  assert.match(handle, /const target = hoveredBlock \?\? this\.selectionBlock\(\)/);
+  assert.match(handle, /this\.editor\.view\.coordsAtPos\(target\.anchor\)/);
   assert.match(handle, /const editableBounds = this\.editor\.view\.dom\.getBoundingClientRect\(\)/);
   assert.match(handle, /getComputedStyle\(this\.editor\.view\.dom\)\.paddingLeft/);
   assert.match(handle, /writingLeft - buttonBounds\.width - 4/);
-  assert.match(handle, /const lineMiddle = \(cursor\.top \+ cursor\.bottom\) \/ 2 - overlayBounds\.top/);
+  assert.match(handle, /const lineMiddle = \(anchor\.top \+ anchor\.bottom\) \/ 2 - overlayBounds\.top/);
   assert.match(handle, /this\.element\.style\.top = `\$\{top\}px`/);
+  assert.match(handle, /NodeSelection\.create\(this\.editor\.state\.doc, target\.from\)/);
+  assert.match(handle, /this\.editor\.view\.serializeForClipboard\(selection\.content\(\)\)/);
+  assert.match(handle, /this\.editor\.view\.dragging = \{ slice: serialized\.slice, move: true \}/);
+  assert.match(handle, /dataTransfer\.setDragImage\(preview, 12, 12\)/);
+  assert.match(handle, /this\.editor\.view\.dragging = null/);
+
+  const helpers = source.slice(source.indexOf('function firstTextPosition('), handleStart);
+  assert.match(helpers, /while \(!current\.isTextblock && current\.childCount > 0\)/);
+  assert.match(helpers, /return current\.isTextblock \? position \+ 1 : from/);
+  assert.match(helpers, /resolved\.before\(1\)/);
+  assert.match(helpers, /anchor: firstTextPosition\(node, from\)/);
 
   assert.match(source, /public openForCurrentBlock\(trigger: HTMLElement\): void \{[\s\S]*?this\.manualSelection = \{ from: selection\.from, to: selection\.to \}[\s\S]*?this\.items = this\.commandItems/);
   assert.match(source, /const cursor = this\.manualTrigger\?\.getBoundingClientRect\(\)[\s\S]*?\?\? this\.editor\.view\.coordsAtPos\(this\.range\.to\)/);
@@ -230,6 +256,13 @@ test('six-dot block handle opens the same slash command menu on the active editi
   assert.match(source, /this\.blockHandle = new NotesRichTextBlockHandle\(this\.editor, this\.overlayRoot, this\.slashMenu\)/);
   assert.match(source, /this\.blockHandle\.sync\(\)/);
   assert.match(source, /this\.blockHandle\.destroy\(\)/);
+  assert.match(source, /dropcursor:\s*\{\s*color: '#3b82f6',\s*width: 2,\s*class: 'notes-richtext-block-dropcursor'/);
+
+  const styles = await readTailwindSource();
+  assert.match(styles, /\.notes-richtext-block-handle\s*\{[^}]*cursor-grab/s);
+  assert.match(styles, /\.notes-richtext-block-handle\[data-dragging='true'\]\s*\{/);
+  assert.match(styles, /\.notes-richtext-block-dropcursor\s*\{[^}]*pointer-events-none/s);
+  assert.match(styles, /\.notes-richtext-block-drag-preview\s*\{/);
 });
 
 test('rich text attachment cards show compact metadata and only supported preview actions', async () => {
