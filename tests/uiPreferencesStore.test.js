@@ -37,6 +37,10 @@ test('UI preferences use stable Notes defaults when the file is missing', async 
   await assert.rejects(fs.stat(filePath), { code: 'ENOENT' });
 });
 
+test('Notes defaults to the running Novel editor font size', () => {
+  assert.equal(DEFAULT_NOTES_FONT_SIZE, 18);
+});
+
 test('UI preferences persist atomically with a versioned private JSON shape', async (t) => {
   const { directory, filePath, store } = await createStore(t);
   await store.load();

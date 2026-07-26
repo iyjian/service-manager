@@ -2967,7 +2967,7 @@ let page: NotesPage | undefined;
 let flushListenerRegistered = false;
 
 export function applyNotesFontSize(fontSize: number): void {
-  const normalized = Number.isInteger(fontSize) && fontSize >= 12 && fontSize <= 24 ? fontSize : 14;
+  const normalized = Number.isInteger(fontSize) && fontSize >= 12 && fontSize <= 24 ? fontSize : 18;
   document.documentElement.style.setProperty('--notes-editor-font-size', `${normalized}px`);
   window.requestAnimationFrame(() => page?.requestEditorMeasure());
 }

@@ -22,7 +22,7 @@ test('rich text offscreen layout containment is limited to ordinary top-level pa
 
   const rule = styles.slice(ruleStart, ruleEnd);
   assert.match(rule, /content-visibility:\s*auto/);
-  assert.match(rule, /contain-intrinsic-block-size:\s*auto 1\.78em/);
+  assert.match(rule, /contain-intrinsic-block-size:\s*auto 1\.7777778em/);
   assert.doesNotMatch(
     styles,
     /\.notes-richtext-content \.ProseMirror > \*\s*\{[^}]*content-visibility/s,

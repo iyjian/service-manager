@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { UiPreferences, UiPreferencesDraft } from '../shared/types';
 
 export const UI_PREFERENCES_SCHEMA_VERSION = 3 as const;
-export const DEFAULT_NOTES_FONT_SIZE = 14;
+export const DEFAULT_NOTES_FONT_SIZE = 18;
 export const MIN_NOTES_FONT_SIZE = 12;
 export const MAX_NOTES_FONT_SIZE = 24;
 export const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;

@@ -88,6 +88,7 @@
     grid-template-rows: minmax(0, 1fr);
     overflow: hidden;
     font-family: var(--font-family-notes-ui);
+    -webkit-font-smoothing: auto;
   }
 
   .app-shell[data-page='notes'] input,
@@ -510,8 +511,10 @@
   }
 
   .notes-markdown-preview {
-    @apply min-h-0 overflow-auto bg-white px-6 py-4 text-[14px] leading-7 text-zinc-700;
+    @apply min-h-0 overflow-auto bg-white px-6 py-4 text-zinc-700;
     font-family: var(--font-family-notes-richtext);
+    font-size: var(--notes-editor-font-size);
+    line-height: 1.7777778;
     overflow-wrap: anywhere;
   }
 
@@ -528,9 +531,37 @@
   .notes-markdown-preview .task-list-item { @apply flex items-start gap-2; }
   .notes-markdown-preview .task-list-item input { @apply mt-1.5; }
   .notes-markdown-preview blockquote { @apply my-3 border-l-4 border-zinc-300 pl-4 text-zinc-500; }
-  .notes-markdown-preview code { @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.9em] text-zinc-900; font-family: var(--font-family-notes-code); }
-  .notes-markdown-preview pre { @apply my-3 overflow-x-auto rounded-lg bg-zinc-950 p-3 text-zinc-100; }
-  .notes-markdown-preview pre code { @apply bg-transparent p-0 text-inherit; }
+  .notes-markdown-preview code {
+    @apply rounded-md bg-slate-100 px-1.5 py-1 text-gray-900;
+    font-family: var(--font-family-notes-code);
+    font-size: 0.8888889em;
+    font-weight: 500;
+    line-height: 1.5;
+    white-space: break-spaces;
+  }
+  .notes-markdown-preview code::before,
+  .notes-markdown-preview code::after {
+    content: '`';
+  }
+  .notes-markdown-preview pre {
+    @apply my-3 overflow-x-auto rounded-md bg-gray-800 text-gray-200;
+    padding: 1em 1.5em;
+    font-family: var(--font-family-notes-code-block);
+    font-size: 0.8888889em;
+    font-weight: 400;
+    line-height: 1.75;
+  }
+  .notes-markdown-preview pre code {
+    @apply bg-transparent p-0 text-inherit;
+    font-family: var(--font-family-notes-code-block);
+    font-weight: 400;
+    line-height: inherit;
+    white-space: inherit;
+  }
+  .notes-markdown-preview pre code::before,
+  .notes-markdown-preview pre code::after {
+    content: none;
+  }
   .notes-markdown-preview table { @apply my-4 w-full border-collapse text-[13px]; }
   .notes-markdown-preview th,
   .notes-markdown-preview td { @apply border border-zinc-300 px-2 py-1.5; }
@@ -878,7 +909,7 @@
     @apply relative min-h-full px-6 pb-12 pt-2.5 text-zinc-700 outline-none;
     font-family: var(--font-family-notes-richtext);
     font-size: var(--notes-editor-font-size);
-    line-height: 1.78;
+    line-height: 1.7777778;
     overflow-wrap: anywhere;
   }
 
@@ -906,7 +937,7 @@
    */
   .notes-richtext-content .ProseMirror > p {
     content-visibility: auto;
-    contain-intrinsic-block-size: auto 1.78em;
+    contain-intrinsic-block-size: auto 1.7777778em;
   }
 
   .notes-richtext-content .ProseMirror p {
@@ -916,14 +947,31 @@
   .notes-richtext-content .ProseMirror h1,
   .notes-richtext-content .ProseMirror h2,
   .notes-richtext-content .ProseMirror h3 {
-    @apply font-bold text-zinc-950;
+    @apply text-zinc-950;
     font-family: var(--font-family-notes-richtext);
-    letter-spacing: -0.025em;
+    letter-spacing: normal;
   }
 
-  .notes-richtext-content .ProseMirror h1 { @apply mb-4 mt-8 text-[36px] leading-10; }
-  .notes-richtext-content .ProseMirror h2 { @apply mb-4 mt-8 text-[30px] leading-10; }
-  .notes-richtext-content .ProseMirror h3 { @apply mb-3 mt-6 text-2xl leading-8; }
+  .notes-richtext-content .ProseMirror h1 {
+    margin: 0 0 0.8333333em;
+    font-size: 2.6666667em;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .notes-richtext-content .ProseMirror h2 {
+    margin: 1.8666667em 0 1.0666667em;
+    font-size: 1.6666667em;
+    font-weight: 700;
+    line-height: 1.3333333;
+  }
+
+  .notes-richtext-content .ProseMirror h3 {
+    margin: 1.6666667em 0 0.6666667em;
+    font-size: 1.3333333em;
+    font-weight: 600;
+    line-height: 1.5;
+  }
 
   .notes-richtext-content .ProseMirror ul,
   .notes-richtext-content .ProseMirror ol {
@@ -938,25 +986,54 @@
   }
 
   .notes-richtext-content .ProseMirror code {
-    @apply rounded bg-zinc-100 px-1 py-0.5 text-[0.9em] text-zinc-900;
+    @apply rounded-md bg-slate-100 px-1.5 py-1 text-gray-900;
     font-family: var(--font-family-notes-code);
+    font-size: 0.8888889em;
+    font-weight: 500;
+    line-height: 1.5;
+    white-space: break-spaces;
+  }
+
+  .notes-richtext-content .ProseMirror code::before,
+  .notes-richtext-content .ProseMirror code::after {
+    content: '`';
   }
 
   .notes-richtext-content .ProseMirror pre {
-    @apply mb-6 mt-0 overflow-x-auto rounded-lg bg-zinc-950 p-4 text-[0.9em] leading-7 text-zinc-100;
-    font-family: var(--font-family-notes-code);
+    @apply overflow-x-auto rounded-md bg-gray-800 text-gray-200;
+    margin: 2em 0;
+    padding: 1em 1.5em;
+    font-family: var(--font-family-notes-code-block);
+    font-size: 0.8888889em;
+    font-weight: 400;
+    line-height: 1.75;
   }
 
   .notes-richtext-content .ProseMirror pre code {
     @apply bg-transparent p-0 text-inherit;
+    font-family: var(--font-family-notes-code-block);
+    font-weight: 400;
+    line-height: inherit;
+    white-space: inherit;
   }
 
   .notes-richtext-content .ProseMirror pre code::selection {
     @apply bg-blue-600 text-white;
   }
 
+  .notes-richtext-content .ProseMirror pre code::before,
+  .notes-richtext-content .ProseMirror pre code::after {
+    content: none;
+  }
+
   .notes-richtext-content .ProseMirror hr {
     @apply my-8 border-0 border-t border-zinc-300;
+  }
+
+  .notes-richtext-content .ProseMirror h1 + *,
+  .notes-richtext-content .ProseMirror h2 + *,
+  .notes-richtext-content .ProseMirror h3 + * {
+    margin-top: 0;
   }
 
   .notes-richtext-content .ProseMirror a {
@@ -1254,7 +1331,7 @@
     height: 1.2em;
     margin: 0 0.3rem 0 0;
     position: relative;
-    top: calc((1.78em - 1.2em) / 2 - 0.5px);
+    top: calc((1.7777778em - 1.2em) / 2 - 0.5px);
   }
 
   .notes-richtext-content .ProseMirror li[data-task-item] input[type='checkbox']::before {

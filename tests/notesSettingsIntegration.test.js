@@ -334,11 +334,11 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(taskCheckboxDeclarations, /appearance:none[^}]*border-style:solid[^}]*display:grid[^}]*place-content:center/);
   assert.match(
     taskCheckboxDeclarations,
-    /width:1\.2em[^}]*height:1\.2em[^}]*top:calc\((?:\.29em|\(1\.78em - 1\.2em\)\/2) - (?:0?\.5px)\)/,
+    /width:1\.2em[^}]*height:1\.2em[^}]*top:calc\((?:\.28889em|\(1\.7777778em - 1\.2em\)\/2) - (?:0?\.5px)\)/,
   );
   assert.doesNotMatch(
     taskCheckboxDeclarations,
-    /top:(?:5px|\.29em|calc\(\.29em\)|calc\(\(1\.78em - 1\.2em\)\/2\)(?:;|$))/,
+    /top:(?:5px|\.29em|calc\(\.29em\)|calc\(\(1\.7777778em - 1\.2em\)\/2\)(?:;|$))/,
   );
   assert.match(styles, /li\[data-task-item\]>div>p\{margin:0\}/);
   assert.match(
@@ -362,12 +362,14 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.doesNotMatch(styles, /@media \(max-width:640px\)\{\.notes-page\{/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes Code'[^}]*notes-code-variable\.woff2[^}]*font-weight:\s*100 800/);
-  assert.match(baseStyles, /--font-family-notes-ui:\s*'STM Notes UI',\s*'STM UI',\s*sans-serif/);
-  assert.match(baseStyles, /--font-family-notes-code:\s*'STM Notes Code',\s*'STM Notes UI',\s*monospace/);
-  assert.match(baseStyles, /--font-family-notes-richtext:\s*'STM UI',\s*'STM Notes UI',\s*ui-sans-serif,\s*sans-serif/);
-  assert.match(baseStyles, /--notes-editor-font-size:\s*14px/);
+  assert.match(baseStyles, /--font-family-notes-ui:\s*ui-sans-serif,\s*system-ui,\s*sans-serif,\s*'Apple Color Emoji',\s*'Segoe UI Emoji',\s*'Segoe UI Symbol',\s*'Noto Color Emoji'/);
+  assert.match(baseStyles, /--font-family-notes-code:\s*ui-monospace,\s*SFMono-Regular,\s*Menlo,\s*Monaco,\s*Consolas,\s*'Liberation Mono',\s*'Courier New',\s*monospace/);
+  assert.match(baseStyles, /--font-family-notes-code-block:\s*'JetBrainsMono',\s*monospace/);
+  assert.match(baseStyles, /--font-family-notes-richtext:\s*var\(--font-family-notes-ui\)/);
+  assert.match(baseStyles, /--notes-editor-font-size:\s*18px/);
   assert.match(baseStyles, /--notes-sidebar-width:\s*280px/);
   assert.match(styles, /\.app-shell\[data-page=notes\][^{]*\{[^}]*font-family:var\(--font-family-notes-ui\)/);
+  assert.match(styles, /\.app-shell\[data-page=notes\]\{[^}]*-webkit-font-smoothing:auto/);
   assert.match(styles, /\.notes-content \.cm-editor\{[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*font-variant-ligatures:none/);
   assert.match(styles, /\.notes-content \.cm-scroller\{[^}]*overflow:auto[^}]*font-family:var\(--font-family-notes-code\)/);
   assert.match(styles, /\.notes-content\[data-theme=dark\] \.notes-code-content/);
@@ -389,7 +391,23 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*position:relative[^}]*min-height:100%[^}]*padding:\.625rem 1\.5rem 3rem/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror\.is-editor-empty:before\{[^}]*left:1\.5rem[^}]*top:\.625rem/);
   assert.match(styles, /@media \(max-width:820px\)\{\.notes-richtext-content \.ProseMirror\{padding:\.625rem \.75rem 2rem/);
-  assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*font-family:var\(--font-family-notes-richtext\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*line-height:1\.78/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror\{[^}]*font-family:var\(--font-family-notes-richtext\)[^}]*font-size:var\(--notes-editor-font-size\)[^}]*line-height:1\.7777778/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror h1\{[^}]*font-size:2\.6666667em[^}]*font-weight:800[^}]*line-height:1/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror h2\{[^}]*font-size:1\.6666667em[^}]*font-weight:700[^}]*line-height:1\.3333333/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror h3\{[^}]*font-size:1\.3333333em[^}]*font-weight:600[^}]*line-height:1\.5/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror code\{[^}]*font-family:var\(--font-family-notes-code\)[^}]*font-size:\.8888889em[^}]*font-weight:500/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror code\{[^}]*border-radius:\.375rem[^}]*background-color:rgb\(241 245 249[^}]*padding:\.25rem \.375rem[^}]*color:rgb\(17 24 39/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror code\{[^}]*line-height:1\.5[^}]*white-space:break-spaces/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror code:after,\.notes-richtext-content \.ProseMirror code:before\{content:"`"\}/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre\{[^}]*background-color:rgb\(31 41 55[^}]*margin:2em 0[^}]*padding:1em 1\.5em[^}]*font-size:\.8888889em[^}]*line-height:1\.75/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre,\.notes-richtext-content \.ProseMirror pre code\{font-family:var\(--font-family-notes-code-block\);font-weight:400\}/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre code\{[^}]*line-height:inherit;white-space:inherit\}/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre code:after,\.notes-richtext-content \.ProseMirror pre code:before\{content:none\}/);
+  assert.ok(
+    styles.indexOf('.notes-richtext-content .ProseMirror h1+*')
+      > styles.indexOf('.notes-richtext-content .ProseMirror pre{'),
+    'heading-following block spacing must override the ordinary code-block top margin',
+  );
   assert.match(styles, /\.notes-richtext-slash-menu\{[^}]*max-height:330px[^}]*width:18rem/);
   assert.match(styles, /\.notes-richtext-slash-item\{[^}]*height:3rem/);
   assert.match(styles, /\.notes-richtext-slash-icon\{[^}]*height:2\.5rem[^}]*width:2\.5rem/);
@@ -405,6 +423,7 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-richtext-image\.ProseMirror-selectednode \.notes-richtext-image-handle\{[^}]*pointer-events:auto[^}]*opacity:1/);
   assert.match(styles, /\.notes-richtext-math\{[^}]*display:inline-flex[^}]*cursor:pointer/);
   assert.match(notesPage, /function applyNotesFontSize\(fontSize\)[\s\S]*?style\.setProperty\('--notes-editor-font-size', `\$\{normalized\}px`\)[\s\S]*?requestAnimationFrame\(\(\) => page\?\.requestEditorMeasure\(\)\)/);
+  assert.match(notesPage, /fontSize >= 12 && fontSize <= 24 \? fontSize : 18/);
   assert.match(notesPage, /function clampNotesSidebarWidth\(value\)[\s\S]*?Math\.min\(MAX_NOTES_SIDEBAR_WIDTH, Math\.max\(MIN_NOTES_SIDEBAR_WIDTH, rounded\)\)/);
   assert.match(notesPage, /handleSidebarResizePointerDown[\s\S]*?setPointerCapture\(event\.pointerId\)[\s\S]*?handleSidebarResizePointerMove[\s\S]*?startWidth \+ event\.clientX - drag\.startX/);
   assert.match(notesPage, /finishSidebarResize[\s\S]*?saveNotesSidebarWidth\(width\)/);
@@ -414,7 +433,7 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(notesPage, /function applyNotesEditorTheme\(theme\)[\s\S]*?theme === 'dark' \? 'dark' : 'light'[\s\S]*?dataset\.notesEditorTheme = normalized[\s\S]*?page\?\.applyEditorTheme\(normalized\)/);
 });
 
-test('Notes local UI and code fonts are packaged with their licenses', async () => {
+test('Bundled compatibility fonts retain their local licenses', async () => {
   const fontRoot = path.join(projectRoot, 'assets', 'fonts');
   const [uiFont, codeFont, uiLicense, codeLicense, packageJson, baseStyles] = await Promise.all([
     stat(path.join(fontRoot, 'notes-ui-variable.woff2')),
@@ -514,7 +533,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(styles, /\.settings-status\{[^}]*display:flex[^}]*min-height:2\.25rem[^}]*align-items:center[^}]*justify-content:space-between/);
   assert.match(styles, /\.settings-sync-progress-wrap progress\{[^}]*height:\.25rem[^}]*width:5rem/);
   assert.match(styles, /\.settings-sync-progress-wrap progress:not\(\[value\]\)\{[^}]*background-image:linear-gradient[^}]*settings-sync-progress-indeterminate/);
-  assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="14"/);
+  assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="18"/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-editor-theme"[\s\S]*?<option value="light">Light<\/option>[\s\S]*?<option value="dark">Dark<\/option>/);
   assert.doesNotMatch(html, /Adjust the snippet editor text size|Use one theme for code and rich text editors/);
   assert.match(styles, /\.settings-notes-card\{[^}]*display:grid[^}]*grid-template-columns:minmax\(0,1fr\) auto/);

@@ -1,7 +1,8 @@
 # Local Fonts
 
-The application packages its UI fonts so Notes typography does not depend on the
-fonts installed on macOS, Windows, or Linux. No font is fetched at runtime.
+The application packages compatibility UI font assets and never fetches fonts at
+runtime. Notes itself follows the running Novel editor's platform-native font
+stacks, so rendered families intentionally depend on the operating system.
 
 ## Shared application UI
 
@@ -14,23 +15,20 @@ the `STM UI` family:
 
 If a WOFF2 file is absent, the corresponding bundled TTF is used.
 
-## Notes
+## Retained Notes compatibility assets
 
-- `notes-ui-variable.woff2` is Noto Sans SC Variable, used for the Notes list,
-  metadata, inputs, and mixed Chinese/Latin content. It was converted from the
-  official variable TTF to WOFF2 while retaining the complete glyph repertoire.
-  Its license is in `OFL-NotoSansCJK.txt`.
-- `notes-code-variable.woff2` is JetBrains Mono Variable, used by CodeMirror.
-  Its license is in `OFL-JetBrainsMono.txt`.
-- Rich Text places the existing local Inter-compatible `STM UI` family first,
-  with Noto Sans SC retained as its Chinese-glyph fallback. This matches the
-  running Novel editor's system-sans proportions without a runtime font fetch.
-- CodeMirror falls back to the bundled Notes UI font for glyphs that JetBrains
-  Mono does not contain, including Chinese characters.
+- `notes-ui-variable.woff2` is Noto Sans SC Variable. It was converted from the
+  official variable TTF to WOFF2 while retaining the complete glyph repertoire;
+  its license is in `OFL-NotoSansCJK.txt`.
+- `notes-code-variable.woff2` is JetBrains Mono Variable; its license is in
+  `OFL-JetBrainsMono.txt`.
 
-The renderer exposes these fonts only through the local `STM Notes UI` and
-`STM Notes Code` family aliases. This keeps the UI stable without relying on a
-platform-specific font name.
+The renderer retains the local `STM Notes UI` and `STM Notes Code` aliases for
+artifact compatibility, but current Notes UI, CodeMirror, inline code, and Rich
+Text do not select them ahead of Novel's system stacks. On macOS this normally
+resolves to the native UI and SF Mono/Menlo families; on Windows it normally
+resolves to Segoe UI/Microsoft YaHei UI and Consolas. Exact glyphs may differ by
+platform while font sizes, line heights, weights, and spacing remain aligned.
 
 Sources:
 
