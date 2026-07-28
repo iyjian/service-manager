@@ -66,6 +66,7 @@ import {
   createSafeNoteFilename,
   renderMarkdownToSafeHtml,
 } from '../shared/notesMarkdown';
+import { highlightSafeNoteCodeBlocks } from './noteCodeHighlight';
 import { ServiceStore } from './store';
 import {
   checkHostServicesStatus,
@@ -2237,9 +2238,10 @@ function registerIpcHandlers(): void {
           : richTextToMarkdown(input.content);
         await fs.writeFile(result.filePath, markdown, { encoding: 'utf8', mode: 0o600 });
       } else {
-        const bodyHtml = input.language === 'markdown'
+        const plainBodyHtml = input.language === 'markdown'
           ? renderMarkdownToSafeHtml(input.content)
           : richTextToSafeHtml(input.content);
+        const bodyHtml = highlightSafeNoteCodeBlocks(plainBodyHtml);
         const pdf = await renderNotePdf(buildNotePrintDocument(input.title, bodyHtml));
         await fs.writeFile(result.filePath, pdf, { mode: 0o600 });
       }

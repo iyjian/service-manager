@@ -37,7 +37,7 @@ test('rich text code blocks keep selected text visible against their dark surfac
   const styles = await readTailwindSource();
   assert.match(
     styles,
-    /\.notes-richtext-content \.ProseMirror pre code::selection\s*\{\s*@apply bg-blue-600 text-white;\s*\}/,
+    /\.notes-richtext-content \.ProseMirror pre code::selection,\s*\.notes-richtext-content \.ProseMirror pre code \*::selection\s*\{\s*@apply bg-blue-600 text-white;\s*\}/,
   );
 });
 
@@ -209,7 +209,7 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
 test('six-dot block handle follows hovered blocks, opens commands, and owns native block dragging', async () => {
   const source = await readEditorSource();
   const handleStart = source.indexOf('class NotesRichTextBlockHandle');
-  const handleEnd = source.indexOf('class NotesRichTextBubbleMenu', handleStart);
+  const handleEnd = source.indexOf('interface RichTextCodeBlockTarget', handleStart);
   assert.ok(handleStart >= 0 && handleEnd > handleStart);
   const handle = source.slice(handleStart, handleEnd);
 
@@ -378,6 +378,52 @@ test('rich text uses a Novel-style selection-only formatter without Ask AI', asy
   assert.match(source, /this\.applyLinkButton\.hidden = linkActive/);
   assert.match(source, /this\.removeLinkButton\.hidden = !linkActive/);
   assert.doesNotMatch(source, /Ask AI|askAI|GenerativeMenu|AISelector/);
+});
+
+test('rich text selection formatter stays hidden for code block selections', async () => {
+  const source = await readEditorSource();
+  const helperStart = source.indexOf('function hasFormattableSelection(');
+  const helperEnd = source.indexOf('\nfunction ', helperStart + 1);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+
+  assert.match(helper, /editor\.state\.doc\.nodesBetween\(selection\.from, selection\.to/);
+  assert.match(helper, /node\.type\.name === 'codeBlock'/);
+  assert.match(helper, /return hasFormattableContent && !intersectsCodeBlock/);
+});
+
+test('Rich Text code blocks use bounded common highlighting and a searchable language pill', async () => {
+  const [source, styles] = await Promise.all([readEditorSource(), readTailwindSource()]);
+  assert.match(source, /import CodeBlockLowlight from '@tiptap\/extension-code-block-lowlight'/);
+  assert.match(source, /import \{ common, createLowlight \} from 'lowlight'/);
+  assert.match(source, /StarterKit\.configure\(\{\s*codeBlock: false/);
+  assert.match(source, /CodeBlockLowlight\.configure\(\{ lowlight: notesCodeLowlight \}\)/);
+  assert.match(source, /value\.length > CODE_HIGHLIGHT_LIMITS\.explicitCharacters/);
+  assert.match(source, /value\.length > CODE_HIGHLIGHT_LIMITS\.automaticCharacters/);
+  assert.match(source, /findCodeHighlightLanguage\(language\)\?\.value \?\? language/);
+  assert.match(source, /listLanguages\(\) \{\s*return \[\.\.\.notesCodeLanguageNames\]/);
+
+  const menuStart = source.indexOf('class NotesRichTextCodeLanguageMenu');
+  const menuEnd = source.indexOf('class NotesRichTextBubbleMenu', menuStart);
+  assert.ok(menuStart >= 0 && menuEnd > menuStart);
+  const menu = source.slice(menuStart, menuEnd);
+  assert.match(menu, /className = 'notes-richtext-code-language-trigger hidden'/);
+  assert.match(menu, /textContent = knownLanguage\?\.label \?\? 'Auto'/);
+  assert.match(menu, /placeholder = 'Search languages'/);
+  assert.match(menu, /RICH_TEXT_CODE_LANGUAGE_CHOICES\.filter\(\(choice\) => choice\.searchText\.includes\(query\)\)/);
+  assert.match(menu, /event\.altKey[\s\S]*?event\.key !== 'F10'/);
+  assert.match(menu, /setNodeMarkup\(target\.position, undefined, attributes\)/);
+  assert.match(menu, /language: choice\.value/);
+  assert.match(menu, /Unsupported saved language/);
+  assert.doesNotMatch(menu, /unknownStatus|Saved tag/);
+  assert.match(menu, /const visibleTop = Math\.max\(blockBounds\.top, overlayBounds\.top\)/);
+  assert.match(menu, /const visibleRight = Math\.min\(blockBounds\.right, overlayBounds\.right\)/);
+  assert.match(menu, /const preferredTop = visibleTop - overlayBounds\.top \+ inset/);
+  assert.doesNotMatch(menu, /blockBounds\.top - overlayBounds\.top - triggerBounds\.height \/ 2/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre \{[\s\S]*?padding: 2\.75em 1\.5em 1em;/);
+  assert.match(styles, /\.notes-richtext-code-language-trigger/);
+  assert.match(styles, /\.notes-richtext-code-language-menu/);
+  assert.match(styles, /\.hljs-keyword/);
 });
 
 test('Novel-style math and color controls use closed renderer extensions and canonical commands', async () => {

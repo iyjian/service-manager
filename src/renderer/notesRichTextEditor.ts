@@ -8,11 +8,19 @@ import {
   type Extensions,
   type NodeViewRendererProps,
 } from '@tiptap/core';
+import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Image from '@tiptap/extension-image';
 import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { NodeSelection } from '@tiptap/pm/state';
+import { common, createLowlight } from 'lowlight';
+import {
+  CODE_HIGHLIGHT_LANGUAGES,
+  CODE_HIGHLIGHT_LIMITS,
+  codeHighlightSearchText,
+  findCodeHighlightLanguage,
+} from './codeHighlight.js';
 import {
   EMPTY_RICH_TEXT_CONTENT,
   extractRichTextPlainText,
@@ -128,6 +136,7 @@ interface SlashCommandItem {
 }
 
 let slashMenuIdSequence = 0;
+let codeLanguageMenuIdSequence = 0;
 
 type EditorIconName =
   | 'text'
@@ -196,6 +205,41 @@ const NOTE_IMAGE_ALIGNMENT_ICONS: Readonly<Record<NoteImageAlignment, readonly s
   left: ['M2.5 3.25h11', 'M2.5 6.75h7', 'M2.5 10.25h11', 'M2.5 13.75h7'],
   center: ['M2.5 3.25h11', 'M4.5 6.75h7', 'M2.5 10.25h11', 'M4.5 13.75h7'],
   right: ['M2.5 3.25h11', 'M6.5 6.75h7', 'M2.5 10.25h11', 'M6.5 13.75h7'],
+};
+
+const notesCodeLowlightBase = createLowlight(common);
+type NotesCodeLowlight = ReturnType<typeof createLowlight>;
+type NotesCodeHighlightRoot = ReturnType<NotesCodeLowlight['highlightAuto']>;
+const notesCodeLanguageNames = Object.freeze([
+  ...notesCodeLowlightBase.listLanguages(),
+  ...CODE_HIGHLIGHT_LANGUAGES.flatMap((item) => item.aliases),
+]);
+
+function plainCodeHighlightRoot(value: string): NotesCodeHighlightRoot {
+  return {
+    type: 'root',
+    children: [{ type: 'text', value }],
+    data: { language: undefined, relevance: 0 },
+  };
+}
+
+const notesCodeLowlight: NotesCodeLowlight = {
+  ...notesCodeLowlightBase,
+  highlight(language, value, options) {
+    if (value.length > CODE_HIGHLIGHT_LIMITS.explicitCharacters) return plainCodeHighlightRoot(value);
+    return notesCodeLowlightBase.highlight(
+      findCodeHighlightLanguage(language)?.value ?? language,
+      value,
+      options,
+    );
+  },
+  highlightAuto(value, options) {
+    if (value.length > CODE_HIGHLIGHT_LIMITS.automaticCharacters) return plainCodeHighlightRoot(value);
+    return notesCodeLowlightBase.highlightAuto(value, options);
+  },
+  listLanguages() {
+    return [...notesCodeLanguageNames];
+  },
 };
 const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3'>, readonly string[]>> = {
   text: ['M4 4h8', 'M8 4v8', 'M6 12h4'],
@@ -273,14 +317,19 @@ function hasFormattableSelection(editor: Editor): boolean {
   const selection = editor.state.selection;
   if (selection.empty || (selection as typeof selection & { node?: unknown }).node) return false;
   let hasFormattableContent = false;
+  let intersectsCodeBlock = false;
   editor.state.doc.nodesBetween(selection.from, selection.to, (node) => {
+    if (node.type.name === 'codeBlock') {
+      intersectsCodeBlock = true;
+      return false;
+    }
     if ((node.isText && Boolean(node.text?.length)) || node.type.name === 'math') {
       hasFormattableContent = true;
       return false;
     }
-    return !hasFormattableContent;
+    return true;
   });
-  return hasFormattableContent;
+  return hasFormattableContent && !intersectsCodeBlock;
 }
 
 function isToolbarCommand(value: unknown): value is RichTextToolbarCommand {
@@ -1069,6 +1118,463 @@ class NotesRichTextBlockHandle {
     window.setTimeout(() => {
       this.suppressClick = false;
     }, 0);
+    this.sync();
+  };
+}
+
+interface RichTextCodeBlockTarget {
+  position: number;
+  node: ProseMirrorNode;
+  dom: HTMLElement;
+}
+
+interface RichTextCodeLanguageChoice {
+  value: string | null;
+  label: string;
+  searchText: string;
+}
+
+const RICH_TEXT_CODE_LANGUAGE_CHOICES: readonly RichTextCodeLanguageChoice[] = Object.freeze([
+  { value: null, label: 'Auto', searchText: 'auto automatic detect' },
+  ...CODE_HIGHLIGHT_LANGUAGES.map((item) => ({
+    value: item.value,
+    label: item.label,
+    searchText: codeHighlightSearchText(item),
+  })),
+]);
+
+function codeBlockTargetAtPosition(editor: Editor, rawPosition: number): RichTextCodeBlockTarget | undefined {
+  const doc = editor.state.doc;
+  const position = Math.max(0, Math.min(rawPosition, doc.content.size));
+  const resolved = doc.resolve(position);
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    const node = resolved.node(depth);
+    if (node.type.name !== 'codeBlock') continue;
+    const nodePosition = resolved.before(depth);
+    const dom = editor.view.nodeDOM(nodePosition);
+    return dom instanceof HTMLElement ? { position: nodePosition, node, dom } : undefined;
+  }
+  const adjacent = resolved.nodeAfter?.type.name === 'codeBlock'
+    ? { position: resolved.pos, node: resolved.nodeAfter }
+    : resolved.nodeBefore?.type.name === 'codeBlock'
+      ? { position: resolved.pos - resolved.nodeBefore.nodeSize, node: resolved.nodeBefore }
+      : undefined;
+  if (!adjacent) return undefined;
+  const dom = editor.view.nodeDOM(adjacent.position);
+  return dom instanceof HTMLElement ? { ...adjacent, dom } : undefined;
+}
+
+class NotesRichTextCodeLanguageMenu {
+  private readonly trigger = document.createElement('button');
+  private readonly triggerLabel = document.createElement('span');
+  private readonly menu = document.createElement('div');
+  private readonly search = document.createElement('input');
+  private readonly options = document.createElement('div');
+  private readonly menuId = `notes-richtext-code-language-${++codeLanguageMenuIdSequence}`;
+  private filteredChoices: readonly RichTextCodeLanguageChoice[] = RICH_TEXT_CODE_LANGUAGE_CHOICES;
+  private selectedIndex = 0;
+  private hoveredTarget: RichTextCodeBlockTarget | undefined;
+  private menuTarget: RichTextCodeBlockTarget | undefined;
+
+  public constructor(
+    private readonly editor: Editor,
+    private readonly overlayRoot: HTMLElement,
+  ) {
+    this.trigger.type = 'button';
+    this.trigger.className = 'notes-richtext-code-language-trigger hidden';
+    this.trigger.setAttribute('aria-label', 'Choose code language');
+    this.trigger.setAttribute('aria-haspopup', 'dialog');
+    this.trigger.setAttribute('aria-controls', this.menuId);
+    this.trigger.setAttribute('aria-expanded', 'false');
+    this.triggerLabel.className = 'notes-richtext-code-language-label';
+    const chevron = createStrokeIcon(['m4.25 6.25 3.75 3.5 3.75-3.5']);
+    chevron.classList.add('notes-richtext-code-language-chevron');
+    this.trigger.append(this.triggerLabel, chevron);
+
+    this.menu.id = this.menuId;
+    this.menu.className = 'notes-richtext-code-language-menu hidden';
+    this.menu.setAttribute('role', 'dialog');
+    this.menu.setAttribute('aria-label', 'Code language');
+    const searchWrap = document.createElement('label');
+    searchWrap.className = 'notes-richtext-code-language-search-wrap';
+    searchWrap.append(createStrokeIcon([
+      'M7 2.75a4.25 4.25 0 1 0 0 8.5 4.25 4.25 0 0 0 0-8.5z',
+      'm10.25 10.25 3 3',
+    ]));
+    this.search.type = 'search';
+    this.search.className = 'notes-richtext-code-language-search';
+    this.search.placeholder = 'Search languages';
+    this.search.autocomplete = 'off';
+    this.search.spellcheck = false;
+    this.search.setAttribute('aria-label', 'Search code languages');
+    this.search.setAttribute('aria-controls', `${this.menuId}-options`);
+    searchWrap.append(this.search);
+    this.options.id = `${this.menuId}-options`;
+    this.options.className = 'notes-richtext-code-language-options';
+    this.options.setAttribute('role', 'listbox');
+    this.options.setAttribute('aria-label', 'Code languages');
+    this.menu.append(searchWrap, this.options);
+
+    this.trigger.addEventListener('pointerdown', this.handleTriggerPointerDown);
+    this.trigger.addEventListener('click', this.handleTriggerClick);
+    this.trigger.addEventListener('keydown', this.handleTriggerKeyDown);
+    this.search.addEventListener('input', this.handleSearchInput);
+    this.search.addEventListener('keydown', this.handleSearchKeyDown);
+    this.options.addEventListener('click', this.handleOptionsClick);
+    this.menu.addEventListener('focusout', this.handleMenuFocusOut);
+    document.addEventListener('pointerdown', this.handleOutsidePointerDown, true);
+    this.overlayRoot.addEventListener('pointermove', this.handlePointerMove);
+    this.overlayRoot.addEventListener('pointerleave', this.handlePointerLeave);
+    this.overlayRoot.append(this.trigger, this.menu);
+  }
+
+  public sync(): void {
+    if (this.editor.isDestroyed) return;
+    const menuOpen = this.isOpen();
+    const hovered = this.validTarget(this.hoveredTarget);
+    if (!hovered) this.hoveredTarget = undefined;
+    const target = menuOpen
+      ? this.validTarget(this.menuTarget)
+      : hovered ?? this.selectionTarget();
+    if (menuOpen && !target) {
+      this.close();
+      return;
+    }
+    const controlFocused = document.activeElement === this.trigger || this.menu.contains(document.activeElement);
+    const visible = Boolean(
+      this.editor.isEditable
+      && target
+      && (hovered || this.editor.isFocused || menuOpen || controlFocused),
+    );
+    this.trigger.classList.toggle('hidden', !visible);
+    if (!visible || !target) return;
+    this.updateTrigger(target);
+    this.positionTrigger(target);
+    if (menuOpen) this.positionMenu();
+  }
+
+  public handleKeyDown(event: KeyboardEvent): boolean {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.key !== 'F10') return false;
+    const target = this.selectionTarget();
+    if (!target || !this.editor.isEditable) return false;
+    event.preventDefault();
+    this.hoveredTarget = undefined;
+    this.menuTarget = target;
+    this.sync();
+    this.trigger.focus();
+    return true;
+  }
+
+  public destroy(): void {
+    this.trigger.removeEventListener('pointerdown', this.handleTriggerPointerDown);
+    this.trigger.removeEventListener('click', this.handleTriggerClick);
+    this.trigger.removeEventListener('keydown', this.handleTriggerKeyDown);
+    this.search.removeEventListener('input', this.handleSearchInput);
+    this.search.removeEventListener('keydown', this.handleSearchKeyDown);
+    this.options.removeEventListener('click', this.handleOptionsClick);
+    this.menu.removeEventListener('focusout', this.handleMenuFocusOut);
+    document.removeEventListener('pointerdown', this.handleOutsidePointerDown, true);
+    this.overlayRoot.removeEventListener('pointermove', this.handlePointerMove);
+    this.overlayRoot.removeEventListener('pointerleave', this.handlePointerLeave);
+    this.trigger.remove();
+    this.menu.remove();
+  }
+
+  private isOpen(): boolean {
+    return !this.menu.classList.contains('hidden');
+  }
+
+  private selectionTarget(): RichTextCodeBlockTarget | undefined {
+    const selection = this.editor.state.selection;
+    const position = selection instanceof NodeSelection ? selection.from : selection.head;
+    return codeBlockTargetAtPosition(this.editor, position);
+  }
+
+  private validTarget(target: RichTextCodeBlockTarget | undefined): RichTextCodeBlockTarget | undefined {
+    if (!target || this.editor.state.doc.nodeAt(target.position) !== target.node) return undefined;
+    const dom = this.editor.view.nodeDOM(target.position);
+    return dom instanceof HTMLElement ? { ...target, dom } : undefined;
+  }
+
+  private targetAtPointer(event: PointerEvent): RichTextCodeBlockTarget | undefined {
+    const source = event.target;
+    if (!(source instanceof Element) || !this.editor.view.dom.contains(source)) return undefined;
+    const block = source.closest('pre');
+    if (!block || !this.editor.view.dom.contains(block)) return undefined;
+    try {
+      return codeBlockTargetAtPosition(this.editor, this.editor.view.posAtDOM(block, 0));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private rawLanguage(target: RichTextCodeBlockTarget): string | undefined {
+    const value = target.node.attrs.language;
+    return typeof value === 'string' && value ? value : undefined;
+  }
+
+  private selectedLanguageValue(target: RichTextCodeBlockTarget): string | null {
+    return findCodeHighlightLanguage(this.rawLanguage(target))?.value ?? null;
+  }
+
+  private updateTrigger(target: RichTextCodeBlockTarget): void {
+    const rawLanguage = this.rawLanguage(target);
+    const knownLanguage = findCodeHighlightLanguage(rawLanguage);
+    this.triggerLabel.textContent = knownLanguage?.label ?? 'Auto';
+    this.trigger.title = rawLanguage && !knownLanguage
+      ? `Unsupported saved language “${rawLanguage}”; using Auto`
+      : `${knownLanguage?.label ?? 'Auto-detect'} code language`;
+  }
+
+  private open(): void {
+    const target = this.validTarget(this.menuTarget) ?? this.validTarget(this.hoveredTarget) ?? this.selectionTarget();
+    if (!target || !this.editor.isEditable) return;
+    this.menuTarget = target;
+    this.search.value = '';
+    this.filteredChoices = RICH_TEXT_CODE_LANGUAGE_CHOICES;
+    const selectedValue = this.selectedLanguageValue(target);
+    this.selectedIndex = Math.max(
+      0,
+      this.filteredChoices.findIndex((choice) => choice.value === selectedValue),
+    );
+    this.renderOptions();
+    this.menu.classList.remove('hidden');
+    this.trigger.setAttribute('aria-expanded', 'true');
+    this.positionTrigger(target);
+    this.positionMenu();
+    window.requestAnimationFrame(() => {
+      if (!this.isOpen()) return;
+      this.search.focus();
+      this.updateActiveDescendant();
+    });
+  }
+
+  private close(): void {
+    this.menu.classList.add('hidden');
+    this.trigger.setAttribute('aria-expanded', 'false');
+    this.search.removeAttribute('aria-activedescendant');
+    this.menuTarget = undefined;
+  }
+
+  private renderOptions(): void {
+    if (this.filteredChoices.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'notes-richtext-code-language-empty';
+      empty.setAttribute('role', 'status');
+      empty.textContent = 'No languages found';
+      this.options.replaceChildren(empty);
+      this.search.removeAttribute('aria-activedescendant');
+      return;
+    }
+    const selectedValue = this.menuTarget ? this.selectedLanguageValue(this.menuTarget) : null;
+    this.options.replaceChildren(...this.filteredChoices.map((choice, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'notes-richtext-code-language-option';
+      button.id = `${this.menuId}-option-${index}`;
+      button.dataset.codeLanguageIndex = String(index);
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', String(choice.value === selectedValue));
+      button.dataset.active = String(index === this.selectedIndex);
+      const label = document.createElement('span');
+      label.textContent = choice.label;
+      const check = document.createElement('span');
+      check.className = 'notes-richtext-code-language-check';
+      check.setAttribute('aria-hidden', 'true');
+      check.textContent = '✓';
+      button.append(label, check);
+      return button;
+    }));
+    this.updateActiveDescendant();
+  }
+
+  private updateActiveDescendant(): void {
+    const buttons = Array.from(this.options.querySelectorAll<HTMLElement>('[data-code-language-index]'));
+    for (const [index, button] of buttons.entries()) {
+      button.dataset.active = String(index === this.selectedIndex);
+    }
+    const active = buttons[this.selectedIndex];
+    if (!active) {
+      this.search.removeAttribute('aria-activedescendant');
+      return;
+    }
+    this.search.setAttribute('aria-activedescendant', active.id);
+    const styles = window.getComputedStyle(this.options);
+    this.options.scrollTop = revealMenuItemScrollTop({
+      scrollTop: this.options.scrollTop,
+      scrollHeight: this.options.scrollHeight,
+      clientHeight: this.options.clientHeight,
+      itemTop: active.offsetTop,
+      itemHeight: active.offsetHeight,
+      paddingTop: Number.parseFloat(styles.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(styles.paddingBottom) || 0,
+    });
+  }
+
+  private select(index: number): void {
+    const choice = this.filteredChoices[index];
+    const target = this.validTarget(this.menuTarget);
+    if (!choice || !target) {
+      this.close();
+      return;
+    }
+    const attributes: Record<string, unknown> = { ...target.node.attrs, language: choice.value };
+    this.close();
+    this.editor.view.dispatch(
+      this.editor.state.tr.setNodeMarkup(target.position, undefined, attributes),
+    );
+    this.editor.commands.focus();
+    this.sync();
+  }
+
+  private positionTrigger(target: RichTextCodeBlockTarget): void {
+    const overlayBounds = this.overlayRoot.getBoundingClientRect();
+    const blockBounds = target.dom.getBoundingClientRect();
+    if (blockBounds.bottom <= overlayBounds.top || blockBounds.top >= overlayBounds.bottom) {
+      if (!this.isOpen() && document.activeElement !== this.trigger) this.trigger.classList.add('hidden');
+      return;
+    }
+    const triggerBounds = this.trigger.getBoundingClientRect();
+    const inset = 10;
+    const visibleTop = Math.max(blockBounds.top, overlayBounds.top);
+    const visibleRight = Math.min(blockBounds.right, overlayBounds.right);
+    const left = Math.max(
+      inset,
+      Math.min(
+        visibleRight - overlayBounds.left - triggerBounds.width - inset,
+        overlayBounds.width - triggerBounds.width - inset,
+      ),
+    );
+    const preferredTop = visibleTop - overlayBounds.top + inset;
+    const top = Math.max(inset, Math.min(preferredTop, overlayBounds.height - triggerBounds.height - inset));
+    this.trigger.style.left = `${left}px`;
+    this.trigger.style.top = `${top}px`;
+  }
+
+  private positionMenu(): void {
+    if (!this.isOpen()) return;
+    const overlayBounds = this.overlayRoot.getBoundingClientRect();
+    const triggerBounds = this.trigger.getBoundingClientRect();
+    const menuBounds = this.menu.getBoundingClientRect();
+    const inset = 8;
+    const left = Math.max(
+      inset,
+      Math.min(triggerBounds.right - overlayBounds.left - menuBounds.width, overlayBounds.width - menuBounds.width - inset),
+    );
+    let top = triggerBounds.bottom - overlayBounds.top + 6;
+    if (top + menuBounds.height > overlayBounds.height - inset) {
+      top = triggerBounds.top - overlayBounds.top - menuBounds.height - 6;
+    }
+    this.menu.style.left = `${left}px`;
+    this.menu.style.top = `${Math.max(inset, top)}px`;
+  }
+
+  private readonly handleTriggerPointerDown = (event: PointerEvent): void => {
+    event.preventDefault();
+  };
+
+  private readonly handleTriggerClick = (): void => {
+    if (this.isOpen()) this.close();
+    else this.open();
+    this.sync();
+  };
+
+  private readonly handleTriggerKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && this.isOpen()) {
+      event.preventDefault();
+      this.close();
+      this.trigger.focus();
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    if (!this.isOpen()) this.open();
+  };
+
+  private readonly handleSearchInput = (): void => {
+    const query = this.search.value.trim().toLocaleLowerCase();
+    this.filteredChoices = query
+      ? RICH_TEXT_CODE_LANGUAGE_CHOICES.filter((choice) => choice.searchText.includes(query))
+      : RICH_TEXT_CODE_LANGUAGE_CHOICES;
+    this.selectedIndex = 0;
+    this.renderOptions();
+  };
+
+  private readonly handleSearchKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.close();
+      this.trigger.focus();
+      return;
+    }
+    if (event.key === 'Home' || event.key === 'End') {
+      if (this.filteredChoices.length === 0) return;
+      event.preventDefault();
+      this.selectedIndex = event.key === 'Home' ? 0 : this.filteredChoices.length - 1;
+      this.updateActiveDescendant();
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (this.filteredChoices.length === 0) return;
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      this.selectedIndex = (this.selectedIndex + direction + this.filteredChoices.length)
+        % this.filteredChoices.length;
+      this.updateActiveDescendant();
+      return;
+    }
+    if (event.key === 'Enter' && this.filteredChoices.length > 0) {
+      event.preventDefault();
+      this.select(this.selectedIndex);
+    }
+  };
+
+  private readonly handleOptionsClick = (event: MouseEvent): void => {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const button = source.closest<HTMLElement>('[data-code-language-index]');
+    const index = Number(button?.dataset.codeLanguageIndex);
+    if (!Number.isInteger(index)) return;
+    event.preventDefault();
+    this.select(index);
+  };
+
+  private readonly handleMenuFocusOut = (): void => {
+    window.setTimeout(() => {
+      if (!this.isOpen()) return;
+      const active = document.activeElement;
+      if (active === this.trigger || this.menu.contains(active)) return;
+      this.close();
+      this.sync();
+    }, 0);
+  };
+
+  private readonly handleOutsidePointerDown = (event: PointerEvent): void => {
+    if (!this.isOpen()) return;
+    const source = event.target;
+    if (source instanceof globalThis.Node
+      && (this.trigger.contains(source) || this.menu.contains(source))) return;
+    this.close();
+    this.sync();
+  };
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.isOpen()) return;
+    const source = event.target;
+    if (source instanceof globalThis.Node
+      && (this.trigger.contains(source) || this.menu.contains(source))) return;
+    const target = this.targetAtPointer(event);
+    if (target && this.hoveredTarget
+      && target.position === this.hoveredTarget.position
+      && target.node === this.hoveredTarget.node) return;
+    if (!target && !this.hoveredTarget) return;
+    this.hoveredTarget = target;
+    this.sync();
+  };
+
+  private readonly handlePointerLeave = (): void => {
+    if (this.isOpen() || document.activeElement === this.trigger || this.menu.contains(document.activeElement)) return;
+    this.hoveredTarget = undefined;
     this.sync();
   };
 }
@@ -2148,6 +2654,7 @@ function createNotesRichTextExtensions(
   importToken?: string,
 ): Extensions {
   return [StarterKit.configure({
+    codeBlock: false,
     dropcursor: {
       color: '#3b82f6',
       width: 2,
@@ -2168,6 +2675,7 @@ function createNotesRichTextExtensions(
       shouldAutoLink: (url) => isAllowedRichTextLinkHref(url),
     },
   }),
+  CodeBlockLowlight.configure({ lowlight: notesCodeLowlight }),
   TableKit.configure({
     table: {
       cellMinWidth: 96,
@@ -2548,6 +3056,7 @@ export class NotesRichTextEditor {
   private readonly blockHandle!: NotesRichTextBlockHandle;
   private readonly bubbleMenu!: NotesRichTextBubbleMenu;
   private readonly imageBubbleMenu!: NotesRichTextImageBubbleMenu;
+  private readonly codeLanguageMenu!: NotesRichTextCodeLanguageMenu;
   private readonly tableControls!: NotesRichTextTableControls;
   private readonly host: HTMLElement;
   private readonly overlayRoot: HTMLElement;
@@ -2588,6 +3097,7 @@ export class NotesRichTextEditor {
           return true;
         },
         handleKeyDown: (_view, event) => {
+          if (this.codeLanguageMenu?.handleKeyDown(event)) return true;
           if (this.tableControls?.handleKeyDown(event)) return true;
           return this.slashMenu?.handleKeyDown(event) ?? false;
         },
@@ -2643,6 +3153,7 @@ export class NotesRichTextEditor {
       this.onError,
     );
     this.imageBubbleMenu = new NotesRichTextImageBubbleMenu(this.editor, this.overlayRoot);
+    this.codeLanguageMenu = new NotesRichTextCodeLanguageMenu(this.editor, this.overlayRoot);
     this.tableControls = new NotesRichTextTableControls(this.editor, this.host, this.overlayRoot);
     this.toolbar.addEventListener('click', this.handleToolbarClick);
     this.host.addEventListener('scroll', this.handleViewportChange, { passive: true });
@@ -2666,6 +3177,7 @@ export class NotesRichTextEditor {
       this.updateToolbarState();
       this.bubbleMenu.sync();
       this.imageBubbleMenu.sync();
+      this.codeLanguageMenu.sync();
       this.tableControls.sync();
       this.slashMenu.sync();
       this.blockHandle.sync();
@@ -2768,6 +3280,7 @@ export class NotesRichTextEditor {
     window.removeEventListener('resize', this.handleViewportChange);
     this.bubbleMenu.destroy();
     this.imageBubbleMenu.destroy();
+    this.codeLanguageMenu.destroy();
     this.tableControls.destroy();
     this.blockHandle.destroy();
     this.slashMenu.destroy();
@@ -2788,6 +3301,7 @@ export class NotesRichTextEditor {
   private readonly handleViewportChange = (): void => {
     this.bubbleMenu.sync();
     this.imageBubbleMenu.sync();
+    this.codeLanguageMenu.sync();
     this.tableControls.sync();
     this.slashMenu.sync();
     this.blockHandle.sync();
@@ -2802,6 +3316,7 @@ export class NotesRichTextEditor {
       this.updateEmptyState();
       this.bubbleMenu.sync();
       this.imageBubbleMenu.sync();
+      this.codeLanguageMenu.sync();
       this.tableControls.sync();
       this.slashMenu.sync();
       this.blockHandle.sync();

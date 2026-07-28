@@ -15,6 +15,7 @@ const root = join(__dirname, '..');
 const outDir = join(root, 'dist', 'renderer');
 const vendorDir = join(outDir, 'vendor');
 const dualTargetRuntimes = Object.freeze([
+  { shared: 'codeHighlight.js', main: 'codeHighlight.cjs', renderer: 'codeHighlight.js', label: 'code highlight' },
   { shared: 'noteRichText.js', main: 'noteRichText.cjs', renderer: 'noteRichText.js', label: 'rich text' },
   { shared: 'noteExport.js', main: 'noteExport.cjs', renderer: 'noteExport.js', label: 'Note export' },
   { shared: 'notesMarkdown.js', main: 'notesMarkdown.cjs', renderer: 'notesMarkdown.js', label: 'Markdown tools' },
@@ -34,9 +35,12 @@ const codeMirrorSeedPackages = Object.freeze([
 const tipTapSeedPackages = Object.freeze([
   '@tiptap/core',
   '@tiptap/starter-kit',
+  '@tiptap/extension-code-block-lowlight',
   '@tiptap/extension-image',
   '@tiptap/extension-table',
   '@tiptap/pm',
+  'highlight.js',
+  'lowlight',
 ]);
 const sentryBrowserSeedPackages = Object.freeze([
   '@sentry/browser',
@@ -99,6 +103,9 @@ function collectBrowserPackages(initialRequests) {
     packages.set(name, packageRoot);
     const packageJson = readPackage(packageRoot);
     for (const dependency of Object.keys(packageJson.dependencies ?? {}).sort()) {
+      // Some browser runtime packages publish declaration-only dependencies in
+      // `dependencies`. They have no ESM entry and never appear in runtime imports.
+      if (dependency.startsWith('@types/')) continue;
       pending.push({ name: dependency, requesterRoot: packageRoot });
     }
   }
@@ -206,6 +213,120 @@ function relativeModuleSpecifiers(source) {
   return specifiers;
 }
 
+function lowlightCommonLanguageSpecifiers(lowlightRoot) {
+  const sourcePath = join(lowlightRoot, 'lib', 'common.js');
+  if (!existsSync(sourcePath)) throw new Error('The installed Lowlight common grammar module is missing');
+  const source = readFileSync(sourcePath, 'utf8');
+  const specifiers = [...source.matchAll(
+    /\bfrom\s+['"](highlight\.js\/lib\/languages\/([a-zA-Z0-9-]+))['"]/g,
+  )].map((match) => ({ specifier: match[1], language: match[2] }));
+  if (specifiers.length !== 37 || new Set(specifiers.map(({ specifier }) => specifier)).size !== 37) {
+    throw new Error('Lowlight common must expose exactly 37 unique Highlight.js grammars');
+  }
+  return specifiers;
+}
+
+function writeHighlightCoreEsm(highlightRoot, outputPath) {
+  const sourcePath = join(highlightRoot, 'lib', 'core.js');
+  if (!existsSync(sourcePath)) throw new Error('The installed Highlight.js core runtime is missing');
+  const source = readFileSync(sourcePath, 'utf8');
+  const commonJsFooter = /\nmodule\.exports = highlight;\nhighlight\.HighlightJS = highlight;\nhighlight\.default = highlight;\s*$/;
+  const typeImportPattern = /\bimport\((['"])(?:highlight\.js(?:\/private)?|\.\/html_renderer)\1\)/g;
+  if (
+    !commonJsFooter.test(source)
+    || (source.match(/\bmodule\.exports\b/g) ?? []).length !== 1
+    || (source.match(typeImportPattern) ?? []).length !== 33
+  ) {
+    throw new Error('The installed Highlight.js core runtime has an unsupported module shape');
+  }
+  const esmSource = source.replace(
+    // These are JSDoc-only type imports, but the vendor-closure validator and
+    // intentionally small copy parser must never mistake them for dependencies.
+    typeImportPattern,
+    'unknown',
+  ).replace(
+    commonJsFooter,
+    [
+      '',
+      'highlight.HighlightJS = highlight;',
+      'highlight.default = highlight;',
+      'export { highlight as HighlightJS };',
+      'export default highlight;',
+      '',
+    ].join('\n'),
+  );
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, esmSource);
+}
+
+function copyLowlightRuntimeModule(entry, outputPath, lowlightRoot, copiedModules) {
+  copyBrowserModule(entry, outputPath, lowlightRoot, copiedModules);
+  const source = readFileSync(outputPath, 'utf8');
+  if (!/^\/\*\*\n \* @import\b/.test(source)) {
+    throw new Error('The installed Lowlight runtime has an unsupported type-comment shape');
+  }
+  // Remove the leading JSDoc type-import block. It has no runtime meaning and
+  // otherwise looks like a real ESM import to the intentionally small vendor
+  // graph validator used by this no-bundler renderer pipeline.
+  writeFileSync(outputPath, source.replace(/^\/\*\*[\s\S]*?\*\/\s*/, ''));
+}
+
+function copySyntaxHighlightVendor(packages, imports, outputOwners, copiedModules) {
+  const lowlightRoot = packages.get('lowlight');
+  const highlightRoot = packages.get('highlight.js');
+  if (!lowlightRoot || !highlightRoot) {
+    throw new Error('The renderer syntax-highlighting packages are missing from the browser graph');
+  }
+
+  // Highlight.js advertises ESM wrappers that import its internal CommonJS
+  // runtime, which a sandboxed browser cannot execute directly. Its core is a
+  // self-contained file with one stable CommonJS footer, so convert only that
+  // footer after asserting its shape. The individual language exports already
+  // are native ESM and remain byte-for-byte package artifacts.
+  const coreSpecifier = 'highlight.js/lib/core';
+  const coreOutputName = claimVendorFileName(coreSpecifier, outputOwners);
+  writeHighlightCoreEsm(highlightRoot, join(vendorDir, coreOutputName));
+  imports.set(coreSpecifier, `./vendor/${coreOutputName}`);
+
+  // Lowlight's root re-exports `all`, causing browsers to load every Highlight.js
+  // grammar even when callers import only `common`. Publish a narrow facade over
+  // the package's own common registry and factory so exactly 37 grammars load.
+  const lowlightRuntimeDir = join(vendorDir, 'lowlight-runtime');
+  copyLowlightRuntimeModule(
+    join(lowlightRoot, 'lib', 'common.js'),
+    join(lowlightRuntimeDir, 'common.js'),
+    lowlightRoot,
+    copiedModules,
+  );
+  copyLowlightRuntimeModule(
+    join(lowlightRoot, 'lib', 'index.js'),
+    join(lowlightRuntimeDir, 'index.js'),
+    lowlightRoot,
+    copiedModules,
+  );
+  const lowlightOutputName = claimVendorFileName('lowlight', outputOwners);
+  writeFileSync(
+    join(vendorDir, lowlightOutputName),
+    [
+      "export { grammars as common } from './lowlight-runtime/common.js';",
+      "export { createLowlight } from './lowlight-runtime/index.js';",
+      '',
+    ].join('\n'),
+  );
+  imports.set('lowlight', `./vendor/${lowlightOutputName}`);
+
+  for (const { specifier, language } of lowlightCommonLanguageSpecifiers(lowlightRoot)) {
+    const outputName = claimVendorFileName(specifier, outputOwners);
+    copyBrowserModule(
+      exportedWildcardEsmEntry(highlightRoot, './lib/languages/*', language),
+      join(vendorDir, outputName),
+      highlightRoot,
+      copiedModules,
+    );
+    imports.set(specifier, `./vendor/${outputName}`);
+  }
+}
+
 function copyBrowserModule(entry, outputPath, packageRoot, copiedModules) {
   const sourcePath = realpathSync(entry);
   const output = resolve(outputPath);
@@ -272,6 +393,7 @@ function copyBrowserVendor() {
   mkdirSync(vendorDir, { recursive: true });
 
   for (const [name, packageRoot] of [...packages].sort(([left], [right]) => compareNames(left, right))) {
+    if (name === 'highlight.js' || name === 'lowlight') continue;
     for (const { specifier, entry } of browserEsmEntries(packageRoot)) {
       if (name.startsWith('@sentry/')) {
         const output = join(
@@ -289,6 +411,8 @@ function copyBrowserVendor() {
       imports.set(specifier, `./vendor/${outputName}`);
     }
   }
+
+  copySyntaxHighlightVendor(packages, imports, outputOwners, copiedModules);
 
   const sentryRendererEntry = browserEsmEntries(sentryElectronRoot).find(
     ({ specifier }) => specifier === '@sentry/electron/renderer',

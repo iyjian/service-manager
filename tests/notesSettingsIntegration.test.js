@@ -278,7 +278,7 @@ test('Notes shared validators and export tools have distinct CommonJS main and E
     readFile(path.join(projectRoot, 'scripts', 'copy-renderer.cjs'), 'utf8'),
   ]);
 
-  for (const runtime of ['noteRichText', 'noteExport', 'notesMarkdown']) {
+  for (const runtime of ['codeHighlight', 'noteRichText', 'noteExport', 'notesMarkdown']) {
     const [sharedRuntime, mainRuntime, rendererRuntime] = await Promise.all([
       readFile(path.join(distRoot, 'shared', `${runtime}.js`), 'utf8'),
       readFile(path.join(mainRoot, `${runtime}.cjs`), 'utf8'),
@@ -399,7 +399,7 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-richtext-content \.ProseMirror code\{[^}]*border-radius:\.375rem[^}]*background-color:rgb\(241 245 249[^}]*padding:\.25rem \.375rem[^}]*color:rgb\(17 24 39/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror code\{[^}]*line-height:1\.5[^}]*white-space:break-spaces/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror code:after,\.notes-richtext-content \.ProseMirror code:before\{content:"`"\}/);
-  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre\{[^}]*background-color:rgb\(31 41 55[^}]*margin:2em 0[^}]*padding:1em 1\.5em[^}]*font-size:\.8888889em[^}]*line-height:1\.75/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre\{[^}]*background-color:rgb\(31 41 55[^}]*margin:2em 0[^}]*padding:2\.75em 1\.5em 1em[^}]*font-size:\.8888889em[^}]*line-height:1\.75/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror pre,\.notes-richtext-content \.ProseMirror pre code\{font-family:var\(--font-family-notes-code-block\);font-weight:400\}/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror pre code\{[^}]*line-height:inherit;white-space:inherit\}/);
   assert.match(styles, /\.notes-richtext-content \.ProseMirror pre code:after,\.notes-richtext-content \.ProseMirror pre code:before\{content:none\}/);

@@ -1002,7 +1002,7 @@
   .notes-richtext-content .ProseMirror pre {
     @apply overflow-x-auto rounded-md bg-gray-800 text-gray-200;
     margin: 2em 0;
-    padding: 1em 1.5em;
+    padding: 2.75em 1.5em 1em;
     font-family: var(--font-family-notes-code-block);
     font-size: 0.8888889em;
     font-weight: 400;
@@ -1017,9 +1017,38 @@
     white-space: inherit;
   }
 
-  .notes-richtext-content .ProseMirror pre code::selection {
+  .notes-richtext-content .ProseMirror pre code::selection,
+  .notes-richtext-content .ProseMirror pre code *::selection {
     @apply bg-blue-600 text-white;
   }
+
+  .notes-richtext-content .ProseMirror pre .hljs-comment,
+  .notes-richtext-content .ProseMirror pre .hljs-quote { color: #8b949e; }
+  .notes-richtext-content .ProseMirror pre .hljs-variable,
+  .notes-richtext-content .ProseMirror pre .hljs-template-variable,
+  .notes-richtext-content .ProseMirror pre .hljs-attribute,
+  .notes-richtext-content .ProseMirror pre .hljs-tag,
+  .notes-richtext-content .ProseMirror pre .hljs-name,
+  .notes-richtext-content .ProseMirror pre .hljs-regexp,
+  .notes-richtext-content .ProseMirror pre .hljs-link,
+  .notes-richtext-content .ProseMirror pre .hljs-selector-id,
+  .notes-richtext-content .ProseMirror pre .hljs-selector-class { color: #f98181; }
+  .notes-richtext-content .ProseMirror pre .hljs-number,
+  .notes-richtext-content .ProseMirror pre .hljs-meta,
+  .notes-richtext-content .ProseMirror pre .hljs-built_in,
+  .notes-richtext-content .ProseMirror pre .hljs-builtin-name,
+  .notes-richtext-content .ProseMirror pre .hljs-literal,
+  .notes-richtext-content .ProseMirror pre .hljs-type,
+  .notes-richtext-content .ProseMirror pre .hljs-params { color: #fbbc88; }
+  .notes-richtext-content .ProseMirror pre .hljs-string,
+  .notes-richtext-content .ProseMirror pre .hljs-symbol,
+  .notes-richtext-content .ProseMirror pre .hljs-bullet { color: #b9f18d; }
+  .notes-richtext-content .ProseMirror pre .hljs-title,
+  .notes-richtext-content .ProseMirror pre .hljs-section { color: #faf594; }
+  .notes-richtext-content .ProseMirror pre .hljs-keyword,
+  .notes-richtext-content .ProseMirror pre .hljs-selector-tag { color: #70cff8; }
+  .notes-richtext-content .ProseMirror pre .hljs-emphasis { font-style: italic; }
+  .notes-richtext-content .ProseMirror pre .hljs-strong { font-weight: 700; }
 
   .notes-richtext-content .ProseMirror pre code::before,
   .notes-richtext-content .ProseMirror pre code::after {
@@ -1149,6 +1178,62 @@
 
   .notes-richtext-block-handle[aria-expanded='true'] {
     @apply bg-zinc-100 text-zinc-700;
+  }
+
+  .notes-richtext-code-language-trigger {
+    @apply absolute z-50 inline-flex h-6 max-w-40 cursor-pointer items-center gap-1 rounded border border-gray-600/80 bg-gray-800 px-2 text-[11px] font-medium leading-none text-gray-300 outline-none transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-400;
+    border-style: solid;
+    font-family: var(--font-family-notes-richtext);
+  }
+
+  .notes-richtext-code-language-label { @apply truncate; }
+
+  .notes-richtext-code-language-chevron {
+    @apply h-3 w-3 shrink-0 transition-transform;
+  }
+
+  .notes-richtext-code-language-trigger[aria-expanded='true'] .notes-richtext-code-language-chevron {
+    transform: rotate(180deg);
+  }
+
+  .notes-richtext-code-language-menu {
+    @apply absolute z-[60] grid max-h-[286px] w-60 overflow-hidden rounded-lg border border-zinc-200 bg-white p-1.5 shadow-xl;
+    border-style: solid;
+    grid-template-rows: auto minmax(0, 1fr);
+    font-family: var(--font-family-notes-richtext);
+  }
+
+  .notes-richtext-code-language-search-wrap {
+    @apply flex h-8 items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-2 text-zinc-400 focus-within:border-zinc-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-zinc-200;
+    border-style: solid;
+  }
+
+  .notes-richtext-code-language-search-wrap > svg { @apply h-3.5 w-3.5 shrink-0; }
+
+  .notes-richtext-code-language-search {
+    @apply h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-zinc-900 outline-none placeholder:text-zinc-400;
+  }
+
+  .notes-richtext-code-language-search::-webkit-search-cancel-button { @apply cursor-pointer; }
+
+  .notes-richtext-code-language-options {
+    @apply mt-1 min-h-0 overflow-y-auto py-0.5;
+  }
+
+  .notes-richtext-code-language-option {
+    @apply flex h-8 w-full cursor-pointer items-center justify-between rounded-md border-0 bg-transparent px-2 text-left text-[12px] text-zinc-700 outline-none hover:bg-zinc-100 focus-visible:bg-zinc-100;
+  }
+
+  .notes-richtext-code-language-option[data-active='true'] { @apply bg-zinc-100; }
+
+  .notes-richtext-code-language-check { @apply invisible text-blue-600; }
+
+  .notes-richtext-code-language-option[aria-selected='true'] .notes-richtext-code-language-check {
+    @apply visible;
+  }
+
+  .notes-richtext-code-language-empty {
+    @apply m-0 px-3 py-7 text-center text-[11px] text-zinc-500;
   }
 
   .notes-richtext-block-dropcursor {
@@ -1560,6 +1645,28 @@
   .notes-content[data-theme='dark'] .notes-richtext-block-handle[data-dragging='true'] {
     @apply bg-blue-950 text-blue-300;
   }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-menu {
+    @apply border-zinc-700 bg-zinc-900;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-search-wrap {
+    @apply border-zinc-700 bg-zinc-950 text-zinc-500 focus-within:border-zinc-600 focus-within:bg-zinc-950 focus-within:ring-zinc-700;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-search {
+    @apply text-zinc-100 placeholder:text-zinc-600;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-option {
+    @apply text-zinc-300 hover:bg-zinc-800 focus-visible:bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-option[data-active='true'] {
+    @apply bg-zinc-800;
+  }
+
+  .notes-content[data-theme='dark'] .notes-richtext-code-language-check { @apply text-blue-400; }
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror .notes-richtext-attachment {
     @apply border-zinc-600 bg-zinc-800/80 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800;
