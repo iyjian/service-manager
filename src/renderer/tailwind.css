@@ -1086,7 +1086,7 @@
   .notes-richtext-content .ProseMirror pre {
     @apply overflow-x-auto rounded-md bg-gray-800 text-gray-200;
     margin: 2em 0;
-    padding: 2.75em 1.5em 1em;
+    padding: 1em 1.5em;
     font-family: var(--font-family-notes-code-block);
     font-size: 0.8888889em;
     font-weight: 400;

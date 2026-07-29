@@ -503,8 +503,8 @@ test('NotesStore staged replacement persists active Notes and tombstones and det
   assert.deepEqual(reloaded.exportTombstones(), store.exportTombstones());
 });
 
-test('NotesStore staged replacement hard-links unchanged Note files instead of rewriting their bodies', async (t) => {
-  const { notesDirectory, store } = await createStore(t);
+test('NotesStore incremental replacement leaves unchanged Note files untouched', async (t) => {
+  const { directory, notesDirectory, store } = await createStore(t);
   const first = await store.create();
   const second = await store.create();
   const before = await fs.stat(noteFilePath(notesDirectory, first.id));
@@ -538,9 +538,46 @@ test('NotesStore staged replacement hard-links unchanged Note files instead of r
     const after = await fs.stat(noteFilePath(notesDirectory, first.id));
     assert.equal(after.ino, before.ino, 'the unchanged Note should retain its existing inode');
   }
+  await assertPathMissing(path.join(directory, '.notes.apply'));
 });
 
-test('NotesStore verifies a reused hard link and rewrites disk content that drifted from memory', async (t) => {
+test('NotesStore copies only a changed staged envelope when hard links are unavailable', async (t) => {
+  const { directory, notesDirectory, store } = await createStore(t);
+  const created = await store.create();
+  const replacement = {
+    schemaVersion: NOTES_SCHEMA_VERSION,
+    notes: [{
+      ...created,
+      content: normalizeRichTextContent({
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'copied change' }] }],
+      }),
+      updatedAt: '2026-07-29T03:04:05.000Z',
+    }],
+  };
+  const originalLink = fs.link;
+  let linkCalls = 0;
+  fs.link = async () => {
+    linkCalls += 1;
+    const error = new Error('hard links are unavailable');
+    error.code = 'EOPNOTSUPP';
+    throw error;
+  };
+  try {
+    await store.replaceSnapshot(replacement, []);
+  } finally {
+    fs.link = originalLink;
+  }
+
+  assert.equal(linkCalls, 1);
+  assert.equal(store.get(created.id).content, replacement.notes[0].content);
+  const reloaded = new NotesStore(notesDirectory);
+  await reloaded.load();
+  assert.deepEqual(reloaded.exportSnapshot(), replacement);
+  await assertPathMissing(path.join(directory, '.notes.apply'));
+});
+
+test('NotesStore does not scan or rewrite an unchanged envelope during incremental apply', async (t) => {
   const { notesDirectory, store } = await createStore(t);
   const created = await store.create();
   const expected = store.exportSnapshot();
@@ -560,10 +597,10 @@ test('NotesStore verifies a reused hard link and rewrites disk content that drif
   await store.replaceSnapshot(expected, []);
 
   assert.equal(store.list()[0].content, EMPTY_RICH_TEXT_CONTENT);
-  assert.equal((await readEnvelope(notesDirectory, created.id)).note.content, EMPTY_RICH_TEXT_CONTENT);
+  assert.equal((await readEnvelope(notesDirectory, created.id)).note.content, drifted.content);
   const reloaded = new NotesStore(notesDirectory);
   await reloaded.load();
-  assert.deepEqual(reloaded.exportSnapshot(), expected);
+  assert.equal(reloaded.get(created.id).content, drifted.content);
 });
 
 test('NotesStore rejects invalid replacement Notes or tombstones without partially applying them', async (t) => {
@@ -594,33 +631,31 @@ test('NotesStore rejects invalid replacement Notes or tombstones without partial
   }
 });
 
-test('NotesStore restores the previous directory when staged replacement promotion fails', async (t) => {
+test('NotesStore resumes a committed incremental apply after a target install failure', async (t) => {
   const { directory, notesDirectory, store } = await createStore(t);
   const created = await store.create();
   await store.update(created.id, draft({ content: 'original durable content' }));
   const beforeNotes = store.exportSnapshot();
   const beforeTombstones = store.exportTombstones();
-  const beforeFiles = await directoryFileSnapshot(notesDirectory);
   const originalRename = fs.rename;
-  const nextDirectory = path.join(directory, '.notes.next');
   let injectedFailure = false;
 
   fs.rename = async (source, destination) => {
     if (!injectedFailure
-      && path.resolve(String(source)) === path.resolve(nextDirectory)
-      && path.resolve(String(destination)) === path.resolve(notesDirectory)) {
+      && path.dirname(path.resolve(String(source))) === path.resolve(notesDirectory)
+      && path.dirname(path.resolve(String(destination))) === path.resolve(notesDirectory)
+      && /^[a-f0-9]{64}\.json$/.test(path.basename(String(destination)))) {
       injectedFailure = true;
-      throw new Error('simulated Notes directory promotion failure');
+      throw new Error('simulated incremental Note install failure');
     }
     return originalRename(source, destination);
   };
+  const replacement = { schemaVersion: NOTES_SCHEMA_VERSION, notes: [storedNote()] };
+  const tombstones = [{ id: 'cloud-deleted', deletedAt: '2026-07-19T01:02:03Z' }];
   try {
     await assert.rejects(
-      store.replaceSnapshot(
-        { schemaVersion: NOTES_SCHEMA_VERSION, notes: [storedNote()] },
-        [{ id: 'cloud-deleted', deletedAt: '2026-07-19T01:02:03Z' }],
-      ),
-      /simulated Notes directory promotion failure/,
+      store.replaceSnapshot(replacement, tombstones),
+      /simulated incremental Note install failure/,
     );
   } finally {
     fs.rename = originalRename;
@@ -629,12 +664,48 @@ test('NotesStore restores the previous directory when staged replacement promoti
   assert.equal(injectedFailure, true);
   assert.deepEqual(store.exportSnapshot(), beforeNotes);
   assert.deepEqual(store.exportTombstones(), beforeTombstones);
-  assert.deepEqual(await directoryFileSnapshot(notesDirectory), beforeFiles);
-  await assertPathMissing(path.join(directory, '.notes.next'));
-  await assertPathMissing(path.join(directory, '.notes.previous'));
+  assert.equal((await fs.lstat(path.join(directory, '.notes.apply'))).isDirectory(), true);
   const reloaded = new NotesStore(notesDirectory);
   await reloaded.load();
-  assert.deepEqual(reloaded.exportSnapshot(), beforeNotes);
+  assert.deepEqual(reloaded.exportSnapshot(), replacement);
+  assert.deepEqual(reloaded.exportTombstones(), [{
+    id: 'cloud-deleted',
+    deletedAt: '2026-07-19T01:02:03.000Z',
+  }]);
+  await assertPathMissing(path.join(directory, '.notes.apply'));
+});
+
+test('NotesStore discards incremental staging that never committed a manifest', async (t) => {
+  const { directory, notesDirectory, store } = await createStore(t);
+  const created = await store.create();
+  const staging = path.join(directory, '.notes.apply');
+  await fs.mkdir(staging, { mode: 0o700 });
+  await fs.writeFile(
+    noteFilePath(staging, 'uncommitted'),
+    JSON.stringify({ schemaVersion: NOTES_SCHEMA_VERSION, note: storedNote({ id: 'uncommitted' }) }),
+    { mode: 0o600 },
+  );
+
+  const reloaded = new NotesStore(notesDirectory);
+  await reloaded.load();
+
+  assert.deepEqual(reloaded.list().map((note) => note.id), [created.id]);
+  await assertPathMissing(staging);
+});
+
+test('NotesStore rejects a symlinked incremental apply directory', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('directory symlink permissions vary on Windows');
+    return;
+  }
+  const { directory, notesDirectory, store } = await createStore(t);
+  await store.create();
+  const target = path.join(directory, 'staging-target');
+  await fs.mkdir(target, { mode: 0o700 });
+  await fs.symlink(target, path.join(directory, '.notes.apply'), 'dir');
+
+  const reloaded = new NotesStore(notesDirectory);
+  await assert.rejects(reloaded.load(), /must be a real directory/);
 });
 
 test('NotesStore recovers interrupted directory swaps without exposing a partial staged set', async (t) => {

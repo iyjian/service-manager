@@ -15,7 +15,7 @@ import type {
 import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
 import { initNav, registerPage } from './nav.js';
 import { registerKubernetesPage } from './kubernetesPage.js';
-import { registerNotesPage, reloadNotesPage } from './notesPage.js';
+import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './notesPage.js';
 import { registerProxyPage } from './proxyPage.js';
 import { registerSettingsDialog } from './settingsDialog.js';
 import {
@@ -2590,9 +2590,14 @@ window.serviceApi.onUpdateStateChanged((state) => {
 });
 
 window.settingsApi.onPersistentDataReloaded((event) => {
-  const reload = event.source === 'trilium'
-    ? reloadNotesPage(event.persistentApplyId)
-    : Promise.all([loadHosts(), reloadNotesPage(event.persistentApplyId)]).then(() => undefined);
+  const notesUpdate = event.notesDelta
+    ? applyNotesPageDelta(event.notesDelta, event.persistentApplyId)
+    : event.persistentApplyId
+      ? reloadNotesPage(event.persistentApplyId)
+      : Promise.resolve();
+  const reload = event.hostsChanged
+    ? Promise.all([loadHosts(), notesUpdate]).then(() => undefined)
+    : notesUpdate;
   void reload.catch((error) => {
     reportRendererError('persistent-data-reloaded', error, 'Persistent data changed, but the page could not be refreshed.');
   });

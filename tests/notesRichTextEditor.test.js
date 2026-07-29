@@ -420,10 +420,30 @@ test('Rich Text code blocks use bounded common highlighting and a searchable lan
   assert.match(menu, /const visibleRight = Math\.min\(blockBounds\.right, overlayBounds\.right\)/);
   assert.match(menu, /const preferredTop = visibleTop - overlayBounds\.top \+ inset/);
   assert.doesNotMatch(menu, /blockBounds\.top - overlayBounds\.top - triggerBounds\.height \/ 2/);
-  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre \{[\s\S]*?padding: 2\.75em 1\.5em 1em;/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror pre \{[\s\S]*?padding: 1em 1\.5em;/);
+  assert.doesNotMatch(styles, /\.notes-richtext-content \.ProseMirror pre \{[\s\S]*?padding: 2\.75em 1\.5em 1em;/);
   assert.match(styles, /\.notes-richtext-code-language-trigger/);
   assert.match(styles, /\.notes-richtext-code-language-menu/);
   assert.match(styles, /\.hljs-keyword/);
+});
+
+test('Rich Text Code blocks scope the first Select All and let the second select the Note', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /import \{ NodeSelection, Plugin, PluginKey, TextSelection \} from '@tiptap\/pm\/state'/);
+  const helperStart = source.indexOf('function handleScopedCodeBlockSelectAll(');
+  const helperEnd = source.indexOf('\nclass NotesRichTextCodeLanguageMenu', helperStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+
+  assert.match(helper, /const modifier = event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(helper, /event\.altKey[\s\S]*?event\.shiftKey[\s\S]*?event\.isComposing[\s\S]*?event\.key\.toLocaleLowerCase\(\) !== 'a'/);
+  assert.match(helper, /selection instanceof TextSelection/);
+  assert.match(helper, /codeBlockTextRangeAtPosition\(editor, selection\.from\)[\s\S]*?codeBlockTextRangeAtPosition\(editor, selection\.to\)/);
+  assert.match(helper, /start\.position !== end\.position[\s\S]*?selection\.from < start\.from[\s\S]*?selection\.to > start\.to/);
+  assert.match(helper, /start\.from === start\.to/);
+  assert.match(helper, /if \(alreadySelected\) \{\s*if \(!event\.repeat\) return false;\s*event\.preventDefault\(\);\s*return true;/);
+  assert.match(helper, /editor\.commands\.setTextSelection\(\{ from: start\.from, to: start\.to \}\)/);
+  assert.match(source, /handleKeyDown: \(_view, event\) => \{\s*if \(handleScopedCodeBlockSelectAll\(this\.editor, event\)\) return true;/);
 });
 
 test('Novel-style math and color controls use closed renderer extensions and canonical commands', async () => {

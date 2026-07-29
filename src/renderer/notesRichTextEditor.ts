@@ -14,7 +14,7 @@ import Image from '@tiptap/extension-image';
 import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
-import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { common, createLowlight } from 'lowlight';
 import {
@@ -1285,6 +1285,63 @@ function codeBlockTargetAtPosition(editor: Editor, rawPosition: number): RichTex
   if (!adjacent) return undefined;
   const dom = editor.view.nodeDOM(adjacent.position);
   return dom instanceof HTMLElement ? { ...adjacent, dom } : undefined;
+}
+
+interface RichTextCodeBlockTextRange {
+  position: number;
+  from: number;
+  to: number;
+}
+
+function codeBlockTextRangeAtPosition(
+  editor: Editor,
+  rawPosition: number,
+): RichTextCodeBlockTextRange | undefined {
+  const doc = editor.state.doc;
+  const position = Math.max(0, Math.min(rawPosition, doc.content.size));
+  const resolved = doc.resolve(position);
+  for (let depth = resolved.depth; depth > 0; depth -= 1) {
+    const node = resolved.node(depth);
+    if (node.type.name !== 'codeBlock') continue;
+    const nodePosition = resolved.before(depth);
+    return {
+      position: nodePosition,
+      from: nodePosition + 1,
+      to: nodePosition + 1 + node.content.size,
+    };
+  }
+  return undefined;
+}
+
+function handleScopedCodeBlockSelectAll(editor: Editor, event: KeyboardEvent): boolean {
+  const modifier = event.metaKey || event.ctrlKey;
+  if (!modifier
+    || event.altKey
+    || event.shiftKey
+    || event.isComposing
+    || event.key.toLocaleLowerCase() !== 'a') return false;
+
+  const selection = editor.state.selection;
+  if (!(selection instanceof TextSelection)) return false;
+  const start = codeBlockTextRangeAtPosition(editor, selection.from);
+  const end = codeBlockTextRangeAtPosition(editor, selection.to);
+  if (!start
+    || !end
+    || start.position !== end.position
+    || selection.from < start.from
+    || selection.to > start.to
+    || start.from === start.to) return false;
+
+  const alreadySelected = selection.from === start.from && selection.to === start.to;
+  if (alreadySelected) {
+    if (!event.repeat) return false;
+    event.preventDefault();
+    return true;
+  }
+
+  const selected = editor.commands.setTextSelection({ from: start.from, to: start.to });
+  if (selected) event.preventDefault();
+  return selected;
 }
 
 class NotesRichTextCodeLanguageMenu {
@@ -3221,6 +3278,7 @@ export class NotesRichTextEditor {
           return true;
         },
         handleKeyDown: (_view, event) => {
+          if (handleScopedCodeBlockSelectAll(this.editor, event)) return true;
           if (this.codeLanguageMenu?.handleKeyDown(event)) return true;
           if (this.tableControls?.handleKeyDown(event)) return true;
           return this.slashMenu?.handleKeyDown(event) ?? false;

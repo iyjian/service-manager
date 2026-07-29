@@ -61,6 +61,8 @@ const DEFAULT_NOTE_NAME = 'Untitled note';
 const NOTE_FILE_PATTERN = /^[a-f0-9]{64}\.json$/;
 const NOTE_TEMPORARY_FILE_PATTERN = /^\.[a-f0-9]{64}\.json\.\d+\.[a-f0-9-]+\.tmp$/;
 const REPLACEMENT_COMPLETE_FILE = '.replacement-complete.json';
+const INCREMENTAL_APPLY_MANIFEST_FILE = 'manifest.json';
+const INCREMENTAL_APPLY_SCHEMA_VERSION = 1 as const;
 const MAX_NOTE_ENVELOPE_BYTES = 8 * 1024 * 1024;
 const MAX_REPLACEMENT_COMPLETE_BYTES = 8 * 1024 * 1024;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
@@ -316,6 +318,12 @@ interface ReplacementCompleteFile {
   files: string[];
 }
 
+interface IncrementalApplyManifest {
+  schemaVersion: typeof INCREMENTAL_APPLY_SCHEMA_VERSION;
+  upsertFiles: string[];
+  removeFiles: string[];
+}
+
 async function syncDirectory(directory: string): Promise<void> {
   let handle: FileHandle | undefined;
   try {
@@ -338,7 +346,8 @@ export class NotesStore {
 
   async load(): Promise<void> {
     await this.flush();
-    const state = await this.recoverInterruptedReplacement();
+    let state = await this.recoverInterruptedReplacement();
+    state = await this.recoverInterruptedIncrementalApply() ?? state;
     this.notes = state.notes.map(cloneNote);
     this.tombstones = state.tombstones.map(cloneTombstone);
   }
@@ -464,6 +473,16 @@ export class NotesStore {
     await this.operationQueue;
   }
 
+  recoverPendingApply(): Promise<boolean> {
+    return this.enqueue(async () => {
+      const recovered = await this.recoverInterruptedIncrementalApply();
+      if (!recovered) return false;
+      this.notes = recovered.notes.map(cloneNote);
+      this.tombstones = recovered.tombstones.map(cloneTombstone);
+      return true;
+    });
+  }
+
   exportSnapshot(): NotesSnapshot {
     return {
       schemaVersion: NOTES_SCHEMA_VERSION,
@@ -482,7 +501,12 @@ export class NotesStore {
       new Set(replacement.map((note) => note.id)),
     ).map(cloneTombstone);
     return this.enqueue(async () => {
-      await this.persistReplacement(replacement, replacementTombstones);
+      const recovered = await this.recoverInterruptedIncrementalApply();
+      if (recovered) {
+        this.notes = recovered.notes.map(cloneNote);
+        this.tombstones = recovered.tombstones.map(cloneTombstone);
+      }
+      await this.persistIncrementalReplacement(replacement, replacementTombstones);
       this.notes = replacement.map(cloneNote);
       this.tombstones = replacementTombstones.map(cloneTombstone);
     });
@@ -510,6 +534,10 @@ export class NotesStore {
 
   private replacementPath(kind: 'next' | 'previous'): string {
     return path.join(path.dirname(this.directoryPath), `.${path.basename(this.directoryPath)}.${kind}`);
+  }
+
+  private incrementalApplyPath(): string {
+    return path.join(path.dirname(this.directoryPath), `.${path.basename(this.directoryPath)}.apply`);
   }
 
   private async requireRealDirectory(directory: string, allowMissing = false): Promise<boolean> {
@@ -763,7 +791,12 @@ export class NotesStore {
     return { notes: [], tombstones: [] };
   }
 
-  private async writeAtomicPrivateFile(directory: string, fileName: string, payload: string): Promise<void> {
+  private async writeAtomicPrivateFile(
+    directory: string,
+    fileName: string,
+    payload: string,
+    syncParent = true,
+  ): Promise<void> {
     await this.ensurePrivateDirectory(directory);
     const temporaryPath = path.join(directory, `.${fileName}.${process.pid}.${randomUUID()}.tmp`);
     const destinationPath = path.join(directory, fileName);
@@ -776,7 +809,7 @@ export class NotesStore {
       await handle.close();
       handle = undefined;
       await fs.rename(temporaryPath, destinationPath);
-      await syncDirectory(directory);
+      if (syncParent) await syncDirectory(directory);
     } catch (error) {
       await handle?.close().catch(() => undefined);
       await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -784,12 +817,17 @@ export class NotesStore {
     }
   }
 
-  private async writeEnvelope(directory: string, envelope: StoredNoteEnvelope): Promise<void> {
+  private async writeEnvelope(
+    directory: string,
+    envelope: StoredNoteEnvelope,
+    syncParent = true,
+  ): Promise<void> {
     const id = 'note' in envelope ? envelope.note.id : envelope.tombstone.id;
     await this.writeAtomicPrivateFile(
       directory,
       noteFileName(id),
       JSON.stringify(envelope, null, 2),
+      syncParent,
     );
   }
 
@@ -805,96 +843,180 @@ export class NotesStore {
     );
   }
 
-  private async linkEnvelope(directory: string, envelope: StoredNoteEnvelope): Promise<boolean> {
-    const id = 'note' in envelope ? envelope.note.id : envelope.tombstone.id;
-    const fileName = noteFileName(id);
-    const destination = path.join(directory, fileName);
-    try {
-      const sourceMetadata = await fs.lstat(path.join(this.directoryPath, fileName));
-      if (sourceMetadata.isSymbolicLink()
-        || !sourceMetadata.isFile()
-        || sourceMetadata.size > MAX_NOTE_ENVELOPE_BYTES) {
-        return false;
+  private parseIncrementalApplyManifest(value: unknown): IncrementalApplyManifest {
+    if (!isRecord(value)
+      || value.schemaVersion !== INCREMENTAL_APPLY_SCHEMA_VERSION
+      || !Array.isArray(value.upsertFiles)
+      || !Array.isArray(value.removeFiles)
+      || value.upsertFiles.length > NOTE_LIMITS.notes + NOTE_LIMITS.tombstones
+      || value.removeFiles.length > NOTE_LIMITS.notes + NOTE_LIMITS.tombstones) {
+      throw new Error('The staged Notes apply manifest is invalid.');
+    }
+    const normalizeFiles = (candidates: unknown[], label: string): string[] => {
+      const result: string[] = [];
+      const unique = new Set<string>();
+      for (const candidate of candidates) {
+        if (typeof candidate !== 'string' || !NOTE_FILE_PATTERN.test(candidate) || unique.has(candidate)) {
+          throw new Error(`The staged Notes apply ${label} are invalid.`);
+        }
+        unique.add(candidate);
+        result.push(candidate);
       }
-      await fs.link(
-        path.join(this.directoryPath, fileName),
-        destination,
+      return result.sort();
+    };
+    const upsertFiles = normalizeFiles(value.upsertFiles, 'upserts');
+    const removeFiles = normalizeFiles(value.removeFiles, 'removals');
+    const upserts = new Set(upsertFiles);
+    if (removeFiles.some((fileName) => upserts.has(fileName))) {
+      throw new Error('The staged Notes apply targets overlap.');
+    }
+    return { schemaVersion: INCREMENTAL_APPLY_SCHEMA_VERSION, upsertFiles, removeFiles };
+  }
+
+  private async readIncrementalApplyManifest(directory: string): Promise<IncrementalApplyManifest> {
+    let value: unknown;
+    try {
+      const contents = await this.readBoundedRegularFile(
+        path.join(directory, INCREMENTAL_APPLY_MANIFEST_FILE),
+        MAX_REPLACEMENT_COMPLETE_BYTES,
       );
-      const linked = await this.readStoredEnvelope(directory, fileName);
-      if (!isDeepStrictEqual(linked.raw, envelope)) throw new Error('linked envelope differs');
-      await fs.chmod(destination, 0o600);
-      await syncDirectory(directory);
-      return true;
+      value = JSON.parse(contents.toString('utf8')) as unknown;
     } catch {
-      await fs.rm(destination, { force: true }).catch(() => undefined);
-      await syncDirectory(directory);
-      return false;
+      throw new Error('The staged Notes apply manifest is invalid.');
+    }
+    return this.parseIncrementalApplyManifest(value);
+  }
+
+  private async installStagedEnvelope(directory: string, fileName: string): Promise<void> {
+    const source = path.join(directory, fileName);
+    const temporary = path.join(
+      this.directoryPath,
+      `.${fileName}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let handle: FileHandle | undefined;
+    try {
+      try {
+        await fs.link(source, temporary);
+      } catch {
+        // Some supported user-data filesystems do not provide hard links.
+        // Revalidate the staged envelope and durably copy only this changed
+        // file before the same atomic target rename.
+        const { raw } = await this.readStoredEnvelope(directory, fileName);
+        handle = await fs.open(temporary, 'wx', 0o600);
+        await handle.writeFile(JSON.stringify(raw), 'utf8');
+        await handle.sync();
+        await handle.close();
+        handle = undefined;
+      }
+      await fs.chmod(temporary, 0o600);
+      await fs.rename(temporary, path.join(this.directoryPath, fileName));
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await fs.rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
     }
   }
 
-  private async persistReplacement(notes: Note[], tombstones: NoteTombstone[]): Promise<void> {
-    await this.recoverInterruptedReplacement();
+  private async applyIncrementalManifest(
+    directory: string,
+    manifest: IncrementalApplyManifest,
+  ): Promise<void> {
     await this.ensurePrivateDirectory(this.directoryPath);
-    const nextDirectory = this.replacementPath('next');
-    const previousDirectory = this.replacementPath('previous');
-    await fs.rm(nextDirectory, { recursive: true, force: true });
-    await fs.rm(previousDirectory, { recursive: true, force: true });
-    await this.ensurePrivateDirectory(nextDirectory);
+    for (const fileName of manifest.upsertFiles) {
+      await this.readStoredEnvelope(directory, fileName);
+    }
+    for (const fileName of manifest.upsertFiles) {
+      await this.installStagedEnvelope(directory, fileName);
+    }
+    for (const fileName of manifest.removeFiles) {
+      await fs.rm(path.join(this.directoryPath, fileName), { force: true });
+    }
+    await syncDirectory(this.directoryPath);
+  }
 
-    let currentMoved = false;
-    let replacementPromoted = false;
+  private async commitIncrementalManifest(directory: string): Promise<void> {
+    await fs.rm(path.join(directory, INCREMENTAL_APPLY_MANIFEST_FILE));
+    await syncDirectory(directory);
+  }
+
+  private async recoverInterruptedIncrementalApply(): Promise<StoredDirectoryState | undefined> {
+    const directory = this.incrementalApplyPath();
+    if (!await this.requireRealDirectory(directory, true)) return undefined;
+    let manifestExists = true;
     try {
-      const currentNotes = new Map(this.notes.map((note) => [note.id, note]));
-      const currentTombstones = new Map(this.tombstones.map((tombstone) => [tombstone.id, tombstone]));
-      for (const note of notes) {
-        const envelope: StoredNoteEnvelope = { schemaVersion: NOTES_SCHEMA_VERSION, note };
-        if (!isDeepStrictEqual(currentNotes.get(note.id), note)
-          || !await this.linkEnvelope(nextDirectory, envelope)) {
-          await this.writeEnvelope(nextDirectory, envelope);
-        }
+      const metadata = await fs.lstat(path.join(directory, INCREMENTAL_APPLY_MANIFEST_FILE));
+      if (metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new Error('The staged Notes apply manifest is invalid.');
       }
-      for (const tombstone of tombstones) {
-        const envelope: StoredNoteEnvelope = { schemaVersion: NOTES_SCHEMA_VERSION, tombstone };
-        if (!isDeepStrictEqual(currentTombstones.get(tombstone.id), tombstone)
-          || !await this.linkEnvelope(nextDirectory, envelope)) {
-          await this.writeEnvelope(nextDirectory, envelope);
-        }
-      }
-      await this.writeReplacementCompleteFile(nextDirectory, [
-        ...notes.map((note) => noteFileName(note.id)),
-        ...tombstones.map((tombstone) => noteFileName(tombstone.id)),
-      ]);
-
-      await fs.rename(this.directoryPath, previousDirectory);
-      currentMoved = true;
-      await syncDirectory(path.dirname(this.directoryPath));
-      await fs.rename(nextDirectory, this.directoryPath);
-      replacementPromoted = true;
-      await syncDirectory(path.dirname(this.directoryPath));
     } catch (error) {
-      if (currentMoved && !replacementPromoted) {
-        try {
-          await fs.rename(previousDirectory, this.directoryPath);
-          currentMoved = false;
-          await syncDirectory(path.dirname(this.directoryPath));
-        } catch (rollbackError) {
-          const replacementMessage = error instanceof Error ? error.message : String(error);
-          const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-          throw new Error(
-            `Notes replacement failed and the previous directory could not be restored: ${replacementMessage}; ${rollbackMessage}`,
-          );
-        }
-      }
-      throw error;
-    } finally {
-      if (!replacementPromoted) {
-        await fs.rm(nextDirectory, { recursive: true, force: true }).catch(() => undefined);
-        await syncDirectory(path.dirname(this.directoryPath));
-      }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') manifestExists = false;
+      else throw error;
+    }
+    if (!manifestExists) {
+      await this.cleanupStaleDirectory(directory);
+      return undefined;
+    }
+    const manifest = await this.readIncrementalApplyManifest(directory);
+    await this.applyIncrementalManifest(directory, manifest);
+    await this.commitIncrementalManifest(directory);
+    const state = await this.readDirectoryState(this.directoryPath);
+    await this.cleanupStaleDirectory(directory);
+    return state;
+  }
+
+  private async persistIncrementalReplacement(notes: Note[], tombstones: NoteTombstone[]): Promise<void> {
+    await this.ensurePrivateDirectory(this.directoryPath);
+    const directory = this.incrementalApplyPath();
+    await this.cleanupStaleDirectory(directory);
+    const current = new Map<string, StoredNoteState>([
+      ...this.notes.map((note): [string, StoredNoteState] => [note.id, { kind: 'note', note }]),
+      ...this.tombstones.map((tombstone): [string, StoredNoteState] => [tombstone.id, { kind: 'tombstone', tombstone }]),
+    ]);
+    const target = new Map<string, StoredNoteEnvelope>();
+    for (const note of notes) target.set(note.id, { schemaVersion: NOTES_SCHEMA_VERSION, note });
+    for (const tombstone of tombstones) {
+      target.set(tombstone.id, { schemaVersion: NOTES_SCHEMA_VERSION, tombstone });
     }
 
-    await this.removeCompletionFile(this.directoryPath);
-    await fs.rm(previousDirectory, { recursive: true, force: true }).catch(() => undefined);
-    await syncDirectory(path.dirname(this.directoryPath));
+    const upserts: StoredNoteEnvelope[] = [];
+    for (const [id, envelope] of target) {
+      const existing = current.get(id);
+      const nextState: StoredNoteState = 'note' in envelope
+        ? { kind: 'note', note: envelope.note }
+        : { kind: 'tombstone', tombstone: envelope.tombstone };
+      if (!existing || !isDeepStrictEqual(existing, nextState)) upserts.push(envelope);
+    }
+    const removeFiles = [...current.keys()]
+      .filter((id) => !target.has(id))
+      .map(noteFileName)
+      .sort();
+    if (upserts.length === 0 && removeFiles.length === 0) return;
+
+    await this.ensurePrivateDirectory(directory);
+    let manifestWritten = false;
+    try {
+      for (const envelope of upserts) await this.writeEnvelope(directory, envelope, false);
+      await syncDirectory(directory);
+      const manifest: IncrementalApplyManifest = {
+        schemaVersion: INCREMENTAL_APPLY_SCHEMA_VERSION,
+        upsertFiles: upserts.map((envelope) => noteFileName('note' in envelope
+          ? envelope.note.id
+          : envelope.tombstone.id)).sort(),
+        removeFiles,
+      };
+      await this.writeAtomicPrivateFile(
+        directory,
+        INCREMENTAL_APPLY_MANIFEST_FILE,
+        JSON.stringify(manifest),
+      );
+      manifestWritten = true;
+      await syncDirectory(path.dirname(directory));
+      await this.applyIncrementalManifest(directory, manifest);
+      await this.commitIncrementalManifest(directory);
+      await this.cleanupStaleDirectory(directory);
+    } catch (error) {
+      if (!manifestWritten) await this.cleanupStaleDirectory(directory);
+      throw error;
+    }
   }
 }

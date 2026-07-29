@@ -7,6 +7,7 @@ import type {
   NoteImageReference,
   NoteLanguage,
   NotesTreeNode,
+  NotesWorkspaceDelta,
   NotesWorkspaceSnapshot,
 } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
@@ -1298,6 +1299,108 @@ class NotesPage {
           'success',
         );
       }
+    } finally {
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      else if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
+    }
+  }
+
+  async applyPersistentDelta(delta: NotesWorkspaceDelta, persistentApplyId?: string): Promise<void> {
+    const coordinatedApply = Boolean(
+      persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
+    );
+    if (!this.loaded) {
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      return;
+    }
+    this.cancelSearchRender();
+    this.resetInNoteFind(false);
+    this.pageRoot.inert = true;
+    this.selectionVersion += 1;
+    try {
+      if (!coordinatedApply) {
+        await this.reload(persistentApplyId);
+        return;
+      }
+      this.workspaceMutationGeneration += 1;
+      this.saveGeneration += 1;
+      const selectedBefore = this.selectedId;
+      const removed = new Set(delta.removedNoteIds);
+      const upserts = new Map(delta.upsertedNotes.map((note) => [note.id, cloneNote(note)]));
+      const previousIds = new Set(this.notes.map((note) => note.id));
+      const noteSetChanged = removed.size > 0
+        || delta.upsertedNotes.some((note) => !previousIds.has(note.id));
+      this.notes = this.notes
+        .filter((note) => !removed.has(note.id))
+        .map((note) => upserts.get(note.id) ?? note);
+      for (const note of upserts.values()) {
+        if (!previousIds.has(note.id)) this.notes.push(note);
+      }
+      this.notes.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+
+      const removedTreeIds = new Set(delta.removedTreeNodeIds);
+      const treeUpserts = new Map(delta.upsertedTreeNodes.map((node) => [node.noteId, { ...node }]));
+      const previousTreeIds = new Set(this.treeNodes.map((node) => node.noteId));
+      this.treeNodes = this.treeNodes
+        .filter((node) => !removedTreeIds.has(node.noteId))
+        .map((node) => treeUpserts.get(node.noteId) ?? node);
+      for (const node of treeUpserts.values()) {
+        if (!previousTreeIds.has(node.noteId)) this.treeNodes.push(node);
+      }
+      this.expandedNoteIds = new Set(delta.expandedNoteIds);
+
+      for (const id of removed) {
+        this.editVersions.delete(id);
+        this.persistedVersions.delete(id);
+        this.queuedVersions.delete(id);
+        this.saveQueues.delete(id);
+        this.persistedNotes.delete(id);
+        this.saveErrorNoteIds.delete(id);
+        this.clearSaveTimer(id);
+      }
+      for (const note of upserts.values()) {
+        this.clearSaveTimer(note.id);
+        this.editVersions.set(note.id, 0);
+        this.persistedVersions.set(note.id, 0);
+        this.queuedVersions.set(note.id, 0);
+        this.saveQueues.delete(note.id);
+        this.persistedNotes.set(note.id, cloneNote(note));
+        this.saveErrorNoteIds.delete(note.id);
+      }
+      if (noteSetChanged) {
+        this.rebuildWorkspaceIndexes();
+      } else {
+        for (const note of upserts.values()) {
+          this.notesById.set(note.id, note);
+          this.refreshNoteSearchEntry(note);
+        }
+        for (const id of removedTreeIds) this.treeNodesById.delete(id);
+        for (const node of treeUpserts.values()) this.treeNodesById.set(node.noteId, node);
+        if (upserts.size > 0 || removedTreeIds.size > 0 || treeUpserts.size > 0) {
+          this.breadcrumbCache.clear();
+        }
+      }
+      if (this.selectedId && !this.notesById.has(this.selectedId)) {
+        this.selectedId = this.treeNodes[0]?.noteId;
+      }
+
+      const structuralChange = noteSetChanged
+        || removedTreeIds.size > 0
+        || treeUpserts.size > 0;
+      if (structuralChange || this.searchInput.value.trim()) {
+        this.renderList();
+      } else {
+        for (const note of upserts.values()) this.updateListNoteName(note);
+      }
+      if (selectedBefore !== this.selectedId
+        || !this.selectedId
+        || upserts.has(this.selectedId)) {
+        this.renderEditor();
+      }
+      this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
+    } catch (error) {
+      await this.reload(persistentApplyId);
+      if (!this.loaded) throw error;
     } finally {
       if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
       else if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
@@ -3266,4 +3369,11 @@ export function flushNotesPage(): Promise<void> {
 
 export function reloadNotesPage(persistentApplyId?: string): Promise<void> {
   return page?.reload(persistentApplyId) ?? Promise.resolve();
+}
+
+export function applyNotesPageDelta(
+  delta: NotesWorkspaceDelta,
+  persistentApplyId?: string,
+): Promise<void> {
+  return page?.applyPersistentDelta(delta, persistentApplyId) ?? Promise.resolve();
 }

@@ -135,7 +135,7 @@ test('preload exposes only the bounded Trilium prepare, image resolve, apply, ca
   assert.match(settingsApi, /onTriliumImportProgress:[\s\S]*?ipcRenderer\.on\('settings:notes:trilium-import:progress', wrapped\)[\s\S]*?removeListener\('settings:notes:trilium-import:progress', wrapped\)/);
   assert.match(preload, /contextBridge\.exposeInMainWorld\('settingsApi', settingsApi\)/);
   assert.match(types, /interface SettingsApi \{[\s\S]*?prepareTriliumImport:[\s\S]*?resolveTriliumImportImages:[\s\S]*?applyTriliumImport:[\s\S]*?cancelTriliumImport:[\s\S]*?onTriliumImportProgress:/);
-  assert.match(types, /interface PersistentDataReloaded \{\s*generation: number;\s*source: 's3' \| 'trilium';[\s\S]*?persistentApplyId\?: string;\s*\}/);
+  assert.match(types, /interface PersistentDataReloaded \{\s*generation: number;\s*source: 's3' \| 'trilium';[\s\S]*?persistentApplyId\?: string;[\s\S]*?hostsChanged\?: boolean;[\s\S]*?notesDelta\?: NotesWorkspaceDelta;\s*\}/);
 });
 
 test('main process owns Trilium preparation sessions and applies each import atomically before one sync marker and reload', async () => {
@@ -234,10 +234,10 @@ test('main process owns Trilium preparation sessions and applies each import ato
   assert.ok(applyFlush >= 0 && applyFlush < sharedMutation);
   assert.match(applyHandler.slice(applyFlush, sharedMutation), /if \(session\.s3ImageTarget\)[\s\S]*?notesImageTarget\(settings\) !== session\.s3ImageTarget[\s\S]*?S3 settings changed after the Trilium images were imported/);
   assert.match(applyHandler, /const previousNotes = getNotesStore\(\)\.exportSnapshot\(\);[\s\S]*?const previousTombstones = getNotesStore\(\)\.exportTombstones\(\);[\s\S]*?const previousTree = getNotesTreeStore\(\)\.snapshot\(\);[\s\S]*?const previousExpanded = getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds/);
-  assert.match(applyHandler, /try \{[\s\S]*?replaceSnapshot\(merged\.notes, merged\.tombstones\)[\s\S]*?getNotesTreeStore\(\)\.replaceSnapshot\(merged\.tree, activeIds\)[\s\S]*?getNotesTreeViewStore\(\)\.replaceActiveIds\(activeIds\)[\s\S]*?\} catch \(error\) \{\s*await restoreNotesWorkspace\(previousNotes, previousTombstones, previousTree, previousExpanded\);\s*throw error;/);
+  assert.match(applyHandler, /try \{[\s\S]*?notesDelta = await getNotesWorkspaceApplyCoordinator\(\)\.replace\(\{\s*notes: merged\.notes,\s*tombstones: merged\.tombstones,\s*tree: merged\.tree,\s*\}\);[\s\S]*?\} catch \(error\) \{\s*await restoreNotesWorkspace\(previousNotes, previousTombstones, previousTree, previousExpanded\);\s*throw error;/);
   assert.equal((applyHandler.match(/s3SyncRuntime\?\.markLocalChange\(\)/g) ?? []).length, 1);
   assert.match(applyHandler, /if \(notesChanged \|\| treeChanged\) \{[\s\S]*?s3SyncRuntime\?\.markLocalChange\(\)/);
-  assert.match(applyHandler, /if \(applied\.changed\) \{\s*publishPersistentDataReload\('trilium', rendererApply\);\s*reloadOwnsRelease = true;/);
+  assert.match(applyHandler, /if \(applied\.changed\) \{[\s\S]*?reloadOwnsRelease = publishPersistentDataReload\('trilium', rendererApply, \{[\s\S]*?notesDelta: applied\.notesDelta/);
   assert.match(applyHandler, /finally \{\s*if \(!reloadOwnsRelease\) releaseRendererNotesPersistentApply\(rendererApply\);/);
   assert.match(applyHandler, /phase: 'complete'[\s\S]*?message: `Imported \$\{result\.total\} Notes\.`/);
   assert.match(applyHandler, /imagePlaceholderCount: input\.convertedNotes\.reduce\([\s\S]*?note\.imagePlaceholderCount/);
@@ -257,7 +257,7 @@ test('main process owns Trilium preparation sessions and applies each import ato
   assert.match(main, /app\.on\('render-process-gone'[\s\S]*?active\.senderId !== webContents\.id[\s\S]*?active\.controller\.abort\(\)[\s\S]*?session\.senderId === webContents\.id[\s\S]*?removePreparedTriliumImport\(sessionId, true\)/);
 });
 
-test('persistent-data reload is source-aware: Trilium refreshes Notes only while S3 refreshes Hosts and Notes', async () => {
+test('persistent-data reload applies precise Notes deltas and reloads Hosts only when changed', async () => {
   const [renderer, main] = await Promise.all([
     source('src/renderer/renderer.ts'),
     source('src/main/main.ts'),
@@ -267,19 +267,12 @@ test('persistent-data reload is source-aware: Trilium refreshes Notes only while
     'window.settingsApi.onPersistentDataReloaded((event) => {',
     '(async function init()',
   );
-  const conditionalStart = reloadHandler.indexOf("event.source === 'trilium'");
-  const triliumStart = reloadHandler.indexOf('?', conditionalStart);
-  const s3Start = reloadHandler.indexOf(':', triliumStart);
-  const conditionalEnd = reloadHandler.indexOf(';', s3Start);
-  assert.ok(conditionalStart >= 0 && triliumStart > conditionalStart && s3Start > triliumStart && conditionalEnd > s3Start);
-  const triliumReload = reloadHandler.slice(triliumStart + 1, s3Start);
-  const s3Reload = reloadHandler.slice(s3Start + 1, conditionalEnd);
-
-  assert.match(triliumReload, /reloadNotesPage\(event\.persistentApplyId\)/);
-  assert.doesNotMatch(triliumReload, /loadHosts\(\)/);
-  assert.match(s3Reload, /Promise\.all\(\[loadHosts\(\), reloadNotesPage\(event\.persistentApplyId\)\]\)/);
-  assert.match(main, /function publishPersistentDataReload\([\s\S]*?source: 's3' \| 'trilium'[\s\S]*?persistentApplyId: apply\.id/);
-  assert.match(main, /publishPersistentDataReload\('s3', rendererApply\)/);
+  assert.match(reloadHandler, /event\.notesDelta\s*\? applyNotesPageDelta\(event\.notesDelta, event\.persistentApplyId\)/);
+  assert.match(reloadHandler, /event\.persistentApplyId\s*\? reloadNotesPage\(event\.persistentApplyId\)/);
+  assert.match(reloadHandler, /event\.hostsChanged\s*\? Promise\.all\(\[loadHosts\(\), notesUpdate\]\)/);
+  assert.doesNotMatch(reloadHandler, /event\.source ===/);
+  assert.match(main, /function publishPersistentDataReload\([\s\S]*?source: 's3' \| 'trilium'[\s\S]*?hostsChanged\?: boolean; notesDelta\?: NotesWorkspaceDelta[\s\S]*?persistentApplyId: apply\.id/);
+  assert.match(main, /publishPersistentDataReload\('s3', rendererApply, \{[\s\S]*?hostsChanged[\s\S]*?notesDelta/);
   assert.doesNotMatch(main, /onDataApplied:/);
 });
 

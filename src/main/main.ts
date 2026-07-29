@@ -27,6 +27,7 @@ import type {
   NoteMoveInput,
   NoteTreeExpansionInput,
   NotesWorkspaceSnapshot,
+  NotesWorkspaceDelta,
   LlmModelsDraft,
   PrivateKeyImportResult,
   ServiceConfig,
@@ -111,6 +112,7 @@ import {
 } from './notesStore';
 import { NotesTreeStore } from './notesTreeStore';
 import { NotesTreeViewStore } from './notesTreeViewStore';
+import { NotesWorkspaceApplyCoordinator } from './notesWorkspaceApply';
 import { UiPreferencesStore } from './uiPreferencesStore';
 import { LlmSettingsStore } from './llmSettingsStore';
 import { fetchLlmModels } from './llmModels';
@@ -270,6 +272,7 @@ let store: ServiceStore | null = null;
 let notesStore: NotesStore | null = null;
 let notesTreeStore: NotesTreeStore | null = null;
 let notesTreeViewStore: NotesTreeViewStore | null = null;
+let notesWorkspaceApplyCoordinator: NotesWorkspaceApplyCoordinator | null = null;
 let uiPreferencesStore: UiPreferencesStore | null = null;
 let llmSettingsStore: LlmSettingsStore | null = null;
 let s3SyncRuntime: S3SyncRuntime | null = null;
@@ -466,6 +469,11 @@ function getNotesTreeStore(): NotesTreeStore {
 function getNotesTreeViewStore(): NotesTreeViewStore {
   if (!notesTreeViewStore) throw new Error('Notes tree view is not initialized.');
   return notesTreeViewStore;
+}
+
+function getNotesWorkspaceApplyCoordinator(): NotesWorkspaceApplyCoordinator {
+  if (!notesWorkspaceApplyCoordinator) throw new Error('Notes workspace apply is not initialized.');
+  return notesWorkspaceApplyCoordinator;
 }
 
 function getUiPreferencesStore(): UiPreferencesStore {
@@ -891,8 +899,8 @@ async function restoreNotesWorkspace(
 ): Promise<void> {
   const activeIds = notes.notes.map((note) => note.id);
   const rollbackErrors: unknown[] = [];
-  await getNotesStore().replaceSnapshot(notes, tombstones).catch((error) => rollbackErrors.push(error));
-  await getNotesTreeStore().replaceSnapshot(tree, activeIds).catch((error) => rollbackErrors.push(error));
+  await getNotesWorkspaceApplyCoordinator().replace({ notes, tombstones, tree })
+    .catch((error) => rollbackErrors.push(error));
   await getNotesTreeViewStore().save(expandedNoteIds, activeIds).catch((error) => rollbackErrors.push(error));
   if (rollbackErrors.length > 0) {
     notesWorkspaceUnsafe = true;
@@ -1089,13 +1097,19 @@ async function prepareRendererNotesPersistentApply(): Promise<RendererNotesPersi
 function publishPersistentDataReload(
   source: 's3' | 'trilium',
   apply: RendererNotesPersistentApply,
-): void {
+  options: { hostsChanged?: boolean; notesDelta?: NotesWorkspaceDelta } = {},
+): boolean {
   persistentDataGeneration += 1;
+  const notesOwnRelease = Boolean(options.notesDelta);
+  if (!notesOwnRelease) releaseRendererNotesPersistentApply(apply);
   broadcast(IPC_CHANNELS.persistentDataReloaded, {
     generation: persistentDataGeneration,
     source,
-    persistentApplyId: apply.id,
+    ...(notesOwnRelease ? { persistentApplyId: apply.id } : {}),
+    ...(options.hostsChanged ? { hostsChanged: true } : {}),
+    ...(options.notesDelta ? { notesDelta: options.notesDelta } : {}),
   });
+  return true;
 }
 
 function serviceKey(hostId: string, serviceId: string): string {
@@ -1916,6 +1930,8 @@ async function applyS3SharedAppData(
   const rendererApply = await prepareRendererNotesPersistentApply();
   let reloadOwnsRelease = false;
   let changed = false;
+  let appliedHostsChanged = false;
+  let notesDelta: NotesWorkspaceDelta | undefined;
   try {
     const applied = await runS3SharedDataMutation(async () => {
       if (expectedLocal) {
@@ -1939,6 +1955,7 @@ async function applyS3SharedAppData(
         || !isDeepStrictEqual(currentNoteTombstones, staged.noteTombstones);
       const notesTreeChanged = !isDeepStrictEqual(currentNotesTree, staged.notesTree);
       const proxyChanged = !isDeepStrictEqual(currentProxy, staged.proxy);
+      appliedHostsChanged = hostsChanged;
       changed = hostsChanged || notesChanged || notesTreeChanged || proxyChanged;
       if (!changed) return true;
 
@@ -1946,32 +1963,25 @@ async function applyS3SharedAppData(
         await stopAndClearHostRuntime(currentHosts);
       }
       try {
-        if (notesChanged) await getNotesStore().replaceSnapshot(staged.notes, staged.noteTombstones);
         if (notesChanged || notesTreeChanged) {
-          const activeNoteIds = staged.notes.notes.map((note) => note.id);
-          await getNotesTreeStore().replaceSnapshot(staged.notesTree, activeNoteIds);
-          await getNotesTreeViewStore().replaceActiveIds(activeNoteIds);
+          notesDelta = await getNotesWorkspaceApplyCoordinator().replace({
+            notes: staged.notes,
+            tombstones: staged.noteTombstones,
+            tree: staged.notesTree,
+          });
         }
         if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
         if (hostsChanged) await getStore().replaceHosts(nextHosts);
       } catch (error) {
         const rollbackErrors: unknown[] = [];
         let notesRollbackIncomplete = false;
-        if (notesChanged) {
-          await getNotesStore().replaceSnapshot(currentNotes, currentNoteTombstones)
-            .catch((rollback) => {
-              notesRollbackIncomplete = true;
-              rollbackErrors.push(rollback);
-            });
-        }
         if (notesChanged || notesTreeChanged) {
-          const activeNoteIds = currentNotes.notes.map((note) => note.id);
-          await getNotesTreeStore().replaceSnapshot(currentNotesTree, activeNoteIds)
-            .catch((rollback) => {
-              notesRollbackIncomplete = true;
-              rollbackErrors.push(rollback);
-            });
-          await getNotesTreeViewStore().save(currentExpandedNoteIds, activeNoteIds)
+          await restoreNotesWorkspace(
+            currentNotes,
+            currentNoteTombstones,
+            currentNotesTree,
+            currentExpandedNoteIds,
+          )
             .catch((rollback) => {
               notesRollbackIncomplete = true;
               rollbackErrors.push(rollback);
@@ -1997,8 +2007,10 @@ async function applyS3SharedAppData(
       return true;
     });
     if (applied && changed) {
-      publishPersistentDataReload('s3', rendererApply);
-      reloadOwnsRelease = true;
+      reloadOwnsRelease = publishPersistentDataReload('s3', rendererApply, {
+        hostsChanged: appliedHostsChanged,
+        ...(notesDelta ? { notesDelta } : {}),
+      });
     }
     return applied;
   } finally {
@@ -2486,21 +2498,21 @@ function registerIpcHandlers(): void {
           const notesChanged = !isDeepStrictEqual(previousNotes, merged.notes)
             || !isDeepStrictEqual(previousTombstones, merged.tombstones);
           const treeChanged = !isDeepStrictEqual(previousTree, merged.tree);
+          let notesDelta: NotesWorkspaceDelta | undefined;
           if (notesChanged || treeChanged) {
             try {
-              if (notesChanged) await getNotesStore().replaceSnapshot(merged.notes, merged.tombstones);
-              if (notesChanged || treeChanged) {
-                const activeIds = merged.notes.notes.map((note) => note.id);
-                await getNotesTreeStore().replaceSnapshot(merged.tree, activeIds);
-                await getNotesTreeViewStore().replaceActiveIds(activeIds);
-              }
+              notesDelta = await getNotesWorkspaceApplyCoordinator().replace({
+                notes: merged.notes,
+                tombstones: merged.tombstones,
+                tree: merged.tree,
+              });
             } catch (error) {
               await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
               throw error;
             }
             s3SyncRuntime?.markLocalChange();
           }
-          return { summary: merged.summary, changed: notesChanged || treeChanged };
+          return { summary: merged.summary, changed: notesChanged || treeChanged, notesDelta };
         });
 
         const result: TriliumImportResult = {
@@ -2523,8 +2535,9 @@ function registerIpcHandlers(): void {
           ).length,
         };
         if (applied.changed) {
-          publishPersistentDataReload('trilium', rendererApply);
-          reloadOwnsRelease = true;
+          reloadOwnsRelease = publishPersistentDataReload('trilium', rendererApply, {
+            ...(applied.notesDelta ? { notesDelta: applied.notesDelta } : {}),
+          });
         }
         sendTriliumImportProgress(event.sender, {
           requestId: input.requestId,
@@ -3391,6 +3404,13 @@ app.whenReady()
     await notesTreeStore.load(notesStore.list().map((note) => note.id));
     notesTreeViewStore = new NotesTreeViewStore(path.join(app.getPath('userData'), 'notes-tree-view.json'));
     await notesTreeViewStore.load(notesStore.list().map((note) => note.id));
+    notesWorkspaceApplyCoordinator = new NotesWorkspaceApplyCoordinator(
+      app.getPath('userData'),
+      notesStore,
+      notesTreeStore,
+      notesTreeViewStore,
+    );
+    await notesWorkspaceApplyCoordinator.recover();
 
     uiPreferencesStore = new UiPreferencesStore(path.join(app.getPath('userData'), 'ui-preferences.json'));
     await uiPreferencesStore.load();

@@ -692,6 +692,14 @@ export interface NotesWorkspaceSnapshot {
   expandedNoteIds: string[];
 }
 
+export interface NotesWorkspaceDelta {
+  upsertedNotes: Note[];
+  removedNoteIds: string[];
+  upsertedTreeNodes: NotesTreeNode[];
+  removedTreeNodeIds: string[];
+  expandedNoteIds: string[];
+}
+
 export interface NotePlacementInput {
   parentId: string | null;
   beforeNoteId?: string;
@@ -1053,8 +1061,10 @@ export interface S3SyncState {
 export interface PersistentDataReloaded {
   generation: number;
   source: 's3' | 'trilium';
-  /** Present when Notes was frozen before this whole-workspace apply. */
+  /** Present when the matching Notes delta owns release of a renderer freeze. */
   persistentApplyId?: string;
+  hostsChanged?: boolean;
+  notesDelta?: NotesWorkspaceDelta;
 }
 
 export interface SettingsApi {
