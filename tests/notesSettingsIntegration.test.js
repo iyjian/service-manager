@@ -30,6 +30,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(html, /<main class="app-shell hidden" data-page="notes">/);
   assert.match(html, /id="notes-search"[^>]*type="search"/);
   assert.match(html, /id="note-name"/);
+  assert.match(html, /id="notes-tabs"[^>]*role="tablist"[^>]*aria-label="Open Notes"/);
   assert.match(html, /<div id="note-content" class="notes-content"[^>]*>[\s\S]*?id="note-code-content"[\s\S]*?id="note-richtext-editor"/);
   assert.match(html, /id="note-richtext-toolbar"[\s\S]*?data-richtext-block-trigger[\s\S]*?data-richtext-link-trigger[\s\S]*?>Link<[\s\S]*?data-richtext-command="math"[\s\S]*?data-richtext-command="bold"[\s\S]*?data-richtext-command="underline"[\s\S]*?data-richtext-color-trigger/);
   assert.doesNotMatch(html, /Ask AI|data-richtext-ai/);
@@ -318,7 +319,13 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-tree-root-drop/);
   assert.match(styles, /\.notes-empty\{[^}]*height:100%[^}]*min-height:0/);
   assert.match(styles, /\.notes-editor\{[^}]*height:100%[^}]*min-height:0/);
-  assert.match(styles, /\.notes-editor\{[^}]*min-width:0[^}]*grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(styles, /\.notes-editor\{[^}]*min-width:0[^}]*grid-template-rows:auto auto minmax\(0,1fr\)/);
+  assert.match(styles, /\.notes-tabs\{[^}]*display:flex[^}]*overflow-x:auto[^}]*border-bottom-width:1px[^}]*background-color:/);
+  assert.match(styles, /\.notes-tab\{[^}]*display:inline-flex[^}]*flex-shrink:0[^}]*border-radius:/);
+  assert.match(styles, /\.notes-tab\[data-active=true\]\{[^}]*background-color:/);
+  assert.match(styles, /\.notes-tab-select\{[^}]*height:1\.5rem[^}]*max-width:152px[^}]*font-size:11\.5px/);
+  assert.match(styles, /\.notes-tab-close\{[^}]*height:1\.5rem[^}]*width:1\.5rem/);
+  assert.match(styles, /\.notes-editor-toolbar\{[^}]*border-bottom-width:1px[^}]*background-color:/);
   assert.doesNotMatch(styles, /\.notes-tags-row|\.notes-tags-label|\.notes-tags-input/);
   assert.match(styles, /\.notes-tree-toggle svg\{[^}]*transform:rotate\(0deg\)/);
   assert.match(styles, /\.notes-tree-toggle\[data-expanded=true\] svg\{transform:rotate\(90deg\)/);

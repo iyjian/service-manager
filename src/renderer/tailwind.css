@@ -314,11 +314,39 @@
 
   .notes-editor {
     @apply grid h-full min-h-0 min-w-0;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .notes-tabs {
+    @apply flex min-w-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-300 bg-zinc-100 px-1.5 py-0.5;
+  }
+
+  .notes-tab {
+    @apply inline-flex min-w-0 shrink-0 items-center overflow-hidden rounded-md border border-zinc-200 bg-white/70 text-zinc-600 shadow-sm;
+  }
+
+  .notes-tab[data-active='true'] {
+    @apply border-zinc-700 bg-zinc-700 text-white;
+  }
+
+  .notes-tab-select {
+    @apply h-6 max-w-[152px] min-w-0 cursor-pointer truncate border-0 bg-transparent px-2 text-left text-[11.5px] font-medium text-inherit outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400;
+  }
+
+  .notes-tab[data-active='true'] .notes-tab-select {
+    @apply hover:bg-white/10 focus-visible:ring-zinc-300;
+  }
+
+  .notes-tab-close {
+    @apply !h-6 w-6 !rounded-none !border-0 !bg-transparent !text-inherit hover:!bg-black/10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400;
+  }
+
+  .notes-tab-close svg {
+    @apply h-3 w-3;
   }
 
   .notes-editor-toolbar {
-    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 p-2;
+    @apply flex min-w-0 items-center gap-2 border-b border-zinc-200 bg-zinc-50/80 p-2;
   }
 
   .notes-editor-toolbar .notes-name-input {
@@ -441,7 +469,7 @@
   }
 
   .notes-content {
-    @apply relative h-full min-h-0 w-full overflow-hidden;
+    @apply relative h-full min-h-0 w-full overflow-hidden bg-white;
   }
 
   .notes-find-bar {

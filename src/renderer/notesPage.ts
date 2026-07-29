@@ -615,6 +615,40 @@ function createTreeIcon(pathData: string): SVGSVGElement {
   return icon;
 }
 
+export function reconcileOpenNoteIds(
+  openNoteIds: readonly string[],
+  activeNoteIds: ReadonlySet<string>,
+  selectedId?: string,
+): string[] {
+  const seen = new Set<string>();
+  const result = openNoteIds.filter((id) => {
+    if (!activeNoteIds.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  if (selectedId && activeNoteIds.has(selectedId) && !seen.has(selectedId)) result.push(selectedId);
+  return result;
+}
+
+export function noteTabFallbackAfterRemoval(
+  openNoteIds: readonly string[],
+  selectedId: string | undefined,
+  removedNoteIds: ReadonlySet<string>,
+): string | undefined {
+  if (!selectedId || !removedNoteIds.has(selectedId)) return selectedId;
+  const selectedIndex = openNoteIds.indexOf(selectedId);
+  if (selectedIndex < 0) return undefined;
+  for (let index = selectedIndex + 1; index < openNoteIds.length; index += 1) {
+    const candidate = openNoteIds[index];
+    if (candidate && !removedNoteIds.has(candidate)) return candidate;
+  }
+  for (let index = selectedIndex - 1; index >= 0; index -= 1) {
+    const candidate = openNoteIds[index];
+    if (candidate && !removedNoteIds.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 class NotesPage {
   private readonly pageRoot = requireElement<HTMLElement>('.notes-page');
   private readonly sidebarResizeHandle = requireElement<HTMLElement>('#notes-sidebar-resizer');
@@ -623,6 +657,7 @@ class NotesPage {
   private readonly list = requireElement<HTMLElement>('#notes-list');
   private readonly emptyState = requireElement<HTMLElement>('#notes-empty');
   private readonly editor = requireElement<HTMLElement>('#notes-editor');
+  private readonly tabList = requireElement<HTMLElement>('#notes-tabs');
   private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
   private readonly languageControl = requireElement<HTMLElement>('#note-language-control');
   private readonly languageToggle = requireElement<HTMLButtonElement>('#note-language-toggle');
@@ -680,8 +715,14 @@ class NotesPage {
   private readonly noteSearchPositions = new Map<string, number>();
   private readonly breadcrumbCache = new Map<string, string>();
   private readonly renderedRowsById = new Map<string, HTMLElement>();
+  private readonly renderedTabButtonsById = new Map<string, {
+    select: HTMLButtonElement;
+    close: HTMLButtonElement;
+  }>();
   private expandedNoteIds = new Set<string>();
   private selectedId: string | undefined;
+  private openNoteIds: string[] = [];
+  private noteTabsVersion = 0;
   private loaded = false;
   private loadPromise: Promise<void> | undefined;
   private loadError: string | undefined;
@@ -1249,7 +1290,9 @@ class NotesPage {
     this.pageRoot.inert = true;
     this.selectionVersion += 1;
     const selectedBeforeReload = this.selectedId;
+    const openTabsBeforeReload = [...this.openNoteIds];
     let selectedAfterRecovery: string | undefined;
+    let recoveredTabs = openTabsBeforeReload;
     let conflictCount = 0;
     try {
       await this.waitForEditorUploads();
@@ -1276,8 +1319,12 @@ class NotesPage {
       this.saveTimers.clear();
       if (pending.length > 0) {
         const result = await window.notesApi.recoverDrafts(pending);
+        const recoveredByOriginalId = new Map(
+          result.recovered.map((item) => [item.originalId, item.noteId]),
+        );
         const selectedRecovery = result.recovered.find((item) => item.originalId === selectedBeforeReload);
         selectedAfterRecovery = selectedRecovery?.noteId;
+        recoveredTabs = openTabsBeforeReload.map((id) => recoveredByOriginalId.get(id) ?? id);
         conflictCount = result.recovered.filter((item) => item.conflict).length;
       }
 
@@ -1291,6 +1338,7 @@ class NotesPage {
       this.loaded = false;
       this.loadPromise = undefined;
       this.loadError = undefined;
+      this.openNoteIds = recoveredTabs;
       this.selectedId = selectedAfterRecovery ?? selectedBeforeReload;
       await this.ensureLoaded();
       if (conflictCount > 0) {
@@ -1325,6 +1373,7 @@ class NotesPage {
       this.workspaceMutationGeneration += 1;
       this.saveGeneration += 1;
       const selectedBefore = this.selectedId;
+      const openTabsBefore = [...this.openNoteIds];
       const removed = new Set(delta.removedNoteIds);
       const upserts = new Map(delta.upsertedNotes.map((note) => [note.id, cloneNote(note)]));
       const previousIds = new Set(this.notes.map((note) => note.id));
@@ -1381,8 +1430,13 @@ class NotesPage {
         }
       }
       if (this.selectedId && !this.notesById.has(this.selectedId)) {
-        this.selectedId = this.treeNodes[0]?.noteId;
+        this.selectedId = noteTabFallbackAfterRemoval(
+          openTabsBefore,
+          selectedBefore,
+          removed,
+        ) ?? this.treeNodes[0]?.noteId;
       }
+      this.reconcileOpenNoteTabs();
 
       const structuralChange = noteSetChanged
         || removedTreeIds.size > 0
@@ -1396,6 +1450,8 @@ class NotesPage {
         || !this.selectedId
         || upserts.has(this.selectedId)) {
         this.renderEditor();
+      } else {
+        this.renderTabs();
       }
       this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
     } catch (error) {
@@ -1453,6 +1509,7 @@ class NotesPage {
       this.selectedId = workspace.notes.some((note) => note.id === this.selectedId)
         ? this.selectedId
         : this.treeNodes[0]?.noteId;
+      this.reconcileOpenNoteTabs();
       this.loaded = true;
       this.render();
       this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
@@ -1510,6 +1567,7 @@ class NotesPage {
     }
     this.rebuildWorkspaceIndexes();
     if (this.selectedId && !activeIds.has(this.selectedId)) this.selectedId = undefined;
+    this.reconcileOpenNoteTabs();
   }
 
   private treeChildren(): Map<string | null, NotesTreeNode[]> {
@@ -1573,6 +1631,7 @@ class NotesPage {
   }
 
   private updateListNoteName(note: Note): void {
+    this.updateTabNoteName(note);
     const row = this.renderedRowsById.get(note.id);
     if (!row) return;
     const displayName = note.name || 'Untitled';
@@ -1591,6 +1650,144 @@ class NotesPage {
       remove.setAttribute('aria-label', `Remove ${displayName}`);
       remove.title = `Remove ${displayName}`;
     }
+  }
+
+  private activeNoteIds(): Set<string> {
+    return new Set(
+      this.notes
+        .filter((note) => !this.deletedIds.has(note.id))
+        .map((note) => note.id),
+    );
+  }
+
+  private reconcileOpenNoteTabs(): void {
+    this.openNoteIds = reconcileOpenNoteIds(
+      this.openNoteIds,
+      this.activeNoteIds(),
+      this.selectedId,
+    );
+  }
+
+  private openNoteTab(id: string, userIntent: boolean): void {
+    if (this.openNoteIds.includes(id) || !this.notesById.has(id) || this.deletedIds.has(id)) return;
+    this.openNoteIds.push(id);
+    if (userIntent) this.noteTabsVersion += 1;
+  }
+
+  private updateTabNoteName(note: Note): void {
+    const buttons = this.renderedTabButtonsById.get(note.id);
+    if (!buttons) return;
+    const label = note.name || 'Untitled';
+    buttons.select.textContent = label;
+    buttons.select.title = label;
+    buttons.select.setAttribute('aria-label', `Open ${label}`);
+    buttons.close.setAttribute('aria-label', `Close ${label}`);
+    buttons.close.title = `Close ${label}`;
+  }
+
+  private focusNoteTab(id: string | undefined): void {
+    window.requestAnimationFrame(() => {
+      if (!id || this.selectedId !== id) return;
+      this.renderedTabButtonsById.get(id)?.select.focus({ preventScroll: true });
+    });
+  }
+
+  private renderTabs(): void {
+    this.reconcileOpenNoteTabs();
+    this.tabList.replaceChildren();
+    this.renderedTabButtonsById.clear();
+    let activeTab: HTMLButtonElement | undefined;
+    for (const id of this.openNoteIds) {
+      const note = this.notesById.get(id);
+      if (!note) continue;
+      const active = id === this.selectedId;
+      const label = note.name || 'Untitled';
+      const item = document.createElement('div');
+      item.className = 'notes-tab';
+      item.dataset.active = String(active);
+
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'notes-tab-select';
+      select.setAttribute('role', 'tab');
+      select.setAttribute('aria-selected', String(active));
+      select.setAttribute('aria-label', `Open ${label}`);
+      select.tabIndex = active ? 0 : -1;
+      select.textContent = label;
+      select.title = label;
+      select.addEventListener('click', () => void this.selectNote(id, 'tab'));
+      select.addEventListener('keydown', (event) => this.handleNoteTabKeydown(event, id));
+
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'icon-btn notes-tab-close';
+      close.setAttribute('aria-label', `Close ${label}`);
+      close.title = `Close ${label}`;
+      close.appendChild(createTreeIcon('M4 4l8 8M12 4l-8 8'));
+      close.addEventListener('click', () => void this.closeNoteTab(id));
+
+      item.append(select, close);
+      this.tabList.appendChild(item);
+      this.renderedTabButtonsById.set(id, { select, close });
+      if (active) activeTab = select;
+    }
+    if (activeTab) {
+      window.requestAnimationFrame(() => {
+        if (activeTab?.isConnected) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+    }
+  }
+
+  private handleNoteTabKeydown(event: KeyboardEvent, id: string): void {
+    const index = this.openNoteIds.indexOf(id);
+    if (index < 0) return;
+    let targetId: string | undefined;
+    if (event.key === 'ArrowLeft') targetId = this.openNoteIds[index - 1] ?? this.openNoteIds.at(-1);
+    if (event.key === 'ArrowRight') targetId = this.openNoteIds[index + 1] ?? this.openNoteIds[0];
+    if (event.key === 'Home') targetId = this.openNoteIds[0];
+    if (event.key === 'End') targetId = this.openNoteIds.at(-1);
+    if (!targetId) return;
+    event.preventDefault();
+    void this.selectNote(targetId, 'tab');
+  }
+
+  private async closeNoteTab(id: string): Promise<void> {
+    const index = this.openNoteIds.indexOf(id);
+    if (index < 0) return;
+    const active = this.selectedId === id;
+    const selectionVersion = active ? ++this.selectionVersion : this.selectionVersion;
+    if (active) {
+      await this.flushNote(id);
+      if (this.isDirty(id)) {
+        setMessage('Save the current Note before closing it.', 'error');
+        return;
+      }
+      if (selectionVersion !== this.selectionVersion || this.selectedId !== id) return;
+    }
+
+    this.openNoteIds.splice(index, 1);
+    this.noteTabsVersion += 1;
+    const focusId = this.openNoteIds[Math.min(index, this.openNoteIds.length - 1)];
+    if (!active) {
+      this.renderTabs();
+      if (focusId) {
+        window.requestAnimationFrame(() => {
+          this.renderedTabButtonsById.get(focusId)?.select.focus({ preventScroll: true });
+        });
+      }
+      return;
+    }
+
+    this.selectedId = focusId;
+    this.renderList();
+    this.renderEditor();
+    if (focusId) this.focusNoteTab(focusId);
+    else this.newButton.focus();
+    const selectedDirty = Boolean(focusId && this.isDirty(focusId));
+    this.setSaveStatus(
+      focusId ? selectedDirty ? 'Saving…' : 'Saved' : '',
+      selectedDirty ? 'saving' : 'saved',
+    );
   }
 
   private renderList(focusId?: string): void {
@@ -1810,6 +2007,7 @@ class NotesPage {
 
   private renderEditor(): void {
     const note = this.selectedNote();
+    this.renderTabs();
     this.emptyState.classList.toggle('hidden', Boolean(note));
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
@@ -1852,10 +2050,15 @@ class NotesPage {
     return this.selectedId ? this.notesById.get(this.selectedId) : undefined;
   }
 
-  private async selectNote(id: string): Promise<void> {
+  private async selectNote(id: string, source: 'tree' | 'tab' = 'tree'): Promise<void> {
     if (!this.notes.some((note) => note.id === id)) return;
     const selectionVersion = ++this.selectionVersion;
-    if (id === this.selectedId) return;
+    if (id === this.selectedId) {
+      this.openNoteTab(id, true);
+      this.renderTabs();
+      if (source === 'tab') this.focusNoteTab(id);
+      return;
+    }
     const previousId = this.selectedId;
     if (previousId) {
       await this.flushNote(previousId);
@@ -1866,10 +2069,12 @@ class NotesPage {
     }
     if (selectionVersion !== this.selectionVersion || !this.notes.some((note) => note.id === id)) return;
     this.selectedId = id;
+    this.openNoteTab(id, true);
     const selectedDirty = this.isDirty(id);
     if (selectedDirty) this.saveErrorNoteIds.delete(id);
-    this.renderList(id);
+    this.renderList(source === 'tree' ? id : undefined);
     this.renderEditor();
+    if (source === 'tab') this.focusNoteTab(id);
     if (selectedDirty) {
       this.setSaveStatus('Saving…', 'saving');
       this.scheduleSave(id);
@@ -2873,6 +3078,7 @@ class NotesPage {
       let committedSelectionVersion = this.selectionVersion;
       if (selectCreatedNote) {
         this.selectedId = note.id;
+        this.openNoteTab(note.id, true);
         this.searchInput.value = '';
         committedSelectionVersion = ++this.selectionVersion;
       }
@@ -3075,6 +3281,9 @@ class NotesPage {
             .find((candidate) => !confirmedPreview.expectedIds.includes(candidate));
         this.captureActiveEditorContent();
         const selectedBeforeDelete = this.selectedId;
+        const openTabsBeforeDelete = [...this.openNoteIds];
+        const noteTabsVersionBeforeDelete = this.noteTabsVersion;
+        const removedNoteIds = new Set(confirmedPreview.expectedIds);
         const editVersionBaseline = new Map(this.editVersions);
         for (const noteId of confirmedPreview.expectedIds) {
           this.deletedIds.add(noteId);
@@ -3082,7 +3291,11 @@ class NotesPage {
         }
         let optimisticSelectionVersion: number | undefined;
         if (this.selectedId && this.deletedIds.has(this.selectedId)) {
-          this.selectedId = focusAfterDelete
+          this.selectedId = noteTabFallbackAfterRemoval(
+            openTabsBeforeDelete,
+            selectedBeforeDelete,
+            removedNoteIds,
+          ) ?? focusAfterDelete
             ?? this.treeNodes.find((node) => !this.deletedIds.has(node.noteId))?.noteId;
           optimisticSelectionVersion = ++this.selectionVersion;
         }
@@ -3096,6 +3309,9 @@ class NotesPage {
           if (result.status === 'changed') {
             this.captureActiveEditorContent();
             for (const noteId of confirmedPreview.expectedIds) this.deletedIds.delete(noteId);
+            if (this.noteTabsVersion === noteTabsVersionBeforeDelete) {
+              this.openNoteIds = openTabsBeforeDelete;
+            }
             if (optimisticSelectionVersion !== undefined
               && optimisticSelectionVersion === this.selectionVersion
               && selectedBeforeDelete
@@ -3140,6 +3356,9 @@ class NotesPage {
           for (const noteId of confirmedPreview.expectedIds) {
             this.deletedIds.delete(noteId);
             if (this.isDirty(noteId)) this.scheduleSave(noteId);
+          }
+          if (this.noteTabsVersion === noteTabsVersionBeforeDelete) {
+            this.openNoteIds = openTabsBeforeDelete;
           }
           if (optimisticSelectionVersion !== undefined
             && optimisticSelectionVersion === this.selectionVersion

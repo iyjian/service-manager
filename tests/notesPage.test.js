@@ -187,6 +187,36 @@ test('Notes delete confirmation compares subtree membership without rejecting ha
   assert.equal(sameNoteIdSet(['root', 'root'], ['root', 'root']), false);
 });
 
+test('Notes session tabs preserve order and choose the right adjacent surviving Note first', async () => {
+  const {
+    noteTabFallbackAfterRemoval,
+    reconcileOpenNoteIds,
+  } = await import(path.join(distRenderer, 'notesPage.js'));
+  const active = new Set(['a', 'b', 'c', 'd']);
+
+  assert.deepEqual(
+    reconcileOpenNoteIds(['a', 'missing', 'b', 'a'], active, 'd'),
+    ['a', 'b', 'd'],
+  );
+  assert.equal(noteTabFallbackAfterRemoval(['a', 'b', 'c', 'd'], 'b', new Set(['b'])), 'c');
+  assert.equal(noteTabFallbackAfterRemoval(['a', 'b', 'c', 'd'], 'b', new Set(['b', 'c'])), 'd');
+  assert.equal(noteTabFallbackAfterRemoval(['a', 'b', 'c', 'd'], 'b', new Set(['b', 'c', 'd'])), 'a');
+  assert.equal(noteTabFallbackAfterRemoval(['a', 'b'], 'b', new Set(['a', 'b'])), undefined);
+  assert.equal(noteTabFallbackAfterRemoval(['a', 'b'], 'a', new Set(['b'])), 'a');
+});
+
+test('Notes tabs remain transient and reconcile through selection, reload, delta, and delete flows', async () => {
+  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+
+  assert.match(source, /private openNoteIds: string\[\] = \[\]/);
+  assert.match(source, /private async selectNote\(id: string, source: 'tree' \| 'tab' = 'tree'\)[\s\S]*?this\.openNoteTab\(id, true\)/);
+  assert.match(source, /private async closeNoteTab\(id: string\)[\s\S]*?await this\.flushNote\(id\)[\s\S]*?this\.openNoteIds\.splice\(index, 1\)/);
+  assert.match(source, /recoveredTabs = openTabsBeforeReload\.map\(\(id\) => recoveredByOriginalId\.get\(id\) \?\? id\)/);
+  assert.match(source, /async applyPersistentDelta[\s\S]*?noteTabFallbackAfterRemoval\([\s\S]*?this\.reconcileOpenNoteTabs\(\)/);
+  assert.match(source, /const openTabsBeforeDelete = \[\.\.\.this\.openNoteIds\][\s\S]*?noteTabFallbackAfterRemoval\(/);
+  assert.doesNotMatch(source, /saveOpenNote|loadOpenNote|openNoteIds.*notesApi/);
+});
+
 test('Notes tree resolves before, inside, and after drops while rejecting self-descendant moves', async () => {
   const {
     isValidNoteTreeParent,
@@ -471,7 +501,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
   assert.match(source, /hide\(\): void \{\s*this\.closeLanguageMenu\(\);\s*this\.closeDownloadMenu\(\);\s*this\.closeMarkdownOutline\(\);\s*if \(this\.attachmentPreviewDialog\.open\) this\.attachmentPreviewDialog\.close\(\);\s*void this\.flush\(\)\.catch\(\(\) => undefined\);/);
   assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?this\.finishSidebarResize\(\)[\s\S]*?this\.flushQueuedSidebarWidthSave\(\)[\s\S]*?this\.waitForSidebarWidthSaves\(\)/);
-  assert.match(source, /private async selectNote\(id: string\): Promise<void>/);
+  assert.match(source, /private async selectNote\(id: string, source: 'tree' \| 'tab' = 'tree'\): Promise<void>/);
   assert.match(source, /await this\.flushNote\(previousId\);\s*if \(this\.isDirty\(previousId\)\)/);
   assert.ok((source.match(/await this\.flushAllPendingSaves\(\)/g) ?? []).length >= 3);
   assert.match(source, /this\.notes\.some\(\(note\) => !this\.deletedIds\.has\(note\.id\) && this\.isDirty\(note\.id\)\)/);
@@ -485,7 +515,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /this\.saveStatus\.textContent = text/);
   assert.match(source, /private async deleteNote\(id: string\)/);
   assert.match(source, /this\.treeNodes\.filter\(\(node\) => !this\.deletedIds\.has\(node\.noteId\)\)/);
-  assert.match(source, /this\.selectedId = focusAfterDelete/);
+  assert.match(source, /this\.selectedId = noteTabFallbackAfterRemoval\([\s\S]*?\?\? focusAfterDelete/);
   assert.match(source, /remove\.disabled = this\.deletingNoteIds\.has\(note\.id\)/);
   assert.match(source, /this\.pageRoot\.inert = true/);
   assert.match(source, /window\.notesApi\.recoverDrafts\(pending\)/);
@@ -674,7 +704,7 @@ test('Notes workspace mutations capture deferred editor content and preserve new
   assert.match(create, /committedSelectionVersion !== this\.selectionVersion \|\| this\.selectedId !== note\.id/);
   assert.match(deletion, /this\.captureActiveEditorContent\(\);[\s\S]*?let optimisticSelectionVersion/);
   assert.match(deletion, /optimisticSelectionVersion === this\.selectionVersion/g);
-  assert.match(source, /const selectionVersion = \+\+this\.selectionVersion;\s*if \(id === this\.selectedId\) return/);
+  assert.match(source, /const selectionVersion = \+\+this\.selectionVersion;\s*if \(id === this\.selectedId\) \{[\s\S]*?this\.openNoteTab\(id, true\)/);
 });
 
 test('Notes flush owns active uploads and captured insertion positions are edit and workspace fenced', async () => {
