@@ -388,6 +388,22 @@
               </div>
             </div>
             <div id="note-content" class="notes-content" data-empty="true" data-language="markdown" data-mode="code">
+              <div id="note-find-bar" class="notes-find-bar hidden" role="search" aria-label="Find in Note" aria-hidden="true">
+                <label class="notes-find-input-wrap">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+                  <input id="note-find-input" class="notes-find-input" type="search" placeholder="Find in Note" aria-label="Find in Note" autocomplete="off" spellcheck="false" />
+                </label>
+                <span id="note-find-counter" class="notes-find-counter" aria-live="polite" aria-label="No matches">0 / 0</span>
+                <button id="note-find-previous" class="notes-find-button" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 9.5 3.5-3.5 3.5 3.5"></path></svg>
+                </button>
+                <button id="note-find-next" class="notes-find-button" type="button" aria-label="Next match" title="Next match (Enter)" disabled>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 6.5 3.5 3.5 3.5-3.5"></path></svg>
+                </button>
+                <button id="note-find-close" class="notes-find-button" type="button" aria-label="Close find" title="Close (Escape)">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"></path></svg>
+                </button>
+              </div>
               <section id="note-code-editor" class="notes-code-editor">
                 <div id="note-markdown-toolbar" class="notes-markdown-toolbar hidden" role="toolbar" aria-label="Markdown formatting">
                   <button type="button" data-markdown-command="bold" aria-label="Bold" title="Bold (Ctrl/⌘ B)"><strong>B</strong></button>

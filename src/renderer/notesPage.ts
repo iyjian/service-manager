@@ -34,6 +34,12 @@ import {
   parseRichTextContent,
 } from './noteRichText.js';
 import { registerPage } from './nav.js';
+import {
+  findNotesTextMatches,
+  initialNotesFindIndex,
+  moveNotesFindIndex,
+  type NotesFindMatch,
+} from './notesFind.js';
 import { NotesRichTextEditor } from './notesRichTextEditor.js';
 import {
   applyMarkdownFormat,
@@ -55,6 +61,33 @@ const MIN_NOTES_SIDEBAR_WIDTH = 240;
 const MAX_NOTES_SIDEBAR_WIDTH = 520;
 const NOTES_SIDEBAR_KEYBOARD_STEP = 8;
 const NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS = 180;
+
+const NOTES_CODE_FIND_HIGHLIGHT = 'notes-code-find-match';
+const NOTES_CODE_FIND_ACTIVE_HIGHLIGHT = 'notes-code-find-match-active';
+
+interface NotesHighlightRegistry {
+  delete(name: string): boolean;
+  set(name: string, highlight: unknown): unknown;
+}
+
+interface NotesHighlightValue {
+  priority: number;
+}
+
+function notesHighlightApi(): {
+  registry: NotesHighlightRegistry;
+  create: (...ranges: Range[]) => NotesHighlightValue;
+} | undefined {
+  const registry = (window.CSS as unknown as { highlights?: NotesHighlightRegistry }).highlights;
+  const HighlightConstructor = (window as typeof window & {
+    Highlight?: new (...ranges: Range[]) => NotesHighlightValue;
+  }).Highlight;
+  if (!registry || !HighlightConstructor) return undefined;
+  return {
+    registry,
+    create: (...ranges) => new HighlightConstructor(...ranges),
+  };
+}
 
 export function clampNotesSidebarWidth(value: number): number {
   const rounded = Number.isFinite(value) ? Math.round(value) : DEFAULT_NOTES_SIDEBAR_WIDTH;
@@ -597,6 +630,12 @@ class NotesPage {
   private readonly languageSearch = requireElement<HTMLInputElement>('#note-language-search');
   private readonly languageOptions = requireElement<HTMLElement>('#note-language-options');
   private readonly contentHost = requireElement<HTMLElement>('#note-content');
+  private readonly findBar = requireElement<HTMLElement>('#note-find-bar');
+  private readonly findInput = requireElement<HTMLInputElement>('#note-find-input');
+  private readonly findCounter = requireElement<HTMLElement>('#note-find-counter');
+  private readonly findPreviousButton = requireElement<HTMLButtonElement>('#note-find-previous');
+  private readonly findNextButton = requireElement<HTMLButtonElement>('#note-find-next');
+  private readonly findCloseButton = requireElement<HTMLButtonElement>('#note-find-close');
   private readonly codeEditorShell = requireElement<HTMLElement>('#note-code-editor');
   private readonly codeLayout = requireElement<HTMLElement>('#note-code-layout');
   private readonly codeContentHost = requireElement<HTMLElement>('#note-code-content');
@@ -685,6 +724,12 @@ class NotesPage {
   private searchRenderTimer: number | undefined;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
   private readonly persistentApplyIds = new Set<string>();
+  private active = false;
+  private findOpen = false;
+  private findMatches: readonly NotesFindMatch[] = [];
+  private findActiveIndex = -1;
+  private findTruncated = false;
+  private findRefreshFrame: number | undefined;
 
   constructor() {
     this.codeEditor = new EditorView({
@@ -694,7 +739,10 @@ class NotesPage {
     this.richTextEditor = new NotesRichTextEditor({
       host: this.richTextHost,
       toolbar: this.richTextToolbar,
-      onChange: () => this.updateSelectedRichTextContent(),
+      onChange: () => {
+        this.updateSelectedRichTextContent();
+        this.queueInNoteFindRefresh();
+      },
       onError: (message) => setMessage(message, 'error'),
       onRequestImage: (file, position) => {
         if (file) void this.uploadImageFile(file, position);
@@ -718,6 +766,11 @@ class NotesPage {
     this.setSidebarWidth(this.sidebarWidth);
     this.updateEditorEmptyState();
     this.newButton.addEventListener('click', () => void this.createNote(null));
+    this.findInput.addEventListener('input', () => this.refreshInNoteFind(false, true));
+    this.findInput.addEventListener('keydown', this.handleFindInputKeyDown);
+    this.findPreviousButton.addEventListener('click', () => this.moveInNoteFind(-1));
+    this.findNextButton.addEventListener('click', () => this.moveInNoteFind(1));
+    this.findCloseButton.addEventListener('click', () => this.closeInNoteFind(true));
     this.searchInput.addEventListener('input', () => this.queueSearchRender());
     this.list.addEventListener('keydown', (event) => this.handleListKeydown(event));
     this.list.addEventListener('dragover', (event) => {
@@ -789,9 +842,11 @@ class NotesPage {
     this.sidebarResizeHandle.addEventListener('pointercancel', this.handleSidebarResizePointerEnd);
     this.sidebarResizeHandle.addEventListener('lostpointercapture', this.handleSidebarResizeLostCapture);
     this.sidebarResizeHandle.addEventListener('keydown', this.handleSidebarResizeKeyDown);
+    document.addEventListener('keydown', this.handleDocumentFindKeyDown, true);
   }
 
   show(): void {
+    this.active = true;
     void this.ensureLoaded();
   }
 
@@ -801,6 +856,8 @@ class NotesPage {
     this.closeMarkdownOutline();
     if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
     void this.flush().catch(() => undefined);
+    this.active = false;
+    this.resetInNoteFind(false);
   }
 
   async flush(): Promise<void> {
@@ -818,6 +875,193 @@ class NotesPage {
   requestEditorMeasure(): void {
     this.codeEditor.requestMeasure();
     this.richTextEditor.requestMeasure();
+  }
+
+  private readonly handleDocumentFindKeyDown = (event: KeyboardEvent): void => {
+    if (!this.active || event.isComposing) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    if (modifier && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'f') {
+      if (!this.selectedNote() || this.attachmentPreviewDialog.open || this.persistentApplyIds.size > 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.openInNoteFind();
+      return;
+    }
+    if (event.key !== 'Escape' || !this.findOpen) return;
+    const target = event.target;
+    if (!(target instanceof Node)
+      || (!this.findBar.contains(target) && !this.contentHost.contains(target))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeInNoteFind(true);
+  };
+
+  private readonly handleFindInputKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      this.moveInNoteFind(event.shiftKey ? -1 : 1);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeInNoteFind(true);
+    }
+  };
+
+  private openInNoteFind(): void {
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    if (!this.findOpen) {
+      this.findOpen = true;
+      this.findBar.classList.remove('hidden');
+      this.findBar.setAttribute('aria-hidden', 'false');
+      this.refreshInNoteFind(false, Boolean(this.findInput.value));
+    }
+    window.requestAnimationFrame(() => {
+      if (!this.findOpen) return;
+      this.findInput.focus({ preventScroll: true });
+      this.findInput.select();
+    });
+  }
+
+  private closeInNoteFind(restoreEditorFocus: boolean): void {
+    if (this.findRefreshFrame !== undefined) {
+      window.cancelAnimationFrame(this.findRefreshFrame);
+      this.findRefreshFrame = undefined;
+    }
+    this.findOpen = false;
+    this.findBar.classList.add('hidden');
+    this.findBar.setAttribute('aria-hidden', 'true');
+    this.findMatches = [];
+    this.findActiveIndex = -1;
+    this.findTruncated = false;
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    if (!restoreEditorFocus) return;
+    if (this.selectedNote()?.language === 'richtext') this.richTextEditor.focus();
+    else this.codeEditor.focus();
+  }
+
+  private resetInNoteFind(restoreEditorFocus: boolean): void {
+    this.findInput.value = '';
+    this.closeInNoteFind(restoreEditorFocus);
+  }
+
+  private queueInNoteFindRefresh(): void {
+    if (!this.findOpen || this.findRefreshFrame !== undefined) return;
+    this.findRefreshFrame = window.requestAnimationFrame(() => {
+      this.findRefreshFrame = undefined;
+      this.refreshInNoteFind(true, false);
+    });
+  }
+
+  private refreshInNoteFind(preserveActivePosition: boolean, reveal: boolean): void {
+    if (!this.findOpen) return;
+    const note = this.selectedNote();
+    if (!note) {
+      this.resetInNoteFind(false);
+      return;
+    }
+    const previousPosition = preserveActivePosition && this.findActiveIndex >= 0
+      ? this.findMatches[this.findActiveIndex]?.from
+      : undefined;
+    const query = this.findInput.value;
+    const result = note.language === 'richtext'
+      ? this.richTextEditor.findText(query)
+      : findNotesTextMatches(this.codeEditor.state.doc.toString(), query);
+    this.findMatches = result.matches;
+    this.findTruncated = result.truncated;
+    const anchor = previousPosition ?? (note.language === 'richtext'
+      ? this.richTextEditor.findAnchor()
+      : this.codeEditor.state.selection.main.from);
+    this.findActiveIndex = initialNotesFindIndex(this.findMatches, anchor);
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    if (reveal) this.revealInNoteFindMatch();
+  }
+
+  private moveInNoteFind(direction: 1 | -1): void {
+    this.findActiveIndex = moveNotesFindIndex(
+      this.findActiveIndex,
+      this.findMatches.length,
+      direction,
+    );
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    this.revealInNoteFindMatch();
+    this.findInput.focus({ preventScroll: true });
+  }
+
+  private applyInNoteFindDecorations(): void {
+    const note = this.selectedNote();
+    const matches = this.findOpen ? this.findMatches : [];
+    const activeIndex = this.findOpen ? this.findActiveIndex : -1;
+    this.applyCodeFindHighlights(note?.language === 'richtext' ? [] : matches, activeIndex);
+    if (note?.language === 'richtext') this.richTextEditor.setFindMatches(matches, activeIndex);
+    else this.richTextEditor.clearFind();
+  }
+
+  private applyCodeFindHighlights(
+    matches: readonly NotesFindMatch[],
+    activeIndex: number,
+  ): void {
+    const api = notesHighlightApi();
+    if (!api) return;
+    api.registry.delete(NOTES_CODE_FIND_HIGHLIGHT);
+    api.registry.delete(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT);
+    if (!this.findOpen || matches.length === 0) return;
+
+    const visibleRanges = this.codeEditor.visibleRanges;
+    const ranges: Range[] = [];
+    let activeRange: Range | undefined;
+    for (const [index, match] of matches.entries()) {
+      if (!visibleRanges.some((visible) => match.from >= visible.from && match.to <= visible.to)) continue;
+      try {
+        const from = this.codeEditor.domAtPos(match.from);
+        const to = this.codeEditor.domAtPos(match.to);
+        const range = document.createRange();
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
+        ranges.push(range);
+        if (index === activeIndex) activeRange = range;
+      } catch {
+        // CodeMirror can replace a virtualized line between its viewport
+        // report and DOM lookup. The next viewport update retries it.
+      }
+    }
+    if (ranges.length > 0) api.registry.set(NOTES_CODE_FIND_HIGHLIGHT, api.create(...ranges));
+    if (activeRange) {
+      const active = api.create(activeRange);
+      active.priority = 1;
+      api.registry.set(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT, active);
+    }
+  }
+
+  private revealInNoteFindMatch(): void {
+    const match = this.findMatches[this.findActiveIndex];
+    if (!match) return;
+    if (this.selectedNote()?.language === 'richtext') {
+      this.richTextEditor.revealFindMatch();
+      return;
+    }
+    this.codeEditor.dispatch({
+      effects: EditorView.scrollIntoView(match.from, { y: 'center' }),
+    });
+  }
+
+  private updateInNoteFindControls(): void {
+    const count = this.findMatches.length;
+    const current = this.findActiveIndex >= 0 ? this.findActiveIndex + 1 : 0;
+    const total = `${count.toLocaleString('en-US')}${this.findTruncated ? '+' : ''}`;
+    this.findCounter.textContent = `${current.toLocaleString('en-US')} / ${total}`;
+    this.findCounter.setAttribute(
+      'aria-label',
+      count > 0
+        ? `${current.toLocaleString('en-US')} of ${total} matches`
+        : 'No matches',
+    );
+    this.findPreviousButton.disabled = count === 0;
+    this.findNextButton.disabled = count === 0;
+    this.findBar.dataset.noResults = String(Boolean(this.findInput.value) && count === 0);
   }
 
   applyPersistedSidebarWidth(width: number): void {
@@ -972,6 +1216,7 @@ class NotesPage {
 
   async lockForPersistentApply(persistentApplyId: string): Promise<void> {
     this.persistentApplyIds.add(persistentApplyId);
+    this.resetInNoteFind(false);
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
     this.pageRoot.inert = true;
@@ -997,6 +1242,7 @@ class NotesPage {
       persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
     );
     this.cancelSearchRender();
+    this.resetInNoteFind(false);
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
     this.pageRoot.inert = true;
@@ -1464,6 +1710,7 @@ class NotesPage {
     this.emptyState.classList.toggle('hidden', Boolean(note));
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
+      this.resetInNoteFind(false);
       this.closeLanguageMenu();
       this.updateLanguageControl(undefined);
       this.editorNoteId = undefined;
@@ -1479,6 +1726,7 @@ class NotesPage {
     const noteChanged = this.editorNoteId !== note.id;
     if (noteChanged) this.closeLanguageMenu();
     if (noteChanged) {
+      this.resetInNoteFind(false);
       this.editorNoteId = note.id;
       if (note.language === 'richtext') {
         this.replaceRichTextDocument(note.content);
@@ -2034,6 +2282,7 @@ class NotesPage {
         selectionVersion: this.selectionVersion,
         workspaceGeneration: this.workspaceMutationGeneration,
       })) return;
+      this.resetInNoteFind(false);
       if (targetLanguage === 'richtext') {
         current.content = plainTextToRichTextContent(current.content);
       } else if (sourceLanguage === 'richtext') {
@@ -2871,8 +3120,12 @@ class NotesPage {
           spellcheck: language === 'markdown' ? 'true' : 'false',
         })),
         EditorView.updateListener.of((update) => {
+          if (update.viewportChanged) this.queueInNoteFindRefresh();
           if ((!update.docChanged && !update.selectionSet) || this.replacingEditorDocument) return;
-          if (update.docChanged) this.updateSelectedCodeContent();
+          if (update.docChanged) {
+            this.updateSelectedCodeContent();
+            this.queueInNoteFindRefresh();
+          }
           if (update.selectionSet) {
             this.updateMarkdownSelectionStats();
             if (this.markdownTypewriterMode) this.queueMarkdownViewportUpdate(true);

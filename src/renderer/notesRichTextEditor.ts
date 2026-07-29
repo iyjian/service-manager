@@ -1,5 +1,6 @@
 import {
   Editor,
+  Extension,
   generateJSON,
   Mark,
   Node,
@@ -13,7 +14,8 @@ import Image from '@tiptap/extension-image';
 import { TableKit } from '@tiptap/extension-table';
 import StarterKit from '@tiptap/starter-kit';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
-import { NodeSelection } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { common, createLowlight } from 'lowlight';
 import {
   CODE_HIGHLIGHT_LANGUAGES,
@@ -39,6 +41,12 @@ import {
   type RichTextNode,
 } from './noteRichText.js';
 import { revealMenuItemScrollTop } from './notesRichTextMenuScroll.js';
+import {
+  findNotesTextMatches,
+  NOTES_FIND_MATCH_LIMIT,
+  type NotesFindMatch,
+  type NotesFindResult,
+} from './notesFind.js';
 import {
   calculateRichTextImageDisplayWidth,
   RICH_TEXT_IMAGE_MIN_DISPLAY_WIDTH,
@@ -121,6 +129,121 @@ const TOGGLE_COMMANDS = new Set<RichTextToolbarCommand>([
   'orderedList',
   'blockquote',
 ]);
+
+interface RichTextFindDecorationState {
+  matches: readonly NotesFindMatch[];
+  activeIndex: number;
+}
+
+interface RichTextFindRunChunk {
+  textFrom: number;
+  textTo: number;
+  documentFrom: number;
+}
+
+interface RichTextFindRun {
+  text: string;
+  chunks: readonly RichTextFindRunChunk[];
+}
+
+const richTextFindPluginKey = new PluginKey<DecorationSet>('notesInNoteFind');
+
+function richTextFindDecorations(
+  document: ProseMirrorNode,
+  state: RichTextFindDecorationState,
+): DecorationSet {
+  const maximum = document.content.size;
+  const decorations = state.matches.flatMap((match, index) => (
+    match.from >= 0 && match.to > match.from && match.to <= maximum
+      ? [Decoration.inline(match.from, match.to, {
+        class: index === state.activeIndex
+          ? 'notes-find-match notes-find-match-active'
+          : 'notes-find-match',
+      })]
+      : []
+  ));
+  return DecorationSet.create(document, decorations);
+}
+
+const notesRichTextFindExtension = Extension.create({
+  name: 'notesInNoteFind',
+  addProseMirrorPlugins() {
+    return [new Plugin<DecorationSet>({
+      key: richTextFindPluginKey,
+      state: {
+        init: () => DecorationSet.empty,
+        apply: (transaction, decorations) => {
+          const requested = transaction.getMeta(richTextFindPluginKey) as RichTextFindDecorationState | undefined;
+          if (requested) return richTextFindDecorations(transaction.doc, requested);
+          return transaction.docChanged ? decorations.map(transaction.mapping, transaction.doc) : decorations;
+        },
+      },
+      props: {
+        decorations: (state) => richTextFindPluginKey.getState(state),
+      },
+    })];
+  },
+});
+
+function richTextFindRuns(node: ProseMirrorNode, documentFrom: number): RichTextFindRun[] {
+  const runs: RichTextFindRun[] = [];
+  let text = '';
+  let chunks: RichTextFindRunChunk[] = [];
+  const flush = (): void => {
+    if (text) runs.push({ text, chunks });
+    text = '';
+    chunks = [];
+  };
+  node.forEach((child, offset) => {
+    if (!child.isText || !child.text) {
+      flush();
+      return;
+    }
+    const textFrom = text.length;
+    text += child.text;
+    chunks.push({
+      textFrom,
+      textTo: text.length,
+      documentFrom: documentFrom + offset,
+    });
+  });
+  flush();
+  return runs;
+}
+
+function richTextFindRunPosition(run: RichTextFindRun, offset: number): number {
+  const chunk = run.chunks.find((candidate) => offset <= candidate.textTo)
+    ?? run.chunks[run.chunks.length - 1];
+  if (!chunk) return 0;
+  return chunk.documentFrom + Math.max(0, offset - chunk.textFrom);
+}
+
+export function findRichTextMatches(document: ProseMirrorNode, query: string): NotesFindResult {
+  if (!query) return { matches: [], truncated: false };
+  const matches: NotesFindMatch[] = [];
+  let truncated = false;
+  document.descendants((node, position) => {
+    if (truncated) return false;
+    if (!node.isTextblock) return true;
+    for (const run of richTextFindRuns(node, position + 1)) {
+      const remaining = NOTES_FIND_MATCH_LIMIT - matches.length;
+      if (remaining <= 0) {
+        if (findNotesTextMatches(run.text, query, 1).matches.length > 0) truncated = true;
+        continue;
+      }
+      const result = findNotesTextMatches(run.text, query, remaining);
+      for (const match of result.matches) {
+        matches.push({
+          from: richTextFindRunPosition(run, match.from),
+          to: richTextFindRunPosition(run, match.to),
+        });
+      }
+      if (result.truncated) truncated = true;
+    }
+    return false;
+  });
+  return { matches, truncated };
+}
 
 interface SlashCommandRange {
   from: number;
@@ -2687,6 +2810,7 @@ function createNotesRichTextExtensions(
   createMathExtension(),
   createTaskListExtension(),
   createTaskItemExtension(),
+  notesRichTextFindExtension,
   createS3ImageExtension(onError, onLayoutChange, importImages, importToken),
   createS3AttachmentExtension(onError, onAttachmentAction)];
 }
@@ -3205,6 +3329,41 @@ export class NotesRichTextEditor {
 
   public focus(): void {
     this.editor.commands.focus();
+  }
+
+  public findText(query: string): NotesFindResult {
+    return findRichTextMatches(this.editor.state.doc, query);
+  }
+
+  public findAnchor(): number {
+    return this.editor.state.selection.from;
+  }
+
+  public setFindMatches(matches: readonly NotesFindMatch[], activeIndex: number): void {
+    if (this.editor.isDestroyed) return;
+    this.editor.view.dispatch(this.editor.state.tr.setMeta(richTextFindPluginKey, {
+      matches,
+      activeIndex,
+    } satisfies RichTextFindDecorationState));
+  }
+
+  public revealFindMatch(): void {
+    if (this.editor.isDestroyed) return;
+    window.requestAnimationFrame(() => {
+      if (this.editor.isDestroyed) return;
+      const active = this.host.querySelector<HTMLElement>('.notes-find-match-active');
+      if (!active) return;
+      const activeBounds = active.getBoundingClientRect();
+      const hostBounds = this.host.getBoundingClientRect();
+      if (activeBounds.top >= hostBounds.top && activeBounds.bottom <= hostBounds.bottom) return;
+      this.host.scrollTop += activeBounds.top
+        - hostBounds.top
+        - Math.max(0, (this.host.clientHeight - activeBounds.height) / 2);
+    });
+  }
+
+  public clearFind(): void {
+    this.setFindMatches([], -1);
   }
 
   public requestMeasure(): void {
