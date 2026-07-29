@@ -10,6 +10,7 @@ const {
   NOTES_SCHEMA_VERSION,
   NotesStore,
   classifyNoteDraftRecovery,
+  rankNoteIdsForSearch,
 } = require('../dist/main/notesStore');
 const { EMPTY_RICH_TEXT_CONTENT, normalizeRichTextContent } = require('../dist/shared/noteRichText');
 
@@ -55,6 +56,27 @@ test('late Note draft recovery updates only an unchanged base and preserves clou
   assert.equal(classifyNoteDraftRecovery(alreadySaved, base, lateDraft), 'already-saved');
   assert.equal(classifyNoteDraftRecovery(cloud, base, lateDraft), 'conflict');
   assert.equal(classifyNoteDraftRecovery(undefined, base, lateDraft), 'conflict');
+});
+
+test('main-process Note search preserves name, metadata, content, and Rich Text ranking', () => {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  const notes = [
+    storedNote({ id: 'content', name: 'Runbook', content: 'deploy api server' }),
+    storedNote({ id: 'tag', name: 'Operations', content: '', tags: ['api'] }),
+    storedNote({ id: 'prefix', name: 'API examples', content: '' }),
+    storedNote({
+      id: 'rich',
+      name: 'Formatted',
+      language: 'richtext',
+      content: normalizeRichTextContent({
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'api body' }] }],
+      }),
+    }),
+  ].map((note) => ({ ...note, createdAt: timestamp, updatedAt: timestamp }));
+
+  assert.deepEqual(rankNoteIdsForSearch(notes, ' api '), ['prefix', 'tag', 'content', 'rich']);
+  assert.deepEqual(rankNoteIdsForSearch(notes, 'unrelated'), []);
 });
 
 function storedNote(overrides = {}) {

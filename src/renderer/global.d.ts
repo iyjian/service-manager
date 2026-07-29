@@ -1,4 +1,4 @@
-import type { KubernetesApi, NotesApi, ProxyApi, ServiceApi, SettingsApi } from '../shared/types';
+import type { KubernetesApi, NotesApi, ProxyApi, ServiceApi, SettingsApi, SqlApi } from '../shared/types';
 
 declare global {
   interface Window {
@@ -7,6 +7,7 @@ declare global {
     settingsApi: SettingsApi;
     proxyApi: ProxyApi;
     kubernetesApi: KubernetesApi;
+    sqlApi: SqlApi;
   }
 }
 

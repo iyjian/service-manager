@@ -1,5 +1,5 @@
 import { flushSentry } from './sentry';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs, type Stats } from 'node:fs';
@@ -18,6 +18,7 @@ import type {
   ForwardState,
   HostConfig,
   HostDraft,
+  Note,
   NoteDeleteInput,
   NoteDeletePreview,
   NoteDraft,
@@ -25,6 +26,7 @@ import type {
   NoteExportInput,
   NotePlacementInput,
   NoteMoveInput,
+  NoteSummary,
   NoteTreeExpansionInput,
   NotesWorkspaceSnapshot,
   NotesWorkspaceDelta,
@@ -107,6 +109,7 @@ import {
   classifyNoteDraftRecovery,
   normalizeNoteDraft,
   normalizeNoteSnapshot,
+  rankNoteIdsForSearch,
   type NoteTombstone,
   type NotesSnapshot,
 } from './notesStore';
@@ -116,7 +119,14 @@ import { NotesWorkspaceApplyCoordinator } from './notesWorkspaceApply';
 import { UiPreferencesStore } from './uiPreferencesStore';
 import { LlmSettingsStore } from './llmSettingsStore';
 import { fetchLlmModels } from './llmModels';
-import { S3SyncRuntime } from './s3Sync';
+import { SqlCredentialsStore } from './sqlCredentialsStore';
+import { SqlRuntime } from './sqlRuntime';
+import {
+  S3SyncRuntime,
+  type S3LocalChange,
+  type S3NotesIncrementalIntent,
+  type S3NotesIncrementalSnapshot,
+} from './s3Sync';
 import {
   createNotesAttachmentPreview,
   noteAttachmentPreviewKind,
@@ -172,6 +182,8 @@ const IPC_CHANNELS = {
   appMemoryUsage: 'app:memory-usage',
   notesList: 'notes:list',
   notesWorkspace: 'notes:workspace',
+  notesGet: 'notes:get',
+  notesSearch: 'notes:search',
   notesCreate: 'notes:create',
   notesUpdate: 'notes:update',
   notesMove: 'notes:move',
@@ -202,6 +214,16 @@ const IPC_CHANNELS = {
   llmSettingsSave: 'settings:llm:save',
   llmSettingsReveal: 'settings:llm:reveal-token',
   llmModelsList: 'settings:llm:list-models',
+  sqlAuthState: 'sql:auth-state',
+  sqlLogin: 'sql:login',
+  sqlLogout: 'sql:logout',
+  sqlQueriesList: 'sql:queries:list',
+  sqlQueryGet: 'sql:query:get',
+  sqlQueryCreate: 'sql:query:create',
+  sqlQueryUpdate: 'sql:query:update',
+  sqlQueryRename: 'sql:query:rename',
+  sqlQueryDelete: 'sql:query:delete',
+  sqlExecute: 'sql:execute',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
   s3SettingsTest: 'settings:s3:test',
@@ -275,6 +297,7 @@ let notesTreeViewStore: NotesTreeViewStore | null = null;
 let notesWorkspaceApplyCoordinator: NotesWorkspaceApplyCoordinator | null = null;
 let uiPreferencesStore: UiPreferencesStore | null = null;
 let llmSettingsStore: LlmSettingsStore | null = null;
+let sqlRuntime: SqlRuntime | null = null;
 let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
@@ -488,6 +511,11 @@ function getLlmSettingsStore(): LlmSettingsStore {
   return llmSettingsStore;
 }
 
+function getSqlRuntime(): SqlRuntime {
+  if (!sqlRuntime) throw new Error('SQL is not initialized.');
+  return sqlRuntime;
+}
+
 function getS3SyncRuntime(): S3SyncRuntime {
   if (!s3SyncRuntime) {
     throw new Error('S3 sync is not initialized.');
@@ -520,20 +548,30 @@ function assertNotesWorkspaceSafe(): void {
   }
 }
 
-function mutateNotesSharedData<T>(operation: () => Promise<T>): Promise<T> {
-  return mutateS3SharedData(async () => {
+function mutateNotesSharedData<T>(
+  operation: () => Promise<T>,
+  change: S3LocalChange | ((result: T) => S3LocalChange) = { kind: 'full' },
+): Promise<T> {
+  return runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
-    return operation();
+    const result = await operation();
+    s3SyncRuntime?.markLocalChange(typeof change === 'function' ? change(result) : change);
+    return result;
   });
 }
 
 function notesWorkspaceSnapshot(): NotesWorkspaceSnapshot {
   assertNotesWorkspaceSafe();
   return {
-    notes: getNotesStore().list(),
+    notes: getNotesStore().list().map(noteSummary),
     tree: getNotesTreeStore().snapshot(),
     expandedNoteIds: getNotesTreeViewStore().snapshot().expandedNoteIds,
   };
+}
+
+function noteSummary(note: Note): NoteSummary {
+  const { content: _content, ...summary } = note;
+  return { ...summary, tags: [...summary.tags] };
 }
 
 function validateNotePlacement(value: unknown, allowUndefined = false): NotePlacementInput {
@@ -1374,10 +1412,6 @@ function createWindow(): BrowserWindow {
     logRuntimeError('window:unresponsive', new Error('Renderer became unresponsive.'));
   });
 
-  window.on('focus', () => {
-    s3SyncRuntime?.checkForRemoteChanges();
-  });
-
   window.webContents.once('did-finish-load', () => {
     void s3SyncRuntime?.startAutoSync().catch((error) => logRuntimeError('s3:auto-start', error));
   });
@@ -1478,7 +1512,7 @@ function applyAppMenu(): void {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
+        { role: 'reload', accelerator: 'CmdOrCtrl+Alt+R' },
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
@@ -1698,6 +1732,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     Promise.resolve().then(() => notesTreeViewStore?.flush()),
     Promise.resolve().then(() => uiPreferencesStore?.flush()),
     Promise.resolve().then(() => llmSettingsStore?.flush()),
+    Promise.resolve().then(() => sqlRuntime?.shutdown()),
     Promise.resolve().then(() => s3SharedDataMutationQueue),
     Promise.resolve().then(() => s3SyncRuntime?.shutdown()),
     Promise.resolve().then(() => portForwardManager.shutdown()),
@@ -1886,6 +1921,34 @@ async function collectS3SharedAppData(): Promise<S3SharedAppDataV2> {
   return runS3SharedDataMutation(collectS3SharedAppDataUnlocked);
 }
 
+async function collectS3ChangedNotes(
+  intent: S3NotesIncrementalIntent,
+): Promise<S3NotesIncrementalSnapshot> {
+  return runS3SharedDataMutation(async () => {
+    assertNotesWorkspaceSafe();
+    const store = getNotesStore();
+    await store.flush();
+    const notes: Note[] = [];
+    const tombstones: NoteTombstone[] = [];
+    const tombstonesById = new Map(store.exportTombstones().map((tombstone) => [tombstone.id, tombstone]));
+    for (const id of new Set([...intent.upsertIds, ...intent.deleteIds])) {
+      const note = store.get(id);
+      if (note) {
+        notes.push(note);
+        continue;
+      }
+      const tombstone = tombstonesById.get(id);
+      if (!tombstone) throw new Error('A changed Note is no longer available.');
+      tombstones.push(tombstone);
+    }
+    return {
+      notes,
+      tombstones,
+      ...(intent.includeTree ? { notesTree: getNotesTreeStore().snapshot() } : {}),
+    };
+  });
+}
+
 function validateS3AppliedHosts(hosts: HostConfig[], currentHosts: HostConfig[]): HostConfig[] {
   const hostIds = new Set<string>();
   const forwardIds = new Set<string>();
@@ -2027,13 +2090,41 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.notesList, async () => runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
-    return getNotesStore().list();
+    return getNotesStore().list().map(noteSummary);
   }));
   ipcMain.handle(IPC_CHANNELS.notesWorkspace, async () => (
     runS3SharedDataMutation(async () => notesWorkspaceSnapshot())
   ));
+  ipcMain.handle(IPC_CHANNELS.notesGet, async (_event, idValue: unknown) => (
+    runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
+      const note = getNotesStore().get(validateNoteId(idValue));
+      if (!note) throw new Error('Note not found.');
+      return note;
+    })
+  ));
+  ipcMain.handle(IPC_CHANNELS.notesSearch, async (_event, inputValue: unknown) => (
+    runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
+      if (!isRecord(inputValue)
+        || typeof inputValue.query !== 'string'
+        || inputValue.query.length > 512) {
+        throw new Error('Note search is invalid.');
+      }
+      const notes = getNotesStore().list();
+      if (inputValue.activeNote !== undefined) {
+        const activeNote = normalizeNoteSnapshot(inputValue.activeNote);
+        const index = notes.findIndex((note) => note.id === activeNote.id);
+        if (index >= 0 && notes[index]?.updatedAt === activeNote.updatedAt) {
+          notes[index] = activeNote;
+        }
+      }
+      return rankNoteIdsForSearch(notes, inputValue.query);
+    })
+  ));
   ipcMain.handle(IPC_CHANNELS.notesCreate, async (_event, placementValue: unknown) => {
     const placement = validateNotePlacement(placementValue, true);
+    let createdNoteId: string | undefined;
     return mutateNotesSharedData(async () => {
       const previousNotes = getNotesStore().exportSnapshot();
       const previousTombstones = getNotesStore().exportTombstones();
@@ -2041,6 +2132,7 @@ function registerIpcHandlers(): void {
       const previousExpanded = getNotesTreeViewStore().snapshot().expandedNoteIds;
       try {
         const note = await getNotesStore().create();
+        createdNoteId = note.id;
         await getNotesTreeStore().insert(note.id, placement.parentId, placement.beforeNoteId);
         if (placement.parentId !== null) {
           await getNotesTreeViewStore().set(
@@ -2054,6 +2146,9 @@ function registerIpcHandlers(): void {
         await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
         throw error;
       }
+    }, () => {
+      if (!createdNoteId) throw new Error('The created Note identity is unavailable.');
+      return { kind: 'notes', upsertIds: [createdNoteId], treeChanged: true };
     });
   });
   ipcMain.handle(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
@@ -2066,7 +2161,7 @@ function registerIpcHandlers(): void {
     if (expectedNote.id !== id) throw new Error('Note update base is invalid.');
     return mutateNotesSharedData(async () => {
       return getNotesStore().compareAndUpdate(id, expectedNote, draft);
-    });
+    }, { kind: 'notes', upsertIds: [id] });
   });
   ipcMain.handle(IPC_CHANNELS.notesMove, async (_event, inputValue: unknown) => {
     const input = validateNoteMove(inputValue);
@@ -2086,7 +2181,7 @@ function registerIpcHandlers(): void {
         await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
         throw error;
       }
-    });
+    }, { kind: 'notes', treeChanged: true });
   });
   ipcMain.handle(IPC_CHANNELS.notesTreeExpanded, async (_event, inputValue: unknown) => {
     const input = validateNoteTreeExpansion(inputValue);
@@ -2139,7 +2234,11 @@ function registerIpcHandlers(): void {
         const expanded = await getNotesTreeViewStore().replaceActiveIds(
           getNotesStore().list().map((note) => note.id),
         );
-        s3SyncRuntime?.markLocalChange();
+        s3SyncRuntime?.markLocalChange({
+          kind: 'notes',
+          deleteIds: deletedIds,
+          treeChanged: true,
+        });
         return {
           status: 'deleted' as const,
           deletedIds,
@@ -2185,7 +2284,11 @@ function registerIpcHandlers(): void {
         await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
         throw error;
       }
-    });
+    }, ({ recovered }) => ({
+      kind: 'notes',
+      upsertIds: recovered.map((item) => item.noteId),
+      treeChanged: recovered.some((item) => item.conflict),
+    }));
   });
   ipcMain.handle(IPC_CHANNELS.notesImageUpload, async (_event, input: unknown) =>
     getS3SyncRuntime().uploadNoteImage(input)
@@ -2510,7 +2613,12 @@ function registerIpcHandlers(): void {
               await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
               throw error;
             }
-            s3SyncRuntime?.markLocalChange();
+            s3SyncRuntime?.markLocalChange({
+              kind: 'notes',
+              upsertIds: notesDelta.upsertedNotes.map((note) => note.id),
+              deleteIds: notesDelta.removedNoteIds,
+              treeChanged,
+            });
           }
           return { summary: merged.summary, changed: notesChanged || treeChanged, notesDelta };
         });
@@ -2594,6 +2702,57 @@ function registerIpcHandlers(): void {
     } finally {
       activeLlmModelRequests.delete(controller);
     }
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlAuthState, async (_event, environment: unknown) =>
+    getSqlRuntime().getAuthState(environment)
+  );
+  ipcMain.handle(IPC_CHANNELS.sqlLogin, async (_event, input: unknown) =>
+    getSqlRuntime().login(input)
+  );
+  ipcMain.handle(IPC_CHANNELS.sqlLogout, async (_event, environment: unknown) =>
+    getSqlRuntime().logout(environment)
+  );
+  ipcMain.handle(IPC_CHANNELS.sqlQueriesList, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'search'].includes(key))) {
+      throw new Error('The saved query list request is invalid.');
+    }
+    return getSqlRuntime().listQueries(input.environment, input.search);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlQueryGet, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'id'].includes(key))) {
+      throw new Error('The saved query request is invalid.');
+    }
+    return getSqlRuntime().getQuery(input.environment, input.id);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlQueryCreate, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'draft'].includes(key))) {
+      throw new Error('The saved query create request is invalid.');
+    }
+    return getSqlRuntime().createQuery(input.environment, input.draft);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlQueryUpdate, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'id', 'draft'].includes(key))) {
+      throw new Error('The saved query update request is invalid.');
+    }
+    return getSqlRuntime().updateQuery(input.environment, input.id, input.draft);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlQueryRename, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'id', 'name'].includes(key))) {
+      throw new Error('The saved query rename request is invalid.');
+    }
+    return getSqlRuntime().renameQuery(input.environment, input.id, input.name);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlQueryDelete, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'id'].includes(key))) {
+      throw new Error('The saved query delete request is invalid.');
+    }
+    await getSqlRuntime().deleteQuery(input.environment, input.id);
+  });
+  ipcMain.handle(IPC_CHANNELS.sqlExecute, async (_event, input: unknown) => {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'statement'].includes(key))) {
+      throw new Error('The SQL execution request is invalid.');
+    }
+    return getSqlRuntime().execute(input.environment, input.statement);
   });
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
@@ -3429,6 +3588,13 @@ app.whenReady()
     });
     await llmSettingsStore.load();
 
+    const sqlCredentialsStore = new SqlCredentialsStore({
+      filePath: path.join(app.getPath('userData'), 'sql-login.json'),
+      credentialProtector,
+    });
+    await sqlCredentialsStore.load();
+    sqlRuntime = new SqlRuntime({ credentialsStore: sqlCredentialsStore });
+
     const userDataPath = app.getPath('userData');
     const initializedProxyRuntime = new ProxyRuntime(path.join(userDataPath, 'proxy'));
     proxyRuntime = initializedProxyRuntime;
@@ -3450,11 +3616,10 @@ app.whenReady()
       appVersion: app.getVersion(),
       credentialProtector,
       snapshotProvider: collectS3SharedAppData,
+      notesIncrementalProvider: collectS3ChangedNotes,
       snapshotApplier: applyS3SharedAppData,
       onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),
     });
-
-    powerMonitor.on('resume', () => s3SyncRuntime?.checkForRemoteChanges());
 
     applyAppIcon();
     registerIpcHandlers();

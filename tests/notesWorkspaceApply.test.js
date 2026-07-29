@@ -66,6 +66,7 @@ test('incremental workspace apply returns exact Note and tree deltas', async (t)
   const delta = await work.coordinator.replace(next);
 
   assert.deepEqual(delta.upsertedNotes.map((item) => item.id), ['a', 'c']);
+  assert.ok(delta.upsertedNotes.every((item) => !Object.hasOwn(item, 'content')));
   assert.deepEqual(delta.removedNoteIds, ['b']);
   assert.deepEqual(delta.upsertedTreeNodes, [{ noteId: 'c', parentId: 'a', order: 1024 }]);
   assert.deepEqual(delta.removedTreeNodeIds, ['b']);

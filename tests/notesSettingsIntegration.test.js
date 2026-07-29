@@ -72,6 +72,8 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
 
   assert.match(preload, /listNotes:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:list'\)/);
   assert.match(preload, /getWorkspace:\s*\(\)\s*=>\s*[^\n]*invoke\('notes:workspace'\)/);
+  assert.match(preload, /getNote:\s*\(id\)\s*=>\s*[^\n]*invoke\('notes:get', id\)/);
+  assert.match(preload, /searchNotes:\s*\(query, activeNote\)\s*=>\s*[^\n]*invoke\('notes:search', \{ query, activeNote \}\)/);
   assert.match(preload, /createNote:\s*\(placement\)\s*=>\s*[^\n]*invoke\('notes:create', placement\)/);
   assert.match(preload, /updateNote:\s*\(id, draft, expectedNote\)\s*=>[\s\S]*?invoke\('notes:update', \{ id, draft, expectedNote \}\)/);
   assert.match(preload, /moveNote:\s*\(input\)\s*=>\s*[^\n]*invoke\('notes:move', input\)/);
@@ -88,6 +90,8 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   for (const handler of [
     'notesList',
     'notesWorkspace',
+    'notesGet',
+    'notesSearch',
     'notesCreate',
     'notesUpdate',
     'notesMove',
@@ -139,6 +143,10 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /window\.notesApi\.recoverDrafts\(pending\)/);
   assert.match(notesPage, /expectedNote: cloneNote\(expectedNote\)/);
   assert.match(notesPage, /window\.notesApi\.getWorkspace\(\)/);
+  assert.match(notesPage, /window\.notesApi\.getNote\(id\)/);
+  assert.match(notesPage, /workspace\.notes\.map\(rendererNote\)/);
+  assert.match(notesPage, /this\.loadedNoteIds = new Set\(\)/);
+  assert.match(notesPage, /releaseEditorResources\(\) \{[\s\S]*?this\.codeEditor\.destroy\(\)[\s\S]*?this\.richTextEditor\.destroy\(\)[\s\S]*?this\.releaseNoteBody\(this\.selectedId\)/);
   assert.match(notesPage, /window\.notesApi\.createNote\(\{ parentId \}\)/);
   assert.match(notesPage, /window\.notesApi\.moveNote\(\{/);
   assert.match(notesPage, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
@@ -171,6 +179,16 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /row\.draggable = true/);
   assert.match(notesPage, /handleListKeydown\(event\)/);
   assert.match(codeMirrorVendor, /const basicSetup/);
+});
+
+test('Notes mutations publish target-only S3 intents while startup retains the full snapshot provider', async () => {
+  const main = await readFile(path.join(projectRoot, 'src', 'main', 'main.ts'), 'utf8');
+  assert.match(main, /snapshotProvider: collectS3SharedAppData,[\s\S]*?notesIncrementalProvider: collectS3ChangedNotes/);
+  assert.match(main, /async function collectS3ChangedNotes\([\s\S]*?store\.get\(id\)[\s\S]*?tombstonesById\.get\(id\)[\s\S]*?intent\.includeTree/);
+  assert.match(main, /IPC_CHANNELS\.notesUpdate[\s\S]*?\{ kind: 'notes', upsertIds: \[id\] \}/);
+  assert.match(main, /IPC_CHANNELS\.notesMove[\s\S]*?\{ kind: 'notes', treeChanged: true \}/);
+  assert.match(main, /IPC_CHANNELS\.notesDelete[\s\S]*?deleteIds: deletedIds,[\s\S]*?treeChanged: true/);
+  assert.doesNotMatch(main, /powerMonitor|s3SyncRuntime\?\.checkForRemoteChanges/);
 });
 
 test('compiled Notes exposes file cards, the six-dot command handle, and PDF or Markdown downloads', async () => {

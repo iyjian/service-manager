@@ -4271,6 +4271,587 @@
     @apply pointer-events-none fixed z-[1200] max-w-[360px] rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-white shadow-2xl;
   }
 
+  .app-shell[data-page='sql'] {
+    @apply mx-0 max-w-none px-3 py-3;
+    height: 100dvh;
+    max-height: 100dvh;
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .sql-page {
+    @apply grid min-h-0 min-w-0 overflow-hidden rounded-xl border border-zinc-300 bg-white shadow-sm;
+    grid-template-rows: 52px minmax(0, 1fr);
+    --sql-sidebar-width: 300px;
+    --sql-editor-height: 320px;
+  }
+
+  .sql-page-head {
+    @apply flex min-w-0 items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3;
+  }
+
+  .sql-title-group,
+  .sql-session-actions,
+  .sql-environment-tabs,
+  .sql-sidebar-tools,
+  .sql-sidebar-actions,
+  .sql-query-toolbar,
+  .sql-shortcut-hint,
+  .sql-results-head,
+  .sql-results-head > div {
+    @apply flex min-w-0 items-center;
+  }
+
+  .sql-environment-tabs {
+    @apply gap-1 rounded-lg border border-zinc-200 bg-white p-0.5;
+  }
+
+  .sql-environment-tabs button {
+    @apply h-7 rounded-md border-0 bg-transparent px-3 text-[12px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .sql-environment-tabs button[aria-selected='true'] {
+    @apply bg-zinc-900 text-white shadow-sm;
+  }
+
+  .sql-page[data-environment='development'] .sql-environment-tabs button[aria-selected='true'] {
+    @apply bg-blue-600;
+  }
+
+  .sql-session-actions {
+    @apply shrink gap-2 overflow-hidden;
+  }
+
+  .sql-session-user {
+    @apply min-w-0 max-w-48 truncate text-xs text-zinc-500;
+  }
+
+  .sql-shortcut-prefix {
+    @apply shrink-0 text-[10.5px] font-medium text-zinc-400;
+  }
+
+  .sql-page-state,
+  .sql-login-view {
+    @apply min-h-0 items-center justify-center bg-zinc-50;
+  }
+
+  .sql-page-state {
+    @apply flex text-sm text-zinc-500;
+  }
+
+  .sql-login-view {
+    @apply flex p-6;
+  }
+
+  .sql-login-card {
+    @apply grid w-full max-w-[380px] gap-4 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm;
+  }
+
+  .sql-login-heading {
+    @apply grid gap-1;
+  }
+
+  .sql-login-heading h2 {
+    @apply m-0 mt-2 text-lg font-semibold text-zinc-950;
+  }
+
+  .sql-login-heading p {
+    @apply m-0 text-xs leading-5 text-zinc-500;
+  }
+
+  .sql-login-error {
+    @apply m-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700;
+  }
+
+  .sql-environment-badge {
+    @apply inline-flex h-6 w-fit shrink-0 items-center rounded-md border border-amber-200 bg-amber-50 px-2 text-[11px] font-semibold text-amber-700;
+  }
+
+  .sql-page[data-environment='development'] .sql-environment-badge {
+    @apply border-blue-200 bg-blue-50 text-blue-700;
+  }
+
+  .sql-workspace {
+    @apply grid min-h-0 min-w-0 overflow-hidden;
+    grid-template-columns: var(--sql-sidebar-width) 6px minmax(0, 1fr);
+  }
+
+  .sql-sidebar {
+    @apply grid min-h-0 min-w-0 bg-zinc-50;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .sql-results-head h2 {
+    @apply m-0 text-[12px] font-semibold text-zinc-900;
+  }
+
+  #sql-result-meta {
+    @apply text-[11px] text-zinc-400;
+  }
+
+  .sql-sidebar-tools {
+    @apply gap-1 p-2;
+  }
+
+  .sql-sidebar-actions {
+    @apply gap-1;
+  }
+
+  .sql-sidebar-actions .icon-btn {
+    @apply h-7 w-7;
+  }
+
+  .sql-query-search {
+    @apply flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-2 text-zinc-400 focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-300;
+  }
+
+  .sql-query-search svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .sql-query-search input {
+    @apply h-7 min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-zinc-900 outline-none placeholder:text-zinc-400;
+  }
+
+  .sql-query-list {
+    @apply min-h-0 overflow-y-auto border-t border-zinc-200 p-1.5;
+  }
+
+  .sql-query-list-empty {
+    @apply px-3 py-8 text-center text-xs text-zinc-400;
+  }
+
+  .sql-query-row {
+    @apply mb-0.5 grid min-w-0 grid-cols-[minmax(0,1fr)_28px_28px] items-center rounded-md border border-transparent transition hover:bg-zinc-100;
+  }
+
+  .sql-query-row[data-selected='true'] {
+    @apply border-zinc-300 bg-white shadow-sm;
+  }
+
+  .sql-query-row-main {
+    @apply grid min-w-0 cursor-pointer gap-0.5 border-0 bg-transparent px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+  }
+
+  .sql-query-row-name {
+    @apply truncate text-[12.5px] font-medium text-zinc-800;
+  }
+
+  .sql-query-row-meta {
+    @apply truncate text-[10.5px] text-zinc-400;
+  }
+
+  .sql-query-row-action {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded-md border-0 bg-transparent p-0 text-zinc-400 outline-none transition focus-visible:ring-2;
+  }
+
+  .sql-query-row-edit {
+    @apply hover:bg-blue-50 hover:text-blue-600 focus-visible:ring-blue-200;
+  }
+
+  .sql-query-row-delete {
+    @apply hover:bg-red-50 hover:text-red-600 focus-visible:ring-red-200;
+  }
+
+  .sql-query-row-action svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .sql-sidebar-resizer,
+  .sql-result-resizer {
+    @apply relative z-20 block border-0 bg-transparent p-0 outline-none;
+    touch-action: none;
+  }
+
+  .sql-sidebar-resizer {
+    @apply h-full w-1.5 cursor-col-resize;
+  }
+
+  .sql-sidebar-resizer::before {
+    @apply absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-zinc-300 transition-colors;
+    content: '';
+  }
+
+  .sql-result-resizer {
+    @apply h-1.5 w-full cursor-row-resize;
+  }
+
+  .sql-result-resizer::before {
+    @apply absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-zinc-300 transition-colors;
+    content: '';
+  }
+
+  .sql-sidebar-resizer:hover::before,
+  .sql-sidebar-resizer:focus-visible::before,
+  .sql-result-resizer:hover::before,
+  .sql-result-resizer:focus-visible::before,
+  .sql-page[data-resizing] .sql-sidebar-resizer::before,
+  .sql-page[data-resizing] .sql-result-resizer::before {
+    @apply bg-blue-500;
+  }
+
+  .sql-sidebar-resizer:focus-visible,
+  .sql-result-resizer:focus-visible {
+    @apply ring-2 ring-inset ring-blue-200;
+  }
+
+  .sql-page[data-resizing],
+  .sql-page[data-resizing] * {
+    user-select: none !important;
+  }
+
+  .sql-query-workspace {
+    @apply grid min-h-0 min-w-0 overflow-hidden bg-white;
+    grid-template-rows: 45px var(--sql-editor-height) 6px minmax(0, 1fr);
+  }
+
+  .sql-query-toolbar {
+    @apply overflow-hidden border-b border-zinc-200 bg-zinc-100 px-1.5;
+  }
+
+  .sql-query-tabs {
+    @apply flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1;
+  }
+
+  .sql-query-tab {
+    @apply inline-flex max-w-[200px] min-w-0 shrink-0 items-center overflow-hidden rounded-md border border-zinc-200 bg-white/80 text-zinc-600 shadow-sm;
+  }
+
+  .sql-query-tab[data-active='true'] {
+    @apply border-zinc-700 bg-zinc-700 text-white;
+  }
+
+  .sql-query-tab-select {
+    @apply flex h-7 min-w-0 max-w-[172px] flex-1 cursor-pointer items-center gap-1.5 overflow-hidden border-0 bg-transparent px-2 text-left text-[11.5px] font-medium text-inherit outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400;
+  }
+
+  .sql-query-tab[data-active='true'] .sql-query-tab-select {
+    @apply hover:bg-white/10 focus-visible:ring-zinc-300;
+  }
+
+  .sql-query-tab-title {
+    @apply min-w-0 flex-1 truncate;
+  }
+
+  .sql-query-tab-close {
+    @apply inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-none border-0 bg-transparent p-0 text-inherit outline-none transition hover:bg-black/10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400 disabled:cursor-wait disabled:opacity-40;
+  }
+
+  .sql-query-tab-close-icon {
+    @apply h-3 w-3;
+  }
+
+  .sql-query-tab-dirty {
+    @apply h-2 w-2 shrink-0 rounded-full bg-zinc-500;
+  }
+
+  .sql-query-tab[data-active='true'] .sql-query-tab-dirty {
+    @apply bg-white;
+  }
+
+  .sql-query-tab[data-dirty='true'] .sql-query-tab-close-icon {
+    display: none;
+  }
+
+  .sql-query-tab[data-dirty='true'] .sql-query-tab-close:not(:disabled):hover .sql-query-tab-dirty,
+  .sql-query-tab[data-dirty='true'] .sql-query-tab-close:not(:disabled):focus-visible .sql-query-tab-dirty,
+  .sql-query-tab[data-dirty='true'][data-close-hovered='true'] .sql-query-tab-close:not(:disabled) .sql-query-tab-dirty {
+    display: none;
+  }
+
+  .sql-query-tab[data-dirty='true'] .sql-query-tab-close:not(:disabled):hover .sql-query-tab-close-icon,
+  .sql-query-tab[data-dirty='true'] .sql-query-tab-close:not(:disabled):focus-visible .sql-query-tab-close-icon,
+  .sql-query-tab[data-dirty='true'][data-close-hovered='true'] .sql-query-tab-close:not(:disabled) .sql-query-tab-close-icon {
+    display: block;
+  }
+
+  .sql-shortcut-hint {
+    @apply shrink-0 gap-1 text-[10.5px] text-zinc-500;
+  }
+
+  .sql-shortcut-hint kbd {
+    @apply rounded border border-zinc-300 bg-white px-1.5 font-mono text-[10px] font-medium leading-5 text-zinc-700 shadow-sm;
+  }
+
+  .sql-editor {
+    @apply min-h-0 min-w-0 overflow-hidden;
+    font-family: var(--font-family-notes-code);
+  }
+
+  .sql-editor .cm-editor {
+    @apply h-full bg-white text-[13px] text-zinc-900 outline-none;
+  }
+
+  .sql-editor .cm-scroller {
+    @apply overflow-auto;
+    font-family: var(--font-family-notes-code);
+    line-height: 1.65;
+  }
+
+  .sql-editor .cm-gutters {
+    @apply border-r border-zinc-200 bg-zinc-50 text-zinc-400;
+  }
+
+  .sql-editor .cm-activeLine,
+  .sql-editor .cm-activeLineGutter {
+    @apply bg-blue-50/70;
+  }
+
+  .sql-editor .cm-selectionBackground,
+  .sql-editor .cm-content ::selection {
+    background-color: rgb(191 219 254) !important;
+  }
+
+  .sql-results {
+    @apply grid min-h-0 min-w-0 overflow-hidden bg-zinc-50;
+    grid-template-rows: 38px minmax(0, 1fr);
+  }
+
+  .sql-results-head {
+    @apply justify-start gap-3 border-b border-zinc-200 px-3;
+  }
+
+  .sql-results-head > div {
+    @apply gap-2;
+  }
+
+  .sql-result-content {
+    @apply min-h-0 min-w-0 overflow-auto bg-white;
+  }
+
+  .sql-result-empty,
+  .sql-result-error,
+  .sql-result-scalar {
+    @apply flex min-h-full items-center justify-center px-6 py-10 text-center text-xs text-zinc-400;
+  }
+
+  .sql-result-error {
+    @apply whitespace-pre-wrap text-red-600;
+  }
+
+  .sql-result-scalar {
+    @apply justify-start whitespace-pre-wrap text-left font-mono text-zinc-700;
+  }
+
+  .sql-result-table-wrap {
+    @apply min-h-full min-w-full overflow-visible bg-white;
+    width: max-content;
+  }
+
+  .sql-result-table {
+    @apply w-max min-w-full border-collapse text-left font-mono text-[12px];
+  }
+
+  .sql-result-table th {
+    @apply sticky top-0 z-10 whitespace-nowrap border-b border-r border-zinc-200 bg-zinc-100 px-3 py-2 font-semibold text-zinc-600;
+  }
+
+  .sql-result-table td {
+    @apply whitespace-nowrap border-b border-r border-zinc-100 bg-white px-3 py-1.5 align-middle text-zinc-700;
+  }
+
+  .sql-result-column-name {
+    @apply block max-w-[320px] truncate;
+  }
+
+  .sql-result-cell {
+    @apply inline-flex min-w-0 max-w-[360px] items-center gap-1;
+  }
+
+  .sql-result-cell-value {
+    @apply block min-w-0 max-w-[320px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap;
+  }
+
+  .sql-result-cell-detail {
+    @apply inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-zinc-400 outline-none transition hover:bg-zinc-100 hover:text-zinc-800 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .sql-result-cell-detail svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .sql-result-table tbody tr:hover td {
+    @apply bg-blue-50/40;
+  }
+
+  .sql-result-section {
+    @apply grid gap-2 border-b border-zinc-200 p-3;
+  }
+
+  .sql-result-section h3 {
+    @apply m-0 text-xs font-semibold text-zinc-700;
+  }
+
+  .sql-result-json {
+    @apply m-0 overflow-auto whitespace-pre-wrap break-words rounded-md border border-zinc-200 bg-white p-3 font-mono text-xs leading-5 text-zinc-700;
+  }
+
+  .sql-result-summary {
+    @apply grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-md border border-zinc-200 bg-white p-3 text-xs;
+  }
+
+  .sql-result-summary dt {
+    @apply font-mono text-zinc-500;
+  }
+
+  .sql-result-summary dd {
+    @apply m-0 font-mono text-zinc-800;
+  }
+
+  .sql-parameter-dialog {
+    @apply w-[min(calc(100vw-32px),440px)] rounded-xl border border-zinc-200 bg-white p-0 text-zinc-700 shadow-2xl;
+  }
+
+  .sql-parameter-dialog::backdrop {
+    @apply bg-zinc-950/35;
+  }
+
+  .sql-parameter-form {
+    @apply grid max-h-[70vh] gap-4 overflow-hidden p-5;
+  }
+
+  .sql-parameter-head h2 {
+    @apply m-0 text-base font-semibold text-zinc-950;
+  }
+
+  .sql-parameter-head p {
+    @apply mb-0 mt-1 text-xs text-zinc-500;
+  }
+
+  .sql-parameter-fields {
+    @apply grid min-h-0 gap-3 overflow-y-auto pr-1;
+  }
+
+  .sql-parameter-actions {
+    @apply flex justify-end gap-2 border-t border-zinc-200 pt-4;
+  }
+
+  .sql-value-dialog {
+    @apply h-[min(78vh,720px)] w-[min(calc(100vw-40px),960px)] rounded-xl border border-zinc-300 bg-white p-0 text-zinc-700 shadow-2xl;
+  }
+
+  .sql-value-dialog::backdrop {
+    @apply bg-zinc-950/40;
+  }
+
+  .sql-value-dialog-shell {
+    @apply grid h-full min-h-0 overflow-hidden;
+    grid-template-rows: 48px auto minmax(0, 1fr);
+  }
+
+  .sql-value-dialog-head,
+  .sql-value-dialog-title-group,
+  .sql-value-modes {
+    @apply flex min-w-0 items-center;
+  }
+
+  .sql-value-dialog-head {
+    @apply justify-between gap-3 border-b border-zinc-200 px-3;
+  }
+
+  .sql-value-dialog-title-group {
+    @apply gap-2 overflow-hidden;
+  }
+
+  .sql-value-dialog-title-group h2 {
+    @apply m-0 truncate text-sm font-semibold text-zinc-950;
+  }
+
+  .sql-value-kind {
+    @apply shrink-0 rounded border border-zinc-200 bg-zinc-100 px-1.5 py-0.5 font-mono text-[10px] font-medium text-zinc-500;
+  }
+
+  .sql-value-modes {
+    @apply gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5;
+  }
+
+  .sql-value-mode {
+    @apply h-7 rounded-md border-0 bg-transparent px-2.5 text-[11.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+  }
+
+  .sql-value-mode[aria-selected='true'] {
+    @apply bg-white text-zinc-950 shadow-sm ring-1 ring-zinc-200;
+  }
+
+  .sql-value-content {
+    @apply min-h-0 min-w-0 overflow-hidden bg-white;
+  }
+
+  .sql-value-code-wrap {
+    @apply grid h-full min-h-0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .sql-value-code {
+    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-zinc-950 p-4 font-mono text-[12px] leading-5 text-zinc-100;
+    tab-size: 2;
+  }
+
+  .sql-value-json-editor,
+  .sql-value-json-editor .cm-editor,
+  .sql-value-json-editor .cm-scroller {
+    @apply h-full min-h-0;
+  }
+
+  .sql-value-json-editor .cm-editor {
+    @apply bg-white text-[12px] text-zinc-900 outline-none;
+  }
+
+  .sql-value-json-editor .cm-scroller {
+    @apply overflow-auto font-mono;
+    line-height: 1.65;
+  }
+
+  .sql-value-json-editor .cm-content {
+    @apply py-3;
+  }
+
+  .sql-value-json-editor .cm-gutters {
+    @apply border-r border-zinc-200 bg-zinc-50 text-zinc-400;
+  }
+
+  .sql-value-json-editor .cm-activeLine,
+  .sql-value-json-editor .cm-activeLineGutter {
+    @apply bg-blue-50/70;
+  }
+
+  .sql-value-truncated {
+    @apply border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800;
+  }
+
+  .sql-value-html-frame {
+    @apply block h-full w-full border-0 bg-white;
+    pointer-events: none;
+  }
+
+  .sql-value-code .hljs-comment,
+  .sql-value-code .hljs-quote { color: #8b949e; }
+  .sql-value-code .hljs-variable,
+  .sql-value-code .hljs-template-variable,
+  .sql-value-code .hljs-attribute,
+  .sql-value-code .hljs-tag,
+  .sql-value-code .hljs-name,
+  .sql-value-code .hljs-regexp,
+  .sql-value-code .hljs-link,
+  .sql-value-code .hljs-selector-id,
+  .sql-value-code .hljs-selector-class { color: #f98181; }
+  .sql-value-code .hljs-number,
+  .sql-value-code .hljs-meta,
+  .sql-value-code .hljs-built_in,
+  .sql-value-code .hljs-builtin-name,
+  .sql-value-code .hljs-literal,
+  .sql-value-code .hljs-type,
+  .sql-value-code .hljs-params { color: #fbbc88; }
+  .sql-value-code .hljs-string,
+  .sql-value-code .hljs-symbol,
+  .sql-value-code .hljs-bullet { color: #b9f18d; }
+  .sql-value-code .hljs-title,
+  .sql-value-code .hljs-section { color: #faf594; }
+  .sql-value-code .hljs-keyword,
+  .sql-value-code .hljs-selector-tag { color: #70cff8; }
+  .sql-value-code .hljs-emphasis { font-style: italic; }
+  .sql-value-code .hljs-strong { font-weight: 700; }
+
   .hidden {
     display: none !important;
   }

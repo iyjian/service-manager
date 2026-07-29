@@ -62,6 +62,7 @@ import {
   mergeS3SharedAppDataV2,
   parseS3SharedAppDataV2,
   type S3SharedAppDataV2,
+  type S3NoteTombstone,
 } from './s3DataMerge';
 import { NOTES_IMAGE_LIMITS, NotesImageS3Store } from './notesImageS3';
 import {
@@ -80,7 +81,6 @@ const OBJECT_LAYOUT_VERSION = 1 as const;
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const AUTO_SYNC_DEBOUNCE_MS = 2_000;
-const AUTO_SYNC_INTERVAL_MS = 45_000;
 const MAX_RECONCILE_ATTEMPTS = 4;
 const MAX_LOCAL_RECOVERY_FILES = 20;
 const MAX_ACTIVE_NOTES_ATTACHMENT_TRANSFERS = 2;
@@ -105,11 +105,37 @@ export type S3SnapshotApplier = (
   expectedLocal?: S3SharedAppDataV2,
 ) => Promise<boolean | void>;
 
+export type S3LocalChange =
+  | { kind: 'full' }
+  | {
+    kind: 'notes';
+    upsertIds?: readonly string[];
+    deleteIds?: readonly string[];
+    treeChanged?: boolean;
+  };
+
+export interface S3NotesIncrementalIntent {
+  upsertIds: string[];
+  deleteIds: string[];
+  includeTree: boolean;
+}
+
+export interface S3NotesIncrementalSnapshot {
+  notes: Note[];
+  tombstones: S3NoteTombstone[];
+  notesTree?: NotesTreeSnapshot;
+}
+
+export type S3NotesIncrementalProvider = (
+  intent: S3NotesIncrementalIntent,
+) => Promise<S3NotesIncrementalSnapshot>;
+
 export interface S3SyncRuntimeOptions {
   userDataPath: string;
   appVersion: string;
   credentialProtector: S3CredentialProtector;
   snapshotProvider: S3SnapshotProvider;
+  notesIncrementalProvider?: S3NotesIncrementalProvider;
   snapshotApplier?: S3SnapshotApplier;
   onStateChanged?: (state: S3SyncState) => void;
   onDataApplied?: () => void;
@@ -936,9 +962,17 @@ export class S3SyncRuntime {
   >>();
   private activeNotesAttachmentTransfers = 0;
   private debounceTimer?: NodeJS.Timeout;
-  private intervalTimer?: NodeJS.Timeout;
   private dirtyGeneration = 0;
+  private pendingFullGeneration?: number;
+  private readonly pendingNoteUpserts = new Map<string, number>();
+  private readonly pendingNoteDeletes = new Map<string, number>();
+  private pendingNotesTreeGeneration?: number;
+  private baselineManifest?: ServiceManagerSyncManifestV3;
+  private baselineHeadEtag?: string;
+  private baselineEncryptionKeyId?: string;
+  private startupSyncComplete = false;
   private syncAgain = false;
+  private syncFullAgain = false;
   private autoStarted = false;
   private shuttingDown = false;
   private state: S3SyncState = { status: 'not-configured', pending: false };
@@ -973,23 +1007,13 @@ export class S3SyncRuntime {
     this.autoStarted = true;
     const settings = await this.ensureSettings();
     if (this.shuttingDown) return;
-    if (isConfigured(settings)) this.scheduleSync(0, false);
-    this.intervalTimer = setInterval(() => {
-      if (!this.shuttingDown) this.checkForRemoteChanges();
-    }, AUTO_SYNC_INTERVAL_MS);
-    this.intervalTimer.unref?.();
+    if (isConfigured(settings)) this.scheduleSync(0, false, true);
   }
 
-  public checkForRemoteChanges(): void {
-    if (this.shuttingDown) return;
-    void this.ensureSettings().then((settings) => {
-      if (isConfigured(settings) && !this.shuttingDown) this.scheduleSync(0, false);
-    }).catch(() => undefined);
-  }
-
-  public markLocalChange(): void {
+  public markLocalChange(change: S3LocalChange = { kind: 'full' }): void {
     if (this.shuttingDown) return;
     this.dirtyGeneration += 1;
+    this.recordLocalChange(change, this.dirtyGeneration);
     const pendingSince = this.state.pendingSince ?? this.now().toISOString();
     void this.enqueueSettingsMutation(async () => {
       const settings = await this.ensureSettings();
@@ -1023,7 +1047,7 @@ export class S3SyncRuntime {
       });
       return true;
     }).then((configured) => {
-      if (configured) this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true);
+      if (configured) this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
     }).catch(() => undefined);
   }
 
@@ -1162,6 +1186,8 @@ export class S3SyncRuntime {
         };
         await this.persist(next);
         this.settings = next;
+        this.clearIncrementalBaseline();
+        this.pendingFullGeneration = this.dirtyGeneration;
         if (isConfigured(next)) {
           this.updateState({
             status: 'pending',
@@ -1170,7 +1196,7 @@ export class S3SyncRuntime {
             ...(next.lastSyncedAt ? { lastSyncedAt: next.lastSyncedAt } : {}),
             ...(next.lastRevision ? { lastRevision: next.lastRevision } : {}),
           });
-          this.scheduleSync(0, true);
+          this.scheduleSync(0, true, true);
         } else {
           this.updateState({ status: 'not-configured', pending: false });
         }
@@ -1203,7 +1229,7 @@ export class S3SyncRuntime {
   }
 
   public syncAllDataToS3(): Promise<S3SyncResult> {
-    return this.requestSync(true);
+    return this.requestSync(true, true);
   }
 
   public async uploadNoteImage(value: unknown, signal?: AbortSignal): Promise<NoteImageUploadResult> {
@@ -1321,9 +1347,7 @@ export class S3SyncRuntime {
   public async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    if (this.intervalTimer) clearInterval(this.intervalTimer);
     this.debounceTimer = undefined;
-    this.intervalTimer = undefined;
     this.activeAbortController?.abort();
     for (const controller of this.activeConnectionTests.keys()) controller.abort();
     const imageShutdowns = [...this.activeNotesImageStores].map((store) => store.shutdown());
@@ -1542,29 +1566,99 @@ export class S3SyncRuntime {
     });
   }
 
-  private scheduleSync(delayMs: number, requireRerun: boolean): void {
+  private recordLocalChange(change: S3LocalChange, generation: number): void {
+    if (change.kind === 'full' || !this.options.notesIncrementalProvider) {
+      this.pendingFullGeneration = generation;
+      return;
+    }
+    for (const id of change.upsertIds ?? []) {
+      this.pendingNoteDeletes.delete(id);
+      this.pendingNoteUpserts.set(id, generation);
+    }
+    for (const id of change.deleteIds ?? []) {
+      this.pendingNoteUpserts.delete(id);
+      this.pendingNoteDeletes.set(id, generation);
+    }
+    if (change.treeChanged) this.pendingNotesTreeGeneration = generation;
+  }
+
+  private pendingNotesIntent(maximumGeneration: number): S3NotesIncrementalIntent | undefined {
+    const upsertIds = [...this.pendingNoteUpserts]
+      .filter(([, generation]) => generation <= maximumGeneration)
+      .map(([id]) => id)
+      .sort();
+    const deleteIds = [...this.pendingNoteDeletes]
+      .filter(([, generation]) => generation <= maximumGeneration)
+      .map(([id]) => id)
+      .sort();
+    const includeTree = this.pendingNotesTreeGeneration !== undefined
+      && this.pendingNotesTreeGeneration <= maximumGeneration;
+    return upsertIds.length > 0 || deleteIds.length > 0 || includeTree
+      ? { upsertIds, deleteIds, includeTree }
+      : undefined;
+  }
+
+  private clearLocalChangesThrough(maximumGeneration: number): void {
+    if (this.pendingFullGeneration !== undefined
+      && this.pendingFullGeneration <= maximumGeneration) {
+      this.pendingFullGeneration = undefined;
+    }
+    for (const [id, generation] of this.pendingNoteUpserts) {
+      if (generation <= maximumGeneration) this.pendingNoteUpserts.delete(id);
+    }
+    for (const [id, generation] of this.pendingNoteDeletes) {
+      if (generation <= maximumGeneration) this.pendingNoteDeletes.delete(id);
+    }
+    if (this.pendingNotesTreeGeneration !== undefined
+      && this.pendingNotesTreeGeneration <= maximumGeneration) {
+      this.pendingNotesTreeGeneration = undefined;
+    }
+  }
+
+  private clearIncrementalBaseline(): void {
+    this.baselineManifest = undefined;
+    this.baselineHeadEtag = undefined;
+    this.baselineEncryptionKeyId = undefined;
+    this.startupSyncComplete = false;
+  }
+
+  private updateIncrementalBaseline(
+    manifest: ServiceManagerSyncManifestV3,
+    headEtag: string | undefined,
+    encryptionKeyId: string,
+  ): void {
+    this.baselineManifest = manifest;
+    this.baselineHeadEtag = headEtag;
+    this.baselineEncryptionKeyId = encryptionKeyId;
+    this.startupSyncComplete = true;
+  }
+
+  private scheduleSync(delayMs: number, requireRerun: boolean, forceFull: boolean): void {
     if (this.shuttingDown) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = undefined;
-      void this.requestSync(requireRerun).catch(() => undefined);
+      void this.requestSync(requireRerun, forceFull).catch(() => undefined);
     }, Math.max(0, delayMs));
     this.debounceTimer.unref?.();
   }
 
-  private requestSync(requireRerun: boolean): Promise<S3SyncResult> {
+  private requestSync(requireRerun: boolean, forceFull: boolean): Promise<S3SyncResult> {
     if (this.shuttingDown) return Promise.reject(new Error('S3 sync was cancelled.'));
     if (this.syncPromise) {
       if (requireRerun) this.syncAgain = true;
+      if (forceFull) this.syncFullAgain = true;
       return this.syncPromise;
     }
-    const promise = this.enqueue(() => this.performReconcile());
+    const promise = this.enqueue(() => this.performSync(forceFull));
     this.syncPromise = promise;
     void promise.finally(() => {
       if (this.syncPromise === promise) this.syncPromise = undefined;
       if (this.syncAgain && !this.shuttingDown) {
+        const rerunFull = this.syncFullAgain;
         this.syncAgain = false;
-        this.scheduleSync(0, false);
+        this.syncFullAgain = false;
+        this.scheduleSync(0, false, rerunFull);
       }
     }).catch(() => undefined);
     return promise;
@@ -2103,6 +2197,289 @@ export class S3SyncRuntime {
     };
   }
 
+  private async publishIncrementalNotes(
+    settings: PersistedS3SyncSettings,
+    intent: S3NotesIncrementalIntent,
+    expectedGeneration: number,
+    signal: AbortSignal,
+    reportProgress: S3SyncProgressReporter,
+  ): Promise<{ status: 'conflict' } | { status: 'written'; result: S3SyncResult }> {
+    const provider = this.options.notesIncrementalProvider;
+    const baseline = this.baselineManifest;
+    const expectedHeadEtag = this.baselineHeadEtag;
+    const syncEncryptionKey = this.syncEncryptionKey(settings) as string;
+    const currentEncryptionKeyId = getS3SyncEncryptionKeyId(syncEncryptionKey);
+    if (!provider
+      || !baseline
+      || !expectedHeadEtag
+      || this.baselineEncryptionKeyId !== currentEncryptionKeyId
+      || settings.encryptedPreviousSyncEncryptionKey) {
+      return { status: 'conflict' };
+    }
+
+    reportProgress('reading-local');
+    let snapshot: S3NotesIncrementalSnapshot;
+    try {
+      snapshot = await provider(intent);
+    } catch {
+      throw new Error('Unable to prepare the changed Notes for S3 sync.');
+    }
+    if (this.dirtyGeneration !== expectedGeneration) return { status: 'conflict' };
+    const requestedIds = new Set([...intent.upsertIds, ...intent.deleteIds]);
+    const requestedUpserts = new Set(intent.upsertIds);
+    const requestedDeletes = new Set(intent.deleteIds);
+    const changedIds = new Set<string>();
+    const notes: Note[] = [];
+    for (const candidate of snapshot.notes) {
+      const note = cloneNoteValue(candidate);
+      hashS3V3NoteContent(note);
+      if (!requestedUpserts.has(note.id) || changedIds.has(note.id)) {
+        throw new Error('The changed Notes snapshot is invalid.');
+      }
+      changedIds.add(note.id);
+      notes.push(note);
+    }
+    const tombstones: S3NoteTombstone[] = [];
+    for (const candidate of snapshot.tombstones) {
+      if (!requestedDeletes.has(candidate.id) || changedIds.has(candidate.id)) {
+        throw new Error('The changed Notes snapshot is invalid.');
+      }
+      changedIds.add(candidate.id);
+      tombstones.push({ id: candidate.id, deletedAt: candidate.deletedAt });
+    }
+    if (changedIds.size !== requestedIds.size) {
+      throw new Error('The changed Notes snapshot is incomplete.');
+    }
+    if (intent.includeTree !== Boolean(snapshot.notesTree)) {
+      throw new Error('The changed Notes tree snapshot is invalid.');
+    }
+
+    const { accessKeyId, secretAccessKey } = this.credentials(settings);
+    const objectStore = new S3V3ObjectStore({
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
+      region: settings.region,
+      accessKeyId,
+      secretAccessKey,
+      syncEncryptionKey,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      createRandomBytes: this.createRandomBytes,
+      timeoutMs: this.timeoutMs,
+      signal,
+    });
+    const references = new Map(
+      baseline.data.notes.items.map((reference) => [reference.id, { ...reference }]),
+    );
+    const nextTombstones = new Map(
+      baseline.data.notes.tombstones.map((tombstone) => [tombstone.id, { ...tombstone }]),
+    );
+    const usedObjectIds = new Set([
+      ...baseline.data.notes.items.map((reference) => reference.objectId),
+      baseline.data.notes.tree.objectId,
+    ]);
+    const nextObjectId = (): string => {
+      for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+        const objectId = this.createObjectId();
+        if (!usedObjectIds.has(objectId)) {
+          usedObjectIds.add(objectId);
+          return objectId;
+        }
+      }
+      throw new Error('A unique S3 object identity could not be created. Try again.');
+    };
+    const plannedNotes: Array<
+      | { kind: 'reference'; note: Note; reference: S3V3NoteReference }
+      | {
+        kind: 'object';
+        note: Note;
+        contentHash: string;
+        object: ReturnType<typeof createServiceManagerNoteObjectV3>;
+      }
+    > = [];
+    for (const note of notes) {
+      const contentHash = hashS3V3NoteContent(note);
+      const existing = references.get(note.id);
+      if (existing?.contentHash === contentHash
+        && existing.encryptionKeyId === currentEncryptionKeyId) {
+        plannedNotes.push({ kind: 'reference', note, reference: existing });
+      } else {
+        plannedNotes.push({
+          kind: 'object',
+          note,
+          contentHash,
+          object: createServiceManagerNoteObjectV3(note, nextObjectId()),
+        });
+      }
+      nextTombstones.delete(note.id);
+    }
+    for (const tombstone of tombstones) {
+      references.delete(tombstone.id);
+      nextTombstones.set(tombstone.id, { ...tombstone });
+    }
+
+    let plannedTree:
+      | { kind: 'reference'; reference: S3V3NotesTreeReference }
+      | {
+        kind: 'object';
+        payload: S3V3NotesTreePayload;
+        contentHash: string;
+        object: ReturnType<typeof createServiceManagerNotesTreeObjectV3>;
+      } = { kind: 'reference', reference: { ...baseline.data.notes.tree } };
+    if (snapshot.notesTree) {
+      const payload = notesTreePayloadFromSnapshot(snapshot.notesTree);
+      const contentHash = hashS3V3NotesTreeContent(payload);
+      if (contentHash !== baseline.data.notes.tree.contentHash
+        || baseline.data.notes.tree.encryptionKeyId !== currentEncryptionKeyId) {
+        plannedTree = {
+          kind: 'object',
+          payload,
+          contentHash,
+          object: createServiceManagerNotesTreeObjectV3(payload, nextObjectId()),
+        };
+      }
+    }
+
+    for (const planned of plannedNotes) {
+      references.set(planned.note.id, planned.kind === 'reference'
+        ? { ...planned.reference }
+        : {
+          id: planned.note.id,
+          objectId: planned.object.objectId,
+          sha256: '0'.repeat(64),
+          contentHash: planned.contentHash,
+          encryptionKeyId: currentEncryptionKeyId,
+        });
+    }
+    const placeholderTreeReference: S3V3NotesTreeReference = plannedTree.kind === 'reference'
+      ? { ...plannedTree.reference }
+      : {
+        objectId: plannedTree.object.objectId,
+        sha256: '0'.repeat(64),
+        contentHash: plannedTree.contentHash,
+        encryptionKeyId: currentEncryptionKeyId,
+      };
+    const placeholderData = parseS3V3ManifestData({
+      schemaVersion: 4,
+      hosts: baseline.data.hosts,
+      notes: {
+        schemaVersion: 4,
+        items: [...references.values()].sort(compareStableIds),
+        tombstones: [...nextTombstones.values()].sort(compareStableIds),
+        tree: placeholderTreeReference,
+      },
+      proxy: baseline.data.proxy,
+    });
+    if (isDeepStrictEqual(placeholderData, baseline.data)) {
+      reportProgress('finishing');
+      const committed = await this.commitSuccessfulRevision(settings, baseline.revision);
+      return {
+        status: 'written',
+        result: {
+          action: 'up-to-date',
+          syncedAt: committed.syncedAt,
+          revision: baseline.revision,
+        },
+      };
+    }
+
+    const noteObjects = plannedNotes.filter((planned): planned is Extract<
+      (typeof plannedNotes)[number],
+      { kind: 'object' }
+    > => planned.kind === 'object');
+    const totalWrites = noteObjects.length + (plannedTree.kind === 'object' ? 1 : 0) + 2;
+    let completedWrites = 0;
+    const reportCompletedWrite = (): void => {
+      completedWrites += 1;
+      reportProgress('uploading', completedWrites, totalWrites);
+    };
+    reportProgress('uploading', 0, totalWrites);
+    let byteLength = 0;
+    const writtenReferences = await mapWithConcurrency(
+      noteObjects,
+      S3_NOTE_TRANSFER_CONCURRENCY,
+      async (planned) => {
+        for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+          const object = attempt === 0
+            ? planned.object
+            : createServiceManagerNoteObjectV3(planned.note, nextObjectId());
+          const written = await objectStore.putNote(object);
+          if (written.status === 'conflict') continue;
+          byteLength += written.byteLength;
+          reportCompletedWrite();
+          return { ...written.reference };
+        }
+        throw new Error('A unique S3 Note object could not be created. Try again.');
+      },
+    );
+    for (const reference of writtenReferences) references.set(reference.id, reference);
+
+    let notesTreeReference = plannedTree.kind === 'reference'
+      ? { ...plannedTree.reference }
+      : undefined;
+    if (plannedTree.kind === 'object') {
+      for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+        const object = attempt === 0
+          ? plannedTree.object
+          : createServiceManagerNotesTreeObjectV3(plannedTree.payload, nextObjectId());
+        const written = await objectStore.putNotesTree(object);
+        if (written.status === 'conflict') continue;
+        byteLength += written.byteLength;
+        notesTreeReference = { ...written.reference };
+        reportCompletedWrite();
+        break;
+      }
+      if (!notesTreeReference) throw new Error('A unique S3 Notes tree object could not be created. Try again.');
+    }
+
+    const revision = normalizedRevision(this.createRevision());
+    const manifest = createServiceManagerSyncManifestV3(
+      parseS3V3ManifestData({
+        schemaVersion: 4,
+        hosts: baseline.data.hosts,
+        notes: {
+          schemaVersion: 4,
+          items: [...references.values()].sort(compareStableIds),
+          tombstones: [...nextTombstones.values()].sort(compareStableIds),
+          tree: notesTreeReference,
+        },
+        proxy: baseline.data.proxy,
+      }),
+      {
+        appVersion: this.options.appVersion,
+        revision,
+        parentRevision: baseline.revision,
+        clientId: settings.clientId,
+        createdAt: this.now().toISOString(),
+      },
+    );
+    const writtenManifest = await objectStore.putManifest(manifest);
+    if (writtenManifest.status === 'conflict') return { status: 'conflict' };
+    byteLength += writtenManifest.byteLength;
+    reportCompletedWrite();
+    const head = createS3SyncHeadV3(
+      manifest,
+      writtenManifest.manifestSha256,
+      currentEncryptionKeyId,
+    );
+    const writtenHead = await objectStore.putHead(head, expectedHeadEtag);
+    if (writtenHead.status === 'conflict') return { status: 'conflict' };
+    reportCompletedWrite();
+    reportProgress('finishing');
+    const committed = await this.commitSuccessfulRevision(settings, manifest.revision);
+    this.updateIncrementalBaseline(manifest, writtenHead.etag, currentEncryptionKeyId);
+    return {
+      status: 'written',
+      result: {
+        action: 'pushed',
+        syncedAt: committed.syncedAt,
+        revision: manifest.revision,
+        byteLength,
+        ...(writtenHead.etag ? { etag: writtenHead.etag } : {}),
+      },
+    };
+  }
+
   private async reconcile(
     settings: PersistedS3SyncSettings,
     signal: AbortSignal,
@@ -2170,6 +2547,11 @@ export class S3SyncRuntime {
         }
         reportProgress('finishing');
         const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+        this.updateIncrementalBaseline(
+          published.manifest,
+          published.etag,
+          getS3SyncEncryptionKeyId(syncEncryptionKey),
+        );
         return {
           action: 'pushed',
           syncedAt: committed.syncedAt,
@@ -2276,6 +2658,11 @@ export class S3SyncRuntime {
         }
         reportProgress('finishing');
         const committed = await this.commitSuccessfulRevision(settings, headResult.head.revision);
+        this.updateIncrementalBaseline(
+          remoteResult.manifest,
+          headResult.etag,
+          remoteResult.encryptionKeyId,
+        );
         return {
           action: conflictCount > 0 ? 'conflict' : applyRequired ? 'pulled' : 'up-to-date',
           syncedAt: committed.syncedAt,
@@ -2319,6 +2706,11 @@ export class S3SyncRuntime {
       }
       reportProgress('finishing');
       const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+      this.updateIncrementalBaseline(
+        published.manifest,
+        published.etag,
+        getS3SyncEncryptionKeyId(syncEncryptionKey),
+      );
       return {
         action: conflictCount > 0 ? 'conflict' : 'pushed',
         syncedAt: committed.syncedAt,
@@ -2331,7 +2723,7 @@ export class S3SyncRuntime {
     throw new Error('S3 sync changed concurrently too many times. Try again.');
   }
 
-  private async performReconcile(): Promise<S3SyncResult> {
+  private async performSync(forceFull: boolean): Promise<S3SyncResult> {
     if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
     const settings = { ...(await this.ensureSettings()) };
     if (!isConfigured(settings)) {
@@ -2339,6 +2731,14 @@ export class S3SyncRuntime {
       throw new Error('S3 sync settings are incomplete.');
     }
     const startingGeneration = this.dirtyGeneration;
+    const notesIntent = this.pendingNotesIntent(startingGeneration);
+    let performedFull = forceFull
+      || !this.startupSyncComplete
+      || !this.baselineManifest
+      || !this.baselineHeadEtag
+      || (this.pendingFullGeneration !== undefined
+        && this.pendingFullGeneration <= startingGeneration)
+      || !notesIntent;
     this.updateState({
       status: 'syncing',
       pending: this.state.pending,
@@ -2350,12 +2750,28 @@ export class S3SyncRuntime {
     const controller = new AbortController();
     this.activeAbortController = controller;
     try {
-      const result = await this.reconcile(
-        settings,
-        controller.signal,
-        (phase, completedItems, totalItems) =>
-          this.reportSyncProgress(phase, completedItems, totalItems),
-      );
+      const reportProgress = (phase: S3SyncProgressPhase, completedItems?: number, totalItems?: number): void =>
+        this.reportSyncProgress(phase, completedItems, totalItems);
+      let result: S3SyncResult;
+      if (!performedFull && notesIntent) {
+        const incremental = await this.publishIncrementalNotes(
+          settings,
+          notesIntent,
+          startingGeneration,
+          controller.signal,
+          reportProgress,
+        );
+        if (incremental.status === 'written') {
+          result = incremental.result;
+        } else {
+          this.clearIncrementalBaseline();
+          performedFull = true;
+          result = await this.reconcile(settings, controller.signal, reportProgress);
+        }
+      } else {
+        result = await this.reconcile(settings, controller.signal, reportProgress);
+      }
+      this.clearLocalChangesThrough(startingGeneration);
       if (this.dirtyGeneration !== startingGeneration) {
         this.updateState({
           status: 'pending',
@@ -2364,7 +2780,7 @@ export class S3SyncRuntime {
           lastSyncedAt: result.syncedAt,
           ...(result.revision ? { lastRevision: result.revision } : {}),
         });
-        this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true);
+        this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
       } else {
         await this.clearPendingIntent(startingGeneration);
         if (this.dirtyGeneration !== startingGeneration) {
@@ -2375,7 +2791,7 @@ export class S3SyncRuntime {
             lastSyncedAt: result.syncedAt,
             ...(result.revision ? { lastRevision: result.revision } : {}),
           });
-          this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true);
+          this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
         } else {
           this.updateState({
             status: result.action === 'conflict' ? 'conflict' : 'synced',
@@ -2389,6 +2805,7 @@ export class S3SyncRuntime {
       return result;
     } catch (error) {
       if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
+      if (performedFull) this.clearIncrementalBaseline();
       const message = error instanceof Error ? error.message : 'S3 sync failed.';
       this.updateState({
         status: isOfflineSyncError(error) ? 'offline' : 'error',

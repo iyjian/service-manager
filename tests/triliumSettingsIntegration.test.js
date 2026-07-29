@@ -235,8 +235,8 @@ test('main process owns Trilium preparation sessions and applies each import ato
   assert.match(applyHandler.slice(applyFlush, sharedMutation), /if \(session\.s3ImageTarget\)[\s\S]*?notesImageTarget\(settings\) !== session\.s3ImageTarget[\s\S]*?S3 settings changed after the Trilium images were imported/);
   assert.match(applyHandler, /const previousNotes = getNotesStore\(\)\.exportSnapshot\(\);[\s\S]*?const previousTombstones = getNotesStore\(\)\.exportTombstones\(\);[\s\S]*?const previousTree = getNotesTreeStore\(\)\.snapshot\(\);[\s\S]*?const previousExpanded = getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds/);
   assert.match(applyHandler, /try \{[\s\S]*?notesDelta = await getNotesWorkspaceApplyCoordinator\(\)\.replace\(\{\s*notes: merged\.notes,\s*tombstones: merged\.tombstones,\s*tree: merged\.tree,\s*\}\);[\s\S]*?\} catch \(error\) \{\s*await restoreNotesWorkspace\(previousNotes, previousTombstones, previousTree, previousExpanded\);\s*throw error;/);
-  assert.equal((applyHandler.match(/s3SyncRuntime\?\.markLocalChange\(\)/g) ?? []).length, 1);
-  assert.match(applyHandler, /if \(notesChanged \|\| treeChanged\) \{[\s\S]*?s3SyncRuntime\?\.markLocalChange\(\)/);
+  assert.equal((applyHandler.match(/s3SyncRuntime\?\.markLocalChange\(\{/g) ?? []).length, 1);
+  assert.match(applyHandler, /if \(notesChanged \|\| treeChanged\) \{[\s\S]*?s3SyncRuntime\?\.markLocalChange\(\{[\s\S]*?upsertIds: notesDelta\.upsertedNotes[\s\S]*?deleteIds: notesDelta\.removedNoteIds[\s\S]*?treeChanged/);
   assert.match(applyHandler, /if \(applied\.changed\) \{[\s\S]*?reloadOwnsRelease = publishPersistentDataReload\('trilium', rendererApply, \{[\s\S]*?notesDelta: applied\.notesDelta/);
   assert.match(applyHandler, /finally \{\s*if \(!reloadOwnsRelease\) releaseRendererNotesPersistentApply\(rendererApply\);/);
   assert.match(applyHandler, /phase: 'complete'[\s\S]*?message: `Imported \$\{result\.total\} Notes\.`/);
@@ -298,7 +298,7 @@ test('Trilium HTML conversion uses the live Tiptap schema, strips active content
   assert.match(extensionFactory, /StarterKit\.configure\(/);
   assert.match(extensionFactory, /TableKit\.configure\(/);
   assert.match(extensionFactory, /createTaskListExtension\(\)/);
-  assert.match(extensionFactory, /createS3ImageExtension\(onError, onLayoutChange, importImages, importToken\)/);
+  assert.match(extensionFactory, /createS3ImageExtension\(onError, onLayoutChange, imageLoads, importImages, importToken\)/);
   assert.match(liveEditor, /extensions: createNotesRichTextExtensions\(\s*this\.onError,/);
   assert.match(conversion, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
   assert.match(conversion, /script,style,iframe,object,embed,form,input,button,textarea,select,meta,link/);

@@ -17,6 +17,7 @@ import { initNav, registerPage } from './nav.js';
 import { registerKubernetesPage } from './kubernetesPage.js';
 import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './notesPage.js';
 import { registerProxyPage } from './proxyPage.js';
+import { registerSqlPage } from './sqlPage.js';
 import { registerSettingsDialog } from './settingsDialog.js';
 import {
   canStartForward,
@@ -2270,6 +2271,7 @@ registerPage({
 });
 registerProxyPage();
 registerKubernetesPage();
+registerSqlPage();
 registerNotesPage();
 registerSettingsDialog();
 initNav('hosts');

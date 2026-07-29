@@ -96,7 +96,8 @@ test('S3 image NodeView owns Blob URLs, strips layout metadata from loads, and e
   assert.match(nodeView, /parseNoteImageNodeAttributes\(node\.attrs\)/);
   assert.match(nodeView, /displayWidth: _displayWidth,[\s\S]*?alignment: _alignment,[\s\S]*?\.\.\.assetReference/);
   assert.match(nodeView, /parseNoteImageReference\(assetReference\)/);
-  assert.match(nodeView, /await loadNoteImage\(reference\)/);
+  assert.match(nodeView, /if \(!visible\)[\s\S]*?showState\('deferred', 'Image loads when visible\.'\)/);
+  assert.match(nodeView, /await imageLoads\.load\(reference\)/);
   assert.match(nodeView, /URL\.createObjectURL\(new Blob\(\[imageBytes\]/);
   assert.match(nodeView, /URL\.revokeObjectURL\(objectUrl\)/);
   assert.match(nodeView, /if \(referenceKey === requestedReferenceKey\) return/);
@@ -108,6 +109,56 @@ test('S3 image NodeView owns Blob URLs, strips layout metadata from loads, and e
   assert.match(nodeView, /image\.src = nextObjectUrl/);
   assert.doesNotMatch(nodeView, /setAttribute\([^\n]*(?:assetKey|ciphertextSha256|contentSha256|objectId)/);
   assert.doesNotMatch(nodeView, /image\.src = reference\./);
+});
+
+test('rich text image loading is visibility-gated, bounded, and deduplicated in flight', async () => {
+  const source = await readEditorSource();
+  assert.match(source, /MAX_CONCURRENT_NOTE_IMAGE_LOADS = 3/);
+  assert.match(source, /new IntersectionObserver\([\s\S]*?rootMargin: '480px 0px'/);
+  assert.match(source, /this\.visibilityCallbacks\.delete\(entry\.target\)[\s\S]*?callback\(\)/);
+  assert.match(source, /const existing = this\.inFlight\.get\(key\);\s*if \(existing\) return existing;/);
+  assert.match(source, /this\.active < this\.maximumConcurrency/);
+  assert.match(source, /this\.imageLoads\.destroy\(\)/);
+
+  const { BoundedNoteImageLoader } = await import('../dist/renderer/notesRichTextEditor.js');
+  let active = 0;
+  let maximumActive = 0;
+  const releases = [];
+  const sourceLoad = () => new Promise((resolve) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    releases.push(() => {
+      active -= 1;
+      resolve({ status: 'missing' });
+    });
+  });
+  const loader = new BoundedNoteImageLoader(sourceLoad, 2);
+  const reference = (id) => ({
+    objectId: id,
+    assetKey: `asset-${id}`,
+    ciphertextSha256: `cipher-${id}`,
+    contentSha256: `content-${id}`,
+    mimeType: 'image/png',
+    byteLength: 1,
+    width: 1,
+    height: 1,
+  });
+
+  const first = loader.load(reference('a'));
+  const duplicate = loader.load(reference('a'));
+  const second = loader.load(reference('b'));
+  const third = loader.load(reference('c'));
+  assert.strictEqual(first, duplicate);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maximumActive, 2);
+  assert.equal(releases.length, 2);
+  releases.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maximumActive, 2);
+  assert.equal(releases.length, 2);
+  while (releases.length > 0) releases.shift()();
+  await Promise.all([first, second, third]);
+  loader.destroy();
 });
 
 test('rich text adapter normalizes persistence and provides the complete toolbar API', async () => {

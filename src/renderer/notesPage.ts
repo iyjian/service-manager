@@ -6,6 +6,7 @@ import type {
   NoteDraftRecoveryInput,
   NoteImageReference,
   NoteLanguage,
+  NoteSummary,
   NotesTreeNode,
   NotesWorkspaceDelta,
   NotesWorkspaceSnapshot,
@@ -582,6 +583,10 @@ function cloneNote(note: Note): Note {
   return { ...note, tags: [...note.tags] };
 }
 
+function rendererNote(summary: NoteSummary): Note {
+  return { ...summary, tags: [...summary.tags], content: '' };
+}
+
 function createRemoveIcon(): SVGSVGElement {
   const namespace = 'http://www.w3.org/2000/svg';
   const icon = document.createElementNS(namespace, 'svg');
@@ -704,15 +709,14 @@ class NotesPage {
   private readonly languageCompartment = new Compartment();
   private readonly themeCompartment = new Compartment();
   private readonly editorAttributesCompartment = new Compartment();
-  private readonly codeEditor: EditorView;
-  private readonly richTextEditor: NotesRichTextEditor;
+  private codeEditor!: EditorView;
+  private richTextEditor!: NotesRichTextEditor;
+  private editorsMounted = false;
 
   private notes: Note[] = [];
   private treeNodes: NotesTreeNode[] = [];
   private readonly notesById = new Map<string, Note>();
   private readonly treeNodesById = new Map<string, NotesTreeNode>();
-  private noteSearchIndex: NoteSearchIndexEntry[] = [];
-  private readonly noteSearchPositions = new Map<string, number>();
   private readonly breadcrumbCache = new Map<string, string>();
   private readonly renderedRowsById = new Map<string, HTMLElement>();
   private readonly renderedTabButtonsById = new Map<string, {
@@ -733,6 +737,10 @@ class NotesPage {
   private readonly saveTimers = new Map<string, number>();
   private readonly saveQueues = new Map<string, Promise<void>>();
   private readonly persistedNotes = new Map<string, Note>();
+  private readonly loadedNoteIds = new Set<string>();
+  private readonly noteBodyRequests = new Map<string, Promise<void>>();
+  private readonly noteBodyErrors = new Map<string, string>();
+  private noteBodyGeneration = 0;
   private readonly deletedIds = new Set<string>();
   private readonly deletingNoteIds = new Set<string>();
   private readonly saveErrorNoteIds = new Set<string>();
@@ -764,6 +772,10 @@ class NotesPage {
   private sidebarMeasureFrame: number | undefined;
   private sidebarKeyboardSaveTimer: number | undefined;
   private searchRenderTimer: number | undefined;
+  private searchResultIds: string[] = [];
+  private searchResultQuery = '';
+  private searchRequestGeneration = 0;
+  private searchPending = false;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
   private readonly persistentApplyIds = new Set<string>();
   private active = false;
@@ -772,38 +784,9 @@ class NotesPage {
   private findActiveIndex = -1;
   private findTruncated = false;
   private findRefreshFrame: number | undefined;
+  private editorReleaseGeneration = 0;
 
   constructor() {
-    this.codeEditor = new EditorView({
-      state: this.createEditorState('', 'markdown'),
-      parent: this.codeContentHost,
-    });
-    this.richTextEditor = new NotesRichTextEditor({
-      host: this.richTextHost,
-      toolbar: this.richTextToolbar,
-      onChange: () => {
-        this.updateSelectedRichTextContent();
-        this.queueInNoteFindRefresh();
-      },
-      onError: (message) => setMessage(message, 'error'),
-      onRequestImage: (file, position) => {
-        if (file) void this.uploadImageFile(file, position);
-        else {
-          this.pendingImagePosition = position;
-          this.imageInput.click();
-        }
-      },
-      onRequestAttachment: (file, position) => {
-        if (file) void this.uploadAttachmentFile(file, position);
-        else {
-          this.pendingAttachmentPosition = position;
-          this.attachmentInput.click();
-        }
-      },
-      onAttachmentAction: (action, reference, opener) => {
-        void this.runAttachmentAction(action, reference, opener);
-      },
-    });
     this.contentHost.dataset.theme = this.editorTheme;
     this.setSidebarWidth(this.sidebarWidth);
     this.updateEditorEmptyState();
@@ -874,9 +857,6 @@ class NotesPage {
       this.markdownOutlineButton,
       () => this.closeMarkdownOutline(),
     ));
-    this.codeEditor.dom.addEventListener('keydown', this.handleMarkdownKeyDown);
-    this.codeEditor.dom.addEventListener('click', this.handleMarkdownEditorClick);
-    this.codeEditor.scrollDOM.addEventListener('scroll', this.syncMarkdownPreviewScroll, { passive: true });
     document.addEventListener('pointerdown', this.handleNotesPopupOutsidePointerDown, true);
     this.sidebarResizeHandle.addEventListener('pointerdown', this.handleSidebarResizePointerDown);
     this.sidebarResizeHandle.addEventListener('pointermove', this.handleSidebarResizePointerMove);
@@ -889,17 +869,28 @@ class NotesPage {
 
   show(): void {
     this.active = true;
+    this.editorReleaseGeneration += 1;
+    this.mountEditors();
     void this.ensureLoaded();
   }
 
   hide(): void {
+    this.active = false;
+    const releaseGeneration = ++this.editorReleaseGeneration;
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
     this.closeLanguageMenu();
     this.closeDownloadMenu();
     this.closeMarkdownOutline();
     if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
-    void this.flush().catch(() => undefined);
-    this.active = false;
     this.resetInNoteFind(false);
+    void this.flush().then(() => {
+      if (this.active || releaseGeneration !== this.editorReleaseGeneration) return;
+      this.releaseEditorResources();
+    }).catch(() => {
+      // A failed save keeps the editor and its document alive so the draft is
+      // never discarded merely because the Notes page was hidden.
+    });
   }
 
   async flush(): Promise<void> {
@@ -915,8 +906,70 @@ class NotesPage {
   }
 
   requestEditorMeasure(): void {
+    if (!this.editorsMounted) return;
     this.codeEditor.requestMeasure();
     this.richTextEditor.requestMeasure();
+  }
+
+  private mountEditors(): void {
+    if (this.editorsMounted) return;
+    this.codeEditor = new EditorView({
+      state: this.createEditorState('', 'markdown'),
+      parent: this.codeContentHost,
+    });
+    this.richTextEditor = new NotesRichTextEditor({
+      host: this.richTextHost,
+      toolbar: this.richTextToolbar,
+      onChange: () => {
+        this.updateSelectedRichTextContent();
+        this.queueInNoteFindRefresh();
+      },
+      onError: (message) => setMessage(message, 'error'),
+      onRequestImage: (file, position) => {
+        if (file) void this.uploadImageFile(file, position);
+        else {
+          this.pendingImagePosition = position;
+          this.imageInput.click();
+        }
+      },
+      onRequestAttachment: (file, position) => {
+        if (file) void this.uploadAttachmentFile(file, position);
+        else {
+          this.pendingAttachmentPosition = position;
+          this.attachmentInput.click();
+        }
+      },
+      onAttachmentAction: (action, reference, opener) => {
+        void this.runAttachmentAction(action, reference, opener);
+      },
+    });
+    this.codeEditor.dom.addEventListener('keydown', this.handleMarkdownKeyDown);
+    this.codeEditor.dom.addEventListener('click', this.handleMarkdownEditorClick);
+    this.codeEditor.scrollDOM.addEventListener('scroll', this.syncMarkdownPreviewScroll, { passive: true });
+    this.editorsMounted = true;
+  }
+
+  private releaseEditorResources(): void {
+    if (this.markdownUiFrame !== undefined) {
+      window.cancelAnimationFrame(this.markdownUiFrame);
+      this.markdownUiFrame = undefined;
+    }
+    this.markdownCenterSelectionOnNextFrame = false;
+    if (this.editorsMounted) {
+      this.codeEditor.dom.removeEventListener('keydown', this.handleMarkdownKeyDown);
+      this.codeEditor.dom.removeEventListener('click', this.handleMarkdownEditorClick);
+      this.codeEditor.scrollDOM.removeEventListener('scroll', this.syncMarkdownPreviewScroll);
+      this.codeEditor.destroy();
+      this.richTextEditor.destroy();
+      this.codeContentHost.replaceChildren();
+      this.richTextHost.replaceChildren();
+      this.editorsMounted = false;
+      this.editorNoteId = undefined;
+    }
+    this.markdownPreview.replaceChildren();
+    this.markdownStatus.textContent = '';
+    this.clearAttachmentPreviewContent();
+    if (this.selectedId && !this.isDirty(this.selectedId)) this.releaseNoteBody(this.selectedId);
   }
 
   private readonly handleDocumentFindKeyDown = (event: KeyboardEvent): void => {
@@ -1000,6 +1053,7 @@ class NotesPage {
     if (!this.findOpen) return;
     const note = this.selectedNote();
     if (!note) {
+      this.editor.inert = false;
       this.resetInNoteFind(false);
       return;
     }
@@ -1161,9 +1215,11 @@ class NotesPage {
 
   private queueSearchRender(): void {
     this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
     this.searchRenderTimer = window.setTimeout(() => {
       this.searchRenderTimer = undefined;
-      this.renderList();
+      void this.refreshWorkspaceSearch();
     }, NOTE_SEARCH_DEBOUNCE_MS);
   }
 
@@ -1176,7 +1232,42 @@ class NotesPage {
   private flushSearchRender(): void {
     if (this.searchRenderTimer === undefined) return;
     this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
+    void this.refreshWorkspaceSearch();
+  }
+
+  private async refreshWorkspaceSearch(): Promise<void> {
+    const query = this.searchInput.value.trim();
+    const generation = ++this.searchRequestGeneration;
+    if (!query) {
+      this.searchResultQuery = '';
+      this.searchResultIds = [];
+      this.searchPending = false;
+      this.renderList();
+      return;
+    }
+    this.captureActiveEditorContent();
+    const active = this.selectedNote();
+    const activeNote = active && this.loadedNoteIds.has(active.id) ? cloneNote(active) : undefined;
+    this.searchResultQuery = query;
+    this.searchResultIds = [];
+    this.searchPending = true;
     this.renderList();
+    try {
+      const ids = await window.notesApi.searchNotes(query, activeNote);
+      if (generation !== this.searchRequestGeneration || query !== this.searchInput.value.trim()) return;
+      this.searchResultIds = ids.filter((id) => this.notesById.has(id) && !this.deletedIds.has(id));
+    } catch (error) {
+      if (generation !== this.searchRequestGeneration || query !== this.searchInput.value.trim()) return;
+      this.searchResultIds = [];
+      setMessage(`Unable to search Notes: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      if (generation === this.searchRequestGeneration && query === this.searchInput.value.trim()) {
+        this.searchPending = false;
+        this.renderList();
+      }
+    }
   }
 
   private finishSidebarResize(pointerId?: number, releaseCapture = true): void {
@@ -1250,6 +1341,7 @@ class NotesPage {
     }
     this.editorTheme = theme;
     this.contentHost.dataset.theme = theme;
+    if (!this.editorsMounted) return;
     this.codeEditor.dispatch({
       effects: this.themeCompartment.reconfigure(editorThemeExtensions(theme)),
     });
@@ -1284,6 +1376,8 @@ class NotesPage {
       persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
     );
     this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
     this.resetInNoteFind(false);
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
@@ -1297,6 +1391,8 @@ class NotesPage {
     try {
       await this.waitForEditorUploads();
       this.workspaceMutationGeneration += 1;
+      this.noteBodyGeneration += 1;
+      this.noteBodyRequests.clear();
       if (!coordinatedApply && this.selectedId) this.captureEditorContent(this.selectedId);
       const pending = coordinatedApply ? [] : this.notes
         .filter((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))
@@ -1333,6 +1429,8 @@ class NotesPage {
       this.persistedVersions.clear();
       this.queuedVersions.clear();
       this.persistedNotes.clear();
+      this.loadedNoteIds.clear();
+      this.noteBodyErrors.clear();
       this.deletedIds.clear();
       this.saveErrorNoteIds.clear();
       this.loaded = false;
@@ -1362,6 +1460,8 @@ class NotesPage {
       return;
     }
     this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
     this.resetInNoteFind(false);
     this.pageRoot.inert = true;
     this.selectionVersion += 1;
@@ -1371,11 +1471,13 @@ class NotesPage {
         return;
       }
       this.workspaceMutationGeneration += 1;
+      this.noteBodyGeneration += 1;
+      this.noteBodyRequests.clear();
       this.saveGeneration += 1;
       const selectedBefore = this.selectedId;
       const openTabsBefore = [...this.openNoteIds];
       const removed = new Set(delta.removedNoteIds);
-      const upserts = new Map(delta.upsertedNotes.map((note) => [note.id, cloneNote(note)]));
+      const upserts = new Map(delta.upsertedNotes.map((note) => [note.id, rendererNote(note)]));
       const previousIds = new Set(this.notes.map((note) => note.id));
       const noteSetChanged = removed.size > 0
         || delta.upsertedNotes.some((note) => !previousIds.has(note.id));
@@ -1404,6 +1506,8 @@ class NotesPage {
         this.queuedVersions.delete(id);
         this.saveQueues.delete(id);
         this.persistedNotes.delete(id);
+        this.loadedNoteIds.delete(id);
+        this.noteBodyErrors.delete(id);
         this.saveErrorNoteIds.delete(id);
         this.clearSaveTimer(id);
       }
@@ -1413,7 +1517,9 @@ class NotesPage {
         this.persistedVersions.set(note.id, 0);
         this.queuedVersions.set(note.id, 0);
         this.saveQueues.delete(note.id);
-        this.persistedNotes.set(note.id, cloneNote(note));
+        this.loadedNoteIds.delete(note.id);
+        this.persistedNotes.delete(note.id);
+        this.noteBodyErrors.delete(note.id);
         this.saveErrorNoteIds.delete(note.id);
       }
       if (noteSetChanged) {
@@ -1421,7 +1527,6 @@ class NotesPage {
       } else {
         for (const note of upserts.values()) {
           this.notesById.set(note.id, note);
-          this.refreshNoteSearchEntry(note);
         }
         for (const id of removedTreeIds) this.treeNodesById.delete(id);
         for (const node of treeUpserts.values()) this.treeNodesById.set(node.noteId, node);
@@ -1452,8 +1557,11 @@ class NotesPage {
         this.renderEditor();
       } else {
         this.renderTabs();
+        if (this.active && this.selectedId && !this.loadedNoteIds.has(this.selectedId)) {
+          void this.ensureNoteBody(this.selectedId);
+        }
       }
-      this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
+      this.updateSelectedSaveStatus();
     } catch (error) {
       await this.reload(persistentApplyId);
       if (!this.loaded) throw error;
@@ -1465,24 +1573,12 @@ class NotesPage {
 
   private rebuildWorkspaceIndexes(): void {
     this.notesById.clear();
-    this.noteSearchPositions.clear();
-    this.noteSearchIndex = this.notes.map((note, index) => {
+    for (const note of this.notes) {
       this.notesById.set(note.id, note);
-      this.noteSearchPositions.set(note.id, index);
-      return createNoteSearchIndexEntry(note, index);
-    });
+    }
     this.treeNodesById.clear();
     for (const node of this.treeNodes) this.treeNodesById.set(node.noteId, node);
     this.breadcrumbCache.clear();
-  }
-
-  private refreshNoteSearchEntry(note: Note): void {
-    const index = this.noteSearchPositions.get(note.id);
-    if (index === undefined) {
-      this.rebuildWorkspaceIndexes();
-      return;
-    }
-    this.noteSearchIndex[index] = createNoteSearchIndexEntry(note, index);
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -1497,22 +1593,21 @@ class NotesPage {
     this.emptyState.textContent = 'Loading notes…';
     this.emptyState.dataset.state = 'loading';
     this.loadPromise = window.notesApi.getWorkspace().then((workspace) => {
-      this.notes = workspace.notes;
+      this.notes = workspace.notes.map(rendererNote);
       this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
       this.rebuildWorkspaceIndexes();
       this.expandedNoteIds = new Set(workspace.expandedNoteIds);
-      for (const note of workspace.notes) {
+      for (const note of this.notes) {
         this.editVersions.set(note.id, 0);
         this.persistedVersions.set(note.id, 0);
-        this.persistedNotes.set(note.id, cloneNote(note));
       }
-      this.selectedId = workspace.notes.some((note) => note.id === this.selectedId)
+      this.selectedId = this.notes.some((note) => note.id === this.selectedId)
         ? this.selectedId
         : this.treeNodes[0]?.noteId;
       this.reconcileOpenNoteTabs();
       this.loaded = true;
       this.render();
-      this.setSaveStatus(this.selectedId ? 'Saved' : '', 'saved');
+      this.updateSelectedSaveStatus();
     }).catch((error) => {
       this.loadError = `Unable to load notes: ${toErrorMessage(error)}`;
       this.renderEditor();
@@ -1534,20 +1629,30 @@ class NotesPage {
     preservePersistedBases = false,
   ): void {
     const localNotes = new Map(this.notes.map((note) => [note.id, note]));
-    this.notes = workspace.notes.map((note) => {
-      const local = localNotes.get(note.id);
-      const baselineVersion = editVersionBaseline?.get(note.id);
+    this.notes = workspace.notes.map((summary) => {
+      const local = localNotes.get(summary.id);
+      const baselineVersion = editVersionBaseline?.get(summary.id);
       const editedDuringRequest = local
         && baselineVersion !== undefined
-        && (this.editVersions.get(note.id) ?? 0) > baselineVersion;
-      return editedDuringRequest
-        ? { ...local, tags: [...local.tags] }
-        : { ...note, tags: [...note.tags] };
+        && (this.editVersions.get(summary.id) ?? 0) > baselineVersion;
+      if (editedDuringRequest) return cloneNote(local);
+      return this.loadedNoteIds.has(summary.id) && local
+        ? { ...summary, tags: [...summary.tags], content: local.content }
+        : rendererNote(summary);
     });
     this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
     this.expandedNoteIds = new Set(workspace.expandedNoteIds);
     if (!preservePersistedBases) {
-      for (const note of workspace.notes) this.persistedNotes.set(note.id, cloneNote(note));
+      for (const summary of workspace.notes) {
+        const persisted = this.persistedNotes.get(summary.id);
+        if (persisted) {
+          this.persistedNotes.set(summary.id, {
+            ...summary,
+            tags: [...summary.tags],
+            content: persisted.content,
+          });
+        }
+      }
     }
     const activeIds = new Set(this.notes.map((note) => note.id));
     for (const note of this.notes) {
@@ -1562,6 +1667,8 @@ class NotesPage {
       this.queuedVersions.delete(id);
       this.saveQueues.delete(id);
       this.persistedNotes.delete(id);
+      this.loadedNoteIds.delete(id);
+      this.noteBodyErrors.delete(id);
       this.saveErrorNoteIds.delete(id);
       this.clearSaveTimer(id);
     }
@@ -1778,16 +1885,13 @@ class NotesPage {
       return;
     }
 
+    this.releaseNoteBody(id);
     this.selectedId = focusId;
     this.renderList();
     this.renderEditor();
     if (focusId) this.focusNoteTab(focusId);
     else this.newButton.focus();
-    const selectedDirty = Boolean(focusId && this.isDirty(focusId));
-    this.setSaveStatus(
-      focusId ? selectedDirty ? 'Saving…' : 'Saved' : '',
-      selectedDirty ? 'saving' : 'saved',
-    );
+    this.updateSelectedSaveStatus();
   }
 
   private renderList(focusId?: string): void {
@@ -1802,11 +1906,16 @@ class NotesPage {
       ? new Map<string | null, NotesTreeNode[]>()
       : this.treeChildren();
     const rows = searchActive
-      ? rankNoteSearchIndex(this.noteSearchIndex, this.searchInput.value, this.deletedIds).map((note) => ({
-        note,
-        node: this.treeNodesById.get(note.id) ?? { noteId: note.id, parentId: null, order: 0 },
-        depth: 0,
-      }))
+      ? (this.searchResultQuery === this.searchInput.value.trim()
+        ? this.searchResultIds.flatMap((id) => {
+          const note = this.notesById.get(id);
+          return note ? [{
+            note,
+            node: this.treeNodesById.get(note.id) ?? { noteId: note.id, parentId: null, order: 0 },
+            depth: 0,
+          }] : [];
+        })
+        : [])
       : this.visibleTreeRows(children);
     const folderNoteIds = new Set(
       this.treeNodes
@@ -1973,7 +2082,11 @@ class NotesPage {
     if (rows.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'notes-list-empty';
-      empty.textContent = this.notes.length > 0 ? 'No notes match your search.' : 'No notes yet.';
+      empty.textContent = searchActive && this.searchPending
+        ? 'Searching notes…'
+        : this.notes.length > 0
+          ? 'No notes match your search.'
+          : 'No notes yet.';
       this.list.appendChild(empty);
     }
 
@@ -2008,6 +2121,8 @@ class NotesPage {
   private renderEditor(): void {
     const note = this.selectedNote();
     this.renderTabs();
+    if (!this.active) return;
+    this.mountEditors();
     this.emptyState.classList.toggle('hidden', Boolean(note));
     this.editor.classList.toggle('hidden', !note);
     if (!note) {
@@ -2024,6 +2139,23 @@ class NotesPage {
 
     this.nameInput.value = note.name;
     this.updateLanguageControl(note.language);
+    if (!this.loadedNoteIds.has(note.id)) {
+      this.editor.inert = true;
+      this.editorNoteId = undefined;
+      this.replacingEditorDocument = true;
+      try {
+        this.codeEditor.setState(this.createEditorState('', note.language === 'richtext' ? 'markdown' : note.language));
+        this.richTextEditor.setContent(EMPTY_RICH_TEXT_CONTENT);
+      } finally {
+        this.replacingEditorDocument = false;
+      }
+      this.showEditorMode(note.language);
+      const error = this.noteBodyErrors.get(note.id);
+      this.setSaveStatus(error ?? 'Loading Note…', error ? 'error' : 'saving');
+      if (!error) void this.ensureNoteBody(note.id);
+      return;
+    }
+    this.editor.inert = false;
     const noteChanged = this.editorNoteId !== note.id;
     if (noteChanged) this.closeLanguageMenu();
     if (noteChanged) {
@@ -2050,12 +2182,55 @@ class NotesPage {
     return this.selectedId ? this.notesById.get(this.selectedId) : undefined;
   }
 
+  private ensureNoteBody(id: string): Promise<void> {
+    if (this.loadedNoteIds.has(id)) return Promise.resolve();
+    const pending = this.noteBodyRequests.get(id);
+    if (pending) return pending;
+    const generation = this.noteBodyGeneration;
+    const request = window.notesApi.getNote(id).then((loaded) => {
+      if (generation !== this.noteBodyGeneration
+        || !this.active
+        || this.selectedId !== id
+        || this.deletedIds.has(id)) return;
+      const note = this.notesById.get(id);
+      if (!note) return;
+      Object.assign(note, loaded, { tags: [...loaded.tags] });
+      this.loadedNoteIds.add(id);
+      this.persistedNotes.set(id, cloneNote(loaded));
+      this.noteBodyErrors.delete(id);
+      this.breadcrumbCache.clear();
+      this.updateListNoteName(note);
+      this.renderEditor();
+      this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
+    }).catch((error) => {
+      if (generation !== this.noteBodyGeneration || !this.active || this.selectedId !== id) return;
+      this.noteBodyErrors.set(id, `Unable to load Note: ${toErrorMessage(error)}`);
+      this.renderEditor();
+    }).finally(() => {
+      if (this.noteBodyRequests.get(id) === request) this.noteBodyRequests.delete(id);
+    });
+    this.noteBodyRequests.set(id, request);
+    return request;
+  }
+
+  private releaseNoteBody(id: string): void {
+    if (this.isDirty(id)) return;
+    const note = this.notesById.get(id);
+    if (note) {
+      note.content = '';
+    }
+    this.loadedNoteIds.delete(id);
+    this.persistedNotes.delete(id);
+    this.noteBodyErrors.delete(id);
+  }
+
   private async selectNote(id: string, source: 'tree' | 'tab' = 'tree'): Promise<void> {
     if (!this.notes.some((note) => note.id === id)) return;
     const selectionVersion = ++this.selectionVersion;
     if (id === this.selectedId) {
       this.openNoteTab(id, true);
       this.renderTabs();
+      if (!this.loadedNoteIds.has(id)) void this.ensureNoteBody(id);
       if (source === 'tab') this.focusNoteTab(id);
       return;
     }
@@ -2068,6 +2243,7 @@ class NotesPage {
       }
     }
     if (selectionVersion !== this.selectionVersion || !this.notes.some((note) => note.id === id)) return;
+    if (previousId) this.releaseNoteBody(previousId);
     this.selectedId = id;
     this.openNoteTab(id, true);
     const selectedDirty = this.isDirty(id);
@@ -2075,12 +2251,8 @@ class NotesPage {
     this.renderList(source === 'tree' ? id : undefined);
     this.renderEditor();
     if (source === 'tab') this.focusNoteTab(id);
-    if (selectedDirty) {
-      this.setSaveStatus('Saving…', 'saving');
-      this.scheduleSave(id);
-    } else {
-      this.setSaveStatus('Saved', 'saved');
-    }
+    if (selectedDirty) this.scheduleSave(id);
+    this.updateSelectedSaveStatus();
   }
 
   private updateSelectedMetadata(): void {
@@ -2344,11 +2516,10 @@ class NotesPage {
   private markNoteEdited(
     note: Note,
     refreshSearchResults: boolean,
-    refreshSearchEntry = true,
+    _refreshSearchEntry = true,
   ): void {
     const wasDirty = this.isDirty(note.id);
     const hadSaveError = this.saveErrorNoteIds.delete(note.id);
-    if (refreshSearchEntry) this.refreshNoteSearchEntry(note);
     this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
     if (this.selectedId === note.id) this.setSaveStatus('Saving…', 'saving');
     if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
@@ -2358,14 +2529,17 @@ class NotesPage {
 
   private captureEditorContent(id: string): void {
     const note = this.notesById.get(id);
-    if (!note || this.editorNoteId !== id || this.selectedId !== id) return;
+    if (!this.editorsMounted
+      || !this.loadedNoteIds.has(id)
+      || !note
+      || this.editorNoteId !== id
+      || this.selectedId !== id) return;
     const content = note.language === 'richtext'
       ? this.richTextEditor.getContent()
       : this.codeEditor.state.doc.toString();
     if (note.language === 'markdown') this.updateMarkdownUi(content);
     if (note.content === content) return;
     note.content = content;
-    this.refreshNoteSearchEntry(note);
     this.updateEditorEmptyState();
     if (this.searchInput.value.trim()) this.queueSearchRender();
   }
@@ -2986,7 +3160,6 @@ class NotesPage {
       if (current && (this.editVersions.get(id) ?? 0) === version) {
         normalizedNameChanged = current.name !== saved.name;
         Object.assign(current, saved, { tags: [...saved.tags] });
-        this.refreshNoteSearchEntry(current);
       }
       if (normalizedNameChanged && current) {
         this.breadcrumbCache.clear();
@@ -3077,18 +3250,15 @@ class NotesPage {
       const selectCreatedNote = selectionIntentVersion === this.selectionVersion;
       let committedSelectionVersion = this.selectionVersion;
       if (selectCreatedNote) {
+        const previouslySelectedId = this.selectedId;
+        if (previouslySelectedId) this.releaseNoteBody(previouslySelectedId);
         this.selectedId = note.id;
         this.openNoteTab(note.id, true);
         this.searchInput.value = '';
         committedSelectionVersion = ++this.selectionVersion;
       }
       this.render();
-      const selected = this.selectedNote();
-      const selectedDirty = Boolean(selected && this.isDirty(selected.id));
-      this.setSaveStatus(
-        selected ? selectedDirty ? 'Saving…' : 'Saved' : '',
-        selectedDirty ? 'saving' : 'saved',
-      );
+      this.updateSelectedSaveStatus();
       if (selectCreatedNote) {
         window.requestAnimationFrame(() => {
           if (committedSelectionVersion !== this.selectionVersion || this.selectedId !== note.id) return;
@@ -3272,7 +3442,7 @@ class NotesPage {
         }
 
         const visibleBeforeDelete = this.searchInput.value.trim()
-          ? rankNotes(this.notes, this.searchInput.value).map((item) => item.id)
+          ? [...this.searchResultIds]
           : this.visibleTreeRows().map((item) => item.note.id);
         const deletedIndex = visibleBeforeDelete.indexOf(id);
         const focusAfterDelete = visibleBeforeDelete.slice(deletedIndex + 1)
@@ -3339,11 +3509,7 @@ class NotesPage {
           this.render();
           this.renderList(focusAfterDelete ?? this.selectedId);
           if (!this.selectedId) this.newButton.focus();
-          const selectedDirty = Boolean(this.selectedId && this.isDirty(this.selectedId));
-          this.setSaveStatus(
-            this.selectedId ? selectedDirty ? 'Saving…' : 'Saved' : '',
-            selectedDirty ? 'saving' : 'saved',
-          );
+          this.updateSelectedSaveStatus();
           setMessage(
             result.deletedIds.length === 1
               ? 'Note deleted.'
@@ -3535,6 +3701,21 @@ class NotesPage {
     this.saveStatus.textContent = text;
     this.saveStatus.dataset.state = state;
     if (state === 'error' && text) setMessage(text, 'error');
+  }
+
+  private updateSelectedSaveStatus(): void {
+    const id = this.selectedId;
+    if (!id) {
+      this.setSaveStatus('', 'saved');
+      return;
+    }
+    if (!this.loadedNoteIds.has(id)) {
+      const error = this.noteBodyErrors.get(id);
+      this.setSaveStatus(error ?? 'Loading Note…', error ? 'error' : 'saving');
+      return;
+    }
+    const dirty = this.isDirty(id);
+    this.setSaveStatus(dirty ? 'Saving…' : 'Saved', dirty ? 'saving' : 'saved');
   }
 }
 

@@ -3,7 +3,11 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { EMPTY_RICH_TEXT_CONTENT, normalizeRichTextContent } from '../shared/noteRichText';
+import {
+  EMPTY_RICH_TEXT_CONTENT,
+  extractRichTextPlainText,
+  normalizeRichTextContent,
+} from '../shared/noteRichText';
 import type { Note, NoteDraft, NoteLanguage } from '../shared/types';
 
 export const NOTES_SCHEMA_VERSION = 1 as const;
@@ -84,6 +88,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function cloneNote(note: Note): Note {
   return { ...note, tags: [...note.tags] };
+}
+
+interface RankedNoteSearchResult {
+  id: string;
+  index: number;
+  score: number;
+  updatedAt: number;
+}
+
+function searchableNoteContent(note: Note): string {
+  if (note.language !== 'richtext') return note.content;
+  try {
+    return extractRichTextPlainText(note.content);
+  } catch {
+    return '';
+  }
+}
+
+/** Preserves renderer search ranking without sending every Note body over IPC. */
+export function rankNoteIdsForSearch(notes: readonly Note[], query: string): string[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return [];
+  const ranked: RankedNoteSearchResult[] = [];
+  notes.forEach((note, index) => {
+    const name = note.name.trim().toLocaleLowerCase();
+    const tags = note.tags.map((tag) => tag.toLocaleLowerCase());
+    const language = note.language.toLocaleLowerCase();
+    const score = name === normalizedQuery
+      ? 1_000
+      : name.startsWith(normalizedQuery)
+        ? 900
+        : name.includes(normalizedQuery)
+          ? 800
+          : tags.some((tag) => tag === normalizedQuery)
+            ? 600
+            : tags.some((tag) => tag.includes(normalizedQuery))
+              ? 500
+              : language === normalizedQuery
+                ? 400
+                : language.includes(normalizedQuery)
+                  ? 350
+                  : searchableNoteContent(note).toLocaleLowerCase().includes(normalizedQuery)
+                    ? 200
+                    : 0;
+    if (score <= 0) return;
+    const timestamp = Date.parse(note.updatedAt);
+    ranked.push({
+      id: note.id,
+      index,
+      score,
+      updatedAt: Number.isFinite(timestamp) ? timestamp : 0,
+    });
+  });
+  return ranked
+    .sort((left, right) => (
+      right.score - left.score
+      || right.updatedAt - left.updatedAt
+      || left.index - right.index
+    ))
+    .map(({ id }) => id);
 }
 
 function cloneTombstone(tombstone: NoteTombstone): NoteTombstone {

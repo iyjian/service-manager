@@ -3,7 +3,13 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import type { Note, NotesTreeNode, NotesTreeSnapshot, NotesWorkspaceDelta } from '../shared/types';
+import type {
+  Note,
+  NoteSummary,
+  NotesTreeNode,
+  NotesTreeSnapshot,
+  NotesWorkspaceDelta,
+} from '../shared/types';
 import type { NoteTombstone, NotesSnapshot } from './notesStore';
 import { NotesStore } from './notesStore';
 import { NotesTreeStore } from './notesTreeStore';
@@ -32,6 +38,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function cloneNote(note: Note): Note {
   return { ...note, tags: [...note.tags] };
+}
+
+function noteSummary(note: Note): NoteSummary {
+  const { content: _content, ...summary } = note;
+  return { ...summary, tags: [...summary.tags] };
 }
 
 function cloneTreeNode(node: NotesTreeNode): NotesTreeNode {
@@ -65,7 +76,7 @@ function createDelta(
   return {
     upsertedNotes: nextNotes.notes
       .filter((note) => !isDeepStrictEqual(previousNoteMap.get(note.id), note))
-      .map(cloneNote),
+      .map(noteSummary),
     removedNoteIds: previousNotes.notes
       .filter((note) => !nextNoteMap.has(note.id))
       .map((note) => note.id)

@@ -668,6 +668,8 @@ export interface Note {
   updatedAt: string;
 }
 
+export type NoteSummary = Omit<Note, 'content'>;
+
 export interface NoteDraft {
   name: string;
   content: string;
@@ -687,13 +689,13 @@ export interface NotesTreeSnapshot {
 }
 
 export interface NotesWorkspaceSnapshot {
-  notes: Note[];
+  notes: NoteSummary[];
   tree: NotesTreeSnapshot;
   expandedNoteIds: string[];
 }
 
 export interface NotesWorkspaceDelta {
-  upsertedNotes: Note[];
+  upsertedNotes: NoteSummary[];
   removedNoteIds: string[];
   upsertedTreeNodes: NotesTreeNode[];
   removedTreeNodeIds: string[];
@@ -839,8 +841,10 @@ export interface NotesFlushRequest {
 }
 
 export interface NotesApi {
-  listNotes: () => Promise<Note[]>;
+  listNotes: () => Promise<NoteSummary[]>;
   getWorkspace: () => Promise<NotesWorkspaceSnapshot>;
+  getNote: (id: string) => Promise<Note>;
+  searchNotes: (query: string, activeNote?: Note) => Promise<string[]>;
   createNote: (placement?: NotePlacementInput) => Promise<NotesWorkspaceSnapshot>;
   updateNote: (id: string, draft: NoteDraft, expectedNote: Note) => Promise<Note>;
   moveNote: (input: NoteMoveInput) => Promise<NotesWorkspaceSnapshot>;
@@ -962,6 +966,88 @@ export interface TriliumImportResult {
   embeddedImageCount: number;
   imagePlaceholderCount: number;
   plainTextFallbackCount: number;
+}
+
+export type SqlEnvironment = 'production' | 'development';
+
+export type SqlJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | SqlJsonValue[]
+  | { [key: string]: SqlJsonValue };
+
+export interface SqlUserView {
+  id: number;
+  name: string;
+  userName: string;
+}
+
+export interface SqlAuthState {
+  environment: SqlEnvironment;
+  status: 'signed-in' | 'signed-out';
+  hasSavedCredentials: boolean;
+  user?: SqlUserView;
+  message?: string;
+}
+
+export interface SqlLoginInput {
+  environment: SqlEnvironment;
+  userName: string;
+  password: string;
+}
+
+export interface SqlQueryCreator {
+  id?: number;
+  name?: string | null;
+  nickname?: string | null;
+  username?: string | null;
+  userName?: string | null;
+}
+
+export interface SqlQueryRecord {
+  id: number;
+  createdAt?: string;
+  updatedAt?: string;
+  name: string;
+  sql: string;
+  config?: SqlJsonValue;
+  lastQueryResult?: string | null;
+  lastQueryDate?: string | null;
+  creatorId?: number;
+  creator?: SqlQueryCreator | null;
+}
+
+export interface SqlQueryDraft {
+  name: string;
+  sql: string;
+  config?: SqlJsonValue;
+  lastQueryResult?: string;
+  lastQueryDate?: string;
+}
+
+export interface SqlExecutionResult {
+  value: SqlJsonValue | undefined;
+  executedAt: string;
+  durationMs: number;
+}
+
+/**
+ * Narrow SQL bridge. Tokens, protected credentials, endpoints, and raw HTTP
+ * transports stay in the main process.
+ */
+export interface SqlApi {
+  getAuthState(environment: SqlEnvironment): Promise<SqlAuthState>;
+  login(input: SqlLoginInput): Promise<SqlAuthState>;
+  logout(environment: SqlEnvironment): Promise<SqlAuthState>;
+  listQueries(environment: SqlEnvironment, search?: string): Promise<SqlQueryRecord[]>;
+  getQuery(environment: SqlEnvironment, id: number): Promise<SqlQueryRecord>;
+  createQuery(environment: SqlEnvironment, draft: SqlQueryDraft): Promise<SqlQueryRecord>;
+  updateQuery(environment: SqlEnvironment, id: number, draft: SqlQueryDraft): Promise<SqlQueryRecord>;
+  renameQuery(environment: SqlEnvironment, id: number, name: string): Promise<SqlQueryRecord>;
+  deleteQuery(environment: SqlEnvironment, id: number): Promise<void>;
+  execute(environment: SqlEnvironment, statement: string): Promise<SqlExecutionResult>;
 }
 
 export interface LlmSettingsView {

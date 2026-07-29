@@ -29,6 +29,10 @@ import type {
   PersistentDataReloaded,
   S3ConnectionTestDraft,
   ServiceApi,
+  SqlApi,
+  SqlEnvironment,
+  SqlLoginInput,
+  SqlQueryDraft,
   S3SyncState,
   S3SyncSettingsDraft,
   SettingsApi,
@@ -110,6 +114,8 @@ const api: ServiceApi = {
 const notesApi: NotesApi = {
   listNotes: () => ipcRenderer.invoke('notes:list'),
   getWorkspace: () => ipcRenderer.invoke('notes:workspace'),
+  getNote: (id) => ipcRenderer.invoke('notes:get', id),
+  searchNotes: (query, activeNote) => ipcRenderer.invoke('notes:search', { query, activeNote }),
   createNote: (placement) => ipcRenderer.invoke('notes:create', placement),
   updateNote: (id: string, draft: NoteDraft, expectedNote: Note) =>
     ipcRenderer.invoke('notes:update', { id, draft, expectedNote }),
@@ -242,6 +248,26 @@ const proxyApi: ProxyApi = {
   },
 };
 
+const sqlApi: SqlApi = {
+  getAuthState: (environment: SqlEnvironment) => ipcRenderer.invoke('sql:auth-state', environment),
+  login: (input: SqlLoginInput) => ipcRenderer.invoke('sql:login', input),
+  logout: (environment: SqlEnvironment) => ipcRenderer.invoke('sql:logout', environment),
+  listQueries: (environment: SqlEnvironment, search?: string) =>
+    ipcRenderer.invoke('sql:queries:list', { environment, ...(search ? { search } : {}) }),
+  getQuery: (environment: SqlEnvironment, id: number) =>
+    ipcRenderer.invoke('sql:query:get', { environment, id }),
+  createQuery: (environment: SqlEnvironment, draft: SqlQueryDraft) =>
+    ipcRenderer.invoke('sql:query:create', { environment, draft }),
+  updateQuery: (environment: SqlEnvironment, id: number, draft: SqlQueryDraft) =>
+    ipcRenderer.invoke('sql:query:update', { environment, id, draft }),
+  renameQuery: (environment: SqlEnvironment, id: number, name: string) =>
+    ipcRenderer.invoke('sql:query:rename', { environment, id, name }),
+  deleteQuery: (environment: SqlEnvironment, id: number) =>
+    ipcRenderer.invoke('sql:query:delete', { environment, id }),
+  execute: (environment: SqlEnvironment, statement: string) =>
+    ipcRenderer.invoke('sql:execute', { environment, statement }),
+};
+
 const kubernetesApi: KubernetesApi = {
   getState: () => ipcRenderer.invoke('kubernetes:get-state'),
   selectContext: (name: string) => ipcRenderer.invoke('kubernetes:select-context', name),
@@ -298,3 +324,4 @@ contextBridge.exposeInMainWorld('notesApi', notesApi);
 contextBridge.exposeInMainWorld('settingsApi', settingsApi);
 contextBridge.exposeInMainWorld('proxyApi', proxyApi);
 contextBridge.exposeInMainWorld('kubernetesApi', kubernetesApi);
+contextBridge.exposeInMainWorld('sqlApi', sqlApi);

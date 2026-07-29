@@ -304,6 +304,105 @@
       </section>
     </main>
 
+    <main class="app-shell hidden" data-page="sql">
+      <section id="sql-page" class="sql-page" aria-label="SQL queries" data-environment="production">
+        <header class="sql-page-head">
+          <div class="sql-title-group">
+            <div class="sql-environment-tabs" role="tablist" aria-label="SQL environment">
+              <button id="sql-production-tab" type="button" role="tab" data-sql-environment="production" aria-selected="true">Production</button>
+              <button id="sql-development-tab" type="button" role="tab" data-sql-environment="development" aria-selected="false">Development</button>
+            </div>
+          </div>
+          <div class="sql-session-actions" aria-label="SQL session and shortcuts">
+            <span class="sql-shortcut-prefix">Tips:</span>
+            <span class="sql-shortcut-hint"><span>Save</span><kbd id="sql-save-shortcut">⌘S</kbd></span>
+            <span class="sql-shortcut-hint"><span>Run</span><kbd id="sql-run-shortcut">⌘R</kbd></span>
+            <span id="sql-session-user" class="sql-session-user hidden"></span>
+            <button id="sql-sign-out" type="button" class="btn btn-secondary btn-sm hidden">Sign out</button>
+          </div>
+        </header>
+
+        <div id="sql-loading" class="sql-page-state" role="status">Connecting…</div>
+
+        <section id="sql-signed-out" class="sql-login-view hidden" aria-labelledby="sql-login-title">
+          <form id="sql-login-form" class="sql-login-card" novalidate>
+            <div class="sql-login-heading">
+              <span id="sql-login-environment" class="sql-environment-badge">Production</span>
+              <h2 id="sql-login-title">Sign in to SQL</h2>
+              <p>Your login is protected by the operating system and reused until you sign out.</p>
+            </div>
+            <label class="field field-xs">
+              Username
+              <input id="sql-login-username" class="input" type="text" autocomplete="username" maxlength="512" required spellcheck="false" />
+            </label>
+            <label class="field field-xs">
+              Password
+              <input id="sql-login-password" class="input" type="password" autocomplete="current-password" maxlength="16384" required />
+            </label>
+            <p id="sql-login-error" class="sql-login-error hidden" role="alert"></p>
+            <button id="sql-login-submit" type="submit" class="btn btn-primary">Sign in</button>
+          </form>
+        </section>
+
+        <div id="sql-workspace" class="sql-workspace hidden">
+          <aside id="sql-sidebar" class="sql-sidebar" aria-label="Saved queries">
+            <div class="sql-sidebar-tools">
+              <label class="sql-query-search">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="3.75"></circle><path d="m10 10 3 3"></path></svg>
+                <input id="sql-query-search" type="search" placeholder="Search saved queries" aria-label="Search saved queries" spellcheck="false" />
+              </label>
+              <div class="sql-sidebar-actions">
+                <button id="sql-refresh-queries" type="button" class="icon-btn" aria-label="Refresh saved queries" title="Refresh saved queries">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5.5A5.5 5.5 0 1 0 13.2 10"></path><path d="M13 2.5v3h-3"></path></svg>
+                </button>
+                <button id="sql-new-query" type="button" class="icon-btn" aria-label="New query" title="New query">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg>
+                </button>
+              </div>
+            </div>
+            <div id="sql-query-list" class="sql-query-list" role="listbox" aria-label="Saved queries"></div>
+          </aside>
+
+          <div id="sql-sidebar-resizer" class="sql-sidebar-resizer" role="separator" aria-label="Resize SQL sidebar" aria-orientation="vertical" aria-controls="sql-sidebar sql-query-workspace" aria-valuemin="240" aria-valuemax="520" aria-valuenow="300" tabindex="0"></div>
+
+          <section id="sql-query-workspace" class="sql-query-workspace" aria-label="SQL editor and results">
+            <div class="sql-query-toolbar">
+              <div id="sql-query-tabs" class="sql-query-tabs" role="tablist" aria-label="Open SQL queries"></div>
+            </div>
+            <div id="sql-editor" class="sql-editor" aria-label="SQL editor"></div>
+            <div id="sql-result-resizer" class="sql-result-resizer" role="separator" aria-label="Resize SQL editor and results" aria-orientation="horizontal" aria-controls="sql-editor sql-results" aria-valuemin="180" aria-valuenow="320" tabindex="0"></div>
+            <section id="sql-results" class="sql-results" aria-label="SQL results">
+              <header class="sql-results-head">
+                <div>
+                  <h2>Results</h2>
+                  <span id="sql-result-meta"></span>
+                </div>
+              </header>
+              <div id="sql-result-content" class="sql-result-content">
+                <div class="sql-result-empty">Run a statement to see its result.</div>
+              </div>
+            </section>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="sql-value-dialog" class="sql-value-dialog" aria-labelledby="sql-value-dialog-title">
+      <section class="sql-value-dialog-shell">
+        <header class="sql-value-dialog-head">
+          <div class="sql-value-dialog-title-group">
+            <h2 id="sql-value-dialog-title">Cell value</h2>
+            <span id="sql-value-kind" class="sql-value-kind">Text</span>
+          </div>
+          <button id="sql-value-close" type="button" class="icon-btn" aria-label="Close cell value">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"></path></svg>
+          </button>
+        </header>
+        <div id="sql-value-modes" class="sql-value-modes" role="tablist" aria-label="Cell value view"></div>
+        <div id="sql-value-content" class="sql-value-content"></div>
+      </section>
+    </dialog>
+
     <main class="app-shell hidden" data-page="notes">
       <section class="notes-page" aria-label="Notes">
         <span id="note-save-status" class="notes-save-announcement" role="status" aria-live="polite" aria-atomic="true"></span>

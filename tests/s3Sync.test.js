@@ -175,7 +175,16 @@ async function createRuntime(t, options) {
     userDataPath,
     appVersion: '0.3.19',
     credentialProtector: fakeProtector(),
-    snapshotProvider: async () => clone(state.data),
+    snapshotProvider: async () => {
+      options.onSnapshotProvider?.();
+      return clone(state.data);
+    },
+    ...(options.notesIncrementalProvider ? {
+      notesIncrementalProvider: (intent) => options.notesIncrementalProvider({
+        intent: clone(intent),
+        state,
+      }),
+    } : {}),
     snapshotApplier: async (data, expectedLocal) => {
       if (options.snapshotApplier) {
         return options.snapshotApplier({ data, expectedLocal, state });
@@ -200,8 +209,8 @@ async function createRuntime(t, options) {
   return { runtime, state, syncStates, userDataPath };
 }
 
-async function waitFor(predicate, message) {
-  const deadline = Date.now() + 2_000;
+async function waitFor(predicate, message, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1222,6 +1231,184 @@ test('v4 reconciliation reuses unchanged Note and tree references and transfers 
   );
 });
 
+test('automatic Note edits publish only the coalesced Note delta after the startup baseline', async (t) => {
+  const s3 = new MemoryS3();
+  let fullSnapshotReads = 0;
+  const incrementalIntents = [];
+  const client = await createRuntime(t, {
+    clientId: 'incremental-note-client',
+    data: sharedData([
+      note('note-a', 'A base'),
+      note('note-b', 'B base'),
+    ]),
+    fetchImpl: s3.fetch,
+    onSnapshotProvider: () => { fullSnapshotReads += 1; },
+    notesIncrementalProvider: async ({ intent, state }) => {
+      incrementalIntents.push(intent);
+      const requested = new Set([...intent.upsertIds, ...intent.deleteIds]);
+      return {
+        notes: clone(state.data.notes.notes.filter((candidate) => requested.has(candidate.id))),
+        tombstones: clone(state.data.notes.tombstones.filter((candidate) => requested.has(candidate.id))),
+        ...(intent.includeTree ? { notesTree: clone(state.data.notes.tree) } : {}),
+      };
+    },
+  });
+  await client.runtime.syncAllDataToS3();
+  assert.equal(fullSnapshotReads, 1);
+  const getsBefore = s3.calls.filter((call) => call.method === 'GET').length;
+  const notePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length;
+  const treePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length;
+
+  client.state.data = sharedData([
+    note('note-a', 'A first edit', T1),
+    note('note-b', 'B base'),
+  ]);
+  client.runtime.markLocalChange({ kind: 'notes', upsertIds: ['note-a'] });
+  client.state.data = sharedData([
+    note('note-a', 'A latest edit', T2),
+    note('note-b', 'B base'),
+  ]);
+  client.runtime.markLocalChange({ kind: 'notes', upsertIds: ['note-a'] });
+  await waitFor(() => client.runtime.getSyncState().pending, 'the Note edit was not marked pending');
+  const result = await client.runtime.requestSync(true, false);
+
+  assert.equal(result.action, 'pushed');
+  assert.equal(fullSnapshotReads, 1, 'an ordinary Note save must not collect the complete app snapshot');
+  assert.deepEqual(incrementalIntents, [{
+    upsertIds: ['note-a'],
+    deleteIds: [],
+    includeTree: false,
+  }]);
+  assert.equal(
+    s3.calls.filter((call) => call.method === 'GET').length,
+    getsBefore,
+    'the startup head and manifest baseline must be reused without another cloud read',
+  );
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length, notePutsBefore + 1);
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length, treePutsBefore, 'content-only edits must reuse the existing tree reference');
+});
+
+test('automatic Note deletion publishes its tombstone and changed tree without a full snapshot', async (t) => {
+  const s3 = new MemoryS3();
+  let fullSnapshotReads = 0;
+  const incrementalIntents = [];
+  const remaining = note('note-a', 'A base');
+  const client = await createRuntime(t, {
+    clientId: 'incremental-delete-client',
+    data: sharedData([remaining, note('note-b', 'B base')]),
+    fetchImpl: s3.fetch,
+    onSnapshotProvider: () => { fullSnapshotReads += 1; },
+    notesIncrementalProvider: async ({ intent, state }) => {
+      incrementalIntents.push(intent);
+      const requested = new Set([...intent.upsertIds, ...intent.deleteIds]);
+      return {
+        notes: clone(state.data.notes.notes.filter((candidate) => requested.has(candidate.id))),
+        tombstones: clone(state.data.notes.tombstones.filter((candidate) => requested.has(candidate.id))),
+        ...(intent.includeTree ? { notesTree: clone(state.data.notes.tree) } : {}),
+      };
+    },
+  });
+  await client.runtime.syncAllDataToS3();
+  const notePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length;
+  const treePutsBefore = s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length;
+
+  client.state.data = sharedData(
+    [remaining],
+    [],
+    [{ id: 'note-b', deletedAt: T2 }],
+  );
+  client.runtime.markLocalChange({
+    kind: 'notes',
+    deleteIds: ['note-b'],
+    treeChanged: true,
+  });
+  await waitFor(() => client.runtime.getSyncState().pending, 'the Note deletion was not marked pending');
+  assert.equal((await client.runtime.requestSync(true, false)).action, 'pushed');
+
+  assert.equal(fullSnapshotReads, 1);
+  assert.deepEqual(incrementalIntents, [{
+    upsertIds: [],
+    deleteIds: ['note-b'],
+    includeTree: true,
+  }]);
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes/')
+  ).length, notePutsBefore, 'deletion must not upload an active Note object');
+  assert.equal(s3.calls.filter((call) =>
+    call.method === 'PUT' && call.url.includes('/service-manager/v4/notes-trees/')
+  ).length, treePutsBefore + 1);
+});
+
+test('a stale incremental head falls back to the complete merge without losing the pending Note', async (t) => {
+  const s3 = new MemoryS3();
+  const base = sharedData([
+    note('note-a', 'A base'),
+    note('note-b', 'B base'),
+  ]);
+  let fullSnapshotReads = 0;
+  const home = await createRuntime(t, {
+    clientId: 'incremental-fallback-home',
+    data: base,
+    fetchImpl: s3.fetch,
+    onSnapshotProvider: () => { fullSnapshotReads += 1; },
+    notesIncrementalProvider: async ({ intent, state }) => {
+      const requested = new Set([...intent.upsertIds, ...intent.deleteIds]);
+      return {
+        notes: clone(state.data.notes.notes.filter((candidate) => requested.has(candidate.id))),
+        tombstones: clone(state.data.notes.tombstones.filter((candidate) => requested.has(candidate.id))),
+        ...(intent.includeTree ? { notesTree: clone(state.data.notes.tree) } : {}),
+      };
+    },
+  });
+  const other = await createRuntime(t, {
+    clientId: 'incremental-fallback-other',
+    data: sharedData(),
+    fetchImpl: s3.fetch,
+  });
+  await home.runtime.syncAllDataToS3();
+  await other.runtime.syncAllDataToS3();
+  other.state.data = sharedData([
+    note('note-a', 'A base'),
+    note('note-b', 'B remote edit', T1),
+  ]);
+  await other.runtime.syncAllDataToS3();
+
+  home.state.data = sharedData([
+    note('note-a', 'A local edit', T2),
+    note('note-b', 'B base'),
+  ]);
+  home.runtime.markLocalChange({ kind: 'notes', upsertIds: ['note-a'] });
+  await waitFor(() => home.runtime.getSyncState().pending, 'the stale incremental edit was not marked pending');
+  const result = await home.runtime.requestSync(true, false);
+
+  assert.equal(result.action, 'pushed');
+  assert.equal(
+    fullSnapshotReads,
+    3,
+    'the conditional-head conflict must collect the fallback snapshot and fence the cloud apply',
+  );
+  assert.equal(
+    home.state.data.notes.notes.find((candidate) => candidate.id === 'note-a').content,
+    'A local edit',
+  );
+  assert.equal(
+    home.state.data.notes.notes.find((candidate) => candidate.id === 'note-b').content,
+    'B remote edit',
+  );
+});
+
 test('v4 uploads a changed Notes tree without rewriting unchanged Note objects', async (t) => {
   const s3 = new MemoryS3();
   const notes = [note('parent', 'Parent'), note('child', 'Child')];
@@ -2068,7 +2255,7 @@ test('S3SyncRuntime times out a stalled reconcile and shutdown aborts an active 
   await assert.rejects(pending, /^Error: S3 sync was cancelled\.$/);
 });
 
-test('S3SyncRuntime does not recreate its auto-sync interval after shutdown starts', async (t) => {
+test('S3SyncRuntime does not schedule its startup sync after shutdown starts', async (t) => {
   const userDataPath = await temporaryDirectory(t);
   let releaseSettings;
   const settingsGate = new Promise((resolve) => { releaseSettings = resolve; });
@@ -2093,8 +2280,17 @@ test('S3SyncRuntime does not recreate its auto-sync interval after shutdown star
   });
   await starting;
 
-  assert.equal(runtime.intervalTimer, undefined);
   assert.equal(runtime.debounceTimer, undefined);
+});
+
+test('automatic S3 sync has no focus, resume, or recurring full-reconcile trigger', async () => {
+  const [runtimeSource, mainSource] = await Promise.all([
+    readFile(path.join(__dirname, '..', 'src', 'main', 's3Sync.ts'), 'utf8'),
+    readFile(path.join(__dirname, '..', 'src', 'main', 'main.ts'), 'utf8'),
+  ]);
+  assert.doesNotMatch(runtimeSource, /AUTO_SYNC_INTERVAL_MS|setInterval\(|checkForRemoteChanges/);
+  assert.doesNotMatch(mainSource, /powerMonitor|s3SyncRuntime\?\.checkForRemoteChanges/);
+  assert.match(runtimeSource, /startAutoSync\(\)[\s\S]*?scheduleSync\(0, false, true\)/);
 });
 
 test('S3SyncRuntime returns bounded safe errors without leaking endpoint, data, or credentials', async (t) => {

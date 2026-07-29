@@ -83,15 +83,15 @@ test('Notes empty search sorts by updated time descending and stays stable for t
   assert.deepEqual(notes.map(({ id }) => id), ['old', 'new-a', 'new-b']);
 });
 
-test('Notes page reuses invalidatable search and tree indexes with a bounded search debounce', async () => {
+test('Notes page delegates body search while retaining lightweight tree indexes and bounded debounce', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /NOTE_SEARCH_DEBOUNCE_MS = 120/);
   assert.match(source, /this\.searchInput\.addEventListener\('input', \(\) => this\.queueSearchRender\(\)\)/);
-  assert.match(source, /private noteSearchIndex: NoteSearchIndexEntry\[\] = \[\]/);
   assert.match(source, /private readonly treeNodesById = new Map<string, NotesTreeNode>\(\)/);
-  assert.match(source, /this\.noteSearchIndex\[index\] = createNoteSearchIndexEntry\(note, index\)/);
-  assert.match(source, /rankNoteSearchIndex\(this\.noteSearchIndex, this\.searchInput\.value, this\.deletedIds\)/);
+  assert.match(source, /window\.notesApi\.searchNotes\(query, activeNote\)/);
+  assert.match(source, /this\.searchResultIds = ids\.filter/);
+  assert.match(source, /this\.searchResultIds\.flatMap\(\(id\)/);
   assert.match(source, /node: this\.treeNodesById\.get\(note\.id\)/);
   assert.match(source, /const cached = this\.breadcrumbCache\.get\(noteId\)/);
   assert.match(source, /noteTreeBreadcrumbFromIndexes\(noteId, this\.notesById, this\.treeNodesById\)/);
@@ -499,7 +499,8 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
   assert.match(source, /window\.serviceApi\.confirmAction\(\{/);
   assert.match(source, /NOTE_SAVE_DEBOUNCE_MS = 250/);
   assert.match(source, /setTimeout\([\s\S]*NOTE_SAVE_DEBOUNCE_MS/);
-  assert.match(source, /hide\(\): void \{\s*this\.closeLanguageMenu\(\);\s*this\.closeDownloadMenu\(\);\s*this\.closeMarkdownOutline\(\);\s*if \(this\.attachmentPreviewDialog\.open\) this\.attachmentPreviewDialog\.close\(\);\s*void this\.flush\(\)\.catch\(\(\) => undefined\);/);
+  assert.match(source, /hide\(\): void \{[\s\S]*?this\.active = false[\s\S]*?void this\.flush\(\)\.then\(\(\) => \{[\s\S]*?this\.releaseEditorResources\(\)/);
+  assert.match(source, /A failed save keeps the editor and its document alive/);
   assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?this\.finishSidebarResize\(\)[\s\S]*?this\.flushQueuedSidebarWidthSave\(\)[\s\S]*?this\.waitForSidebarWidthSaves\(\)/);
   assert.match(source, /private async selectNote\(id: string, source: 'tree' \| 'tab' = 'tree'\): Promise<void>/);
   assert.match(source, /await this\.flushNote\(previousId\);\s*if \(this\.isDirty\(previousId\)\)/);
@@ -531,7 +532,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
 test('Notes tree workspace mutations flush first, fence request-time edits, persist expansion, and expose keyboard navigation', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
-  assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(note\.id\)[\s\S]*?> baselineVersion/);
+  assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(summary\.id\)[\s\S]*?> baselineVersion/);
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
   assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline, true\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);

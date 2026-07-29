@@ -102,6 +102,8 @@ type NotesImageLoadResult =
   | { status: 'loaded'; bytes: Uint8Array; mimeType: NoteImageReference['mimeType'] }
   | { status: 'not-configured' | 'missing' | 'error' };
 
+const MAX_CONCURRENT_NOTE_IMAGE_LOADS = 3;
+
 const TOOLBAR_COMMANDS = new Set<RichTextToolbarCommand>([
   'undo',
   'redo',
@@ -503,6 +505,122 @@ function loadNoteImage(reference: NoteImageReference): Promise<NotesImageLoadRes
     loadImage(value: NoteImageReference): Promise<NotesImageLoadResult>;
   };
   return api.loadImage(reference);
+}
+
+function noteImageLoadKey(reference: NoteImageReference): string {
+  return `${reference.assetKey}\u0000${reference.ciphertextSha256}\u0000${reference.contentSha256}`;
+}
+
+interface PendingNoteImageLoad {
+  reference: NoteImageReference;
+  resolve: (result: NotesImageLoadResult) => void;
+}
+
+/** Bounds S3 image work and shares one in-flight request for identical assets. */
+export class BoundedNoteImageLoader {
+  private readonly inFlight = new Map<string, Promise<NotesImageLoadResult>>();
+  private readonly pending: PendingNoteImageLoad[] = [];
+  private active = 0;
+  private destroyed = false;
+
+  public constructor(
+    private readonly source: (reference: NoteImageReference) => Promise<NotesImageLoadResult>,
+    private readonly maximumConcurrency = MAX_CONCURRENT_NOTE_IMAGE_LOADS,
+  ) {
+    if (!Number.isInteger(maximumConcurrency) || maximumConcurrency < 1) {
+      throw new Error('Image load concurrency must be a positive integer.');
+    }
+  }
+
+  public load(reference: NoteImageReference): Promise<NotesImageLoadResult> {
+    if (this.destroyed) return Promise.resolve({ status: 'error' });
+    const key = noteImageLoadKey(reference);
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+    let resolve!: (result: NotesImageLoadResult) => void;
+    const promise = new Promise<NotesImageLoadResult>((complete) => {
+      resolve = complete;
+    });
+    this.inFlight.set(key, promise);
+    this.pending.push({ reference, resolve });
+    this.pump();
+    void promise.finally(() => {
+      if (this.inFlight.get(key) === promise) this.inFlight.delete(key);
+    });
+    return promise;
+  }
+
+  public destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    for (const task of this.pending.splice(0)) task.resolve({ status: 'error' });
+  }
+
+  private pump(): void {
+    while (!this.destroyed && this.active < this.maximumConcurrency && this.pending.length > 0) {
+      const task = this.pending.shift();
+      if (!task) return;
+      this.active += 1;
+      void this.source(task.reference).catch((): NotesImageLoadResult => ({ status: 'error' }))
+        .then(task.resolve)
+        .finally(() => {
+          this.active -= 1;
+          this.pump();
+        });
+    }
+  }
+}
+
+class NotesImageLoadCoordinator {
+  private readonly loader = new BoundedNoteImageLoader(loadNoteImage);
+  private readonly visibilityCallbacks = new Map<Element, () => void>();
+  private readonly observer: IntersectionObserver | undefined;
+  private destroyed = false;
+
+  public constructor(root: HTMLElement) {
+    if (typeof IntersectionObserver === 'function') {
+      this.observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const callback = this.visibilityCallbacks.get(entry.target);
+          if (!callback) continue;
+          this.visibilityCallbacks.delete(entry.target);
+          this.observer?.unobserve(entry.target);
+          callback();
+        }
+      }, {
+        root,
+        rootMargin: '480px 0px',
+      });
+    }
+  }
+
+  public load(reference: NoteImageReference): Promise<NotesImageLoadResult> {
+    return this.loader.load(reference);
+  }
+
+  public observe(element: Element, onVisible: () => void): () => void {
+    if (this.destroyed) return () => undefined;
+    if (!this.observer) {
+      queueMicrotask(() => {
+        if (!this.destroyed) onVisible();
+      });
+      return () => undefined;
+    }
+    this.visibilityCallbacks.set(element, onVisible);
+    this.observer.observe(element);
+    return () => {
+      this.visibilityCallbacks.delete(element);
+      this.observer?.unobserve(element);
+    };
+  }
+
+  public destroy(): void {
+    this.destroyed = true;
+    this.observer?.disconnect();
+    this.visibilityCallbacks.clear();
+    this.loader.destroy();
+  }
 }
 
 function createTaskListExtension() {
@@ -2274,6 +2392,7 @@ function createS3ImageNodeView(
   getPos: NodeViewRendererProps['getPos'],
   onError: (message: string) => void,
   onLayoutChange: () => void,
+  imageLoads: NotesImageLoadCoordinator,
 ): {
   dom: HTMLElement;
   update: (node: NodeViewRendererProps['node']) => boolean;
@@ -2307,6 +2426,7 @@ function createS3ImageNodeView(
   let requestedReferenceKey: string | undefined;
   let loadGeneration = 0;
   let destroyed = false;
+  let visible = false;
   let activeResize: {
     pointerId: number;
     direction: 'west' | 'east';
@@ -2323,7 +2443,10 @@ function createS3ImageNodeView(
     objectUrl = undefined;
   };
 
-  const showState = (state: 'loading' | 'not-configured' | 'missing' | 'error', text: string): void => {
+  const showState = (
+    state: 'deferred' | 'loading' | 'not-configured' | 'missing' | 'error',
+    text: string,
+  ): void => {
     dom.dataset.state = state;
     const status = document.createElement('span');
     status.className = 'notes-richtext-image-status';
@@ -2373,6 +2496,13 @@ function createS3ImageNodeView(
       return;
     }
     applyLayout(attributes);
+    if (!visible) {
+      loadGeneration += 1;
+      requestedReferenceKey = undefined;
+      revokeObjectUrl();
+      showState('deferred', 'Image loads when visible.');
+      return;
+    }
     const referenceKey = JSON.stringify(reference);
     if (referenceKey === requestedReferenceKey) return;
     requestedReferenceKey = referenceKey;
@@ -2383,7 +2513,7 @@ function createS3ImageNodeView(
 
     let result: NotesImageLoadResult;
     try {
-      result = await loadNoteImage(reference);
+      result = await imageLoads.load(reference);
     } catch {
       result = { status: 'error' };
     }
@@ -2540,6 +2670,11 @@ function createS3ImageNodeView(
   westHandle.addEventListener('pointerdown', beginResize);
   eastHandle.addEventListener('pointerdown', beginResize);
 
+  const stopObserving = imageLoads.observe(dom, () => {
+    if (destroyed) return;
+    visible = true;
+    void reload();
+  });
   void reload();
   return {
     dom,
@@ -2565,6 +2700,7 @@ function createS3ImageNodeView(
       loadGeneration += 1;
       westHandle.removeEventListener('pointerdown', beginResize);
       eastHandle.removeEventListener('pointerdown', beginResize);
+      stopObserving();
       revokeObjectUrl();
       dom.replaceChildren();
     },
@@ -2574,6 +2710,7 @@ function createS3ImageNodeView(
 function createS3ImageExtension(
   onError: (message: string) => void,
   onLayoutChange: () => void,
+  imageLoads?: NotesImageLoadCoordinator,
   importImages?: readonly NoteImageNodeAttributes[],
   importToken?: string,
 ) {
@@ -2633,12 +2770,14 @@ function createS3ImageExtension(
       return ['span', { class: 'notes-richtext-image-serialized', 'aria-label': 'Embedded image' }];
     },
     addNodeView() {
+      if (!imageLoads) return () => ({ dom: document.createElement('span') });
       return ({ node, editor, getPos }) => createS3ImageNodeView(
         node,
         editor,
         getPos,
         onError,
         onLayoutChange,
+        imageLoads,
       );
     },
   });
@@ -2832,6 +2971,7 @@ function createNotesRichTextExtensions(
   ) => void,
   importImages?: readonly NoteImageNodeAttributes[],
   importToken?: string,
+  imageLoads?: NotesImageLoadCoordinator,
 ): Extensions {
   return [StarterKit.configure({
     codeBlock: false,
@@ -2868,7 +3008,7 @@ function createNotesRichTextExtensions(
   createTaskListExtension(),
   createTaskItemExtension(),
   notesRichTextFindExtension,
-  createS3ImageExtension(onError, onLayoutChange, importImages, importToken),
+  createS3ImageExtension(onError, onLayoutChange, imageLoads, importImages, importToken),
   createS3AttachmentExtension(onError, onAttachmentAction)];
 }
 
@@ -3239,6 +3379,7 @@ export class NotesRichTextEditor {
   private readonly imageBubbleMenu!: NotesRichTextImageBubbleMenu;
   private readonly codeLanguageMenu!: NotesRichTextCodeLanguageMenu;
   private readonly tableControls!: NotesRichTextTableControls;
+  private readonly imageLoads: NotesImageLoadCoordinator;
   private readonly host: HTMLElement;
   private readonly overlayRoot: HTMLElement;
   private lastCanonicalContent = EMPTY_RICH_TEXT_CONTENT;
@@ -3253,6 +3394,7 @@ export class NotesRichTextEditor {
     const overlayRoot = options.toolbar.parentElement;
     if (!overlayRoot) throw new Error('The Rich Text editor overlay root is missing.');
     this.overlayRoot = overlayRoot;
+    this.imageLoads = new NotesImageLoadCoordinator(this.host);
     this.editor = new Editor({
       element: options.host,
       content: parseRichTextContent(EMPTY_RICH_TEXT_CONTENT),
@@ -3262,6 +3404,9 @@ export class NotesRichTextEditor {
         this.onError,
         () => this.imageBubbleMenu?.sync(),
         options.onAttachmentAction,
+        undefined,
+        undefined,
+        this.imageLoads,
       ),
       injectCSS: false,
       editorProps: {
@@ -3502,6 +3647,7 @@ export class NotesRichTextEditor {
     this.blockHandle.destroy();
     this.slashMenu.destroy();
     this.editor.destroy();
+    this.imageLoads.destroy();
   }
 
   private readonly handleToolbarClick = (event: Event): void => {

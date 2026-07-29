@@ -126,6 +126,11 @@ test('Kubernetes environment bridge exposes only the active Pod resolver and val
 test('Kubernetes page provides a read-only resource browser shell', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const kubernetesStart = html.indexOf('<main class="app-shell hidden" data-page="kubernetes">');
+  const kubernetesEnd = html.indexOf('</main>', kubernetesStart);
+  assert.notEqual(kubernetesStart, -1);
+  assert.notEqual(kubernetesEnd, -1);
+  const kubernetesHtml = html.slice(kubernetesStart, kubernetesEnd + '</main>'.length);
 
   assert.match(html, /<main class="app-shell hidden" data-page="kubernetes">/);
   assert.match(html, /class="kubernetes-page"/);
@@ -176,7 +181,7 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /listCustomResourceDefinitions\(\)/);
   assert.match(page, /apiVersion: `\$\{definition\.group\}\/\$\{definition\.version\}`/);
   for (const mutation of ['Delete', 'Scale', 'Apply', 'Restart']) {
-    assert.doesNotMatch(html, new RegExp(`>${mutation}<`));
+    assert.doesNotMatch(kubernetesHtml, new RegExp(`>${mutation}<`));
     assert.doesNotMatch(page, new RegExp(`['\"]${mutation}['\"]`));
   }
 });
@@ -645,6 +650,11 @@ test('Kubernetes page never auto-loads more pages for an active name filter', as
 test('Kubernetes resource details use a read-only overlay drawer and clear active Secret data on close', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const kubernetesStart = html.indexOf('<main class="app-shell hidden" data-page="kubernetes">');
+  const kubernetesEnd = html.indexOf('</main>', kubernetesStart);
+  assert.notEqual(kubernetesStart, -1);
+  assert.notEqual(kubernetesEnd, -1);
+  const kubernetesHtml = html.slice(kubernetesStart, kubernetesEnd + '</main>'.length);
 
   assert.match(html, /id="kubernetes-detail-drawer"/);
   assert.match(html, /id="kubernetes-detail-drawer-scrim"/);
@@ -666,10 +676,10 @@ test('Kubernetes resource details use a read-only overlay drawer and clear activ
   assert.match(page, /getRelatedResources/);
   assert.match(page, /No permission/);
   assert.match(page, /name\.textContent/);
-  assert.doesNotMatch(html, />Delete</);
-  assert.doesNotMatch(html, />Scale</);
-  assert.doesNotMatch(html, />Apply</);
-  assert.doesNotMatch(html, />Restart</);
+  assert.doesNotMatch(kubernetesHtml, />Delete</);
+  assert.doesNotMatch(kubernetesHtml, />Scale</);
+  assert.doesNotMatch(kubernetesHtml, />Apply</);
+  assert.doesNotMatch(kubernetesHtml, />Restart</);
 });
 
 test('Kubernetes detail YAML uses the copied browser serializer and text-safe rendering without Copy', async () => {
