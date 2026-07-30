@@ -273,6 +273,8 @@ const sqlApi: SqlApi = {
     ipcRenderer.invoke('sql:query:delete', { environment, id }),
   execute: (environment: SqlEnvironment, statement: string) =>
     ipcRenderer.invoke('sql:execute', { environment, statement }),
+  getSchema: (environment: SqlEnvironment) =>
+    ipcRenderer.invoke('sql:schema:get', environment),
 };
 
 const kubernetesApi: KubernetesApi = {

@@ -28,6 +28,7 @@ const codeMirrorSeedPackages = Object.freeze([
   '@codemirror/lang-javascript',
   '@codemirror/lang-json',
   '@codemirror/lang-markdown',
+  '@codemirror/lang-sql',
   '@codemirror/lang-yaml',
   '@codemirror/language',
   '@codemirror/state',

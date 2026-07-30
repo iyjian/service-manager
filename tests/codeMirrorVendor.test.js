@@ -44,6 +44,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     '@codemirror/lang-javascript',
     '@codemirror/lang-json',
     '@codemirror/lang-markdown',
+    '@codemirror/lang-sql',
     '@codemirror/lang-yaml',
     '@codemirror/language',
     '@codemirror/state',

@@ -4693,6 +4693,32 @@
     background-color: rgb(191 219 254) !important;
   }
 
+  .sql-editor .cm-tooltip-autocomplete {
+    @apply z-50 overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg;
+  }
+
+  .sql-editor .cm-tooltip-autocomplete > ul {
+    @apply max-h-64 min-w-56 py-1;
+    font-family: var(--sql-editor-font-family);
+    font-size: 12px;
+  }
+
+  .sql-editor .cm-tooltip-autocomplete > ul > li {
+    @apply flex min-h-7 items-center px-2 text-zinc-700;
+  }
+
+  .sql-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+    @apply bg-blue-50 text-blue-900;
+  }
+
+  .sql-editor .cm-completionLabel {
+    @apply font-medium;
+  }
+
+  .sql-editor .cm-completionDetail {
+    @apply ml-auto pl-4 text-zinc-400;
+  }
+
   .sql-results {
     @apply grid min-h-0 min-w-0 overflow-hidden bg-zinc-50;
     grid-template-rows: 38px minmax(0, 1fr);

@@ -2,7 +2,13 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const test = require('node:test');
 
-const { SQL_API_BASE_URLS, SqlRuntime, hashSqlPassword } = require('../dist/main/sqlRuntime');
+const {
+  SQL_API_BASE_URLS,
+  SQL_SCHEMA_TABLE_BATCH_SIZE,
+  SqlRuntime,
+  buildSqlSchemaColumnsStatement,
+  hashSqlPassword,
+} = require('../dist/main/sqlRuntime');
 
 function response(data, options = {}) {
   return new Response(JSON.stringify({ err: options.err ?? 0, errMsg: options.errMsg, data }), {
@@ -211,4 +217,107 @@ test('SQL runtime does not loop when the replay is also unauthorized', async () 
   await assert.rejects(runtime.execute('development', 'select 1'), /session expired/i);
   assert.equal(loginCount, 2);
   assert.equal(executeCount, 2);
+});
+
+test('SQL schema loading is bounded, batched, deduplicated, cached, and detached', async () => {
+  const credentialsStore = credentialStore({ production: { userName: 'owner', passwd: 'a'.repeat(32) } });
+  const tableNames = Array.from({ length: SQL_SCHEMA_TABLE_BATCH_SIZE + 1 }, (_value, index) => `t_${index}`);
+  const schemaStatements = [];
+  const runtime = new SqlRuntime({
+    credentialsStore,
+    fetchImpl: async (url, init) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) return response({ token: 'schema-token' });
+      if (pathname.endsWith('/user/detail')) {
+        return response({ id: 7, name: 'Owner', userName: 'owner' });
+      }
+      if (pathname.endsWith('/system/profile')) {
+        const { statement } = JSON.parse(init.body);
+        schemaStatements.push(statement);
+        if (/from information_schema\.tables/i.test(statement)) {
+          return response(tableNames.map((tableName) => ({ tableName })));
+        }
+        const names = [...statement.matchAll(/'((?:''|\\\\|[^'])+)'/g)]
+          .map((match) => match[1].replace(/''/g, "'").replace(/\\\\/g, '\\'));
+        return response(names.map((tableName) => ({
+          tableName,
+          columnName: `${tableName}_id`,
+          dataType: 'bigint',
+        })));
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    },
+  });
+
+  await runtime.getAuthState('production');
+  const [left, right] = await Promise.all([
+    runtime.getSchema('production'),
+    runtime.getSchema('production'),
+  ]);
+
+  assert.deepEqual(left, right);
+  assert.equal(left.tables.length, tableNames.length);
+  assert.equal(schemaStatements.length, 3);
+  assert.equal(schemaStatements.filter((statement) => /information_schema\.columns/i.test(statement)).length, 2);
+  left.tables[0].name = 'mutated';
+  left.tables[0].columns[0].name = 'mutated';
+  const cached = await runtime.getSchema('production');
+  assert.equal(cached.tables[0].name, 't_0');
+  assert.equal(cached.tables[0].columns[0].name, 't_0_id');
+  assert.equal(schemaStatements.length, 3);
+});
+
+test('SQL schema column statements quote server-owned names and enforce the batch bound', () => {
+  const statement = buildSqlSchemaColumnsStatement(["ordinary", "quote'name", 'slash\\name']);
+  assert.match(statement, /table_name in \('ordinary', 'quote''name', 'slash\\\\name'\)/);
+  assert.throws(
+    () => buildSqlSchemaColumnsStatement(
+      Array.from({ length: SQL_SCHEMA_TABLE_BATCH_SIZE + 1 }, (_value, index) => `t_${index}`),
+    ),
+    /schema table batch is invalid/i,
+  );
+});
+
+test('SQL schema cache is environment-session scoped and cleared by explicit sign out', async () => {
+  const credentialsStore = credentialStore();
+  let schemaTableRequests = 0;
+  let loginCount = 0;
+  const runtime = new SqlRuntime({
+    credentialsStore,
+    fetchImpl: async (url, init) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) {
+        loginCount += 1;
+        return response({ token: `token-${loginCount}` });
+      }
+      if (pathname.endsWith('/user/detail')) {
+        return response({ id: 7, name: 'Owner', userName: 'owner' });
+      }
+      if (pathname.endsWith('/system/profile')) {
+        const { statement } = JSON.parse(init.body);
+        if (/from information_schema\.tables/i.test(statement)) {
+          schemaTableRequests += 1;
+          return response([{ tableName: 't_user' }]);
+        }
+        return response([{ tableName: 't_user', columnName: 'id', dataType: 'bigint' }]);
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    },
+  });
+
+  await runtime.login({
+    environment: 'production',
+    userName: 'owner',
+    password: 'first-password',
+  });
+  await runtime.getSchema('production');
+  await runtime.logout('production');
+  await runtime.login({
+    environment: 'production',
+    userName: 'owner',
+    password: 'second-password',
+  });
+  await runtime.getSchema('production');
+
+  assert.equal(schemaTableRequests, 2);
 });

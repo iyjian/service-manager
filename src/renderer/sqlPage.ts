@@ -1,5 +1,6 @@
 import type {
   SqlAuthState,
+  SqlDatabaseSchema,
   SqlEnvironment,
   SqlJsonValue,
   SqlQueryDraft,
@@ -7,12 +8,17 @@ import type {
 } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
-import { StreamLanguage } from '@codemirror/language';
-import { standardSQL } from '@codemirror/legacy-modes/mode/sql';
+import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
 import { EditorState } from '@codemirror/state';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from './codeHighlight.js';
 import { registerPage } from './nav.js';
+import {
+  buildSqlCompletionNamespace,
+  defaultTableColumnCompletions,
+  resolveSqlDefaultTable,
+  SQL_COMPLETION_CONTEXT_CHARACTERS,
+} from './sqlCompletion.js';
 import {
   extractSqlTemplateParamNames,
   isLikelyReadOnlySql,
@@ -74,10 +80,13 @@ interface SqlQueryTab {
 
 interface SqlEnvironmentState {
   auth?: SqlAuthState;
+  schema?: SqlDatabaseSchema;
+  schemaCompletion?: ReturnType<typeof schemaCompletionSource>;
   records: SqlQueryRecord[];
   tabs: SqlQueryTab[];
   activeTabKey?: string;
   listLoading: boolean;
+  schemaLoading: boolean;
   loadVersion: number;
   recordLoadVersion: number;
 }
@@ -99,6 +108,7 @@ function newEnvironmentState(): SqlEnvironmentState {
     records: [],
     tabs: [],
     listLoading: false,
+    schemaLoading: false,
     loadVersion: 0,
     recordLoadVersion: 0,
   };
@@ -422,6 +432,27 @@ class SqlPage {
     production: newEnvironmentState(),
     development: newEnvironmentState(),
   };
+  private readonly contextualSchemaCompletion: ReturnType<typeof schemaCompletionSource> = async (context) => {
+    const state = this.currentState();
+    if (!state.schema || !state.schemaCompletion) return null;
+    const base = await state.schemaCompletion(context);
+    if (!base) return null;
+    const sourceBeforeCursor = context.state.sliceDoc(
+      Math.max(0, context.pos - SQL_COMPLETION_CONTEXT_CHARACTERS),
+      context.pos,
+    );
+    const defaultTable = resolveSqlDefaultTable(sourceBeforeCursor, state.schema);
+    const columns = defaultTableColumnCompletions(state.schema, defaultTable);
+    if (columns.length === 0) return base;
+    const existing = new Set(base.options.map((option) => option.label.toLocaleLowerCase()));
+    return {
+      ...base,
+      options: [
+        ...columns.filter((option) => !existing.has(option.label.toLocaleLowerCase())),
+        ...base.options,
+      ],
+    };
+  };
   private readonly editor: EditorView;
   private valueEditor?: EditorView;
   private environment: SqlEnvironment = 'production';
@@ -443,7 +474,8 @@ class SqlPage {
         doc: '',
         extensions: [
           basicSetup,
-          StreamLanguage.define(standardSQL),
+          sql({ dialect: MySQL, upperCaseKeywords: true }),
+          MySQL.language.data.of({ autocomplete: this.contextualSchemaCompletion }),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({
             'aria-label': 'SQL source',
@@ -591,6 +623,7 @@ class SqlPage {
       if (!this.active || environment !== this.environment) return;
       if (auth.status === 'signed-in') {
         this.renderAuthenticated();
+        void this.fetchSchema(environment, version);
         await this.fetchRecords(false, environment, version);
       } else {
         this.renderSignedOut(auth.message);
@@ -673,6 +706,7 @@ class SqlPage {
       if (version !== state.loadVersion) return;
       state.auth = auth;
       this.renderAuthenticated();
+      void this.fetchSchema(environment, version);
       await this.fetchRecords(false, environment, version);
     } catch (error) {
       if (version === state.loadVersion) this.renderSignedOut(toErrorMessage(error));
@@ -691,6 +725,9 @@ class SqlPage {
       state.loadVersion += 1;
       state.recordLoadVersion += 1;
       state.auth = auth;
+      state.schema = undefined;
+      state.schemaCompletion = undefined;
+      state.schemaLoading = false;
       state.records = [];
       state.tabs = [];
       state.activeTabKey = undefined;
@@ -724,6 +761,29 @@ class SqlPage {
     } finally {
       state.listLoading = false;
       if (environment === this.environment) this.renderBusyState();
+    }
+  }
+
+  private async fetchSchema(
+    environment = this.environment,
+    loadVersion = this.states[environment].loadVersion,
+  ): Promise<void> {
+    const state = this.states[environment];
+    state.schemaLoading = true;
+    try {
+      const schema = await window.sqlApi.getSchema(environment);
+      if (loadVersion !== state.loadVersion || schema.environment !== environment) return;
+      state.schema = schema;
+      state.schemaCompletion = schemaCompletionSource({
+        dialect: MySQL,
+        schema: buildSqlCompletionNamespace(schema),
+      });
+    } catch {
+      if (loadVersion === state.loadVersion) {
+        console.warn('[renderer:sql-schema] SQL schema completion is temporarily unavailable.');
+      }
+    } finally {
+      if (loadVersion === state.loadVersion) state.schemaLoading = false;
     }
   }
 

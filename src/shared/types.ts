@@ -1040,6 +1040,21 @@ export interface SqlExecutionResult {
   durationMs: number;
 }
 
+export interface SqlSchemaColumn {
+  name: string;
+  dataType?: string;
+}
+
+export interface SqlSchemaTable {
+  name: string;
+  columns: SqlSchemaColumn[];
+}
+
+export interface SqlDatabaseSchema {
+  environment: SqlEnvironment;
+  tables: SqlSchemaTable[];
+}
+
 /**
  * Narrow SQL bridge. Tokens, protected credentials, endpoints, and raw HTTP
  * transports stay in the main process.
@@ -1055,6 +1070,7 @@ export interface SqlApi {
   renameQuery(environment: SqlEnvironment, id: number, name: string): Promise<SqlQueryRecord>;
   deleteQuery(environment: SqlEnvironment, id: number): Promise<void>;
   execute(environment: SqlEnvironment, statement: string): Promise<SqlExecutionResult>;
+  getSchema(environment: SqlEnvironment): Promise<SqlDatabaseSchema>;
 }
 
 export interface LlmSettingsView {

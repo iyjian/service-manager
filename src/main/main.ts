@@ -225,6 +225,7 @@ const IPC_CHANNELS = {
   sqlQueryRename: 'sql:query:rename',
   sqlQueryDelete: 'sql:query:delete',
   sqlExecute: 'sql:execute',
+  sqlSchemaGet: 'sql:schema:get',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
   s3SettingsTest: 'settings:s3:test',
@@ -2768,6 +2769,9 @@ function registerIpcHandlers(): void {
     }
     return getSqlRuntime().execute(input.environment, input.statement);
   });
+  ipcMain.handle(IPC_CHANNELS.sqlSchemaGet, async (_event, environment: unknown) =>
+    getSqlRuntime().getSchema(environment)
+  );
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(
     IPC_CHANNELS.startupS3SyncGet,

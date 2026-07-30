@@ -104,6 +104,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /renderAuthenticated\(\) \{[\s\S]*?this\.setAuthenticatedHeaderVisible\(true\)/);
   assert.match(page, /window\.sqlApi\.renameQuery/);
   assert.match(page, /window\.sqlApi\.execute/);
+  assert.match(page, /window\.sqlApi\.getSchema/);
+  assert.match(page, /schemaCompletionSource/);
+  assert.match(page, /dialect:\s*MySQL/);
+  assert.doesNotMatch(page, /StreamLanguage\.define\(standardSQL\)/);
   assert.match(page, /sqlCellPresentation/);
   assert.match(page, /Formatted JSON cell value/);
   assert.match(page, /formatSqlDuration/);
@@ -139,6 +143,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
     'sql:query:rename',
     'sql:query:delete',
     'sql:execute',
+    'sql:schema:get',
   ]) {
     assert.match(preload, new RegExp(channel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(main, new RegExp(channel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));

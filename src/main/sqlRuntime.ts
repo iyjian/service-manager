@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import type {
   SqlAuthState,
+  SqlDatabaseSchema,
   SqlEnvironment,
   SqlExecutionResult,
   SqlJsonValue,
@@ -20,6 +21,7 @@ export const SQL_API_BASE_URLS: Readonly<Record<SqlEnvironment, string>> = Objec
 export const SQL_REQUEST_TIMEOUT_MS = 120_000;
 export const SQL_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 export const SQL_MAX_STATEMENT_CHARACTERS = 1_000_000;
+export const SQL_SCHEMA_TABLE_BATCH_SIZE = 20;
 
 const MAX_USERNAME_CHARACTERS = 512;
 const MAX_PASSWORD_CHARACTERS = 16 * 1024;
@@ -27,10 +29,27 @@ const MAX_QUERY_NAME_CHARACTERS = 300;
 const MAX_SEARCH_CHARACTERS = 300;
 const MAX_RESULT_CHARACTERS = 16 * 1024 * 1024;
 const MAX_ERROR_CHARACTERS = 600;
+const MAX_SCHEMA_TABLES = 1_000;
+const MAX_SCHEMA_COLUMNS = 50_000;
+const MAX_SCHEMA_COLUMNS_PER_BATCH = 5_000;
+const MAX_SCHEMA_IDENTIFIER_CHARACTERS = 256;
+const MAX_SCHEMA_DATA_TYPE_CHARACTERS = 256;
+const SQL_SCHEMA_CACHE_TTL_MS = 5 * 60 * 1_000;
+
+const SQL_SCHEMA_TABLES_STATEMENT = `select table_name as tableName
+from information_schema.tables
+where table_schema = database()
+order by table_name;`;
 
 interface SqlSession {
   token: string;
   user: SqlUserView;
+}
+
+interface SqlSchemaCacheEntry {
+  session: SqlSession;
+  schema: SqlDatabaseSchema;
+  expiresAt: number;
 }
 
 interface SqlRuntimeOptions {
@@ -203,6 +222,54 @@ function safeApiMessage(value: unknown, fallback: string): string {
   return text || fallback;
 }
 
+function normalizeSchemaText(
+  value: unknown,
+  maximumCharacters: number,
+): string | undefined {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > maximumCharacters
+    || value !== value.trim()
+    || /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function escapeSqlStringLiteral(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+}
+
+export function buildSqlSchemaColumnsStatement(tableNames: readonly string[]): string {
+  if (
+    tableNames.length === 0
+    || tableNames.length > SQL_SCHEMA_TABLE_BATCH_SIZE
+    || tableNames.some((name) => !normalizeSchemaText(name, MAX_SCHEMA_IDENTIFIER_CHARACTERS))
+  ) {
+    throw new Error('The SQL schema table batch is invalid.');
+  }
+  const names = tableNames.map(escapeSqlStringLiteral).join(', ');
+  return `select table_name as tableName,
+column_name as columnName,
+column_type as dataType
+from information_schema.columns
+where table_schema = database()
+and table_name in (${names})
+order by table_name, ordinal_position;`;
+}
+
+function cloneSqlDatabaseSchema(schema: SqlDatabaseSchema): SqlDatabaseSchema {
+  return {
+    environment: schema.environment,
+    tables: schema.tables.map((table) => ({
+      name: table.name,
+      columns: table.columns.map((column) => ({ ...column })),
+    })),
+  };
+}
+
 async function readBoundedBody(response: Response, signal: AbortSignal): Promise<Buffer> {
   const declaredLength = response.headers.get('content-length');
   if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > SQL_MAX_RESPONSE_BYTES) {
@@ -305,6 +372,9 @@ export class SqlRuntime {
   private readonly timeoutMs: number;
   private readonly sessions = new Map<SqlEnvironment, SqlSession>();
   private readonly loginFlights = new Map<SqlEnvironment, Promise<SqlSession>>();
+  private readonly schemaCache = new Map<SqlEnvironment, SqlSchemaCacheEntry>();
+  private readonly schemaFlights = new Map<SqlEnvironment, Promise<SqlDatabaseSchema>>();
+  private readonly schemaGenerations = new Map<SqlEnvironment, number>();
   private readonly activeRequests = new Set<AbortController>();
 
   public constructor(private readonly options: SqlRuntimeOptions) {
@@ -332,6 +402,7 @@ export class SqlRuntime {
     }
     const input = value as unknown as SqlLoginInput;
     const environment = normalizeSqlEnvironment(input.environment);
+    this.clearSchemaState(environment);
     this.sessions.delete(environment);
     const existing = this.loginFlights.get(environment);
     if (existing) await existing.catch(() => undefined);
@@ -341,6 +412,7 @@ export class SqlRuntime {
 
   public async logout(environmentValue: unknown): Promise<SqlAuthState> {
     const environment = normalizeSqlEnvironment(environmentValue);
+    this.clearSchemaState(environment);
     this.sessions.delete(environment);
     await this.options.credentialsStore.remove(environment);
     return this.authState(environment);
@@ -453,11 +525,7 @@ export class SqlRuntime {
     const statement = normalizeStatement(statementValue);
     const startedAt = Date.now();
     return this.withAuthentication(environment, async (session) => {
-      const value = await this.request(environment, '/system/profile', {
-        method: 'POST',
-        token: session.token,
-        body: { statement },
-      });
+      const value = await this.executeProfileStatement(environment, session, statement);
       if (value !== undefined && !isJsonValue(value)) {
         throw new SqlApiError('The SQL response is invalid.');
       }
@@ -469,11 +537,119 @@ export class SqlRuntime {
     });
   }
 
+  public async getSchema(environmentValue: unknown): Promise<SqlDatabaseSchema> {
+    const environment = normalizeSqlEnvironment(environmentValue);
+    const existing = this.schemaFlights.get(environment);
+    if (existing) return cloneSqlDatabaseSchema(await existing);
+
+    const generation = this.schemaGenerations.get(environment) ?? 0;
+    const flight = this.withAuthentication(environment, async (session) => {
+      const cached = this.schemaCache.get(environment);
+      if (cached && cached.session === session && cached.expiresAt > Date.now()) {
+        return cached.schema;
+      }
+      const schema = await this.fetchSchema(environment, session);
+      if (
+        (this.schemaGenerations.get(environment) ?? 0) === generation
+        && this.sessions.get(environment) === session
+      ) {
+        this.schemaCache.set(environment, {
+          session,
+          schema,
+          expiresAt: Date.now() + SQL_SCHEMA_CACHE_TTL_MS,
+        });
+      }
+      return schema;
+    });
+    this.schemaFlights.set(environment, flight);
+    void flight.finally(() => {
+      if (this.schemaFlights.get(environment) === flight) {
+        this.schemaFlights.delete(environment);
+      }
+    }).catch(() => undefined);
+    return cloneSqlDatabaseSchema(await flight);
+  }
+
   public async shutdown(): Promise<void> {
     for (const controller of this.activeRequests) controller.abort();
     await Promise.allSettled([...this.loginFlights.values()]);
     await this.options.credentialsStore.flush();
+    this.schemaCache.clear();
+    this.schemaFlights.clear();
     this.sessions.clear();
+  }
+
+  private clearSchemaState(environment: SqlEnvironment): void {
+    this.schemaGenerations.set(environment, (this.schemaGenerations.get(environment) ?? 0) + 1);
+    this.schemaCache.delete(environment);
+    this.schemaFlights.delete(environment);
+  }
+
+  private async fetchSchema(
+    environment: SqlEnvironment,
+    session: SqlSession,
+  ): Promise<SqlDatabaseSchema> {
+    const tableValue = await this.executeProfileStatement(
+      environment,
+      session,
+      SQL_SCHEMA_TABLES_STATEMENT,
+    );
+    if (!Array.isArray(tableValue) || tableValue.length > MAX_SCHEMA_TABLES) {
+      throw new SqlApiError('The SQL schema response is invalid.');
+    }
+    const tables = new Map<string, SqlDatabaseSchema['tables'][number]>();
+    for (const row of tableValue) {
+      if (!isRecord(row)) throw new SqlApiError('The SQL schema response is invalid.');
+      const tableName = normalizeSchemaText(row.tableName, MAX_SCHEMA_IDENTIFIER_CHARACTERS);
+      if (!tableName || tables.has(tableName)) continue;
+      tables.set(tableName, { name: tableName, columns: [] });
+    }
+
+    const tableNames = [...tables.keys()];
+    let totalColumns = 0;
+    for (let index = 0; index < tableNames.length; index += SQL_SCHEMA_TABLE_BATCH_SIZE) {
+      const batch = tableNames.slice(index, index + SQL_SCHEMA_TABLE_BATCH_SIZE);
+      const columnValue = await this.executeProfileStatement(
+        environment,
+        session,
+        buildSqlSchemaColumnsStatement(batch),
+      );
+      if (!Array.isArray(columnValue) || columnValue.length > MAX_SCHEMA_COLUMNS_PER_BATCH) {
+        throw new SqlApiError('The SQL schema response is invalid.');
+      }
+      totalColumns += columnValue.length;
+      if (totalColumns > MAX_SCHEMA_COLUMNS) {
+        throw new SqlApiError('The SQL schema response is too large.');
+      }
+      for (const row of columnValue) {
+        if (!isRecord(row)) throw new SqlApiError('The SQL schema response is invalid.');
+        const tableName = normalizeSchemaText(row.tableName, MAX_SCHEMA_IDENTIFIER_CHARACTERS);
+        const columnName = normalizeSchemaText(row.columnName, MAX_SCHEMA_IDENTIFIER_CHARACTERS);
+        const table = tableName ? tables.get(tableName) : undefined;
+        if (!table || !columnName || table.columns.some((column) => column.name === columnName)) continue;
+        const dataType = normalizeSchemaText(row.dataType, MAX_SCHEMA_DATA_TYPE_CHARACTERS);
+        table.columns.push({
+          name: columnName,
+          ...(dataType ? { dataType } : {}),
+        });
+      }
+    }
+    return {
+      environment,
+      tables: [...tables.values()],
+    };
+  }
+
+  private executeProfileStatement(
+    environment: SqlEnvironment,
+    session: SqlSession,
+    statement: string,
+  ): Promise<unknown> {
+    return this.request(environment, '/system/profile', {
+      method: 'POST',
+      token: session.token,
+      body: { statement },
+    });
   }
 
   private authState(
