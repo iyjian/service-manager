@@ -4294,7 +4294,12 @@
     grid-template-rows: 52px minmax(0, 1fr);
     --sql-sidebar-width: 300px;
     --sql-editor-height: 320px;
-    --sql-editor-font-size: 18px;
+    --sql-editor-font-size: 21px;
+    --sql-editor-font-family: var(--font-family-notes-code-block);
+  }
+
+  .sql-page[data-editor-font='comic-mono'] {
+    --sql-editor-font-family: 'STM Comic Mono', var(--font-family-notes-code-block);
   }
 
   .sql-page-head {
@@ -4302,13 +4307,15 @@
   }
 
   .sql-title-group,
+  .sql-editor-font-controls,
   .sql-session-actions,
   .sql-environment-tabs,
   .sql-font-size-controls,
+  .sql-font-family-toggle,
   .sql-sidebar-tools,
   .sql-sidebar-actions,
   .sql-query-toolbar,
-  .sql-shortcut-hint,
+  .sql-session-action,
   .sql-results-head,
   .sql-results-head > div {
     @apply flex min-w-0 items-center;
@@ -4342,16 +4349,45 @@
     @apply h-7 min-w-8 cursor-pointer rounded-md border-0 bg-transparent px-1.5 text-[12px] font-semibold text-zinc-600 outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-35;
   }
 
+  .sql-editor-font-controls {
+    @apply gap-1.5;
+  }
+
+  .sql-font-family-toggle {
+    @apply h-8 shrink-0 gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 text-[11px] text-zinc-400;
+  }
+
+  .sql-font-family-toggle > span {
+    @apply transition-colors;
+  }
+
+  .sql-page:not([data-editor-font='comic-mono']) .sql-font-family-toggle [data-sql-font-label='default'],
+  .sql-page[data-editor-font='comic-mono'] .sql-font-family-toggle [data-sql-font-label='comic-mono'] {
+    @apply font-semibold text-zinc-800;
+  }
+
+  #sql-font-family-switch {
+    @apply relative h-4 w-8 shrink-0 cursor-pointer rounded-full border-0 bg-zinc-300 p-0 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-1;
+  }
+
+  #sql-font-family-switch[aria-checked='true'] {
+    @apply bg-zinc-800;
+  }
+
+  .sql-font-family-switch-thumb {
+    @apply absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform;
+  }
+
+  #sql-font-family-switch[aria-checked='true'] .sql-font-family-switch-thumb {
+    transform: translateX(16px);
+  }
+
   .sql-session-actions {
     @apply shrink gap-2 overflow-hidden;
   }
 
   .sql-session-user {
     @apply min-w-0 max-w-48 truncate text-xs text-zinc-500;
-  }
-
-  .sql-shortcut-prefix {
-    @apply shrink-0 text-[10.5px] font-medium text-zinc-400;
   }
 
   .sql-page-state,
@@ -4585,29 +4621,37 @@
     display: block;
   }
 
-  .sql-shortcut-hint {
-    @apply shrink-0 gap-1 text-[10.5px] text-zinc-500;
+  .sql-session-action {
+    @apply h-8 shrink-0 cursor-pointer justify-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 text-[12px] font-medium text-zinc-700 outline-none transition hover:border-zinc-400 hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-40;
   }
 
-  .sql-shortcut-hint kbd {
-    @apply rounded border border-zinc-300 bg-white px-1.5 font-mono text-[10px] font-medium leading-5 text-zinc-700 shadow-sm;
+  .sql-session-action kbd {
+    @apply rounded bg-zinc-100 px-1.5 font-sans text-[12px] font-semibold leading-5 text-zinc-600;
+  }
+
+  .sql-session-action[data-action='run'] {
+    @apply border-zinc-900 bg-zinc-900 text-white hover:border-zinc-700 hover:bg-zinc-700;
+  }
+
+  .sql-session-action[data-action='run'] kbd {
+    @apply bg-zinc-700 text-white;
   }
 
   .sql-editor {
     @apply min-h-0 min-w-0 overflow-hidden;
-    font-family: var(--font-family-notes-code-block);
+    font-family: var(--sql-editor-font-family);
   }
 
   .sql-editor .cm-editor {
     @apply h-full bg-white text-[13px] text-zinc-900 outline-none;
-    font-family: var(--font-family-notes-code-block);
+    font-family: var(--sql-editor-font-family);
     font-size: calc(var(--sql-editor-font-size) * 0.8888889);
     font-weight: 400;
   }
 
   .sql-editor .cm-scroller {
     @apply overflow-auto;
-    font-family: var(--font-family-notes-code-block);
+    font-family: var(--sql-editor-font-family);
     line-height: 1.75;
   }
 

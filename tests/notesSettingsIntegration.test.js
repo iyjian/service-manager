@@ -460,11 +460,13 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
 
 test('Bundled compatibility fonts retain their local licenses', async () => {
   const fontRoot = path.join(projectRoot, 'assets', 'fonts');
-  const [uiFont, codeFont, uiLicense, codeLicense, packageJson, baseStyles] = await Promise.all([
+  const [uiFont, codeFont, comicFont, uiLicense, codeLicense, comicLicense, packageJson, baseStyles] = await Promise.all([
     stat(path.join(fontRoot, 'notes-ui-variable.woff2')),
     stat(path.join(fontRoot, 'notes-code-variable.woff2')),
+    stat(path.join(fontRoot, 'comic-mono.ttf')),
     readFile(path.join(fontRoot, 'OFL-NotoSansCJK.txt'), 'utf8'),
     readFile(path.join(fontRoot, 'OFL-JetBrainsMono.txt'), 'utf8'),
+    readFile(path.join(fontRoot, 'LICENSE-ComicMono.txt'), 'utf8'),
     readFile(path.join(projectRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(path.join(projectRoot, 'src', 'renderer', 'styles.css'), 'utf8'),
   ]);
@@ -474,10 +476,12 @@ test('Bundled compatibility fonts retain their local licenses', async () => {
 
   assert.ok(uiFont.size > 1_000_000);
   assert.ok(codeFont.size > 50_000);
-  assert.equal(declaredFonts.length, 5);
+  assert.ok(comicFont.size > 10_000);
+  assert.equal(declaredFonts.length, 6);
   assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
   assert.match(uiLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.match(codeLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.match(comicLicense, /MIT License[\s\S]*Original work Copyright \(c\) 2018 Shannon Miwa[\s\S]*Modified work Copyright \(c\) 2019 dtinth/);
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 

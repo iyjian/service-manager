@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { readFile } = require('node:fs/promises');
+const { readFile, stat } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
@@ -9,6 +9,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
   const page = await readFile(path.join(dist, 'renderer', 'sqlPage.js'), 'utf8');
   const styles = await readFile(path.join(dist, 'renderer', 'tailwind.css'), 'utf8');
+  const baseStyles = await readFile(path.join(dist, 'renderer', 'styles.css'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
   const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
 
@@ -17,18 +18,20 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-development-tab"/);
   assert.match(
     html,
-    /id="sql-development-tab"[\s\S]*id="sql-font-size-controls" class="sql-font-size-controls hidden"[\s\S]*id="sql-font-size-decrease"[\s\S]*>A−<\/button>[\s\S]*id="sql-font-size-increase"[\s\S]*>A\+<\/button>/,
+    /id="sql-development-tab"[\s\S]*id="sql-editor-font-controls" class="sql-editor-font-controls hidden"[\s\S]*id="sql-font-size-decrease"[\s\S]*>A−<\/button>[\s\S]*id="sql-font-size-increase"[\s\S]*>A\+<\/button>[\s\S]*data-sql-font-label="default">Default<\/span>[\s\S]*id="sql-font-family-switch"[^>]*role="switch"[^>]*aria-checked="false"[\s\S]*data-sql-font-label="comic-mono">Comic<\/span>/,
   );
   assert.match(html, /id="sql-query-list"/);
   assert.match(html, /id="sql-query-tabs"/);
   assert.match(html, /id="sql-save-shortcut"/);
-  assert.match(html, /id="sql-run-shortcut"/);
+  assert.match(html, /id="sql-run-shortcut">⌘Enter<\/kbd>/);
   assert.match(html, /id="sql-value-dialog"/);
   assert.match(html, /id="sql-value-modes"/);
   assert.match(html, /id="sql-value-content"/);
   assert.doesNotMatch(html, /id="sql-result-status"/);
-  assert.match(html, /class="sql-shortcut-prefix">Tips:<\/span>/);
   assert.match(html, /id="sql-session-actions" class="sql-session-actions hidden"/);
+  assert.doesNotMatch(html, /Tips:/);
+  assert.match(html, /id="sql-save-action"[^>]*data-action="save"[\s\S]*>Save<\/span><kbd id="sql-save-shortcut">⌘S<\/kbd>/);
+  assert.match(html, /id="sql-run-action"[^>]*data-action="run"[\s\S]*>Run<\/span><kbd id="sql-run-shortcut">⌘Enter<\/kbd>/);
   assert.match(html, /id="sql-login-environment"[^>]*>Production<\/span>\s*<h2 id="sql-login-title">Sign in<\/h2>/);
   const loginStart = html.indexOf('<section id="sql-signed-out"');
   const loginEnd = html.indexOf('<div id="sql-workspace"', loginStart);
@@ -48,16 +51,24 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
     html,
     /class="sql-sidebar-tools">[\s\S]*id="sql-query-search"[\s\S]*id="sql-refresh-queries"[\s\S]*id="sql-new-query"[\s\S]*<\/div>\s*<div id="sql-query-list"/,
   );
-  assert.doesNotMatch(html, /id="sql-(?:run|save|delete|query-name)"/);
+  assert.doesNotMatch(html, /id="sql-(?:delete|query-name)"/);
   assert.doesNotMatch(html, /sql-active-environment|sql-query-toolbar-meta/);
   assert.match(html, /class="sql-query-toolbar">\s*<div id="sql-query-tabs"[^>]*><\/div>\s*<\/div>/);
-  assert.match(html, /id="sql-session-actions"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
+  assert.match(html, /id="sql-session-actions"[\s\S]*id="sql-save-action"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-action"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
   assert.doesNotMatch(html, />Mine<|>All<|>Others</);
   assert.match(styles, /\.sql-workspace/);
-  assert.match(styles, /--sql-editor-font-size:18px/);
-  assert.match(styles, /\.sql-editor \.cm-editor\{font-family:var\(--font-family-notes-code-block\)\}/);
+  assert.match(styles, /--sql-editor-font-size:21px/);
+  assert.match(styles, /--sql-editor-font-family:var\(--font-family-notes-code-block\)/);
+  assert.match(styles, /\.sql-page\[data-editor-font=comic-mono\]\{--sql-editor-font-family:["']STM Comic Mono["'],var\(--font-family-notes-code-block\)\}/);
+  assert.match(styles, /#sql-font-family-switch\{[^}]*width:2rem[^}]*border-radius:9999px/);
+  assert.match(styles, /#sql-font-family-switch\[aria-checked=true\] \.sql-font-family-switch-thumb\{transform:translateX\(16px\)\}/);
+  assert.match(styles, /\.sql-session-action\{[^}]*height:2rem[^}]*font-size:12px/);
+  assert.match(styles, /\.sql-session-action kbd\{[^}]*font-size:12px[^}]*font-weight:600/);
+  assert.match(styles, /\.sql-editor \.cm-editor\{font-family:var\(--sql-editor-font-family\)\}/);
   assert.match(styles, /\.sql-editor \.cm-editor\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)[^}]*font-weight:400/);
-  assert.match(styles, /\.sql-editor \.cm-scroller\{[^}]*font-family:var\(--font-family-notes-code-block\)[^}]*line-height:1\.75/);
+  assert.match(styles, /\.sql-editor \.cm-scroller\{[^}]*font-family:var\(--sql-editor-font-family\)[^}]*line-height:1\.75/);
+  assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Comic Mono'[^}]*comic-mono\.ttf[^}]*font-weight:\s*400/);
+  assert.ok((await stat(path.join(__dirname, '..', 'assets', 'fonts', 'comic-mono.ttf'))).size > 10_000);
   assert.match(styles, /\.sql-query-tab-dirty/);
   assert.match(styles, /max-width:200px/);
   assert.match(styles, /\.sql-query-tab\[data-dirty=true\] \.sql-query-tab-close/);
@@ -73,10 +84,20 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
   assert.match(page, /sql:editor-font-size/);
+  assert.match(page, /sql:editor-font-family/);
   assert.match(page, /clampSqlEditorFontSize/);
+  assert.match(page, /normalizeSqlEditorFontFamily/);
   assert.match(page, /writeStoredValue\(EDITOR_FONT_SIZE_KEY,\s*String\(next\)\)/);
+  assert.match(page, /writeStoredValue\(EDITOR_FONT_FAMILY_KEY,\s*fontFamily\)/);
+  assert.match(page, /fontFamilySwitch\.addEventListener\('click'/);
+  assert.match(page, /saveActionButton\.addEventListener\('click', \(\) => void this\.saveCurrentQuery\(\)\)/);
+  assert.match(page, /runActionButton\.addEventListener\('click', \(\) => void this\.runCurrentStatement\(\)\)/);
+  assert.match(page, /saveActionButton\.disabled = state\.auth\?\.status !== 'signed-in' \|\| !tab \|\| tab\.saving/);
+  assert.match(page, /runActionButton\.disabled = state\.auth\?\.status !== 'signed-in' \|\| !tab \|\| tab\.executing/);
+  assert.match(page, /tab\.saving = true;\s*this\.renderTabs\(\);\s*this\.renderBusyState\(\)/);
+  assert.match(page, /fontFamilySwitch\.setAttribute\('aria-checked', String\(comic\)\)/);
   assert.match(page, /style\.setProperty\('--sql-editor-font-size',\s*`\$\{fontSize\}px`\)/);
-  assert.match(page, /setAuthenticatedHeaderVisible\(visible\) \{[\s\S]*?this\.fontSizeControls\.classList\.toggle\('hidden', !visible\)[\s\S]*?this\.sessionActions\.classList\.toggle\('hidden', !visible\)/);
+  assert.match(page, /setAuthenticatedHeaderVisible\(visible\) \{[\s\S]*?this\.fontControls\.classList\.toggle\('hidden', !visible\)[\s\S]*?this\.sessionActions\.classList\.toggle\('hidden', !visible\)/);
   assert.match(page, /renderLoading\(\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
   assert.match(page, /renderSignedOut\(message\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
   assert.match(page, /renderAuthenticated\(\) \{[\s\S]*?this\.setAuthenticatedHeaderVisible\(true\)/);
@@ -93,6 +114,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /script,noscript,style,meta,base,link,iframe/);
   assert.match(page, /durationMs/);
   assert.doesNotMatch(page, /resultStatus/);
+  assert.doesNotMatch(page, /Query ran/);
   assert.match(page, /replace\(\/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);
   assert.match(page, /sessionUser\.textContent = user\?\.userName \?\? ['"]{2}/);
   assert.doesNotMatch(page, /sessionUser\.textContent\s*=.*user\?\.name/);
@@ -118,14 +140,18 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.doesNotMatch(preload, /sd-pc\.tiusolution|sd-pc\.dev\.tiusolution|private-token|passwd/);
 });
 
-test('SQL editor font size stays within the local supported range', async () => {
+test('SQL editor font preferences stay within the local supported values', async () => {
   const page = await import(pathToFileURL(
     path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
   ));
 
-  assert.equal(page.clampSqlEditorFontSize(Number.NaN), 18);
+  assert.equal(page.clampSqlEditorFontSize(Number.NaN), 21);
   assert.equal(page.clampSqlEditorFontSize(10), 12);
   assert.equal(page.clampSqlEditorFontSize(13.4), 13);
   assert.equal(page.clampSqlEditorFontSize(13.6), 14);
   assert.equal(page.clampSqlEditorFontSize(25), 24);
+  assert.equal(page.normalizeSqlEditorFontFamily('default'), 'default');
+  assert.equal(page.normalizeSqlEditorFontFamily('comic-mono'), 'comic-mono');
+  assert.equal(page.normalizeSqlEditorFontFamily('Comic Mono'), 'default');
+  assert.equal(page.normalizeSqlEditorFontFamily(null), 'default');
 });

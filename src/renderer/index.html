@@ -312,15 +312,27 @@
               <button id="sql-production-tab" type="button" role="tab" data-sql-environment="production" aria-selected="true">Production</button>
               <button id="sql-development-tab" type="button" role="tab" data-sql-environment="development" aria-selected="false">Development</button>
             </div>
-            <div id="sql-font-size-controls" class="sql-font-size-controls hidden" role="group" aria-label="SQL editor font size">
-              <button id="sql-font-size-decrease" type="button" aria-label="Decrease SQL editor font size" title="Decrease SQL editor font size">A−</button>
-              <button id="sql-font-size-increase" type="button" aria-label="Increase SQL editor font size" title="Increase SQL editor font size">A+</button>
+            <div id="sql-editor-font-controls" class="sql-editor-font-controls hidden">
+              <div id="sql-font-size-controls" class="sql-font-size-controls" role="group" aria-label="SQL editor font size">
+                <button id="sql-font-size-decrease" type="button" aria-label="Decrease SQL editor font size" title="Decrease SQL editor font size">A−</button>
+                <button id="sql-font-size-increase" type="button" aria-label="Increase SQL editor font size" title="Increase SQL editor font size">A+</button>
+              </div>
+              <div class="sql-font-family-toggle" role="group" aria-label="SQL editor font">
+                <span data-sql-font-label="default">Default</span>
+                <button id="sql-font-family-switch" type="button" role="switch" aria-checked="false" aria-label="Use Comic font">
+                  <span class="sql-font-family-switch-thumb" aria-hidden="true"></span>
+                </button>
+                <span data-sql-font-label="comic-mono">Comic</span>
+              </div>
             </div>
           </div>
-          <div id="sql-session-actions" class="sql-session-actions hidden" aria-label="SQL session and shortcuts">
-            <span class="sql-shortcut-prefix">Tips:</span>
-            <span class="sql-shortcut-hint"><span>Save</span><kbd id="sql-save-shortcut">⌘S</kbd></span>
-            <span class="sql-shortcut-hint"><span>Run</span><kbd id="sql-run-shortcut">⌘R</kbd></span>
+          <div id="sql-session-actions" class="sql-session-actions hidden" aria-label="SQL session actions">
+            <button id="sql-save-action" type="button" class="sql-session-action" data-action="save">
+              <span>Save</span><kbd id="sql-save-shortcut">⌘S</kbd>
+            </button>
+            <button id="sql-run-action" type="button" class="sql-session-action" data-action="run">
+              <span>Run</span><kbd id="sql-run-shortcut">⌘Enter</kbd>
+            </button>
             <span id="sql-session-user" class="sql-session-user hidden"></span>
             <button id="sql-sign-out" type="button" class="btn btn-secondary btn-sm hidden">Sign out</button>
           </div>

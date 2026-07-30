@@ -24,7 +24,6 @@ import {
   formatSqlCell,
   normalizeSqlResult,
   sqlCellPresentation,
-  sqlResultRowCount,
   sqlResultRowCountInfo,
   type SqlCellPresentation,
   type SqlDisplayResult,
@@ -42,13 +41,14 @@ const ACTIVE_ENVIRONMENT_KEY = 'sql:active-environment';
 const SIDEBAR_WIDTH_KEY = 'sql:sidebar-width';
 const EDITOR_HEIGHT_KEY = 'sql:editor-height';
 const EDITOR_FONT_SIZE_KEY = 'sql:editor-font-size';
+const EDITOR_FONT_FAMILY_KEY = 'sql:editor-font-family';
 const DEFAULT_SIDEBAR_WIDTH = 300;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 520;
 const DEFAULT_EDITOR_HEIGHT = 320;
 const MIN_EDITOR_HEIGHT = 180;
 const MIN_RESULTS_HEIGHT = 120;
-const DEFAULT_EDITOR_FONT_SIZE = 18;
+const DEFAULT_EDITOR_FONT_SIZE = 21;
 const MIN_EDITOR_FONT_SIZE = 12;
 const MAX_EDITOR_FONT_SIZE = 24;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
@@ -82,6 +82,7 @@ interface SqlEnvironmentState {
 }
 
 type SqlShortcutEvent = Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
+export type SqlEditorFontFamily = 'default' | 'comic-mono';
 
 let tabSequence = 0;
 let queryNameDialogSequence = 0;
@@ -145,7 +146,15 @@ function writeStoredValue(key: string, value: string): void {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // Layout and active-environment persistence are optional.
+    // Device-local SQL UI preference persistence is optional.
+  }
+}
+
+function readStoredValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
   }
 }
 
@@ -158,8 +167,12 @@ export function clampSqlEditorFontSize(value: number): number {
   return Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(value)));
 }
 
+export function normalizeSqlEditorFontFamily(value: unknown): SqlEditorFontFamily {
+  return value === 'comic-mono' ? value : 'default';
+}
+
 export function sqlShortcutLabel(platform: string): string {
-  return /mac/i.test(platform) ? '⌘R' : 'Ctrl+Enter';
+  return /mac/i.test(platform) ? '⌘Enter' : 'Ctrl+Enter';
 }
 
 export function sqlSaveShortcutLabel(platform: string): string {
@@ -169,7 +182,7 @@ export function sqlSaveShortcutLabel(platform: string): string {
 export function isSqlRunShortcut(event: SqlShortcutEvent, isMac: boolean): boolean {
   if (event.altKey || event.shiftKey) return false;
   if (isMac) {
-    return event.key.toLocaleLowerCase() === 'r' && event.metaKey && !event.ctrlKey;
+    return event.key === 'Enter' && event.metaKey && !event.ctrlKey;
   }
   return event.key === 'Enter' && event.ctrlKey && !event.metaKey;
 }
@@ -369,10 +382,13 @@ class SqlPage {
   private readonly workspace = requireElement<HTMLElement>('#sql-workspace');
   private readonly productionTab = requireElement<HTMLButtonElement>('#sql-production-tab');
   private readonly developmentTab = requireElement<HTMLButtonElement>('#sql-development-tab');
-  private readonly fontSizeControls = requireElement<HTMLElement>('#sql-font-size-controls');
+  private readonly fontControls = requireElement<HTMLElement>('#sql-editor-font-controls');
   private readonly decreaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-decrease');
   private readonly increaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-increase');
+  private readonly fontFamilySwitch = requireElement<HTMLButtonElement>('#sql-font-family-switch');
   private readonly sessionActions = requireElement<HTMLElement>('#sql-session-actions');
+  private readonly saveActionButton = requireElement<HTMLButtonElement>('#sql-save-action');
+  private readonly runActionButton = requireElement<HTMLButtonElement>('#sql-run-action');
   private readonly sessionUser = requireElement<HTMLElement>('#sql-session-user');
   private readonly signOutButton = requireElement<HTMLButtonElement>('#sql-sign-out');
   private readonly loginForm = requireElement<HTMLFormElement>('#sql-login-form');
@@ -444,11 +460,18 @@ class SqlPage {
       }),
       parent: this.editorHost,
     });
-    this.saveShortcut.textContent = sqlSaveShortcutLabel(navigator.platform);
-    this.runShortcut.textContent = sqlShortcutLabel(navigator.platform);
+    const saveShortcut = sqlSaveShortcutLabel(navigator.platform);
+    const runShortcut = sqlShortcutLabel(navigator.platform);
+    this.saveShortcut.textContent = saveShortcut;
+    this.runShortcut.textContent = runShortcut;
+    this.saveActionButton.title = `Save query (${saveShortcut})`;
+    this.runActionButton.title = `Run query (${runShortcut})`;
+    this.saveActionButton.setAttribute('aria-keyshortcuts', this.isMac ? 'Meta+S' : 'Control+S');
+    this.runActionButton.setAttribute('aria-keyshortcuts', this.isMac ? 'Meta+Enter' : 'Control+Enter');
     this.applySidebarWidth(clampSqlSidebarWidth(readStoredNumber(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH)));
     this.applyEditorHeight(readStoredNumber(EDITOR_HEIGHT_KEY, DEFAULT_EDITOR_HEIGHT));
     this.applyEditorFontSize(readStoredNumber(EDITOR_FONT_SIZE_KEY, DEFAULT_EDITOR_FONT_SIZE));
+    this.applyEditorFontFamily(normalizeSqlEditorFontFamily(readStoredValue(EDITOR_FONT_FAMILY_KEY)));
     this.bindEvents();
     this.renderEnvironmentChrome();
   }
@@ -469,6 +492,15 @@ class SqlPage {
     this.developmentTab.addEventListener('click', () => void this.switchEnvironment('development'));
     this.decreaseFontSizeButton.addEventListener('click', () => this.adjustEditorFontSize(-1));
     this.increaseFontSizeButton.addEventListener('click', () => this.adjustEditorFontSize(1));
+    this.fontFamilySwitch.addEventListener('click', () => {
+      const fontFamily: SqlEditorFontFamily = this.page.dataset.editorFont === 'comic-mono'
+        ? 'default'
+        : 'comic-mono';
+      this.applyEditorFontFamily(fontFamily);
+      writeStoredValue(EDITOR_FONT_FAMILY_KEY, fontFamily);
+    });
+    this.saveActionButton.addEventListener('click', () => void this.saveCurrentQuery());
+    this.runActionButton.addEventListener('click', () => void this.runCurrentStatement());
     this.loginForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.login();
@@ -539,7 +571,7 @@ class SqlPage {
   }
 
   private setAuthenticatedHeaderVisible(visible: boolean): void {
-    this.fontSizeControls.classList.toggle('hidden', !visible);
+    this.fontControls.classList.toggle('hidden', !visible);
     this.sessionActions.classList.toggle('hidden', !visible);
   }
 
@@ -968,6 +1000,7 @@ class SqlPage {
     const wasCreating = tab.recordId === undefined;
     tab.saving = true;
     this.renderTabs();
+    this.renderBusyState();
     try {
       const saved = tab.recordId === undefined
         ? await window.sqlApi.createQuery(environment, draft)
@@ -1132,9 +1165,6 @@ class SqlPage {
       tab.executedAt = response.executedAt;
       tab.durationMs = response.durationMs;
       if (environment === this.environment && this.currentTab()?.key === tab.key) this.renderResult();
-      const rows = sqlResultRowCount(tab.result);
-      const duration = formatSqlDuration(response.durationMs);
-      toast(`Query ran${rows ? ` · ${rows} row${rows === 1 ? '' : 's'}` : ''}${duration ? ` · ${duration}` : ''}.`, 'success');
     } catch (error) {
       if (version !== tab.executionVersion) return;
       tab.resultError = toErrorMessage(error);
@@ -1313,8 +1343,11 @@ class SqlPage {
 
   private renderBusyState(): void {
     const state = this.currentState();
+    const tab = this.currentTab();
     this.refreshButton.disabled = state.listLoading;
     this.newButton.disabled = state.auth?.status !== 'signed-in';
+    this.saveActionButton.disabled = state.auth?.status !== 'signed-in' || !tab || tab.saving;
+    this.runActionButton.disabled = state.auth?.status !== 'signed-in' || !tab || tab.executing;
   }
 
   private renderResult(): void {
@@ -1710,6 +1743,17 @@ class SqlPage {
     this.increaseFontSizeButton.disabled = fontSize >= MAX_EDITOR_FONT_SIZE;
     this.decreaseFontSizeButton.title = `Decrease SQL editor font size (currently ${renderedFontSize}px)`;
     this.increaseFontSizeButton.title = `Increase SQL editor font size (currently ${renderedFontSize}px)`;
+    this.editor.requestMeasure();
+  }
+
+  private applyEditorFontFamily(value: unknown): void {
+    const fontFamily = normalizeSqlEditorFontFamily(value);
+    this.page.dataset.editorFont = fontFamily;
+    const comic = fontFamily === 'comic-mono';
+    const actionLabel = comic ? 'Use Default font' : 'Use Comic font';
+    this.fontFamilySwitch.setAttribute('aria-checked', String(comic));
+    this.fontFamilySwitch.setAttribute('aria-label', actionLabel);
+    this.fontFamilySwitch.title = actionLabel;
     this.editor.requestMeasure();
   }
 }

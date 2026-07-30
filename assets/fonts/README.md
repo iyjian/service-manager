@@ -22,6 +22,10 @@ If a WOFF2 file is absent, the corresponding bundled TTF is used.
   its license is in `OFL-NotoSansCJK.txt`.
 - `notes-code-variable.woff2` is JetBrains Mono Variable; its license is in
   `OFL-JetBrainsMono.txt`.
+- `comic-mono.ttf` is Comic Mono 0.1.1 from the official upstream repository,
+  pinned from commit `13eb162648d01d61ece424088dbf750ec80a1a62`; its MIT license
+  is in `LICENSE-ComicMono.txt`. It is available only through the SQL editor's
+  local font selector.
 
 The renderer retains the local `STM Notes UI` and `STM Notes Code` aliases for
 artifact compatibility, but current Notes UI, CodeMirror, inline code, and Rich
@@ -34,3 +38,4 @@ Sources:
 
 - Noto CJK: https://github.com/notofonts/noto-cjk
 - JetBrains Mono: https://github.com/JetBrains/JetBrainsMono
+- Comic Mono: https://github.com/dtinth/comic-mono-font

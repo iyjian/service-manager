@@ -70,15 +70,16 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
     key: 'Enter', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
   });
 
-  assert.equal(isSqlRunShortcut(event({ key: 'r', metaKey: true }), true), true);
-  assert.equal(isSqlRunShortcut(event({ metaKey: true }), true), false);
+  assert.equal(isSqlRunShortcut(event({ metaKey: true }), true), true);
+  assert.equal(isSqlRunShortcut(event({ key: 'r', metaKey: true }), true), false);
+  assert.equal(isSqlRunShortcut(event({ metaKey: true, ctrlKey: true }), true), false);
   assert.equal(isSqlRunShortcut(event({ ctrlKey: true }), false), true);
   assert.equal(isSqlRunShortcut(event({ metaKey: true }), false), false);
   assert.equal(isSqlSaveShortcut(event({ key: 's', metaKey: true }), true), true);
   assert.equal(isSqlSaveShortcut(event({ key: 's', ctrlKey: true }), true), false);
   assert.equal(isSqlSaveShortcut(event({ key: 'S', ctrlKey: true }), false), true);
   assert.equal(isSqlSaveShortcut(event({ key: 's', ctrlKey: true, shiftKey: true }), false), false);
-  assert.equal(sqlShortcutLabel('MacIntel'), '⌘R');
+  assert.equal(sqlShortcutLabel('MacIntel'), '⌘Enter');
   assert.equal(sqlShortcutLabel('Win32'), 'Ctrl+Enter');
   assert.equal(sqlSaveShortcutLabel('MacIntel'), '⌘S');
   assert.equal(sqlSaveShortcutLabel('Linux x86_64'), 'Ctrl+S');
