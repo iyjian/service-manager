@@ -369,8 +369,10 @@ class SqlPage {
   private readonly workspace = requireElement<HTMLElement>('#sql-workspace');
   private readonly productionTab = requireElement<HTMLButtonElement>('#sql-production-tab');
   private readonly developmentTab = requireElement<HTMLButtonElement>('#sql-development-tab');
+  private readonly fontSizeControls = requireElement<HTMLElement>('#sql-font-size-controls');
   private readonly decreaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-decrease');
   private readonly increaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-increase');
+  private readonly sessionActions = requireElement<HTMLElement>('#sql-session-actions');
   private readonly sessionUser = requireElement<HTMLElement>('#sql-session-user');
   private readonly signOutButton = requireElement<HTMLButtonElement>('#sql-sign-out');
   private readonly loginForm = requireElement<HTMLFormElement>('#sql-login-form');
@@ -536,6 +538,11 @@ class SqlPage {
     this.loginEnvironment.textContent = label;
   }
 
+  private setAuthenticatedHeaderVisible(visible: boolean): void {
+    this.fontSizeControls.classList.toggle('hidden', !visible);
+    this.sessionActions.classList.toggle('hidden', !visible);
+  }
+
   private async loadEnvironment(): Promise<void> {
     const environment = this.environment;
     const state = this.states[environment];
@@ -564,6 +571,7 @@ class SqlPage {
   }
 
   private renderLoading(): void {
+    this.setAuthenticatedHeaderVisible(false);
     this.loadingView.classList.remove('hidden');
     this.signedOutView.classList.add('hidden');
     this.workspace.classList.add('hidden');
@@ -573,6 +581,7 @@ class SqlPage {
   }
 
   private renderSignedOut(message?: string): void {
+    this.setAuthenticatedHeaderVisible(false);
     this.loadingView.classList.add('hidden');
     this.workspace.classList.add('hidden');
     this.signedOutView.classList.remove('hidden');
@@ -592,6 +601,7 @@ class SqlPage {
     const state = this.currentState();
     const user = state.auth?.user;
     if (state.tabs.length === 0) this.createNewTab(false);
+    this.setAuthenticatedHeaderVisible(true);
     this.loadingView.classList.add('hidden');
     this.signedOutView.classList.add('hidden');
     this.workspace.classList.remove('hidden');

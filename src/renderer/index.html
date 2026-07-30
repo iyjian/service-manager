@@ -312,12 +312,12 @@
               <button id="sql-production-tab" type="button" role="tab" data-sql-environment="production" aria-selected="true">Production</button>
               <button id="sql-development-tab" type="button" role="tab" data-sql-environment="development" aria-selected="false">Development</button>
             </div>
-            <div class="sql-font-size-controls" role="group" aria-label="SQL editor font size">
+            <div id="sql-font-size-controls" class="sql-font-size-controls hidden" role="group" aria-label="SQL editor font size">
               <button id="sql-font-size-decrease" type="button" aria-label="Decrease SQL editor font size" title="Decrease SQL editor font size">A−</button>
               <button id="sql-font-size-increase" type="button" aria-label="Increase SQL editor font size" title="Increase SQL editor font size">A+</button>
             </div>
           </div>
-          <div class="sql-session-actions" aria-label="SQL session and shortcuts">
+          <div id="sql-session-actions" class="sql-session-actions hidden" aria-label="SQL session and shortcuts">
             <span class="sql-shortcut-prefix">Tips:</span>
             <span class="sql-shortcut-hint"><span>Save</span><kbd id="sql-save-shortcut">⌘S</kbd></span>
             <span class="sql-shortcut-hint"><span>Run</span><kbd id="sql-run-shortcut">⌘R</kbd></span>
@@ -332,8 +332,7 @@
           <form id="sql-login-form" class="sql-login-card" novalidate>
             <div class="sql-login-heading">
               <span id="sql-login-environment" class="sql-environment-badge">Production</span>
-              <h2 id="sql-login-title">Sign in to SQL</h2>
-              <p>Your login is protected by the operating system and reused until you sign out.</p>
+              <h2 id="sql-login-title">Sign in</h2>
             </div>
             <label class="field field-xs">
               Username

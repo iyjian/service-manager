@@ -17,7 +17,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-development-tab"/);
   assert.match(
     html,
-    /id="sql-development-tab"[\s\S]*class="sql-font-size-controls"[\s\S]*id="sql-font-size-decrease"[\s\S]*>A−<\/button>[\s\S]*id="sql-font-size-increase"[\s\S]*>A\+<\/button>/,
+    /id="sql-development-tab"[\s\S]*id="sql-font-size-controls" class="sql-font-size-controls hidden"[\s\S]*id="sql-font-size-decrease"[\s\S]*>A−<\/button>[\s\S]*id="sql-font-size-increase"[\s\S]*>A\+<\/button>/,
   );
   assert.match(html, /id="sql-query-list"/);
   assert.match(html, /id="sql-query-tabs"/);
@@ -28,6 +28,19 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-value-content"/);
   assert.doesNotMatch(html, /id="sql-result-status"/);
   assert.match(html, /class="sql-shortcut-prefix">Tips:<\/span>/);
+  assert.match(html, /id="sql-session-actions" class="sql-session-actions hidden"/);
+  assert.match(html, /id="sql-login-environment"[^>]*>Production<\/span>\s*<h2 id="sql-login-title">Sign in<\/h2>/);
+  const loginStart = html.indexOf('<section id="sql-signed-out"');
+  const loginEnd = html.indexOf('<div id="sql-workspace"', loginStart);
+  assert.ok(loginStart >= 0 && loginEnd > loginStart);
+  const loginHtml = html.slice(loginStart, loginEnd);
+  assert.match(loginHtml, />\s*Username\s*</);
+  assert.match(loginHtml, />\s*Password\s*</);
+  assert.doesNotMatch(loginHtml, /Sign in to SQL|protected by the operating system|reused until/i);
+  const loginHeadingStart = loginHtml.indexOf('<div class="sql-login-heading">');
+  const loginHeadingEnd = loginHtml.indexOf('</div>', loginHeadingStart);
+  assert.ok(loginHeadingStart >= 0 && loginHeadingEnd > loginHeadingStart);
+  assert.doesNotMatch(loginHtml.slice(loginHeadingStart, loginHeadingEnd), /<p\b/);
   assert.doesNotMatch(html, /<h1[^>]*>\s*SQL\s*<\/h1>/);
   assert.doesNotMatch(html, /id="sql-query-count"/);
   assert.doesNotMatch(html, /<h[1-6][^>]*>\s*Saved Queries(?:\s*\([^)]*\))?\s*<\/h[1-6]>/i);
@@ -38,7 +51,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.doesNotMatch(html, /id="sql-(?:run|save|delete|query-name)"/);
   assert.doesNotMatch(html, /sql-active-environment|sql-query-toolbar-meta/);
   assert.match(html, /class="sql-query-toolbar">\s*<div id="sql-query-tabs"[^>]*><\/div>\s*<\/div>/);
-  assert.match(html, /class="sql-session-actions"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
+  assert.match(html, /id="sql-session-actions"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
   assert.doesNotMatch(html, />Mine<|>All<|>Others</);
   assert.match(styles, /\.sql-workspace/);
   assert.match(styles, /--sql-editor-font-size:18px/);
@@ -63,6 +76,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /clampSqlEditorFontSize/);
   assert.match(page, /writeStoredValue\(EDITOR_FONT_SIZE_KEY,\s*String\(next\)\)/);
   assert.match(page, /style\.setProperty\('--sql-editor-font-size',\s*`\$\{fontSize\}px`\)/);
+  assert.match(page, /setAuthenticatedHeaderVisible\(visible\) \{[\s\S]*?this\.fontSizeControls\.classList\.toggle\('hidden', !visible\)[\s\S]*?this\.sessionActions\.classList\.toggle\('hidden', !visible\)/);
+  assert.match(page, /renderLoading\(\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
+  assert.match(page, /renderSignedOut\(message\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
+  assert.match(page, /renderAuthenticated\(\) \{[\s\S]*?this\.setAuthenticatedHeaderVisible\(true\)/);
   assert.match(page, /window\.sqlApi\.renameQuery/);
   assert.match(page, /window\.sqlApi\.execute/);
   assert.match(page, /sqlCellPresentation/);

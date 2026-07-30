@@ -4379,10 +4379,6 @@
     @apply m-0 mt-2 text-lg font-semibold text-zinc-950;
   }
 
-  .sql-login-heading p {
-    @apply m-0 text-xs leading-5 text-zinc-500;
-  }
-
   .sql-login-error {
     @apply m-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700;
   }
