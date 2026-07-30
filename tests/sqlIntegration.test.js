@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
+const { pathToFileURL } = require('node:url');
 
 test('compiled SQL page uses the narrow main-process bridge and Service Manager layout', async () => {
   const dist = path.join(__dirname, '..', 'dist');
@@ -14,6 +15,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /data-page="sql"/);
   assert.match(html, /id="sql-production-tab"/);
   assert.match(html, /id="sql-development-tab"/);
+  assert.match(
+    html,
+    /id="sql-development-tab"[\s\S]*class="sql-font-size-controls"[\s\S]*id="sql-font-size-decrease"[\s\S]*>A−<\/button>[\s\S]*id="sql-font-size-increase"[\s\S]*>A\+<\/button>/,
+  );
   assert.match(html, /id="sql-query-list"/);
   assert.match(html, /id="sql-query-tabs"/);
   assert.match(html, /id="sql-save-shortcut"/);
@@ -36,6 +41,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /class="sql-session-actions"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
   assert.doesNotMatch(html, />Mine<|>All<|>Others</);
   assert.match(styles, /\.sql-workspace/);
+  assert.match(styles, /--sql-editor-font-size:13px/);
+  assert.match(styles, /\.sql-editor \.cm-editor\{[^}]*font-size:var\(--sql-editor-font-size\)/);
   assert.match(styles, /\.sql-query-tab-dirty/);
   assert.match(styles, /max-width:200px/);
   assert.match(styles, /\.sql-query-tab\[data-dirty=true\] \.sql-query-tab-close/);
@@ -50,6 +57,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /resolveSqlStatement/);
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
+  assert.match(page, /sql:editor-font-size/);
+  assert.match(page, /clampSqlEditorFontSize/);
+  assert.match(page, /writeStoredValue\(EDITOR_FONT_SIZE_KEY,\s*String\(next\)\)/);
+  assert.match(page, /style\.setProperty\('--sql-editor-font-size',\s*`\$\{fontSize\}px`\)/);
   assert.match(page, /window\.sqlApi\.renameQuery/);
   assert.match(page, /window\.sqlApi\.execute/);
   assert.match(page, /sqlCellPresentation/);
@@ -85,4 +96,16 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   }
   assert.match(main, /CmdOrCtrl\+Alt\+R/);
   assert.doesNotMatch(preload, /sd-pc\.tiusolution|sd-pc\.dev\.tiusolution|private-token|passwd/);
+});
+
+test('SQL editor font size stays within the local supported range', async () => {
+  const page = await import(pathToFileURL(
+    path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
+  ));
+
+  assert.equal(page.clampSqlEditorFontSize(Number.NaN), 13);
+  assert.equal(page.clampSqlEditorFontSize(10), 11);
+  assert.equal(page.clampSqlEditorFontSize(13.4), 13);
+  assert.equal(page.clampSqlEditorFontSize(13.6), 14);
+  assert.equal(page.clampSqlEditorFontSize(25), 24);
 });

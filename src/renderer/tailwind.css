@@ -4284,6 +4284,7 @@
     grid-template-rows: 52px minmax(0, 1fr);
     --sql-sidebar-width: 300px;
     --sql-editor-height: 320px;
+    --sql-editor-font-size: 13px;
   }
 
   .sql-page-head {
@@ -4293,6 +4294,7 @@
   .sql-title-group,
   .sql-session-actions,
   .sql-environment-tabs,
+  .sql-font-size-controls,
   .sql-sidebar-tools,
   .sql-sidebar-actions,
   .sql-query-toolbar,
@@ -4316,6 +4318,18 @@
 
   .sql-page[data-environment='development'] .sql-environment-tabs button[aria-selected='true'] {
     @apply bg-blue-600;
+  }
+
+  .sql-title-group {
+    @apply gap-2;
+  }
+
+  .sql-font-size-controls {
+    @apply gap-0.5 rounded-lg border border-zinc-200 bg-white p-0.5;
+  }
+
+  .sql-font-size-controls button {
+    @apply h-7 min-w-8 cursor-pointer rounded-md border-0 bg-transparent px-1.5 text-[12px] font-semibold text-zinc-600 outline-none transition hover:bg-zinc-100 hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-35;
   }
 
   .sql-session-actions {
@@ -4580,6 +4594,7 @@
 
   .sql-editor .cm-editor {
     @apply h-full bg-white text-[13px] text-zinc-900 outline-none;
+    font-size: var(--sql-editor-font-size);
   }
 
   .sql-editor .cm-scroller {

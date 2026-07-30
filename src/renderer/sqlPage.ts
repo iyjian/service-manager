@@ -41,12 +41,16 @@ const SQL_NAV_ICON = `
 const ACTIVE_ENVIRONMENT_KEY = 'sql:active-environment';
 const SIDEBAR_WIDTH_KEY = 'sql:sidebar-width';
 const EDITOR_HEIGHT_KEY = 'sql:editor-height';
+const EDITOR_FONT_SIZE_KEY = 'sql:editor-font-size';
 const DEFAULT_SIDEBAR_WIDTH = 300;
 const MIN_SIDEBAR_WIDTH = 240;
 const MAX_SIDEBAR_WIDTH = 520;
 const DEFAULT_EDITOR_HEIGHT = 320;
 const MIN_EDITOR_HEIGHT = 180;
 const MIN_RESULTS_HEIGHT = 120;
+const DEFAULT_EDITOR_FONT_SIZE = 13;
+const MIN_EDITOR_FONT_SIZE = 11;
+const MAX_EDITOR_FONT_SIZE = 24;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const sqlValueLowlight = createLowlight(common);
 
@@ -145,6 +149,11 @@ function writeStoredValue(key: string, value: string): void {
 
 export function clampSqlSidebarWidth(value: number): number {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(value)));
+}
+
+export function clampSqlEditorFontSize(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_EDITOR_FONT_SIZE;
+  return Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(value)));
 }
 
 export function sqlShortcutLabel(platform: string): string {
@@ -358,6 +367,8 @@ class SqlPage {
   private readonly workspace = requireElement<HTMLElement>('#sql-workspace');
   private readonly productionTab = requireElement<HTMLButtonElement>('#sql-production-tab');
   private readonly developmentTab = requireElement<HTMLButtonElement>('#sql-development-tab');
+  private readonly decreaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-decrease');
+  private readonly increaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-increase');
   private readonly sessionUser = requireElement<HTMLElement>('#sql-session-user');
   private readonly signOutButton = requireElement<HTMLButtonElement>('#sql-sign-out');
   private readonly loginForm = requireElement<HTMLFormElement>('#sql-login-form');
@@ -433,6 +444,7 @@ class SqlPage {
     this.runShortcut.textContent = sqlShortcutLabel(navigator.platform);
     this.applySidebarWidth(clampSqlSidebarWidth(readStoredNumber(SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH)));
     this.applyEditorHeight(readStoredNumber(EDITOR_HEIGHT_KEY, DEFAULT_EDITOR_HEIGHT));
+    this.applyEditorFontSize(readStoredNumber(EDITOR_FONT_SIZE_KEY, DEFAULT_EDITOR_FONT_SIZE));
     this.bindEvents();
     this.renderEnvironmentChrome();
   }
@@ -451,6 +463,8 @@ class SqlPage {
   private bindEvents(): void {
     this.productionTab.addEventListener('click', () => void this.switchEnvironment('production'));
     this.developmentTab.addEventListener('click', () => void this.switchEnvironment('development'));
+    this.decreaseFontSizeButton.addEventListener('click', () => this.adjustEditorFontSize(-1));
+    this.increaseFontSizeButton.addEventListener('click', () => this.adjustEditorFontSize(1));
     this.loginForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.login();
@@ -1662,6 +1676,27 @@ class SqlPage {
     const height = Math.round(Math.min(available, Math.max(MIN_EDITOR_HEIGHT, value)));
     this.page.style.setProperty('--sql-editor-height', `${height}px`);
     this.resultResizer.setAttribute('aria-valuenow', String(height));
+    this.editor.requestMeasure();
+  }
+
+  private editorFontSize(): number {
+    return Number.parseFloat(getComputedStyle(this.page).getPropertyValue('--sql-editor-font-size'))
+      || DEFAULT_EDITOR_FONT_SIZE;
+  }
+
+  private adjustEditorFontSize(delta: -1 | 1): void {
+    const next = clampSqlEditorFontSize(this.editorFontSize() + delta);
+    this.applyEditorFontSize(next);
+    writeStoredValue(EDITOR_FONT_SIZE_KEY, String(next));
+  }
+
+  private applyEditorFontSize(value: number): void {
+    const fontSize = clampSqlEditorFontSize(value);
+    this.page.style.setProperty('--sql-editor-font-size', `${fontSize}px`);
+    this.decreaseFontSizeButton.disabled = fontSize <= MIN_EDITOR_FONT_SIZE;
+    this.increaseFontSizeButton.disabled = fontSize >= MAX_EDITOR_FONT_SIZE;
+    this.decreaseFontSizeButton.title = `Decrease SQL editor font size (currently ${fontSize}px)`;
+    this.increaseFontSizeButton.title = `Increase SQL editor font size (currently ${fontSize}px)`;
     this.editor.requestMeasure();
   }
 }
