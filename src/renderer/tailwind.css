@@ -6,6 +6,30 @@
     @apply m-0 bg-zinc-50 font-sans text-zinc-700 antialiased;
   }
 
+  .app-startup-sync {
+    @apply fixed inset-0 z-[200] flex items-center justify-center bg-zinc-50/95 p-6 backdrop-blur-sm;
+  }
+
+  .app-startup-sync-card {
+    @apply flex w-full max-w-sm items-center gap-4 rounded-xl border border-zinc-200 bg-white px-5 py-4 shadow-lg ring-1 ring-zinc-950/[0.03];
+  }
+
+  .app-startup-sync-spinner {
+    @apply h-6 w-6 shrink-0 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-800;
+  }
+
+  .app-startup-sync-copy {
+    @apply min-w-0;
+  }
+
+  .app-startup-sync-copy h1 {
+    @apply m-0 text-sm font-semibold text-zinc-900;
+  }
+
+  .app-startup-sync-copy p {
+    @apply m-0 mt-1 text-xs leading-5 text-zinc-500;
+  }
+
   .app-layout {
     @apply flex min-h-screen;
   }

@@ -19,6 +19,7 @@ import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './notes
 import { registerProxyPage } from './proxyPage.js';
 import { registerSqlPage } from './sqlPage.js';
 import { registerSettingsDialog } from './settingsDialog.js';
+import { trackStartupS3SyncWork, waitForStartupS3Sync } from './startupS3SyncGate.js';
 import {
   canStartForward,
   canStartService,
@@ -96,6 +97,7 @@ const serviceLogContent = requireElement<HTMLDivElement>('#service-log-content')
 const LOG_FETCH_CHUNK_LINES = 200;
 const APP_MEMORY_REFRESH_INTERVAL_MS = 5000;
 const MAX_CONCURRENT_HOST_SERVICE_REFRESHES = 4;
+const startupS3SyncReady = waitForStartupS3Sync();
 
 type LogLoadReason = 'refresh' | 'older';
 
@@ -2331,7 +2333,6 @@ registerKubernetesPage();
 registerSqlPage();
 registerNotesPage();
 registerSettingsDialog();
-initNav('hosts');
 
 applyStaticButtonIcons();
 resetServiceLogState();
@@ -2657,13 +2658,15 @@ window.settingsApi.onPersistentDataReloaded((event) => {
   const reload = event.hostsChanged
     ? Promise.all([loadHosts(), notesUpdate]).then(() => undefined)
     : notesUpdate;
-  void reload.catch((error) => {
+  void trackStartupS3SyncWork(reload).catch((error) => {
     reportRendererError('persistent-data-reloaded', error, 'Persistent data changed, but the page could not be refreshed.');
   });
 });
 
 (async function init() {
   try {
+    await startupS3SyncReady;
+    initNav('hosts');
     resetForm();
     await loadHosts();
     await refreshAllServices(true);

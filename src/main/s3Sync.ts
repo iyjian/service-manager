@@ -27,6 +27,7 @@ import type {
   S3SyncSettingsDraft,
   S3SyncSettingsView,
   S3SyncState,
+  StartupS3SyncState,
 } from '../shared/types';
 import {
   createServiceManagerSyncRevisionV2,
@@ -138,6 +139,7 @@ export interface S3SyncRuntimeOptions {
   notesIncrementalProvider?: S3NotesIncrementalProvider;
   snapshotApplier?: S3SnapshotApplier;
   onStateChanged?: (state: S3SyncState) => void;
+  onStartupStateChanged?: (state: StartupS3SyncState) => void;
   onDataApplied?: () => void;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -974,6 +976,7 @@ export class S3SyncRuntime {
   private syncAgain = false;
   private syncFullAgain = false;
   private autoStarted = false;
+  private startupStatus: StartupS3SyncState['status'] = 'checking';
   private shuttingDown = false;
   private state: S3SyncState = { status: 'not-configured', pending: false };
 
@@ -1002,12 +1005,27 @@ export class S3SyncRuntime {
     return cloneSyncState(this.state);
   }
 
+  public getStartupSyncState(): StartupS3SyncState {
+    return {
+      status: this.startupStatus,
+      syncState: cloneSyncState(this.state),
+    };
+  }
+
   public async startAutoSync(): Promise<void> {
     if (this.shuttingDown || this.autoStarted) return;
     this.autoStarted = true;
     const settings = await this.ensureSettings();
-    if (this.shuttingDown) return;
-    if (isConfigured(settings)) this.scheduleSync(0, false, true);
+    if (this.shuttingDown || !isConfigured(settings)) {
+      this.updateStartupStatus('ready');
+      return;
+    }
+    this.updateStartupStatus('syncing');
+    try {
+      await this.requestSync(false, true);
+    } finally {
+      this.updateStartupStatus('ready');
+    }
   }
 
   public markLocalChange(change: S3LocalChange = { kind: 'full' }): void {
@@ -1520,6 +1538,21 @@ export class S3SyncRuntime {
       this.options.onStateChanged?.(cloneSyncState(this.state));
     } catch {
       // Renderer state publication is best effort.
+    }
+    this.publishStartupState();
+  }
+
+  private updateStartupStatus(status: StartupS3SyncState['status']): void {
+    if (this.startupStatus === status) return;
+    this.startupStatus = status;
+    this.publishStartupState();
+  }
+
+  private publishStartupState(): void {
+    try {
+      this.options.onStartupStateChanged?.(this.getStartupSyncState());
+    } catch {
+      // Renderer startup-state publication is best effort.
     }
   }
 

@@ -1151,6 +1151,13 @@ export interface S3SyncState {
   totalItems?: number;
 }
 
+export type StartupS3SyncStatus = 'checking' | 'syncing' | 'ready';
+
+export interface StartupS3SyncState {
+  status: StartupS3SyncStatus;
+  syncState: S3SyncState;
+}
+
 export interface PersistentDataReloaded {
   generation: number;
   source: 's3' | 'trilium';
@@ -1175,6 +1182,8 @@ export interface SettingsApi {
   revealS3SyncCredentials: () => Promise<S3CredentialValues>;
   syncAllDataToS3: () => Promise<S3SyncResult>;
   onS3SyncStateChanged: (listener: (state: S3SyncState) => void) => () => void;
+  getStartupS3SyncState: () => Promise<StartupS3SyncState>;
+  onStartupS3SyncStateChanged: (listener: (state: StartupS3SyncState) => void) => () => void;
   onUiPreferencesChanged: (listener: (preferences: UiPreferences) => void) => () => void;
   onPersistentDataReloaded: (listener: (event: PersistentDataReloaded) => void) => () => void;
   getLlmSettings: () => Promise<LlmSettingsView>;

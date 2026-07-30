@@ -171,6 +171,7 @@ async function createRuntime(t, options) {
   await writeConfiguredSettings(userDataPath, options.clientId, options.persistedSettings);
   const state = { data: clone(options.data), applied: [] };
   const syncStates = [];
+  const startupStates = [];
   const runtime = new S3SyncRuntime({
     userDataPath,
     appVersion: '0.3.19',
@@ -203,10 +204,15 @@ async function createRuntime(t, options) {
       syncStates.push(snapshot);
       options.onStateChanged?.(snapshot);
     },
+    onStartupStateChanged: (next) => {
+      const snapshot = clone(next);
+      startupStates.push(snapshot);
+      options.onStartupStateChanged?.(snapshot);
+    },
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
   });
   t.after(() => runtime.shutdown());
-  return { runtime, state, syncStates, userDataPath };
+  return { runtime, state, syncStates, startupStates, userDataPath };
 }
 
 async function waitFor(predicate, message, timeoutMs = 2_000) {
@@ -1586,6 +1592,63 @@ test('a second independent client automatically pulls the shared cloud head', as
   );
 });
 
+test('startup S3 state blocks through the initial reconcile and settles after renderer-safe data apply', async (t) => {
+  const s3 = new MemoryS3();
+  const client = await createRuntime(t, {
+    clientId: 'startup-state',
+    data: sharedData([note('startup-note', 'startup')]),
+    fetchImpl: s3.fetch,
+  });
+
+  assert.equal(client.runtime.getStartupSyncState().status, 'checking');
+  await client.runtime.startAutoSync();
+
+  assert.equal(client.runtime.getStartupSyncState().status, 'ready');
+  assert.equal(client.startupStates[0].status, 'syncing');
+  assert.ok(client.startupStates.slice(0, -1).every((state) => state.status === 'syncing'));
+  assert.ok(client.startupStates.some((state) => state.syncState.phase === 'checking'));
+  assert.equal(client.startupStates.at(-1).syncState.status, 'synced');
+  assert.equal(client.startupStates.at(-1).status, 'ready');
+
+  const startupEventCount = client.startupStates.length;
+  await client.runtime.syncAllDataToS3();
+  assert.ok(client.startupStates.length > startupEventCount);
+  assert.ok(client.startupStates.slice(startupEventCount).every((state) => state.status === 'ready'));
+});
+
+test('startup S3 state releases the application after an offline or failed reconcile', async (t) => {
+  const client = await createRuntime(t, {
+    clientId: 'startup-failure',
+    data: sharedData(),
+    fetchImpl: async () => new Response('', { status: 503 }),
+  });
+
+  await assert.rejects(client.runtime.startAutoSync(), /S3 sync failed/);
+  assert.equal(client.runtime.getStartupSyncState().status, 'ready');
+  assert.equal(client.runtime.getStartupSyncState().syncState.status, 'offline');
+  assert.equal(client.startupStates.at(-1).status, 'ready');
+});
+
+test('startup S3 state immediately releases an application without configured sync', async (t) => {
+  const userDataPath = await temporaryDirectory(t);
+  const startupStates = [];
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.50',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => sharedData(),
+    createClientId: () => 'startup-not-configured',
+    onStartupStateChanged: (state) => startupStates.push(clone(state)),
+  });
+  t.after(() => runtime.shutdown());
+
+  await runtime.startAutoSync();
+
+  assert.equal(runtime.getStartupSyncState().status, 'ready');
+  assert.equal(runtime.getStartupSyncState().syncState.status, 'not-configured');
+  assert.deepEqual(startupStates.map((state) => state.status), ['ready']);
+});
+
 test('two clients keep syncing after one rotates only its S3 AK and SK', async (t) => {
   const s3 = new MemoryS3();
   const home = await createRuntime(t, {
@@ -2290,7 +2353,8 @@ test('automatic S3 sync has no focus, resume, or recurring full-reconcile trigge
   ]);
   assert.doesNotMatch(runtimeSource, /AUTO_SYNC_INTERVAL_MS|setInterval\(|checkForRemoteChanges/);
   assert.doesNotMatch(mainSource, /powerMonitor|s3SyncRuntime\?\.checkForRemoteChanges/);
-  assert.match(runtimeSource, /startAutoSync\(\)[\s\S]*?scheduleSync\(0, false, true\)/);
+  assert.match(runtimeSource, /startAutoSync\(\)[\s\S]*?await this\.requestSync\(false, true\)/);
+  assert.match(runtimeSource, /finally \{\s*this\.updateStartupStatus\('ready'\);/);
 });
 
 test('S3SyncRuntime returns bounded safe errors without leaking endpoint, data, or credentials', async (t) => {

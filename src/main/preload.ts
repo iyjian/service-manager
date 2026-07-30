@@ -35,6 +35,7 @@ import type {
   SqlQueryDraft,
   S3SyncState,
   S3SyncSettingsDraft,
+  StartupS3SyncState,
   SettingsApi,
   ServiceStatusChange,
   ServiceStatusChangeBatch,
@@ -199,6 +200,12 @@ const settingsApi: SettingsApi = {
     const wrapped = (_event: Electron.IpcRendererEvent, state: S3SyncState): void => listener(state);
     ipcRenderer.on('settings:s3:state', wrapped);
     return () => ipcRenderer.removeListener('settings:s3:state', wrapped);
+  },
+  getStartupS3SyncState: () => ipcRenderer.invoke('app:startup-s3-sync:get'),
+  onStartupS3SyncStateChanged: (listener: (state: StartupS3SyncState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: StartupS3SyncState): void => listener(state);
+    ipcRenderer.on('app:startup-s3-sync:state', wrapped);
+    return () => ipcRenderer.removeListener('app:startup-s3-sync:state', wrapped);
   },
   onUiPreferencesChanged: (listener: (preferences: UiPreferences) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, preferences: UiPreferences): void => listener(preferences);

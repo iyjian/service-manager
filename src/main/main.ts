@@ -59,6 +59,7 @@ import type {
   TriliumImportResult,
   KubernetesVncLaunchResult,
   KubernetesVncTarget,
+  StartupS3SyncState,
 } from '../shared/types';
 import {
   buildNotePrintDocument,
@@ -230,6 +231,8 @@ const IPC_CHANNELS = {
   s3SettingsReveal: 'settings:s3:reveal-credentials',
   s3Sync: 'settings:s3:sync',
   s3SyncState: 'settings:s3:state',
+  startupS3SyncGet: 'app:startup-s3-sync:get',
+  startupS3SyncState: 'app:startup-s3-sync:state',
   persistentDataReloaded: 'app:persistent-data-reloaded',
   proxyGetState: 'proxy:get-state',
   proxyDownloadCore: 'proxy:download-core',
@@ -2766,6 +2769,10 @@ function registerIpcHandlers(): void {
     return getSqlRuntime().execute(input.environment, input.statement);
   });
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
+  ipcMain.handle(
+    IPC_CHANNELS.startupS3SyncGet,
+    (): StartupS3SyncState => getS3SyncRuntime().getStartupSyncState()
+  );
   ipcMain.handle(IPC_CHANNELS.s3SettingsSave, async (_event, draft: unknown) =>
     getS3SyncRuntime().saveS3SyncSettings(draft)
   );
@@ -3630,6 +3637,7 @@ app.whenReady()
       notesIncrementalProvider: collectS3ChangedNotes,
       snapshotApplier: applyS3SharedAppData,
       onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),
+      onStartupStateChanged: (state) => broadcast(IPC_CHANNELS.startupS3SyncState, state),
     });
 
     applyAppIcon();

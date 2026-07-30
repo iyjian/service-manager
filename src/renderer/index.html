@@ -8,8 +8,24 @@
     <link rel="stylesheet" href="./tailwind.css" />
     <link rel="stylesheet" href="./xterm.css" />
   </head>
-  <body>
-    <div class="app-layout">
+  <body data-startup-sync="true">
+    <div
+      id="app-startup-sync"
+      class="app-startup-sync"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      aria-busy="true"
+    >
+      <section class="app-startup-sync-card">
+        <span class="app-startup-sync-spinner" aria-hidden="true"></span>
+        <div class="app-startup-sync-copy">
+          <h1>Preparing Service Manager</h1>
+          <p id="app-startup-sync-detail">Checking S3 synchronization status…</p>
+        </div>
+      </section>
+    </div>
+    <div id="app-layout" class="app-layout" inert aria-hidden="true">
       <nav id="nav-rail" class="nav-rail" aria-label="Primary">
         <img class="nav-logo" src="../../assets/icon-64.png" alt="Service Manager" />
         <button id="nav-settings-btn" type="button" class="nav-item nav-settings-button" title="Settings" aria-label="Settings">
