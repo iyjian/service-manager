@@ -28,6 +28,7 @@ import {
   type SqlCellPresentation,
   type SqlDisplayResult,
 } from './sqlResult.js';
+import { SqlVirtualResultTable } from './sqlVirtualResultTable.js';
 
 const SQL_NAV_ICON = `
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -428,6 +429,7 @@ class SqlPage {
   private active = false;
   private sidebarPointerId?: number;
   private resultPointerId?: number;
+  private resultTable?: SqlVirtualResultTable;
 
   public constructor() {
     try {
@@ -484,6 +486,8 @@ class SqlPage {
 
   public hide(): void {
     this.active = false;
+    this.destroyResultTable();
+    this.resultContent.replaceChildren();
     this.closeValueDialog();
   }
 
@@ -584,6 +588,7 @@ class SqlPage {
       const auth = await window.sqlApi.getAuthState(environment);
       if (version !== state.loadVersion) return;
       state.auth = auth;
+      if (!this.active || environment !== this.environment) return;
       if (auth.status === 'signed-in') {
         this.renderAuthenticated();
         await this.fetchRecords(false, environment, version);
@@ -598,7 +603,9 @@ class SqlPage {
         hasSavedCredentials: false,
         message: toErrorMessage(error),
       };
-      this.renderSignedOut(toErrorMessage(error));
+      if (this.active && environment === this.environment) {
+        this.renderSignedOut(toErrorMessage(error));
+      }
     }
   }
 
@@ -1164,15 +1171,19 @@ class SqlPage {
       tab.lastResponseText = jsonText(response.value);
       tab.executedAt = response.executedAt;
       tab.durationMs = response.durationMs;
-      if (environment === this.environment && this.currentTab()?.key === tab.key) this.renderResult();
+      if (this.active && environment === this.environment && this.currentTab()?.key === tab.key) {
+        this.renderResult();
+      }
     } catch (error) {
       if (version !== tab.executionVersion) return;
       tab.resultError = toErrorMessage(error);
-      if (environment === this.environment && this.currentTab()?.key === tab.key) this.renderResult();
+      if (this.active && environment === this.environment && this.currentTab()?.key === tab.key) {
+        this.renderResult();
+      }
       this.handleOperationError(error, false, environment);
     } finally {
       tab.executing = false;
-      if (environment === this.environment) {
+      if (this.active && environment === this.environment) {
         this.renderTabs();
         this.renderBusyState();
         if (this.currentTab()?.key === tab.key) this.renderResult();
@@ -1351,6 +1362,7 @@ class SqlPage {
   }
 
   private renderResult(): void {
+    this.destroyResultTable();
     const tab = this.currentTab();
     if (tab?.executing) {
       this.resultMeta.textContent = '';
@@ -1382,8 +1394,22 @@ class SqlPage {
       rowCount === undefined ? '' : `${rowCount} row${rowCount === 1 ? '' : 's'}`,
       duration,
     ].filter(Boolean).join(' · ');
+    if (tab.result.kind === 'table') {
+      this.resultTable = new SqlVirtualResultTable({
+        host: this.resultContent,
+        result: tab.result,
+        onOpenValue: (column, presentation) => this.openValueDialog(column, presentation),
+        onWindowRendered: () => this.refreshCellOverflowButtons(),
+      });
+      return;
+    }
     this.resultContent.replaceChildren(this.createResultNode(tab.result));
     window.requestAnimationFrame(() => this.refreshCellOverflowButtons());
+  }
+
+  private destroyResultTable(): void {
+    this.resultTable?.destroy();
+    this.resultTable = undefined;
   }
 
   private createResultNode(result: SqlDisplayResult): HTMLElement {
@@ -1487,11 +1513,15 @@ class SqlPage {
   }
 
   private refreshCellOverflowButtons(): void {
+    const updates: Array<{ detail: HTMLButtonElement; overflowing: boolean }> = [];
     for (const cell of Array.from(this.resultContent.querySelectorAll<HTMLElement>('.sql-result-cell'))) {
       const text = cell.querySelector<HTMLElement>('.sql-result-cell-value');
       const detail = cell.querySelector<HTMLButtonElement>('.sql-result-cell-detail');
       if (!text || !detail) continue;
-      detail.classList.toggle('hidden', text.scrollWidth <= text.clientWidth);
+      updates.push({ detail, overflowing: text.scrollWidth > text.clientWidth });
+    }
+    for (const { detail, overflowing } of updates) {
+      detail.classList.toggle('hidden', !overflowing);
     }
   }
 

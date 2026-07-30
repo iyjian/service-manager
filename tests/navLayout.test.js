@@ -26,7 +26,8 @@ test('home layout renders the nav rail with per-page shells', async () => {
   assert.doesNotMatch(html, />Refresh<\/button>/);
   assert.doesNotMatch(proxyPage, /const refreshGroupsButton = requireElement/);
   assert.doesNotMatch(proxyPage, /refreshGroupsButton\.addEventListener/);
-  assert.match(proxyPage, /onShow:\s*\(\) => \{\s*void refreshState\(\)\.then\(\(\) => refreshGroups\(\)\);/);
+  assert.match(proxyPage, /onShow:\s*\(\) => \{\s*isProxyPageActive = true;\s*const generation = \+\+proxyPageGeneration;/);
+  assert.match(proxyPage, /refreshState\(generation\)\.then\(\(refreshed\) =>/);
   assert.match(proxyPage, /setMessage\('Proxy started\.', 'success'\);\s*await refreshGroups\(\);/);
   assert.doesNotMatch(html, /id="proxy-apply-port-btn"/);
   assert.doesNotMatch(proxyPage, /applyPortButton/);
@@ -81,7 +82,7 @@ test('Save & Fetch clears stale delay labels and refreshes the running strategy 
   assert.notEqual(fetchIndex, -1);
   assert.match(
     saveFetchHandler,
-    /renderState\(state\);[\s\S]*?subUrlInput\.value = '';[\s\S]*?if \(state\.running === 'running'\) \{\s*groupList\.replaceChildren\(\);\s*await refreshGroups\(\);\s*\}/
+    /renderState\(state\);[\s\S]*?subUrlInput\.value = '';[\s\S]*?if \(state\.running === 'running'\) \{\s*clearRenderedGroups\(\);\s*await refreshGroups\(\);\s*\}/
   );
 });
 
@@ -131,10 +132,35 @@ test('proxy page provides Custom Rules controls in its shared content container'
   assert.doesNotMatch(proxyPage, /innerHTML\s*=\s*[^;]*(?:exception|rule)\.(?:type|target|value)/);
   assert.match(
     proxyPage,
-    /deleteException\(exception\.id\)[\s\S]{0,160}renderState\(state\);\s*clearExceptionEditor\(\);/
+    /deleteException\(exceptionId\)[\s\S]{0,160}renderState\(state\);\s*clearExceptionEditor\(\);/
   );
   assert.match(styles, /\.proxy-page-container/);
   assert.doesNotMatch(html, /class="page-logo"/);
+});
+
+test('proxy lists patch stable nodes and release hidden-page DOM', async () => {
+  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const proxyGroupView = await readFile(path.join(rendererDir, 'proxyGroupView.js'), 'utf8');
+
+  assert.match(proxyPage, /haveSameProxyGroupStructure\(renderedGroups, data\)/);
+  assert.match(proxyPage, /patchRenderedGroups\(data\)/);
+  assert.match(proxyPage, /groupList\.addEventListener\('click'/);
+  assert.match(proxyPage, /exceptionList\.addEventListener\('click'/);
+  assert.doesNotMatch(proxyPage, /button\.addEventListener\('click', \(\) => \{\s*void runAction\(button/);
+  assert.match(proxyPage, /onHide:\s*\(\) => \{[\s\S]*?isProxyPageActive = false;[\s\S]*?clearRenderedGroups\(\);/);
+  assert.match(proxyGroupView, /haveSameProxyGroupStructure/);
+  assert.match(proxyGroupView, /haveSameProxyCustomRules/);
+});
+
+test('Hosts patches one collapsed panel and releases inactive-page work', async () => {
+  const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
+
+  assert.match(renderer, /function setRenderedHostCollapsed\(/);
+  assert.match(renderer, /setRenderedHostCollapsed\(host, panel, nextCollapsed\)/);
+  assert.match(renderer, /function populateHostPanelBody\(/);
+  assert.match(renderer, /onShow:\s*\(\) => \{\s*isHostsPageActive = true;/);
+  assert.match(renderer, /onHide:\s*\(\) => \{\s*isHostsPageActive = false;[\s\S]*?stopStatusAutoRefresh\(\);/);
+  assert.match(renderer, /pendingRuntimeStatusDomUpdates\.clear\(\);[\s\S]*?hostTableBody\.replaceChildren\(\);/);
 });
 
 test('compiled tailwind styles cover the nav rail and proxy page', async () => {

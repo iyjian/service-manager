@@ -458,6 +458,18 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(notesPage, /function applyNotesEditorTheme\(theme\)[\s\S]*?theme === 'dark' \? 'dark' : 'light'[\s\S]*?dataset\.notesEditorTheme = normalized[\s\S]*?page\?\.applyEditorTheme\(normalized\)/);
 });
 
+test('Notes releases hidden tree DOM and patches ordinary selection without rebuilding the tree', async () => {
+  const notesPage = await readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8');
+
+  assert.match(notesPage, /hide\(\) \{[\s\S]*?this\.list\.replaceChildren\(\);[\s\S]*?this\.renderedRowsById\.clear\(\);/);
+  assert.match(notesPage, /hide\(\) \{[\s\S]*?this\.cancelSearchRender\(\);/);
+  assert.match(notesPage, /this\.tabList\.replaceChildren\(\);[\s\S]*?this\.renderedTabButtonsById\.clear\(\);/);
+  assert.match(notesPage, /renderList\(focusId\) \{[\s\S]*?if \(!this\.active\) \{[\s\S]*?this\.list\.replaceChildren\(\);/);
+  assert.match(notesPage, /this\.updateRenderedTreeSelection\(previousId, id\);/);
+  assert.match(notesPage, /updateRenderedTreeSelection\(previousId, nextId\)/);
+  assert.match(notesPage, /const fragment = document\.createDocumentFragment\(\);[\s\S]*?this\.list\.replaceChildren\(fragment\);/);
+});
+
 test('Bundled compatibility fonts retain their local licenses', async () => {
   const fontRoot = path.join(projectRoot, 'assets', 'fonts');
   const [uiFont, codeFont, comicFont, uiLicense, codeLicense, comicLicense, packageJson, baseStyles] = await Promise.all([

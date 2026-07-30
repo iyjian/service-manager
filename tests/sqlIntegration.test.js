@@ -8,6 +8,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
   const page = await readFile(path.join(dist, 'renderer', 'sqlPage.js'), 'utf8');
+  const virtualTable = await readFile(path.join(dist, 'renderer', 'sqlVirtualResultTable.js'), 'utf8');
   const styles = await readFile(path.join(dist, 'renderer', 'tailwind.css'), 'utf8');
   const baseStyles = await readFile(path.join(dist, 'renderer', 'styles.css'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
@@ -113,6 +114,12 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /form-action 'none'/);
   assert.match(page, /script,noscript,style,meta,base,link,iframe/);
   assert.match(page, /durationMs/);
+  assert.match(page, /new SqlVirtualResultTable/);
+  assert.match(page, /destroyResultTable\(\)/);
+  assert.match(virtualTable, /className = 'sql-result-table-wrap'/);
+  assert.match(virtualTable, /className = 'sql-result-table'/);
+  assert.match(virtualTable, /calculateSqlResultVirtualWindow/);
+  assert.match(virtualTable, /data-sql-cell-detail/);
   assert.doesNotMatch(page, /resultStatus/);
   assert.doesNotMatch(page, /Query ran/);
   assert.match(page, /replace\(\/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);

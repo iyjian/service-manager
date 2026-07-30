@@ -35,11 +35,13 @@ test('Hosts runtime row builders retain status details and action behavior after
   const renderer = await readRendererSource();
   const forwardRow = section(renderer, 'function createForwardRuntimeRow', 'function createServiceRuntimeRow');
   const serviceRow = section(renderer, 'function createServiceRuntimeRow', 'function findRenderedHostPanel');
+  const hostBody = section(renderer, 'function populateHostPanelBody', 'function render(): void');
   const renderHosts = section(renderer, 'function render(): void', 'const HOSTS_NAV_ICON');
 
   assert.match(renderHosts, /panel\.dataset\.hostId = host\.id/);
-  assert.match(renderHosts, /createForwardRuntimeRow\(host, forward, index\)/);
-  assert.match(renderHosts, /createServiceRuntimeRow\(host, service\)/);
+  assert.match(renderHosts, /populateHostPanelBody\(panel, host\)/);
+  assert.match(hostBody, /createForwardRuntimeRow\(host, forward, index\)/);
+  assert.match(hostBody, /createServiceRuntimeRow\(host, service\)/);
 
   assert.match(forwardRow, /item\.dataset\.forwardId = forward\.id/);
   assert.match(forwardRow, /status-retry/);

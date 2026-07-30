@@ -119,6 +119,7 @@ let isLoadingOlderLogs = false;
 let pageMessageTimer: number | null = null;
 let pageMessageAction: PageMessageAction | undefined;
 let pageMessageGeneration = 0;
+let isHostsPageActive = false;
 const collapsedHostIds = new Set<string>();
 const PAGE_TOAST_DURATION_MS = 10_000;
 
@@ -188,6 +189,9 @@ function safeValue(value: string | number | undefined): string {
 }
 
 function renderSafely(scope = 'render'): void {
+  if (!isHostsPageActive) {
+    return;
+  }
   try {
     render();
   } catch (error) {
@@ -1412,6 +1416,7 @@ async function refreshAllServices(silent = false): Promise<void> {
 
 function startStatusAutoRefresh(): void {
   if (statusAutoRefreshTimer !== null) return;
+  void refreshAllServices(true);
   statusAutoRefreshTimer = window.setInterval(() => {
     void refreshAllServices(true);
   }, 5000);
@@ -2128,17 +2133,93 @@ function stopAppMemoryRefresh(): void {
   appMemoryRefreshTimer = null;
 }
 
+function populateHostPanelBody(panel: HTMLElement, host: HostView): void {
+  const body = panel.querySelector<HTMLDivElement>('.host-panel-body');
+  if (!body) {
+    throw new Error('Missing host panel body.');
+  }
+
+  body.replaceChildren();
+  body.classList.toggle('host-panel-body-two-col', !panel.classList.contains('host-panel-collapsed'));
+  if (panel.classList.contains('host-panel-collapsed')) {
+    return;
+  }
+
+  const tunnelSection = document.createElement('section');
+  tunnelSection.className = 'runtime-section runtime-section-tunnels';
+  tunnelSection.innerHTML = `
+    <div class="runtime-section-title">
+      ${renderSectionLabel('tunnel', 'Tunnels')}
+    </div>
+    <div class="runtime-list"></div>
+  `;
+  const tunnelList = tunnelSection.querySelector<HTMLDivElement>('.runtime-list');
+  if (!tunnelList) {
+    throw new Error('Missing tunnel runtime list.');
+  }
+
+  if (host.forwards.length === 0) {
+    tunnelList.innerHTML = '<div class="runtime-empty">No tunnels</div>';
+  } else {
+    host.forwards.forEach((forward, index) => {
+      tunnelList.appendChild(createForwardRuntimeRow(host, forward, index));
+    });
+  }
+  body.appendChild(tunnelSection);
+
+  const serviceSection = document.createElement('section');
+  serviceSection.className = 'runtime-section runtime-section-services';
+  serviceSection.innerHTML = `
+    <div class="runtime-section-title">
+      ${renderSectionLabel('service', 'Services')}
+    </div>
+    <div class="runtime-list"></div>
+  `;
+  const serviceList = serviceSection.querySelector<HTMLDivElement>('.runtime-list');
+  if (!serviceList) {
+    throw new Error('Missing service runtime list.');
+  }
+
+  if (host.services.length === 0) {
+    serviceList.innerHTML = '<div class="runtime-empty">No services</div>';
+  } else {
+    for (const service of host.services) {
+      serviceList.appendChild(createServiceRuntimeRow(host, service));
+    }
+  }
+  body.appendChild(serviceSection);
+}
+
+function setRenderedHostCollapsed(host: HostView, panel: HTMLElement, collapsed: boolean): void {
+  const body = panel.querySelector<HTMLElement>('.host-panel-body');
+  if (collapsed && body && floatingTooltipAnchor && body.contains(floatingTooltipAnchor)) {
+    hideFloatingTooltip();
+  }
+  panel.classList.toggle('host-panel-collapsed', collapsed);
+  const toggle = panel.querySelector<HTMLButtonElement>('[data-action="toggle-host"]');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    toggle.setAttribute('aria-label', collapsed ? 'Expand host' : 'Collapse host');
+    toggle.title = collapsed ? 'Expand host' : 'Collapse host';
+    const icon = toggle.querySelector<HTMLElement>('.host-toggle-icon');
+    if (icon) {
+      icon.innerHTML = renderHostToggleIcon(collapsed);
+    }
+  }
+  populateHostPanelBody(panel, host);
+}
+
 function render(): void {
-  hostTableBody.innerHTML = '';
   renderPageStats();
 
   if (hosts.length === 0) {
     const row = document.createElement('tr');
     row.innerHTML = `<td class="table-empty">No hosts configured.</td>`;
-    hostTableBody.appendChild(row);
+    hostTableBody.replaceChildren(row);
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   hosts.forEach((host) => {
     const isCollapsed = collapsedHostIds.has(host.id);
     const row = document.createElement('tr');
@@ -2184,73 +2265,28 @@ function render(): void {
     `;
 
     panel.querySelector<HTMLButtonElement>('[data-action="toggle-host"]')?.addEventListener('click', () => {
-      if (isCollapsed) {
-        collapsedHostIds.delete(host.id);
-      } else {
+      const nextCollapsed = !collapsedHostIds.has(host.id);
+      if (nextCollapsed) {
         collapsedHostIds.add(host.id);
+      } else {
+        collapsedHostIds.delete(host.id);
       }
-      renderSafely('toggle-host');
+      try {
+        setRenderedHostCollapsed(host, panel, nextCollapsed);
+      } catch (error) {
+        reportRendererError('toggle-host', error, 'Unexpected Host display error.');
+        renderSafely('toggle-host-fallback');
+      }
     });
 
     bindHostActions(panel, host);
-
-    const body = panel.querySelector<HTMLDivElement>('.host-panel-body');
-    if (!body) {
-      throw new Error('Missing host panel body.');
-    }
-
-    if (!isCollapsed) {
-      body.classList.add('host-panel-body-two-col');
-
-      const tunnelSection = document.createElement('section');
-      tunnelSection.className = 'runtime-section runtime-section-tunnels';
-      tunnelSection.innerHTML = `
-        <div class="runtime-section-title">
-          ${renderSectionLabel('tunnel', 'Tunnels')}
-        </div>
-        <div class="runtime-list"></div>
-      `;
-      const tunnelList = tunnelSection.querySelector<HTMLDivElement>('.runtime-list');
-      if (!tunnelList) {
-        throw new Error('Missing tunnel runtime list.');
-      }
-
-      if (host.forwards.length === 0) {
-        tunnelList.innerHTML = '<div class="runtime-empty">No tunnels</div>';
-      } else {
-        host.forwards.forEach((forward, index) => {
-          tunnelList.appendChild(createForwardRuntimeRow(host, forward, index));
-        });
-      }
-      body.appendChild(tunnelSection);
-
-      const serviceSection = document.createElement('section');
-      serviceSection.className = 'runtime-section runtime-section-services';
-      serviceSection.innerHTML = `
-        <div class="runtime-section-title">
-          ${renderSectionLabel('service', 'Services')}
-        </div>
-        <div class="runtime-list"></div>
-      `;
-      const serviceList = serviceSection.querySelector<HTMLDivElement>('.runtime-list');
-      if (!serviceList) {
-        throw new Error('Missing service runtime list.');
-      }
-
-      if (host.services.length === 0) {
-        serviceList.innerHTML = '<div class="runtime-empty">No services</div>';
-      } else {
-        for (const service of host.services) {
-          serviceList.appendChild(createServiceRuntimeRow(host, service));
-        }
-      }
-      body.appendChild(serviceSection);
-    }
+    populateHostPanelBody(panel, host);
 
     cell.appendChild(panel);
     row.appendChild(cell);
-    hostTableBody.appendChild(row);
+    fragment.appendChild(row);
   });
+  hostTableBody.replaceChildren(fragment);
 }
 
 const HOSTS_NAV_ICON = `
@@ -2266,8 +2302,29 @@ registerPage({
   id: 'hosts',
   title: 'Hosts',
   icon: HOSTS_NAV_ICON,
-  onShow: startAppMemoryRefresh,
-  onHide: stopAppMemoryRefresh,
+  onShow: () => {
+    isHostsPageActive = true;
+    renderSafely('show-hosts');
+    startAppMemoryRefresh();
+    startStatusAutoRefresh();
+  },
+  onHide: () => {
+    isHostsPageActive = false;
+    stopAppMemoryRefresh();
+    stopStatusAutoRefresh();
+    stopLogAutoRefresh();
+    activeLogTarget = null;
+    closeDialog(serviceLogDialog, 'service log');
+    resetServiceLogState();
+    setServiceLogPageScrollLock(false);
+    hideFloatingTooltip();
+    if (runtimeStatusUpdateFrame !== null) {
+      window.cancelAnimationFrame(runtimeStatusUpdateFrame);
+      runtimeStatusUpdateFrame = null;
+    }
+    pendingRuntimeStatusDomUpdates.clear();
+    hostTableBody.replaceChildren();
+  },
 });
 registerProxyPage();
 registerKubernetesPage();
@@ -2532,7 +2589,7 @@ window.serviceApi.onServiceStatusChanged((change) => {
     service.updatedAt = change.updatedAt;
     service.forwardState = change.forwardState;
     service.forwardError = change.forwardError;
-    if (hasVisibleChange) {
+    if (hasVisibleChange && isHostsPageActive) {
       scheduleRuntimeStatusDomUpdate({
         kind: 'service',
         hostId: change.hostId,
@@ -2568,7 +2625,7 @@ window.serviceApi.onForwardStatusChanged((change) => {
     forward.status = change.status;
     forward.error = change.error;
     forward.reconnectAt = change.reconnectAt;
-    if (hasVisibleChange || refreshRetryText) {
+    if ((hasVisibleChange || refreshRetryText) && isHostsPageActive) {
       scheduleRuntimeStatusDomUpdate({
         kind: 'forward',
         hostId: change.hostId,
@@ -2615,7 +2672,6 @@ window.settingsApi.onPersistentDataReloaded((event) => {
     } catch {
       // no-op
     }
-    startStatusAutoRefresh();
   } catch (error) {
     reportRendererError('init', error, 'Failed to initialize UI.');
   }

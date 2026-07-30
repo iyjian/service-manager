@@ -905,12 +905,17 @@ class NotesPage {
     this.active = false;
     const releaseGeneration = ++this.editorReleaseGeneration;
     this.searchRequestGeneration += 1;
+    this.cancelSearchRender();
     this.searchPending = false;
     this.closeLanguageMenu();
     this.closeDownloadMenu();
     this.closeMarkdownOutline();
     if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
     this.resetInNoteFind(false);
+    this.list.replaceChildren();
+    this.renderedRowsById.clear();
+    this.tabList.replaceChildren();
+    this.renderedTabButtonsById.clear();
     void this.flush().then(() => {
       if (this.active || releaseGeneration !== this.editorReleaseGeneration) return;
       this.releaseEditorResources();
@@ -1836,6 +1841,11 @@ class NotesPage {
   }
 
   private renderTabs(): void {
+    if (!this.active) {
+      this.tabList.replaceChildren();
+      this.renderedTabButtonsById.clear();
+      return;
+    }
     this.reconcileOpenNoteTabs();
     this.tabList.replaceChildren();
     this.renderedTabButtonsById.clear();
@@ -1932,6 +1942,11 @@ class NotesPage {
 
   private renderList(focusId?: string): void {
     this.cancelSearchRender();
+    if (!this.active) {
+      this.list.replaceChildren();
+      this.renderedRowsById.clear();
+      return;
+    }
     const activeItem = document.activeElement instanceof HTMLButtonElement
       && document.activeElement.classList.contains('notes-list-item')
       ? document.activeElement
@@ -1958,8 +1973,8 @@ class NotesPage {
         .map((treeNode) => treeNode.parentId)
         .filter((parentId): parentId is string => typeof parentId === 'string'),
     );
-    this.list.replaceChildren();
     this.renderedRowsById.clear();
+    const fragment = document.createDocumentFragment();
 
     for (const { note, node, depth } of rows) {
       const row = document.createElement('div');
@@ -2117,7 +2132,7 @@ class NotesPage {
         });
       }
 
-      this.list.appendChild(row);
+      fragment.appendChild(row);
     }
     if (rows.length === 0) {
       const empty = document.createElement('div');
@@ -2127,7 +2142,7 @@ class NotesPage {
         : this.notes.length > 0
           ? 'No notes match your search.'
           : 'No notes yet.';
-      this.list.appendChild(empty);
+      fragment.appendChild(empty);
     }
 
     if (!searchActive && this.notes.length > 0) {
@@ -2149,8 +2164,9 @@ class NotesPage {
         this.clearTreeDropMarkers();
         void this.moveNote(movingId, null);
       });
-      this.list.appendChild(rootDrop);
+      fragment.appendChild(rootDrop);
     }
+    this.list.replaceChildren(fragment);
     if (restoreFocusId) {
       Array.from(this.list.querySelectorAll<HTMLButtonElement>('.notes-list-item'))
         .find((button) => button.dataset.noteId === restoreFocusId)
@@ -2293,7 +2309,7 @@ class NotesPage {
     const selectedDirty = this.isDirty(id);
     if (selectedDirty) this.saveErrorNoteIds.delete(id);
     if (source === 'tab') this.clearWorkspaceSearch();
-    this.renderList(source === 'tree' ? id : undefined);
+    this.updateRenderedTreeSelection(previousId, id);
     this.renderEditor();
     if (source === 'tab') {
       void this.revealTreeNote(id, false);
@@ -2301,6 +2317,24 @@ class NotesPage {
     }
     if (selectedDirty) this.scheduleSave(id);
     this.updateSelectedSaveStatus();
+  }
+
+  private updateRenderedTreeSelection(previousId: string | undefined, nextId: string): void {
+    if (previousId) {
+      const previousRow = this.renderedRowsById.get(previousId);
+      if (previousRow) {
+        previousRow.dataset.selected = 'false';
+        previousRow.querySelector<HTMLButtonElement>('.notes-list-item')
+          ?.setAttribute('aria-current', 'false');
+      }
+    }
+
+    const nextRow = this.renderedRowsById.get(nextId);
+    if (nextRow) {
+      nextRow.dataset.selected = 'true';
+      nextRow.querySelector<HTMLButtonElement>('.notes-list-item')
+        ?.setAttribute('aria-current', 'true');
+    }
   }
 
   private async revealSearchResult(noteId: string): Promise<void> {

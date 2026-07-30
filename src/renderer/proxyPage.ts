@@ -2,6 +2,8 @@ import type {
   ProxyCustomRule,
   ProxyCustomRuleDraft,
   ProxyExceptionType,
+  ProxyGroupInfo,
+  ProxyGroupOptionInfo,
   ProxyGroupsInfo,
   ProxyMode,
   ProxyRuleTarget,
@@ -9,6 +11,7 @@ import type {
   ProxyTraffic,
 } from '../shared/types';
 import { registerPage } from './nav.js';
+import { haveSameProxyCustomRules, haveSameProxyGroupStructure } from './proxyGroupView.js';
 import { setMessage } from './renderer.js';
 
 const PROXY_NAV_ICON = `
@@ -63,6 +66,23 @@ let logRefreshTimer: number | null = null;
 let editingExceptionId: string | null = null;
 let mixedPortDraft: string | null = null;
 let isTestingNodes = false;
+let isProxyPageActive = false;
+let proxyPageGeneration = 0;
+let renderedGroups: ProxyGroupsInfo | null = null;
+let renderedExceptions: ProxyCustomRule[] | null = null;
+
+interface RenderedProxyOption {
+  button: HTMLButtonElement;
+  marker: HTMLSpanElement;
+  meta: HTMLSpanElement | null;
+}
+
+interface RenderedProxyGroup {
+  current: HTMLSpanElement;
+  options: Map<string, RenderedProxyOption>;
+}
+
+const renderedGroupElements = new Map<string, RenderedProxyGroup>();
 
 const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
   DOMAIN: 'example.com',
@@ -94,6 +114,9 @@ function formatTrafficRate(bytesPerSecond: number): string {
 }
 
 function renderTraffic(traffic: ProxyTraffic | null): void {
+  if (!isProxyPageActive) {
+    return;
+  }
   if (!traffic || currentState?.running !== 'running') {
     trafficReadout.textContent = '';
     trafficReadout.classList.add('hidden');
@@ -116,6 +139,9 @@ async function runAction(button: HTMLButtonElement | null, action: () => Promise
 }
 
 function renderState(state: ProxyState): void {
+  if (!isProxyPageActive) {
+    return;
+  }
   currentState = state;
 
   // Header badges
@@ -205,7 +231,7 @@ function renderState(state: ProxyState): void {
 
   if (!isRunning) {
     renderTraffic(null);
-    groupList.replaceChildren();
+    clearRenderedGroups();
   }
 
   renderExceptions(state.settings.customRules ?? []);
@@ -237,11 +263,18 @@ function startEditingException(exception: ProxyCustomRule): void {
 }
 
 function renderExceptions(exceptions: ProxyCustomRule[]): void {
+  if (haveSameProxyCustomRules(renderedExceptions, exceptions)) {
+    return;
+  }
+
+  renderedExceptions = exceptions.map((exception) => ({ ...exception }));
   exceptionList.replaceChildren();
+  const fragment = document.createDocumentFragment();
   for (const exception of exceptions) {
     const row = document.createElement('div');
     row.className = 'proxy-exception-row';
     row.setAttribute('role', 'listitem');
+    row.dataset.exceptionId = exception.id;
 
     const type = document.createElement('span');
     type.className = 'proxy-exception-type';
@@ -262,33 +295,82 @@ function renderExceptions(exceptions: ProxyCustomRule[]): void {
     editButton.className = 'btn btn-secondary btn-sm';
     editButton.textContent = 'Edit';
     editButton.setAttribute('aria-label', 'Edit custom rule');
-    editButton.addEventListener('click', () => startEditingException(exception));
+    editButton.dataset.exceptionAction = 'edit';
 
     const deleteButton = document.createElement('button');
     deleteButton.type = 'button';
     deleteButton.className = 'btn btn-danger btn-sm';
     deleteButton.textContent = 'Delete';
     deleteButton.setAttribute('aria-label', 'Delete custom rule');
-    deleteButton.addEventListener('click', () => {
-      void runAction(deleteButton, async () => {
-        const state = await window.proxyApi.deleteException(exception.id);
-        renderState(state);
-        clearExceptionEditor();
-        if (state.running === 'running') {
-          await refreshGroups();
-        }
-        setMessage('Custom rule deleted.', 'success');
-      });
-    });
+    deleteButton.dataset.exceptionAction = 'delete';
 
     actions.append(editButton, deleteButton);
     row.append(type, target, value, actions);
-    exceptionList.appendChild(row);
+    fragment.appendChild(row);
+  }
+  exceptionList.appendChild(fragment);
+}
+
+function updateProxyOptionMeta(
+  renderedOption: RenderedProxyOption,
+  option: ProxyGroupOptionInfo
+): void {
+  let text = '';
+  let unavailable = false;
+  if (option.delayStatus === 'unavailable') {
+    text = 'Unavailable';
+    unavailable = true;
+  } else if (typeof option.delayMs === 'number') {
+    text = `${option.delayMs}ms`;
+  }
+
+  if (!text) {
+    renderedOption.meta?.remove();
+    renderedOption.meta = null;
+    return;
+  }
+
+  if (!renderedOption.meta) {
+    renderedOption.meta = document.createElement('span');
+    renderedOption.meta.className = 'proxy-node-meta';
+    renderedOption.button.appendChild(renderedOption.meta);
+  }
+  renderedOption.meta.classList.toggle('proxy-node-meta-unavailable', unavailable);
+  renderedOption.meta.textContent = text;
+}
+
+function patchRenderedGroup(group: ProxyGroupInfo, renderedGroup: RenderedProxyGroup): void {
+  renderedGroup.current.textContent = group.now ? `Current: ${group.now}` : 'No current candidate';
+  for (const option of group.options) {
+    const renderedOption = renderedGroup.options.get(option.name);
+    if (!renderedOption) {
+      continue;
+    }
+    const isActive = option.name === group.now;
+    renderedOption.button.classList.toggle('proxy-node-active', isActive);
+    renderedOption.marker.textContent = isActive ? '●' : '○';
+    updateProxyOptionMeta(renderedOption, option);
   }
 }
 
-function renderGroups(data: ProxyGroupsInfo): void {
+function patchRenderedGroups(data: ProxyGroupsInfo): void {
+  for (const group of data.groups) {
+    const renderedGroup = renderedGroupElements.get(group.name);
+    if (renderedGroup) {
+      patchRenderedGroup(group, renderedGroup);
+    }
+  }
+}
+
+function clearRenderedGroups(): void {
+  renderedGroups = null;
+  renderedGroupElements.clear();
   groupList.replaceChildren();
+}
+
+function rebuildGroups(data: ProxyGroupsInfo): void {
+  renderedGroupElements.clear();
+  const fragment = document.createDocumentFragment();
   for (const group of data.groups) {
     const section = document.createElement('section');
     section.className = 'proxy-strategy-group';
@@ -304,10 +386,13 @@ function renderGroups(data: ProxyGroupsInfo): void {
 
     const options = document.createElement('div');
     options.className = 'proxy-node-list';
+    const optionElements = new Map<string, RenderedProxyOption>();
     for (const option of group.options) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `proxy-node${option.name === group.now ? ' proxy-node-active' : ''}`;
+      button.dataset.proxyGroup = group.name;
+      button.dataset.proxyOption = option.name;
       const marker = document.createElement('span');
       marker.className = 'proxy-node-marker';
       marker.textContent = option.name === group.now ? '●' : '○';
@@ -329,36 +414,64 @@ function renderGroups(data: ProxyGroupsInfo): void {
       if (meta.textContent) {
         button.appendChild(meta);
       }
-      button.addEventListener('click', () => {
-        void runAction(button, async () => {
-          renderState(await window.proxyApi.selectProxy(group.name, option.name));
-          await refreshGroups();
-          setMessage(`${group.name} switched to ${option.name}`, 'success');
-        });
+      optionElements.set(option.name, {
+        button,
+        marker,
+        meta: meta.textContent ? meta : null,
       });
       options.appendChild(button);
     }
     section.append(heading, options);
-    groupList.appendChild(section);
+    fragment.appendChild(section);
+    renderedGroupElements.set(group.name, {
+      current,
+      options: optionElements,
+    });
   }
+  groupList.replaceChildren(fragment);
 }
 
-async function refreshGroups(): Promise<void> {
+function renderGroups(data: ProxyGroupsInfo): void {
+  if (!isProxyPageActive) {
+    return;
+  }
+  if (haveSameProxyGroupStructure(renderedGroups, data)) {
+    patchRenderedGroups(data);
+  } else {
+    rebuildGroups(data);
+  }
+  renderedGroups = data;
+}
+
+async function refreshGroups(generation = proxyPageGeneration): Promise<void> {
   if (!currentState || currentState.running !== 'running') {
     return;
   }
   try {
-    renderGroups(await window.proxyApi.listProxies());
+    const groups = await window.proxyApi.listProxies();
+    if (isProxyPageActive && generation === proxyPageGeneration) {
+      renderGroups(groups);
+    }
   } catch (error) {
-    setMessage(toErrorMessage(error), 'error');
+    if (isProxyPageActive && generation === proxyPageGeneration) {
+      setMessage(toErrorMessage(error), 'error');
+    }
   }
 }
 
-async function refreshState(): Promise<void> {
+async function refreshState(generation = proxyPageGeneration): Promise<boolean> {
   try {
-    renderState(await window.proxyApi.getState());
+    const state = await window.proxyApi.getState();
+    if (!isProxyPageActive || generation !== proxyPageGeneration) {
+      return false;
+    }
+    renderState(state);
+    return true;
   } catch (error) {
-    setMessage(toErrorMessage(error), 'error');
+    if (isProxyPageActive && generation === proxyPageGeneration) {
+      setMessage(toErrorMessage(error), 'error');
+    }
+    return false;
   }
 }
 
@@ -404,6 +517,46 @@ function closeLogDialog(): void {
 }
 
 function bindEvents(): void {
+  groupList.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button.proxy-node');
+    const groupName = button?.dataset.proxyGroup;
+    const optionName = button?.dataset.proxyOption;
+    if (!button || !groupName || !optionName) {
+      return;
+    }
+    void runAction(button, async () => {
+      renderState(await window.proxyApi.selectProxy(groupName, optionName));
+      await refreshGroups();
+      setMessage(`${groupName} switched to ${optionName}`, 'success');
+    });
+  });
+
+  exceptionList.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-exception-action]');
+    const row = button?.closest<HTMLElement>('[data-exception-id]');
+    const exceptionId = row?.dataset.exceptionId;
+    const action = button?.dataset.exceptionAction;
+    const exception = currentState?.settings.customRules?.find((item) => item.id === exceptionId);
+    if (!button || !exceptionId || !action || !exception) {
+      return;
+    }
+    if (action === 'edit') {
+      startEditingException(exception);
+      return;
+    }
+    if (action === 'delete') {
+      void runAction(button, async () => {
+        const state = await window.proxyApi.deleteException(exceptionId);
+        renderState(state);
+        clearExceptionEditor();
+        if (state.running === 'running') {
+          await refreshGroups();
+        }
+        setMessage('Custom rule deleted.', 'success');
+      });
+    }
+  });
+
   toggleButton.addEventListener('click', () => {
     void runAction(toggleButton, async () => {
       const state = currentState;
@@ -514,7 +667,7 @@ function bindEvents(): void {
       renderState(state);
       subUrlInput.value = '';
       if (state.running === 'running') {
-        groupList.replaceChildren();
+        clearRenderedGroups();
         await refreshGroups();
       }
       setMessage(
@@ -572,7 +725,9 @@ function bindEvents(): void {
   logDialog.addEventListener('close', stopLogRefresh);
 
   window.proxyApi.onProxyStateChanged((state) => {
-    renderState(state);
+    if (isProxyPageActive) {
+      renderState(state);
+    }
   });
   window.proxyApi.onProxyTrafficChanged(renderTraffic);
 }
@@ -585,10 +740,23 @@ export function registerProxyPage(): void {
     title: 'Proxy',
     icon: PROXY_NAV_ICON,
     onShow: () => {
-      void refreshState().then(() => refreshGroups());
+      isProxyPageActive = true;
+      const generation = ++proxyPageGeneration;
+      void refreshState(generation).then((refreshed) => {
+        if (refreshed) {
+          return refreshGroups(generation);
+        }
+        return undefined;
+      });
     },
     onHide: () => {
+      isProxyPageActive = false;
+      proxyPageGeneration += 1;
       closeLogDialog();
+      currentState = null;
+      renderedExceptions = null;
+      exceptionList.replaceChildren();
+      clearRenderedGroups();
     },
   });
 }

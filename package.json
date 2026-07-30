@@ -11,6 +11,7 @@
     "build:renderer": "tsc -p tsconfig.renderer.json",
     "copy:renderer": "node scripts/copy-renderer.cjs",
     "build:css": "node scripts/build-tailwind.cjs",
+    "benchmark:sql-results": "pnpm run build && electron scripts/benchmark-sql-results.cjs",
     "test": "pnpm run build && node --test tests/*.test.js",
     "start": "pnpm run build && electron .",
     "dev": "pnpm run build && electron .",
@@ -75,10 +76,14 @@
     "@types/adm-zip": "^0.5.8",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
     "electron": "^33.2.0",
     "electron-builder": "^24.13.3",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vite": "8.1.5"
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",
@@ -90,6 +95,8 @@
     "@codemirror/state": "^6.7.1",
     "@kubernetes/client-node": "^1.4.0",
     "@sentry/electron": "^7.15.0",
+    "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.9",
     "@tiptap/core": "3.28.0",
     "@tiptap/extension-code-block-lowlight": "3.28.0",
     "@tiptap/extension-image": "3.28.0",
@@ -105,6 +112,8 @@
     "highlight.js": "11.11.1",
     "js-yaml": "^5.2.1",
     "lowlight": "3.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "ssh2": "^1.15.0"
   }
 }
