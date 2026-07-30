@@ -4688,6 +4688,13 @@
     @apply bg-blue-50/70;
   }
 
+  .sql-editor .cm-sql-current-statement {
+    background-color: rgb(219 234 254 / 0.58);
+    border-radius: 2px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+
   .sql-editor .cm-selectionBackground,
   .sql-editor .cm-content ::selection {
     background-color: rgb(191 219 254) !important;
@@ -4871,7 +4878,19 @@
   }
 
   .sql-value-dialog-title-group h2 {
-    @apply m-0 truncate text-sm font-semibold text-zinc-950;
+    @apply m-0 min-w-0 truncate text-sm font-semibold text-zinc-950;
+  }
+
+  .sql-value-copy-raw {
+    @apply flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-zinc-400 outline-none transition hover:bg-zinc-100 hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-40;
+  }
+
+  .sql-value-copy-raw svg {
+    @apply h-4 w-4;
+  }
+
+  .sql-value-copy-raw[data-copied='true'] {
+    @apply bg-emerald-50 text-emerald-700;
   }
 
   .sql-value-kind {
@@ -4900,8 +4919,19 @@
   }
 
   .sql-value-code {
-    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-zinc-950 p-4 font-mono text-[12px] leading-5 text-zinc-100;
+    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-zinc-950 p-4 font-mono leading-5 text-zinc-100 outline-none;
+    font-size: calc(var(--sql-editor-font-size) * 0.8888889);
     tab-size: 2;
+  }
+
+  .sql-value-code.sql-value-code-raw {
+    @apply whitespace-pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .sql-value-code code::selection,
+  .sql-value-code code *::selection {
+    @apply bg-blue-600 text-white;
   }
 
   .sql-value-json-editor,
@@ -4911,7 +4941,8 @@
   }
 
   .sql-value-json-editor .cm-editor {
-    @apply bg-white text-[12px] text-zinc-900 outline-none;
+    @apply bg-white text-zinc-900 outline-none;
+    font-size: calc(var(--sql-editor-font-size) * 0.8888889);
   }
 
   .sql-value-json-editor .cm-scroller {
@@ -4930,6 +4961,12 @@
   .sql-value-json-editor .cm-activeLine,
   .sql-value-json-editor .cm-activeLineGutter {
     @apply bg-blue-50/70;
+  }
+
+  .sql-value-json-editor .cm-selectionBackground,
+  .sql-value-json-editor .cm-content ::selection {
+    background-color: rgb(37 99 235) !important;
+    color: white !important;
   }
 
   .sql-value-truncated {

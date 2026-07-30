@@ -26,6 +26,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-save-shortcut"/);
   assert.match(html, /id="sql-run-shortcut">⌘Enter<\/kbd>/);
   assert.match(html, /id="sql-value-dialog"/);
+  assert.match(
+    html,
+    /id="sql-value-dialog-title">Cell value<\/h2>[\s\S]*id="sql-value-copy-raw"[^>]*aria-label="Copy raw cell value"[^>]*disabled[\s\S]*id="sql-value-kind"/,
+  );
   assert.match(html, /id="sql-value-modes"/);
   assert.match(html, /id="sql-value-content"/);
   assert.doesNotMatch(html, /id="sql-result-status"/);
@@ -68,6 +72,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-editor \.cm-editor\{font-family:var\(--sql-editor-font-family\)\}/);
   assert.match(styles, /\.sql-editor \.cm-editor\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)[^}]*font-weight:400/);
   assert.match(styles, /\.sql-editor \.cm-scroller\{[^}]*font-family:var\(--sql-editor-font-family\)[^}]*line-height:1\.75/);
+  assert.match(styles, /\.sql-editor \.cm-sql-current-statement\{/);
   assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Comic Mono'[^}]*comic-mono\.ttf[^}]*font-weight:\s*400/);
   assert.ok((await stat(path.join(__dirname, '..', 'assets', 'fonts', 'comic-mono.ttf'))).size > 10_000);
   assert.match(styles, /\.sql-query-tab-dirty/);
@@ -79,9 +84,25 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-result-cell-value\{[^}]*max-width:320px[^}]*white-space:nowrap/);
   assert.match(styles, /\.sql-result-cell-detail/);
   assert.match(styles, /\.sql-value-dialog/);
+  assert.match(styles, /\.sql-value-copy-raw/);
+  assert.match(
+    styles,
+    /\.sql-value-code\.sql-value-code-raw\{[^}]*white-space:pre-wrap[^}]*overflow-wrap:anywhere/,
+  );
+  assert.match(
+    styles,
+    /\.sql-value-code\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/,
+  );
+  assert.match(styles, /\.sql-value-code code::selection\{[^}]*background-color:rgb\(37 99 235/);
   assert.match(styles, /\.sql-value-json-editor/);
+  assert.match(
+    styles,
+    /\.sql-value-json-editor \.cm-editor\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/,
+  );
+  assert.match(styles, /\.sql-value-json-editor \.cm-selectionBackground/);
   assert.match(styles, /\.sql-value-html-frame\{[^}]*pointer-events:none/);
   assert.match(page, /resolveSqlStatement/);
+  assert.match(page, /sqlCurrentStatementHighlight/);
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
   assert.match(page, /sql:editor-font-size/);
@@ -98,6 +119,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /tab\.saving = true;\s*this\.renderTabs\(\);\s*this\.renderBusyState\(\)/);
   assert.match(page, /fontFamilySwitch\.setAttribute\('aria-checked', String\(comic\)\)/);
   assert.match(page, /style\.setProperty\('--sql-editor-font-size',\s*`\$\{fontSize\}px`\)/);
+  assert.match(page, /valueDialog\.style\.setProperty\('--sql-editor-font-size',\s*`\$\{fontSize\}px`\)/);
   assert.match(page, /setAuthenticatedHeaderVisible\(visible\) \{[\s\S]*?this\.fontControls\.classList\.toggle\('hidden', !visible\)[\s\S]*?this\.sessionActions\.classList\.toggle\('hidden', !visible\)/);
   assert.match(page, /renderLoading\(\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
   assert.match(page, /renderSignedOut\(message\) \{\s*this\.setAuthenticatedHeaderVisible\(false\)/);
@@ -110,6 +132,15 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.doesNotMatch(page, /StreamLanguage\.define\(standardSQL\)/);
   assert.match(page, /sqlCellPresentation/);
   assert.match(page, /Formatted JSON cell value/);
+  assert.match(page, /sqlValueModesForKind/);
+  assert.match(page, /detectSqlValueLanguage/);
+  assert.match(page, /mode === 'highlighted'/);
+  assert.match(page, /valueModes\.classList\.remove\('hidden'\)/);
+  assert.match(page, /window\.serviceApi\.writeClipboardText\(raw\)/);
+  assert.match(page, /rawCode\?\.classList\.add\('sql-value-code-raw'\)/);
+  assert.match(page, /handleValueDialogSelectAll/);
+  assert.match(page, /selectedRange\.compareBoundaryPoints\(Range\.START_TO_START, contentRange\)/);
+  assert.match(page, /if \(!event\.repeat\)\s*return/);
   assert.match(page, /formatSqlDuration/);
   assert.match(page, /highlightAuto/);
   assert.match(page, /setAttribute\(['"]sandbox['"], ['"]{2}\)/);
@@ -166,4 +197,26 @@ test('SQL editor font preferences stay within the local supported values', async
   assert.equal(page.normalizeSqlEditorFontFamily('comic-mono'), 'comic-mono');
   assert.equal(page.normalizeSqlEditorFontFamily('Comic Mono'), 'default');
   assert.equal(page.normalizeSqlEditorFontFamily(null), 'default');
+});
+
+test('SQL field detail modes always expose Raw', async () => {
+  const page = await import(pathToFileURL(
+    path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
+  ));
+
+  assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['formatted', 'raw']);
+  assert.deepEqual(page.sqlValueModesForKind('html').map((mode) => mode.id), ['preview', 'raw']);
+  assert.deepEqual(page.sqlValueModesForKind('text').map((mode) => mode.id), ['raw']);
+  assert.deepEqual(
+    page.sqlValueModesForKind('text', 'markdown').map((mode) => [mode.id, mode.label]),
+    [['highlighted', 'Markdown'], ['raw', 'Raw']],
+  );
+  assert.deepEqual(
+    page.sqlValueModesForKind('text', 'sql').map((mode) => [mode.id, mode.label]),
+    [['highlighted', 'SQL'], ['raw', 'Raw']],
+  );
+  assert.equal(
+    page.detectSqlValueLanguage('# Heading\n\nThis is **bold** and [a link](https://example.com).\n\n- one\n- two'),
+    'markdown',
+  );
 });

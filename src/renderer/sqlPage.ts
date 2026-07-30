@@ -25,6 +25,7 @@ import {
   replaceSqlTemplateParams,
   resolveSqlStatement,
 } from './sqlStatement.js';
+import { sqlCurrentStatementHighlight } from './sqlStatementHighlight.js';
 import {
   formatSqlDuration,
   formatSqlCell,
@@ -93,6 +94,24 @@ interface SqlEnvironmentState {
 
 type SqlShortcutEvent = Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
 export type SqlEditorFontFamily = 'default' | 'comic-mono';
+export type SqlValueModeId = 'formatted' | 'preview' | 'highlighted' | 'raw';
+
+interface SqlValueMode {
+  id: SqlValueModeId;
+  label: string;
+}
+
+const SQL_JSON_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
+  { id: 'formatted', label: 'Formatted' },
+  { id: 'raw', label: 'Raw' },
+]);
+const SQL_HTML_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
+  { id: 'preview', label: 'Preview' },
+  { id: 'raw', label: 'Raw' },
+]);
+const SQL_TEXT_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
+  { id: 'raw', label: 'Raw' },
+]);
 
 let tabSequence = 0;
 let queryNameDialogSequence = 0;
@@ -180,6 +199,21 @@ export function clampSqlEditorFontSize(value: number): number {
 
 export function normalizeSqlEditorFontFamily(value: unknown): SqlEditorFontFamily {
   return value === 'comic-mono' ? value : 'default';
+}
+
+export function sqlValueModesForKind(
+  kind: SqlCellPresentation['kind'],
+  detectedLanguage?: string,
+): readonly SqlValueMode[] {
+  if (kind === 'json') return SQL_JSON_VALUE_MODES;
+  if (kind === 'html') return SQL_HTML_VALUE_MODES;
+  const detected = findCodeHighlightLanguage(detectedLanguage);
+  return detected && detected.value !== 'plaintext'
+    ? Object.freeze([
+      { id: 'highlighted', label: detected.label },
+      { id: 'raw', label: 'Raw' },
+    ])
+    : SQL_TEXT_VALUE_MODES;
 }
 
 export function sqlShortcutLabel(platform: string): string {
@@ -281,9 +315,27 @@ function boundedSqlValue(value: string): { text: string; truncated: boolean } {
   };
 }
 
-function highlightedSqlValue(value: string, language?: 'json' | 'xml'): { node: HTMLElement; language?: string } {
+export function detectSqlValueLanguage(value: string): string | undefined {
+  const bounded = boundedSqlValue(value);
+  if (bounded.text.length > CODE_HIGHLIGHT_LIMITS.automaticCharacters) return undefined;
+  try {
+    const root = sqlValueLowlight.highlightAuto(bounded.text);
+    return typeof root.data?.language === 'string'
+      ? findCodeHighlightLanguage(root.data.language)?.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function highlightedSqlValue(
+  value: string,
+  language?: string,
+  detectAutomatically = language === undefined,
+): { node: HTMLElement; language?: string } {
   const pre = document.createElement('pre');
   pre.className = 'sql-value-code';
+  pre.tabIndex = 0;
   const code = document.createElement('code');
   code.className = 'hljs';
   pre.append(code);
@@ -294,7 +346,7 @@ function highlightedSqlValue(value: string, language?: 'json' | 'xml'): { node: 
       ? bounded.text.length <= CODE_HIGHLIGHT_LIMITS.explicitCharacters
         ? sqlValueLowlight.highlight(language, bounded.text)
         : undefined
-      : bounded.text.length <= CODE_HIGHLIGHT_LIMITS.automaticCharacters
+      : detectAutomatically && bounded.text.length <= CODE_HIGHLIGHT_LIMITS.automaticCharacters
         ? sqlValueLowlight.highlightAuto(bounded.text)
         : undefined;
     if (root) {
@@ -420,6 +472,7 @@ class SqlPage {
   private readonly resultMeta = requireElement<HTMLElement>('#sql-result-meta');
   private readonly valueDialog = requireElement<HTMLDialogElement>('#sql-value-dialog');
   private readonly valueDialogTitle = requireElement<HTMLElement>('#sql-value-dialog-title');
+  private readonly valueCopyRaw = requireElement<HTMLButtonElement>('#sql-value-copy-raw');
   private readonly valueKind = requireElement<HTMLElement>('#sql-value-kind');
   private readonly valueModes = requireElement<HTMLElement>('#sql-value-modes');
   private readonly valueContent = requireElement<HTMLElement>('#sql-value-content');
@@ -461,6 +514,9 @@ class SqlPage {
   private sidebarPointerId?: number;
   private resultPointerId?: number;
   private resultTable?: SqlVirtualResultTable;
+  private valueDialogGeneration = 0;
+  private valueRaw = '';
+  private valueCopyResetTimer?: number;
 
   public constructor() {
     try {
@@ -476,6 +532,7 @@ class SqlPage {
           basicSetup,
           sql({ dialect: MySQL, upperCaseKeywords: true }),
           MySQL.language.data.of({ autocomplete: this.contextualSchemaCompletion }),
+          sqlCurrentStatementHighlight,
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({
             'aria-label': 'SQL source',
@@ -545,11 +602,13 @@ class SqlPage {
     this.refreshButton.addEventListener('click', () => void this.fetchRecords(true));
     this.newButton.addEventListener('click', () => this.createNewTab(true));
     this.searchInput.addEventListener('input', () => this.renderRecordList());
+    this.valueCopyRaw.addEventListener('click', () => void this.copyRawValue());
     this.valueClose.addEventListener('click', () => this.closeValueDialog());
     this.valueDialog.addEventListener('cancel', (event) => {
       event.preventDefault();
       this.closeValueDialog();
     });
+    this.valueDialog.addEventListener('keydown', (event) => this.handleValueDialogSelectAll(event), true);
     this.valueDialog.addEventListener('close', () => this.clearValueDialog());
     window.addEventListener('keydown', (event) => {
       if (!this.active || this.currentState().auth?.status !== 'signed-in') return;
@@ -1588,11 +1647,13 @@ class SqlPage {
   private openValueDialog(column: string, presentation: SqlCellPresentation): void {
     this.clearValueDialog();
     this.valueDialogTitle.textContent = column;
-    const modes: Array<{ id: 'formatted' | 'preview' | 'raw'; label: string }> = presentation.kind === 'json'
-      ? [{ id: 'formatted', label: 'Formatted' }, { id: 'raw', label: 'Raw' }]
-      : presentation.kind === 'html'
-        ? [{ id: 'preview', label: 'Preview' }, { id: 'raw', label: 'Raw' }]
-        : [{ id: 'raw', label: 'Raw' }];
+    this.valueRaw = presentation.raw;
+    this.valueCopyRaw.disabled = false;
+    this.resetRawCopyFeedback();
+    const detectedLanguage = presentation.kind === 'text'
+      ? detectSqlValueLanguage(presentation.raw)
+      : undefined;
+    const modes = sqlValueModesForKind(presentation.kind, detectedLanguage);
 
     const buttons = modes.map((mode, index) => {
       const button = document.createElement('button');
@@ -1609,20 +1670,21 @@ class SqlPage {
           candidate.setAttribute('aria-selected', String(selected));
           candidate.tabIndex = selected ? 0 : -1;
         }
-        this.renderValueMode(presentation, mode.id);
+        this.renderValueMode(presentation, mode.id, detectedLanguage);
       });
       return button;
     });
-    this.valueModes.classList.toggle('hidden', buttons.length < 2);
+    this.valueModes.classList.remove('hidden');
     this.valueModes.replaceChildren(...buttons);
-    this.renderValueMode(presentation, modes[0]?.id ?? 'raw');
+    this.renderValueMode(presentation, modes[0]?.id ?? 'raw', detectedLanguage);
     this.valueDialog.showModal();
     window.requestAnimationFrame(() => (buttons[0] ?? this.valueClose).focus());
   }
 
   private renderValueMode(
     presentation: SqlCellPresentation,
-    mode: 'formatted' | 'preview' | 'raw',
+    mode: SqlValueModeId,
+    detectedLanguage?: string,
   ): void {
     this.clearValueContent();
     if (mode === 'preview' && presentation.kind === 'html') {
@@ -1675,14 +1737,78 @@ class SqlPage {
     }
 
     const source = presentation.raw;
-    const language = presentation.kind === 'json' ? 'json' : presentation.kind === 'html' ? 'xml' : undefined;
-    const highlighted = highlightedSqlValue(source, language);
+    const language = mode === 'highlighted'
+      ? detectedLanguage
+      : presentation.kind === 'json'
+        ? 'json'
+        : presentation.kind === 'html'
+          ? 'xml'
+          : undefined;
+    const highlighted = highlightedSqlValue(source, language, false);
+    const rawCode = highlighted.node.matches('.sql-value-code')
+      ? highlighted.node
+      : highlighted.node.querySelector<HTMLElement>('.sql-value-code');
+    if (mode === 'raw') rawCode?.classList.add('sql-value-code-raw');
     this.valueKind.textContent = presentation.kind === 'json'
       ? 'JSON'
       : presentation.kind === 'html'
         ? 'HTML'
-        : sqlHighlightLabel(highlighted.language);
+        : sqlHighlightLabel(detectedLanguage);
     this.valueContent.replaceChildren(highlighted.node);
+  }
+
+  private handleValueDialogSelectAll(event: KeyboardEvent): void {
+    const modifier = event.metaKey || event.ctrlKey;
+    if (!this.valueDialog.open
+      || !modifier
+      || event.altKey
+      || event.shiftKey
+      || event.isComposing
+      || event.key.toLocaleLowerCase() !== 'a') return;
+
+    if (this.valueEditor) {
+      const selection = this.valueEditor.state.selection;
+      const documentLength = this.valueEditor.state.doc.length;
+      if (documentLength === 0 || selection.ranges.length !== 1) return;
+      const range = selection.main;
+      const alreadySelected = range.from === 0 && range.to === documentLength;
+      if (alreadySelected) {
+        event.stopPropagation();
+        if (!event.repeat) return;
+        event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      this.valueEditor.focus();
+      this.valueEditor.dispatch({
+        selection: { anchor: 0, head: documentLength },
+        scrollIntoView: true,
+      });
+      return;
+    }
+
+    const code = this.valueContent.querySelector<HTMLElement>('.sql-value-code > code');
+    if (!code || !code.textContent) return;
+    const selected = window.getSelection();
+    if (!selected) return;
+    const contentRange = document.createRange();
+    contentRange.selectNodeContents(code);
+    const selectedRange = selected.rangeCount === 1 ? selected.getRangeAt(0) : undefined;
+    const alreadySelected = selectedRange !== undefined
+      && selectedRange.compareBoundaryPoints(Range.START_TO_START, contentRange) === 0
+      && selectedRange.compareBoundaryPoints(Range.END_TO_END, contentRange) === 0;
+    if (alreadySelected) {
+      event.stopPropagation();
+      if (!event.repeat) return;
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    code.parentElement?.focus({ preventScroll: true });
+    selected.removeAllRanges();
+    selected.addRange(contentRange);
   }
 
   private closeValueDialog(): void {
@@ -1693,11 +1819,57 @@ class SqlPage {
     }
   }
 
+  private async copyRawValue(): Promise<void> {
+    if (!this.valueDialog.open || this.valueCopyRaw.disabled) return;
+    const generation = this.valueDialogGeneration;
+    const raw = this.valueRaw;
+    this.valueCopyRaw.disabled = true;
+    try {
+      await window.serviceApi.writeClipboardText(raw);
+      if (generation !== this.valueDialogGeneration || !this.valueDialog.open) return;
+      this.valueCopyRaw.dataset.copied = 'true';
+      this.valueCopyRaw.setAttribute('aria-label', 'Raw value copied');
+      this.valueCopyRaw.title = 'Raw value copied';
+      if (this.valueCopyResetTimer !== undefined) window.clearTimeout(this.valueCopyResetTimer);
+      this.valueCopyResetTimer = window.setTimeout(() => {
+        this.valueCopyResetTimer = undefined;
+        if (generation === this.valueDialogGeneration) this.resetRawCopyFeedback();
+      }, 1_200);
+    } catch (error) {
+      if (generation === this.valueDialogGeneration) {
+        toast(`Unable to copy raw value: ${toErrorMessage(error)}`, 'error');
+      }
+    } finally {
+      if (generation === this.valueDialogGeneration && this.valueDialog.open) {
+        this.valueCopyRaw.disabled = false;
+      }
+    }
+  }
+
+  private resetRawCopyFeedback(): void {
+    delete this.valueCopyRaw.dataset.copied;
+    const column = this.valueDialogTitle.textContent?.trim();
+    const label = column && column !== 'Cell value'
+      ? `Copy raw ${column} value`
+      : 'Copy raw cell value';
+    this.valueCopyRaw.setAttribute('aria-label', label);
+    this.valueCopyRaw.title = label;
+  }
+
   private clearValueDialog(): void {
+    this.valueDialogGeneration += 1;
+    this.valueRaw = '';
+    if (this.valueCopyResetTimer !== undefined) {
+      window.clearTimeout(this.valueCopyResetTimer);
+      this.valueCopyResetTimer = undefined;
+    }
     this.clearValueContent();
     this.valueModes.replaceChildren();
     this.valueModes.classList.add('hidden');
     this.valueKind.textContent = 'Text';
+    this.valueDialogTitle.textContent = 'Cell value';
+    this.valueCopyRaw.disabled = true;
+    this.resetRawCopyFeedback();
   }
 
   private clearValueContent(): void {
@@ -1829,6 +2001,7 @@ class SqlPage {
     const fontSize = clampSqlEditorFontSize(value);
     const renderedFontSize = Number((fontSize * 0.8888889).toFixed(1));
     this.page.style.setProperty('--sql-editor-font-size', `${fontSize}px`);
+    this.valueDialog.style.setProperty('--sql-editor-font-size', `${fontSize}px`);
     this.decreaseFontSizeButton.disabled = fontSize <= MIN_EDITOR_FONT_SIZE;
     this.increaseFontSizeButton.disabled = fontSize >= MAX_EDITOR_FONT_SIZE;
     this.decreaseFontSizeButton.title = `Decrease SQL editor font size (currently ${renderedFontSize}px)`;

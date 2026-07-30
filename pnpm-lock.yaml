@@ -32,6 +32,9 @@ importers:
       '@codemirror/state':
         specifier: ^6.7.1
         version: 6.7.1
+      '@codemirror/view':
+        specifier: ^6.43.6
+        version: 6.43.6
       '@kubernetes/client-node':
         specifier: ^1.4.0
         version: 1.4.0

@@ -1,6 +1,9 @@
-export interface SqlStatementRange {
+export interface SqlStatementBoundary {
   from: number;
   to: number;
+}
+
+export interface SqlStatementRange extends SqlStatementBoundary {
   sql: string;
 }
 
@@ -8,15 +11,19 @@ export type SqlStatementResolution =
   | { ok: true; statement: SqlStatementRange }
   | { ok: false; message: string };
 
+export type SqlStatementBoundaryResolution =
+  | { ok: true; statement: SqlStatementBoundary }
+  | { ok: false; message: string };
+
 type ScanState = 'normal' | 'single' | 'double' | 'backtick' | 'line-comment' | 'block-comment';
 
-function trimRange(source: string, from: number, to: number): SqlStatementRange | undefined {
+function trimRange(source: string, from: number, to: number): SqlStatementBoundary | undefined {
   let start = from;
   let end = to;
   while (start < end && /\s/.test(source[start] ?? '')) start += 1;
   while (end > start && /\s/.test(source[end - 1] ?? '')) end -= 1;
   if (start >= end) return undefined;
-  return { from: start, to: end, sql: source.slice(start, end) };
+  return { from: start, to: end };
 }
 
 /**
@@ -24,8 +31,8 @@ function trimRange(source: string, from: number, to: number): SqlStatementRange 
  * Comment-only fragments are ignored, while comments attached to a statement
  * remain part of the submitted source.
  */
-export function splitSqlStatements(source: string): SqlStatementRange[] {
-  const ranges: SqlStatementRange[] = [];
+export function findSqlStatementBoundaries(source: string): SqlStatementBoundary[] {
+  const ranges: SqlStatementBoundary[] = [];
   let state: ScanState = 'normal';
   let segmentStart = 0;
   let hasExecutableToken = false;
@@ -107,12 +114,50 @@ export function splitSqlStatements(source: string): SqlStatementRange[] {
   return ranges;
 }
 
-export function resolveSqlStatement(source: string, from: number, to = from): SqlStatementResolution {
-  const safeFrom = Math.max(0, Math.min(source.length, Math.trunc(from)));
-  const safeTo = Math.max(safeFrom, Math.min(source.length, Math.trunc(to)));
+export function splitSqlStatements(source: string): SqlStatementRange[] {
+  return findSqlStatementBoundaries(source).map(({ from, to }) => ({
+    from,
+    to,
+    sql: source.slice(from, to),
+  }));
+}
+
+export function resolveSqlStatementFromBoundaries(
+  source: string,
+  statements: readonly SqlStatementBoundary[],
+  from: number,
+  to = from,
+): SqlStatementResolution {
+  const resolution = resolveSqlStatementBoundary(
+    source.length,
+    statements,
+    from,
+    to,
+    (sliceFrom, sliceTo) => source.slice(sliceFrom, sliceTo),
+  );
+  if (!resolution.ok) return resolution;
+  return {
+    ok: true,
+    statement: {
+      ...resolution.statement,
+      sql: source.slice(resolution.statement.from, resolution.statement.to),
+    },
+  };
+}
+
+export function resolveSqlStatementBoundary(
+  sourceLength: number,
+  statements: readonly SqlStatementBoundary[],
+  from: number,
+  to: number,
+  readSource: (from: number, to: number) => string,
+): SqlStatementBoundaryResolution {
+  const safeLength = Math.max(0, Math.trunc(sourceLength));
+  const safeFrom = Math.max(0, Math.min(safeLength, Math.trunc(from)));
+  const safeTo = Math.max(safeFrom, Math.min(safeLength, Math.trunc(to)));
   if (safeTo > safeFrom) {
-    const selectedSource = source.slice(safeFrom, safeTo);
-    const selectedStatements = splitSqlStatements(selectedSource);
+    const selectedSource = readSource(safeFrom, safeTo);
+    const selectedStatements = findSqlStatementBoundaries(selectedSource);
     if (selectedStatements.length !== 1) {
       return { ok: false, message: 'Select exactly one SQL statement to run.' };
     }
@@ -123,19 +168,27 @@ export function resolveSqlStatement(source: string, from: number, to = from): Sq
       statement: {
         from: safeFrom + selected.from,
         to: safeFrom + selected.to,
-        sql: selected.sql,
       },
     };
   }
 
-  const statements = splitSqlStatements(source);
   if (statements.length === 0) {
     return { ok: false, message: 'Enter a SQL statement to run.' };
   }
   const containing = statements.find((statement) => safeFrom >= statement.from && safeFrom <= statement.to);
   if (containing) return { ok: true, statement: containing };
   const next = statements.find((statement) => statement.from > safeFrom);
-  return { ok: true, statement: next ?? statements[statements.length - 1]! };
+  const statement = next ?? statements[statements.length - 1]!;
+  return { ok: true, statement };
+}
+
+export function resolveSqlStatement(source: string, from: number, to = from): SqlStatementResolution {
+  return resolveSqlStatementFromBoundaries(
+    source,
+    findSqlStatementBoundaries(source),
+    from,
+    to,
+  );
 }
 
 function firstSqlKeyword(statement: string): string {

@@ -29,16 +29,92 @@ test('SQL statement scanner ignores semicolons inside strings, identifiers, and 
 });
 
 test('SQL execution resolves a selection first and otherwise the cursor statement', async () => {
-  const { resolveSqlStatement } = await loadModule('sqlStatement.js');
+  const {
+    findSqlStatementBoundaries,
+    resolveSqlStatementBoundary,
+    resolveSqlStatement,
+    resolveSqlStatementFromBoundaries,
+  } = await loadModule('sqlStatement.js');
   const source = 'select 1;\n\nselect 2;\nselect 3;';
+  const boundaries = findSqlStatementBoundaries(source);
+  let caretReadCount = 0;
 
   assert.equal(resolveSqlStatement(source, source.indexOf('2')).statement.sql, 'select 2;');
   assert.equal(resolveSqlStatement(source, 10).statement.sql, 'select 2;');
   assert.equal(resolveSqlStatement(source, 0, 'select 1'.length).statement.sql, 'select 1');
+  assert.equal(
+    resolveSqlStatementFromBoundaries(source, boundaries, source.indexOf('3')).statement.sql,
+    'select 3;',
+  );
+  assert.deepEqual(
+    resolveSqlStatementBoundary(
+      source.length,
+      boundaries,
+      source.indexOf('2'),
+      source.indexOf('2'),
+      () => {
+        caretReadCount += 1;
+        return '';
+      },
+    ),
+    {
+      ok: true,
+      statement: boundaries[1],
+    },
+  );
+  assert.equal(caretReadCount, 0);
   assert.deepEqual(resolveSqlStatement(source, 0, source.length), {
     ok: false,
     message: 'Select exactly one SQL statement to run.',
   });
+});
+
+test('SQL current-statement highlight follows the exact execution range', async () => {
+  const { EditorState } = await import('@codemirror/state');
+  const {
+    currentSqlStatementHighlightRange,
+    sqlCurrentStatementHighlight,
+  } = await loadModule('sqlStatementHighlight.js');
+  const source = 'select 1;\n\n-- next\nselect 2;';
+  let state = EditorState.create({
+    doc: source,
+    selection: { anchor: source.indexOf('2') },
+    extensions: [sqlCurrentStatementHighlight],
+  });
+
+  assert.deepEqual(
+    currentSqlStatementHighlightRange(state),
+    {
+      from: source.indexOf('-- next'),
+      to: source.length,
+    },
+  );
+
+  state = state.update({ selection: { anchor: 10 } }).state;
+  assert.deepEqual(
+    currentSqlStatementHighlightRange(state),
+    {
+      from: source.indexOf('-- next'),
+      to: source.length,
+    },
+  );
+
+  const inserted = 'select 0;\n';
+  state = state.update({
+    changes: { from: 0, insert: inserted },
+  }).state;
+  assert.deepEqual(
+    currentSqlStatementHighlightRange(state),
+    {
+      from: inserted.length + source.indexOf('-- next'),
+      to: inserted.length + source.length,
+    },
+  );
+
+  state = state.update({
+    selection: { anchor: 0, head: state.doc.length },
+  }).state;
+  assert.equal(currentSqlStatementHighlightRange(state), undefined);
 });
 
 test('SQL production guard is conservative and template parameters preserve reference behavior', async () => {

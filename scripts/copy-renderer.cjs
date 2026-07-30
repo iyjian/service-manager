@@ -32,6 +32,7 @@ const codeMirrorSeedPackages = Object.freeze([
   '@codemirror/lang-yaml',
   '@codemirror/language',
   '@codemirror/state',
+  '@codemirror/view',
 ]);
 const tipTapSeedPackages = Object.freeze([
   '@tiptap/core',
