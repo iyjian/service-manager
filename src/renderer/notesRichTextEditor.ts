@@ -269,6 +269,7 @@ type EditorIconName =
   | 'heading1'
   | 'heading2'
   | 'heading3'
+  | 'heading4'
   | 'bulletList'
   | 'numberedList'
   | 'quote'
@@ -281,6 +282,30 @@ interface RichTextBlockItem {
   name: string;
   label: string;
   icon: EditorIconName;
+}
+
+export function richTextBlockCommandTitle(
+  nodeName: string,
+  attributes: Readonly<Record<string, unknown>> = {},
+): string | undefined {
+  switch (nodeName) {
+    case 'paragraph': return 'Text';
+    case 'heading': {
+      const level = attributes.level;
+      return level === 1 || level === 2 || level === 3 || level === 4
+        ? `Heading ${level}`
+        : undefined;
+    }
+    case 'taskList': return 'To-do List';
+    case 'bulletList': return 'Bullet List';
+    case 'orderedList': return 'Numbered List';
+    case 'blockquote': return 'Quote';
+    case 'codeBlock': return 'Code';
+    case 'table': return 'Table';
+    case 's3Image': return 'Image';
+    case 's3Attachment': return 'File';
+    default: return undefined;
+  }
 }
 
 const RICH_TEXT_BLOCK_ITEMS: readonly RichTextBlockItem[] = [
@@ -366,7 +391,7 @@ const notesCodeLowlight: NotesCodeLowlight = {
     return [...notesCodeLanguageNames];
   },
 };
-const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3'>, readonly string[]>> = {
+const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>, readonly string[]>> = {
   text: ['M4 4h8', 'M8 4v8', 'M6 12h4'],
   todo: ['M2.5 4.25 4 5.75l2.25-3', 'M7.75 4.5h5.75', 'M2.5 10.25 4 11.75l2.25-3', 'M7.75 10.5h5.75'],
   bulletList: ['M6 4h7.5', 'M6 8h7.5', 'M6 12h7.5', 'M2.75 4h.01', 'M2.75 8h.01', 'M2.75 12h.01'],
@@ -401,7 +426,7 @@ function createEditorIcon(name: EditorIconName): HTMLElement {
   icon.setAttribute('stroke-linecap', 'round');
   icon.setAttribute('stroke-linejoin', 'round');
   icon.setAttribute('aria-hidden', 'true');
-  const pathDataItems = ICON_PATHS[name as Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3'>];
+  const pathDataItems = ICON_PATHS[name as Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>];
   for (const pathData of pathDataItems) {
     const path = document.createElementNS(SVG_NAMESPACE, 'path');
     path.setAttribute('d', pathData);
@@ -835,6 +860,10 @@ class NotesRichTextSlashMenu {
         run: (editor, range) => { editor.chain().focus().deleteRange(range).setHeading({ level: 3 }).run(); },
       },
       {
+        title: 'Heading 4', description: 'Compact section heading.', searchTerms: ['h4', 'heading4', 'compact'], icon: 'heading4',
+        run: (editor, range) => { editor.chain().focus().deleteRange(range).setHeading({ level: 4 }).run(); },
+      },
+      {
         title: 'Bullet List', description: 'Create a simple bullet list.', searchTerms: ['ul', 'unordered', 'point'], icon: 'bulletList',
         run: (editor, range) => { editor.chain().focus().deleteRange(range).toggleBulletList().run(); },
       },
@@ -952,14 +981,16 @@ class NotesRichTextSlashMenu {
     this.element.remove();
   }
 
-  public openForCurrentBlock(trigger: HTMLElement): void {
+  public openForCurrentBlock(trigger: HTMLElement, block: ProseMirrorNode): void {
     const selection = this.editor.state.selection;
     this.manualOpen = true;
     this.manualTrigger = trigger;
     this.manualSelection = { from: selection.from, to: selection.to };
     this.range = { from: selection.from, to: selection.from };
     this.items = this.commandItems;
-    this.selectedIndex = 0;
+    const currentTitle = richTextBlockCommandTitle(block.type.name, block.attrs);
+    const currentIndex = this.items.findIndex((item) => item.title === currentTitle);
+    this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
     this.currentQuery = '';
     this.render();
   }
@@ -1163,11 +1194,12 @@ class NotesRichTextBlockHandle {
     this.element.append(icon);
     this.element.addEventListener('click', () => {
       if (this.suppressClick) return;
-      this.selectActiveBlock();
+      const target = this.selectActiveBlock();
+      if (!target) return;
       if (this.menu.isOpenForCurrentBlock()) {
         this.menu.closeCurrentBlock();
       } else {
-        this.menu.openForCurrentBlock(this.element);
+        this.menu.openForCurrentBlock(this.element, target.node);
         this.editor.commands.focus();
       }
       this.sync();
@@ -1290,14 +1322,15 @@ class NotesRichTextBlockHandle {
     };
   }
 
-  private selectActiveBlock(): void {
+  private selectActiveBlock(): RichTextTopLevelBlock | undefined {
     const target = this.validHoveredBlock() ?? this.selectionBlock();
-    if (!target) return;
+    if (!target) return undefined;
     if (target.anchor > target.from) {
       this.editor.commands.setTextSelection(target.anchor);
     } else {
       this.editor.commands.setNodeSelection(target.from);
     }
+    return target;
   }
 
   private readonly handlePointerMove = (event: PointerEvent): void => {

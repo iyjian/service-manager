@@ -1058,7 +1058,8 @@
 
   .notes-richtext-content .ProseMirror h1,
   .notes-richtext-content .ProseMirror h2,
-  .notes-richtext-content .ProseMirror h3 {
+  .notes-richtext-content .ProseMirror h3,
+  .notes-richtext-content .ProseMirror h4 {
     @apply text-zinc-950;
     font-family: var(--font-family-notes-richtext);
     letter-spacing: normal;
@@ -1083,6 +1084,13 @@
     font-size: 1.3333333em;
     font-weight: 600;
     line-height: 1.5;
+  }
+
+  .notes-richtext-content .ProseMirror h4 {
+    margin: 1.5em 0 0.5em;
+    font-size: 1.1111111em;
+    font-weight: 600;
+    line-height: 1.6;
   }
 
   .notes-richtext-content .ProseMirror ul,
@@ -1173,7 +1181,8 @@
 
   .notes-richtext-content .ProseMirror h1 + *,
   .notes-richtext-content .ProseMirror h2 + *,
-  .notes-richtext-content .ProseMirror h3 + * {
+  .notes-richtext-content .ProseMirror h3 + *,
+  .notes-richtext-content .ProseMirror h4 + * {
     margin-top: 0;
   }
 
@@ -1680,7 +1689,8 @@
 
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h1,
   .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h2,
-  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h3 {
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h3,
+  .notes-content[data-theme='dark'] .notes-richtext-content .ProseMirror h4 {
     @apply text-zinc-50;
   }
 
@@ -4284,7 +4294,7 @@
     grid-template-rows: 52px minmax(0, 1fr);
     --sql-sidebar-width: 300px;
     --sql-editor-height: 320px;
-    --sql-editor-font-size: 13px;
+    --sql-editor-font-size: 18px;
   }
 
   .sql-page-head {
@@ -4589,18 +4599,20 @@
 
   .sql-editor {
     @apply min-h-0 min-w-0 overflow-hidden;
-    font-family: var(--font-family-notes-code);
+    font-family: var(--font-family-notes-code-block);
   }
 
   .sql-editor .cm-editor {
     @apply h-full bg-white text-[13px] text-zinc-900 outline-none;
-    font-size: var(--sql-editor-font-size);
+    font-family: var(--font-family-notes-code-block);
+    font-size: calc(var(--sql-editor-font-size) * 0.8888889);
+    font-weight: 400;
   }
 
   .sql-editor .cm-scroller {
     @apply overflow-auto;
-    font-family: var(--font-family-notes-code);
-    line-height: 1.65;
+    font-family: var(--font-family-notes-code-block);
+    line-height: 1.75;
   }
 
   .sql-editor .cm-gutters {

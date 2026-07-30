@@ -110,12 +110,16 @@ test('set expands and collapses active Notes while rejecting invalid targets', a
   assert.deepEqual((await store.set('b', true, ['a', 'b'])).expandedNoteIds, ['b']);
   assert.deepEqual((await store.set('a', true, ['a', 'b'])).expandedNoteIds, ['a', 'b']);
   assert.deepEqual((await store.set('b', false, ['a', 'b'])).expandedNoteIds, ['a']);
+  assert.deepEqual((await store.setMany(['a', 'b'], true, ['a', 'b'])).expandedNoteIds, ['a', 'b']);
+  assert.deepEqual((await store.setMany(['a', 'b'], false, ['a', 'b'])).expandedNoteIds, []);
   assert.deepEqual(await readView(filePath), store.snapshot());
 
   assert.throws(() => store.set('inactive', true, ['a', 'b']), /not active/);
+  assert.throws(() => store.setMany(['a', 'inactive'], true, ['a', 'b']), /not active/);
+  assert.throws(() => store.setMany(['a', 'a'], true, ['a', 'b']), /duplicate/);
   assert.throws(() => store.set('a', 'yes', ['a', 'b']), /Expanded state is invalid/);
   assert.throws(() => store.set('a', true, ['a', 'a']), /duplicate/);
-  assert.deepEqual(store.snapshot().expandedNoteIds, ['a']);
+  assert.deepEqual(store.snapshot().expandedNoteIds, []);
 });
 
 test('replaceActiveIds removes stale expansion state and preserves active state', async (t) => {

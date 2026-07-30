@@ -145,16 +145,26 @@ export class NotesTreeViewStore {
     expanded: boolean,
     activeNoteIds: readonly string[],
   ): Promise<NotesTreeViewSnapshot> {
-    const normalizedId = normalizeNoteId(noteId);
+    return this.setMany([noteId], expanded, activeNoteIds);
+  }
+
+  setMany(
+    noteIds: readonly string[],
+    expanded: boolean,
+    activeNoteIds: readonly string[],
+  ): Promise<NotesTreeViewSnapshot> {
+    const normalizedIds = normalizeIds(noteIds, 'Expanded Note IDs');
     if (typeof expanded !== 'boolean') throw new Error('Expanded state is invalid.');
     const normalizedActiveIds = normalizeIds(activeNoteIds, 'Active Note IDs');
     const active = new Set(normalizedActiveIds);
-    if (!active.has(normalizedId)) throw new Error('The Note is not active.');
+    if (normalizedIds.some((noteId) => !active.has(noteId))) throw new Error('The Note is not active.');
 
     return this.enqueue(async () => {
       const nextSet = new Set(filterActive(this.expandedNoteIds, normalizedActiveIds));
-      if (expanded) nextSet.add(normalizedId);
-      else nextSet.delete(normalizedId);
+      for (const noteId of normalizedIds) {
+        if (expanded) nextSet.add(noteId);
+        else nextSet.delete(noteId);
+      }
       const next = [...nextSet].sort(compareText);
       if (!sameIds(next, this.expandedNoteIds)) {
         await this.persist(next);

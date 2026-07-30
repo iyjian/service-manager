@@ -212,7 +212,7 @@ test('rich text adapter normalizes persistence and provides the complete toolbar
 });
 
 test('rich text provides the requested Novel-style slash blocks without embeds or AI actions', async () => {
-  const source = await readEditorSource();
+  const [source, styles] = await Promise.all([readEditorSource(), readTailwindSource()]);
   const slashStart = source.indexOf('    this.commandItems = [');
   const slashEnd = source.indexOf('    ];', slashStart);
   assert.notEqual(slashStart, -1);
@@ -224,6 +224,7 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
     'Heading 1',
     'Heading 2',
     'Heading 3',
+    'Heading 4',
     'Bullet List',
     'Numbered List',
     'Quote',
@@ -237,6 +238,8 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
     expectedTitles,
   );
   assert.doesNotMatch(slashSource, /feedback|youtube|twitter|ask\s*ai/i);
+  assert.match(slashSource, /title: 'Heading 4',[\s\S]*?searchTerms: \['h4', 'heading4', 'compact'\],[\s\S]*?setHeading\(\{ level: 4 \}\)/);
+  assert.match(styles, /\.notes-richtext-content \.ProseMirror h4 \{[^}]*font-size: 1\.1111111em;[^}]*font-weight: 600;/s);
   assert.match(slashSource, /title: 'File',[\s\S]*?searchTerms: \['attachment', 'upload', 'document'\],[\s\S]*?icon: 'file'/);
   assert.match(slashSource, /deleteRange\(range\)\.run\(\);\s*window\.requestAnimationFrame\(\(\) => requestAttachment\(undefined, range\.from\)\)/);
   assert.match(source, /class NotesRichTextSlashMenu/);
@@ -257,6 +260,24 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
   assert.match(source, /aria-label', 'Mark task complete'/);
 });
 
+test('six-dot block commands initially select the captured block format', async () => {
+  const { richTextBlockCommandTitle } = await import('../dist/renderer/notesRichTextEditor.js');
+
+  assert.equal(richTextBlockCommandTitle('paragraph'), 'Text');
+  assert.equal(richTextBlockCommandTitle('heading', { level: 1 }), 'Heading 1');
+  assert.equal(richTextBlockCommandTitle('heading', { level: 4 }), 'Heading 4');
+  assert.equal(richTextBlockCommandTitle('taskList'), 'To-do List');
+  assert.equal(richTextBlockCommandTitle('bulletList'), 'Bullet List');
+  assert.equal(richTextBlockCommandTitle('orderedList'), 'Numbered List');
+  assert.equal(richTextBlockCommandTitle('blockquote'), 'Quote');
+  assert.equal(richTextBlockCommandTitle('codeBlock'), 'Code');
+  assert.equal(richTextBlockCommandTitle('table'), 'Table');
+  assert.equal(richTextBlockCommandTitle('s3Image'), 'Image');
+  assert.equal(richTextBlockCommandTitle('s3Attachment'), 'File');
+  assert.equal(richTextBlockCommandTitle('heading', { level: 5 }), undefined);
+  assert.equal(richTextBlockCommandTitle('unknown'), undefined);
+});
+
 test('six-dot block handle follows hovered blocks, opens commands, and owns native block dragging', async () => {
   const source = await readEditorSource();
   const handleStart = source.indexOf('class NotesRichTextBlockHandle');
@@ -274,7 +295,7 @@ test('six-dot block handle follows hovered blocks, opens commands, and owns nati
   assert.match(handle, /M5 3\.25a1\.5 1\.5[\s\S]*?m7 0a1\.5 1\.5/);
   assert.match(handle, /iconPath\.setAttribute\('fill', 'currentColor'\)/);
   assert.doesNotMatch(handle, /grid-cols-2|createElement\('span'\)/);
-  assert.match(handle, /this\.selectActiveBlock\(\)[\s\S]*?this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
+  assert.match(handle, /const target = this\.selectActiveBlock\(\);[\s\S]*?if \(!target\) return;[\s\S]*?this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element, target\.node\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
   assert.match(handle, /this\.element\.addEventListener\('keydown',[\s\S]*?this\.menu\.handleKeyDown\(event\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?event\.stopPropagation\(\)/);
   assert.match(handle, /this\.overlayRoot\.addEventListener\('pointermove', this\.handlePointerMove\)/);
   assert.match(handle, /this\.overlayRoot\.addEventListener\('pointerleave', this\.handlePointerLeave\)/);
@@ -300,7 +321,7 @@ test('six-dot block handle follows hovered blocks, opens commands, and owns nati
   assert.match(helpers, /resolved\.before\(1\)/);
   assert.match(helpers, /anchor: firstTextPosition\(node, from\)/);
 
-  assert.match(source, /public openForCurrentBlock\(trigger: HTMLElement\): void \{[\s\S]*?this\.manualSelection = \{ from: selection\.from, to: selection\.to \}[\s\S]*?this\.items = this\.commandItems/);
+  assert.match(source, /public openForCurrentBlock\(trigger: HTMLElement, block: ProseMirrorNode\): void \{[\s\S]*?this\.manualSelection = \{ from: selection\.from, to: selection\.to \}[\s\S]*?this\.items = this\.commandItems[\s\S]*?richTextBlockCommandTitle\(block\.type\.name, block\.attrs\)[\s\S]*?this\.selectedIndex = currentIndex >= 0 \? currentIndex : 0/);
   assert.match(source, /const cursor = this\.manualTrigger\?\.getBoundingClientRect\(\)[\s\S]*?\?\? this\.editor\.view\.coordsAtPos\(this\.range\.to\)/);
   assert.doesNotMatch(source, /manualAnchor/);
   assert.match(handle, /if \(menuOpen\) this\.menu\.repositionCurrentBlock\(\)/);

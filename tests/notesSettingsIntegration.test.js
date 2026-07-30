@@ -161,7 +161,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(main, /sameNoteIds\(deletedIds, input\.expectedIds\)/);
   assert.match(main, /status: 'changed'[\s\S]*?preview: noteDeletePreview\(input\.id\)/);
   assert.match(main, /getNotesStore\(\)\.deleteMany\(deletedIds\)/);
-  assert.match(main, /if \(!activeIds\.includes\(input\.noteId\)\) \{\s*return getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds;/);
+  assert.match(main, /const requestedIds = 'noteIds' in input \? input\.noteIds : \[input\.noteId\];[\s\S]*?const expandableIds = requestedIds\.filter\(\(noteId\) => activeIds\.includes\(noteId\)\);[\s\S]*?getNotesTreeViewStore\(\)\.setMany\(/);
   const deleteHandlerStart = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesDelete,');
   const deleteHandlerEnd = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesRecoverDrafts,', deleteHandlerStart);
   assert.ok(deleteHandlerStart >= 0 && deleteHandlerEnd > deleteHandlerStart);

@@ -48,8 +48,8 @@ const MAX_SIDEBAR_WIDTH = 520;
 const DEFAULT_EDITOR_HEIGHT = 320;
 const MIN_EDITOR_HEIGHT = 180;
 const MIN_RESULTS_HEIGHT = 120;
-const DEFAULT_EDITOR_FONT_SIZE = 13;
-const MIN_EDITOR_FONT_SIZE = 11;
+const DEFAULT_EDITOR_FONT_SIZE = 18;
+const MIN_EDITOR_FONT_SIZE = 12;
 const MAX_EDITOR_FONT_SIZE = 24;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const sqlValueLowlight = createLowlight(common);
@@ -1692,11 +1692,12 @@ class SqlPage {
 
   private applyEditorFontSize(value: number): void {
     const fontSize = clampSqlEditorFontSize(value);
+    const renderedFontSize = Number((fontSize * 0.8888889).toFixed(1));
     this.page.style.setProperty('--sql-editor-font-size', `${fontSize}px`);
     this.decreaseFontSizeButton.disabled = fontSize <= MIN_EDITOR_FONT_SIZE;
     this.increaseFontSizeButton.disabled = fontSize >= MAX_EDITOR_FONT_SIZE;
-    this.decreaseFontSizeButton.title = `Decrease SQL editor font size (currently ${fontSize}px)`;
-    this.increaseFontSizeButton.title = `Increase SQL editor font size (currently ${fontSize}px)`;
+    this.decreaseFontSizeButton.title = `Decrease SQL editor font size (currently ${renderedFontSize}px)`;
+    this.increaseFontSizeButton.title = `Increase SQL editor font size (currently ${renderedFontSize}px)`;
     this.editor.requestMeasure();
   }
 }

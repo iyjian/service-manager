@@ -144,6 +144,7 @@ test('Notes ranking keeps one hundred list entries available for the scrolling s
 
 test('Notes tree renders arbitrary expanded levels and search breadcrumbs keep the complete ancestor path', async () => {
   const {
+    noteTreeAncestorIds,
     noteTreeBreadcrumb,
     noteTreeSubtreeIds,
     visibleNoteTreeRows,
@@ -174,8 +175,22 @@ test('Notes tree renders arbitrary expanded levels and search breadcrumbs keep t
     [['root', 0], ['child', 1], ['second-child', 1], ['sibling', 0]],
   );
   assert.equal(noteTreeBreadcrumb('grandchild', notes, nodes), 'Root / Child');
+  assert.deepEqual(noteTreeAncestorIds('grandchild', nodes), ['root', 'child']);
+  assert.deepEqual(noteTreeAncestorIds('root', nodes), []);
+  assert.deepEqual(noteTreeAncestorIds('missing', nodes), []);
   assert.deepEqual(noteTreeSubtreeIds('root', nodes), ['root', 'child', 'grandchild', 'second-child']);
   assert.deepEqual(noteTreeSubtreeIds('missing', nodes), []);
+});
+
+test('Notes search result reveal bounds malformed ancestor cycles', async () => {
+  const { noteTreeAncestorIds } = await import(path.join(distRenderer, 'notesPage.js'));
+  const cyclicNodes = [
+    { noteId: 'target', parentId: 'parent', order: 10 },
+    { noteId: 'parent', parentId: 'grandparent', order: 10 },
+    { noteId: 'grandparent', parentId: 'parent', order: 10 },
+  ];
+
+  assert.deepEqual(noteTreeAncestorIds('target', cyclicNodes), ['grandparent', 'parent']);
 });
 
 test('Notes delete confirmation compares subtree membership without rejecting harmless reorders', async () => {
@@ -536,7 +551,8 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
   assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline, true\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
-  assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*void this\.selectNote\(note\.id\);\s*if \(hasChildren && !searchActive\) \{\s*void this\.toggleTreeExpanded\(note\.id\);/);
+  assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*if \(searchActive\) \{\s*void this\.revealSearchResult\(note\.id\);\s*return;\s*\}\s*void this\.selectNote\(note\.id\);/);
+  assert.match(source, /private async revealSearchResult\(noteId: string\): Promise<void> \{[\s\S]*?this\.searchInput\.value = '';[\s\S]*?noteTreeAncestorIdsFromIndexes\(noteId, this\.treeNodesById\)[\s\S]*?this\.renderedRowsById\.get\(noteId\)\?\.scrollIntoView\(\{ block: 'nearest' \}\)[\s\S]*?window\.notesApi\.setTreeExpanded\(\{\s*noteIds: collapsedAncestorIds,\s*expanded: true,/);
   assert.match(source, /if \(hasChildren && !searchActive\) \{\s*button\.setAttribute\('aria-expanded', String\(this\.expandedNoteIds\.has\(note\.id\)\)\);/);
   assert.match(source, /toggleButton\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*void this\.toggleTreeExpanded\(note\.id\);/);
   assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);

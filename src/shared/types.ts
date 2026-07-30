@@ -716,6 +716,13 @@ export interface NoteTreeExpansionInput {
   expanded: boolean;
 }
 
+export interface NoteTreeExpansionBatchInput {
+  noteIds: string[];
+  expanded: boolean;
+}
+
+export type NoteTreeExpansionRequest = NoteTreeExpansionInput | NoteTreeExpansionBatchInput;
+
 export interface NoteDeleteInput {
   id: string;
   /** Exact subtree IDs shown in the renderer confirmation. */
@@ -848,7 +855,7 @@ export interface NotesApi {
   createNote: (placement?: NotePlacementInput) => Promise<NotesWorkspaceSnapshot>;
   updateNote: (id: string, draft: NoteDraft, expectedNote: Note) => Promise<Note>;
   moveNote: (input: NoteMoveInput) => Promise<NotesWorkspaceSnapshot>;
-  setTreeExpanded: (input: NoteTreeExpansionInput) => Promise<string[]>;
+  setTreeExpanded: (input: NoteTreeExpansionRequest) => Promise<string[]>;
   previewNoteDelete: (id: string) => Promise<NoteDeletePreview | null>;
   deleteNote: (input: NoteDeleteInput) => Promise<NoteDeleteResult>;
   recoverDrafts: (input: NoteDraftRecoveryInput[]) => Promise<NoteDraftRecoveryResult>;

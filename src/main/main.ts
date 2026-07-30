@@ -27,7 +27,7 @@ import type {
   NotePlacementInput,
   NoteMoveInput,
   NoteSummary,
-  NoteTreeExpansionInput,
+  NoteTreeExpansionRequest,
   NotesWorkspaceSnapshot,
   NotesWorkspaceDelta,
   LlmModelsDraft,
@@ -594,11 +594,20 @@ function validateNoteMove(value: unknown): NoteMoveInput {
   return { noteId: value.noteId, ...placement };
 }
 
-function validateNoteTreeExpansion(value: unknown): NoteTreeExpansionInput {
-  if (!isRecord(value) || typeof value.noteId !== 'string' || typeof value.expanded !== 'boolean') {
+function validateNoteTreeExpansion(value: unknown): NoteTreeExpansionRequest {
+  if (!isRecord(value) || typeof value.expanded !== 'boolean') {
     throw new Error('Note tree expansion is invalid.');
   }
-  return { noteId: value.noteId, expanded: value.expanded };
+  if (typeof value.noteId === 'string') {
+    return { noteId: value.noteId, expanded: value.expanded };
+  }
+  if (Array.isArray(value.noteIds)
+    && value.noteIds.length > 0
+    && value.noteIds.length <= 32
+    && value.noteIds.every((noteId) => typeof noteId === 'string')) {
+    return { noteIds: value.noteIds, expanded: value.expanded };
+  }
+  throw new Error('Note tree expansion is invalid.');
 }
 
 function validateNoteId(value: unknown, label = 'Note ID'): string {
@@ -2188,11 +2197,13 @@ function registerIpcHandlers(): void {
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
       const activeIds = getNotesStore().list().map((candidate) => candidate.id);
-      if (!activeIds.includes(input.noteId)) {
+      const requestedIds = 'noteIds' in input ? input.noteIds : [input.noteId];
+      const expandableIds = requestedIds.filter((noteId) => activeIds.includes(noteId));
+      if (expandableIds.length === 0) {
         return getNotesTreeViewStore().snapshot().expandedNoteIds;
       }
-      return (await getNotesTreeViewStore().set(
-        input.noteId,
+      return (await getNotesTreeViewStore().setMany(
+        expandableIds,
         input.expanded,
         activeIds,
       )).expandedNoteIds;

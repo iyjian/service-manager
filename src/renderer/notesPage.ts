@@ -487,6 +487,21 @@ function noteTreeBreadcrumbFromIndexes(
   return names.join(' / ');
 }
 
+function noteTreeAncestorIdsFromIndexes(
+  noteId: string,
+  nodesById: ReadonlyMap<string, NotesTreeNode>,
+): string[] {
+  const ancestorIds: string[] = [];
+  const visited = new Set<string>([noteId]);
+  let parentId = nodesById.get(noteId)?.parentId ?? null;
+  while (parentId !== null && ancestorIds.length < 32 && !visited.has(parentId)) {
+    visited.add(parentId);
+    ancestorIds.unshift(parentId);
+    parentId = nodesById.get(parentId)?.parentId ?? null;
+  }
+  return ancestorIds;
+}
+
 /** Returns only ancestor names for compact global-search context. */
 export function noteTreeBreadcrumb(
   noteId: string,
@@ -496,6 +511,17 @@ export function noteTreeBreadcrumb(
   const nodesById = new Map(nodes.map((node) => [node.noteId, node]));
   const notesById = new Map(notes.map((note) => [note.id, note]));
   return noteTreeBreadcrumbFromIndexes(noteId, notesById, nodesById);
+}
+
+/** Returns the bounded root-to-parent path needed to reveal a nested search result. */
+export function noteTreeAncestorIds(
+  noteId: string,
+  nodes: readonly NotesTreeNode[],
+): string[] {
+  return noteTreeAncestorIdsFromIndexes(
+    noteId,
+    new Map(nodes.map((node) => [node.noteId, node])),
+  );
 }
 
 /** Returns a bounded deterministic subtree, including the requested root. */
@@ -776,6 +802,7 @@ class NotesPage {
   private searchResultQuery = '';
   private searchRequestGeneration = 0;
   private searchPending = false;
+  private searchRevealGeneration = 0;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
   private readonly persistentApplyIds = new Set<string>();
   private active = false;
@@ -1999,6 +2026,10 @@ class NotesPage {
       }
 
       button.addEventListener('click', () => {
+        if (searchActive) {
+          void this.revealSearchResult(note.id);
+          return;
+        }
         void this.selectNote(note.id);
         if (hasChildren && !searchActive) {
           void this.toggleTreeExpanded(note.id);
@@ -2253,6 +2284,44 @@ class NotesPage {
     if (source === 'tab') this.focusNoteTab(id);
     if (selectedDirty) this.scheduleSave(id);
     this.updateSelectedSaveStatus();
+  }
+
+  private async revealSearchResult(noteId: string): Promise<void> {
+    const generation = ++this.searchRevealGeneration;
+    await this.selectNote(noteId);
+    if (generation !== this.searchRevealGeneration || this.selectedId !== noteId) return;
+
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchInput.value = '';
+    this.searchResultIds = [];
+    this.searchResultQuery = '';
+    this.searchPending = false;
+
+    const ancestorIds = noteTreeAncestorIdsFromIndexes(noteId, this.treeNodesById);
+    const collapsedAncestorIds = ancestorIds.filter((ancestorId) => !this.expandedNoteIds.has(ancestorId));
+    for (const ancestorId of ancestorIds) this.expandedNoteIds.add(ancestorId);
+    this.renderList(noteId);
+    window.requestAnimationFrame(() => {
+      if (generation !== this.searchRevealGeneration
+        || this.selectedId !== noteId
+        || this.searchInput.value.trim()) return;
+      this.renderedRowsById.get(noteId)?.scrollIntoView({ block: 'nearest' });
+    });
+
+    if (collapsedAncestorIds.length === 0) return;
+    try {
+      const persistedIds = await window.notesApi.setTreeExpanded({
+        noteIds: collapsedAncestorIds,
+        expanded: true,
+      });
+      const expansionChanged = persistedIds.length !== this.expandedNoteIds.size
+        || persistedIds.some((ancestorId) => !this.expandedNoteIds.has(ancestorId));
+      this.expandedNoteIds = new Set(persistedIds);
+      if (expansionChanged) this.renderList();
+    } catch (error) {
+      setMessage(`Unable to save the revealed Notes tree: ${toErrorMessage(error)}`, 'error');
+    }
   }
 
   private updateSelectedMetadata(): void {

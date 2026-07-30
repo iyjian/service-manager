@@ -41,8 +41,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /class="sql-session-actions"[\s\S]*id="sql-save-shortcut"[\s\S]*id="sql-run-shortcut"[\s\S]*id="sql-session-user"[\s\S]*id="sql-sign-out"/);
   assert.doesNotMatch(html, />Mine<|>All<|>Others</);
   assert.match(styles, /\.sql-workspace/);
-  assert.match(styles, /--sql-editor-font-size:13px/);
-  assert.match(styles, /\.sql-editor \.cm-editor\{[^}]*font-size:var\(--sql-editor-font-size\)/);
+  assert.match(styles, /--sql-editor-font-size:18px/);
+  assert.match(styles, /\.sql-editor \.cm-editor\{font-family:var\(--font-family-notes-code-block\)\}/);
+  assert.match(styles, /\.sql-editor \.cm-editor\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)[^}]*font-weight:400/);
+  assert.match(styles, /\.sql-editor \.cm-scroller\{[^}]*font-family:var\(--font-family-notes-code-block\)[^}]*line-height:1\.75/);
   assert.match(styles, /\.sql-query-tab-dirty/);
   assert.match(styles, /max-width:200px/);
   assert.match(styles, /\.sql-query-tab\[data-dirty=true\] \.sql-query-tab-close/);
@@ -103,8 +105,8 @@ test('SQL editor font size stays within the local supported range', async () => 
     path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
   ));
 
-  assert.equal(page.clampSqlEditorFontSize(Number.NaN), 13);
-  assert.equal(page.clampSqlEditorFontSize(10), 11);
+  assert.equal(page.clampSqlEditorFontSize(Number.NaN), 18);
+  assert.equal(page.clampSqlEditorFontSize(10), 12);
   assert.equal(page.clampSqlEditorFontSize(13.4), 13);
   assert.equal(page.clampSqlEditorFontSize(13.6), 14);
   assert.equal(page.clampSqlEditorFontSize(25), 24);
