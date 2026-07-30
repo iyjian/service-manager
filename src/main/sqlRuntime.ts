@@ -44,6 +44,7 @@ interface SqlApiRequestOptions {
   query?: URLSearchParams;
   body?: SqlJsonValue;
   token?: string;
+  purpose?: 'login';
 }
 
 class SqlApiError extends Error {
@@ -551,6 +552,7 @@ export class SqlRuntime {
       const loginResult = await this.request(environment, '/auth/users/login', {
         method: 'POST',
         body: { userName: credential.userName, passwd: credential.passwd },
+        purpose: 'login',
       });
       if (!isRecord(loginResult) || typeof loginResult.token !== 'string'
         || loginResult.token.length === 0 || loginResult.token.length > 64 * 1024
@@ -558,7 +560,10 @@ export class SqlRuntime {
         throw new SqlApiError('The SQL login response is invalid.');
       }
       const token = loginResult.token;
-      const user = parseUser(await this.request(environment, '/user/detail', { token }));
+      const user = parseUser(await this.request(environment, '/user/detail', {
+        token,
+        purpose: 'login',
+      }));
       const session = { token, user };
       if (persist) await this.options.credentialsStore.save(environment, credential);
       this.sessions.set(environment, session);
@@ -578,6 +583,7 @@ export class SqlRuntime {
   ): Promise<unknown> {
     const baseUrl = SQL_API_BASE_URLS[environment];
     const url = new URL(`${baseUrl}${requestPath}`);
+    const loginRequest = options.purpose === 'login';
     if (options.query) url.search = options.query.toString();
     const controller = new AbortController();
     this.activeRequests.add(controller);
@@ -604,17 +610,24 @@ export class SqlRuntime {
           signal: controller.signal,
         });
       } catch {
-        if (timedOut) throw new SqlApiError('The SQL request timed out.');
-        if (controller.signal.aborted) throw new SqlApiError('The SQL request was cancelled.');
-        throw new SqlApiError('The SQL request failed.');
+        if (timedOut) throw new SqlApiError(loginRequest ? 'Login timed out.' : 'The SQL request timed out.');
+        if (controller.signal.aborted) {
+          throw new SqlApiError(loginRequest ? 'Login was cancelled.' : 'The SQL request was cancelled.');
+        }
+        throw new SqlApiError(loginRequest ? 'Login failed.' : 'The SQL request failed.');
       }
       if (response.status === 401) {
         await response.body?.cancel().catch(() => undefined);
+        if (loginRequest) throw new SqlApiError('Login failed (401).');
         throw new SqlApiError('The SQL session expired.', true);
       }
       if (response.status < 200 || response.status >= 300) {
         await response.body?.cancel().catch(() => undefined);
-        throw new SqlApiError(`The SQL request failed (${response.status}).`);
+        throw new SqlApiError(
+          loginRequest
+            ? `Login failed (${response.status}).`
+            : `The SQL request failed (${response.status}).`,
+        );
       }
       const rawBody = await readBoundedBody(response, controller.signal);
       let payload: unknown;
@@ -631,6 +644,10 @@ export class SqlRuntime {
       }
       if (payload.err) {
         const unauthorized = payload.err === 401 || payload.err === '401';
+        if (loginRequest) {
+          const detail = safeApiMessage(payload.errMsg, '');
+          throw new SqlApiError(detail ? `Login failed: ${detail}` : 'Login failed.');
+        }
         throw new SqlApiError(
           safeApiMessage(payload.errMsg, unauthorized ? 'The SQL session expired.' : 'The SQL request failed.'),
           unauthorized,

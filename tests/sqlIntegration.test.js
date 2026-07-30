@@ -76,6 +76,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /script,noscript,style,meta,base,link,iframe/);
   assert.match(page, /durationMs/);
   assert.doesNotMatch(page, /resultStatus/);
+  assert.match(page, /replace\(\/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);
   assert.match(page, /sessionUser\.textContent = user\?\.userName \?\? ['"]{2}/);
   assert.doesNotMatch(page, /sessionUser\.textContent\s*=.*user\?\.name/);
   assert.match(page, /textContent = formatSqlCell/);

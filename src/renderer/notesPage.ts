@@ -802,7 +802,7 @@ class NotesPage {
   private searchResultQuery = '';
   private searchRequestGeneration = 0;
   private searchPending = false;
-  private searchRevealGeneration = 0;
+  private treeRevealGeneration = 0;
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
   private readonly persistentApplyIds = new Set<string>();
   private active = false;
@@ -1254,6 +1254,15 @@ class NotesPage {
     if (this.searchRenderTimer === undefined) return;
     window.clearTimeout(this.searchRenderTimer);
     this.searchRenderTimer = undefined;
+  }
+
+  private clearWorkspaceSearch(): void {
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchInput.value = '';
+    this.searchResultIds = [];
+    this.searchResultQuery = '';
+    this.searchPending = false;
   }
 
   private flushSearchRender(): void {
@@ -2262,7 +2271,11 @@ class NotesPage {
       this.openNoteTab(id, true);
       this.renderTabs();
       if (!this.loadedNoteIds.has(id)) void this.ensureNoteBody(id);
-      if (source === 'tab') this.focusNoteTab(id);
+      if (source === 'tab') {
+        this.clearWorkspaceSearch();
+        void this.revealTreeNote(id, false);
+        this.focusNoteTab(id);
+      }
       return;
     }
     const previousId = this.selectedId;
@@ -2279,31 +2292,33 @@ class NotesPage {
     this.openNoteTab(id, true);
     const selectedDirty = this.isDirty(id);
     if (selectedDirty) this.saveErrorNoteIds.delete(id);
+    if (source === 'tab') this.clearWorkspaceSearch();
     this.renderList(source === 'tree' ? id : undefined);
     this.renderEditor();
-    if (source === 'tab') this.focusNoteTab(id);
+    if (source === 'tab') {
+      void this.revealTreeNote(id, false);
+      this.focusNoteTab(id);
+    }
     if (selectedDirty) this.scheduleSave(id);
     this.updateSelectedSaveStatus();
   }
 
   private async revealSearchResult(noteId: string): Promise<void> {
-    const generation = ++this.searchRevealGeneration;
     await this.selectNote(noteId);
-    if (generation !== this.searchRevealGeneration || this.selectedId !== noteId) return;
+    if (this.selectedId !== noteId) return;
 
-    this.cancelSearchRender();
-    this.searchRequestGeneration += 1;
-    this.searchInput.value = '';
-    this.searchResultIds = [];
-    this.searchResultQuery = '';
-    this.searchPending = false;
+    this.clearWorkspaceSearch();
+    await this.revealTreeNote(noteId, true);
+  }
 
+  private async revealTreeNote(noteId: string, focusTreeRow: boolean): Promise<void> {
+    const generation = ++this.treeRevealGeneration;
     const ancestorIds = noteTreeAncestorIdsFromIndexes(noteId, this.treeNodesById);
     const collapsedAncestorIds = ancestorIds.filter((ancestorId) => !this.expandedNoteIds.has(ancestorId));
     for (const ancestorId of ancestorIds) this.expandedNoteIds.add(ancestorId);
-    this.renderList(noteId);
+    this.renderList(focusTreeRow ? noteId : undefined);
     window.requestAnimationFrame(() => {
-      if (generation !== this.searchRevealGeneration
+      if (generation !== this.treeRevealGeneration
         || this.selectedId !== noteId
         || this.searchInput.value.trim()) return;
       this.renderedRowsById.get(noteId)?.scrollIntoView({ block: 'nearest' });
@@ -2315,6 +2330,7 @@ class NotesPage {
         noteIds: collapsedAncestorIds,
         expanded: true,
       });
+      if (generation !== this.treeRevealGeneration || this.selectedId !== noteId) return;
       const expansionChanged = persistedIds.length !== this.expandedNoteIds.size
         || persistedIds.some((ancestorId) => !this.expandedNoteIds.has(ancestorId));
       this.expandedNoteIds = new Set(persistedIds);

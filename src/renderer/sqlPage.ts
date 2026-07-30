@@ -122,7 +122,9 @@ function environmentLabel(environment: SqlEnvironment): string {
 }
 
 function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim().replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  }
   return 'The SQL operation failed.';
 }
 

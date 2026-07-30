@@ -225,6 +225,9 @@ test('Notes tabs remain transient and reconcile through selection, reload, delta
 
   assert.match(source, /private openNoteIds: string\[\] = \[\]/);
   assert.match(source, /private async selectNote\(id: string, source: 'tree' \| 'tab' = 'tree'\)[\s\S]*?this\.openNoteTab\(id, true\)/);
+  assert.match(source, /if \(source === 'tab'\) \{\s*void this\.revealTreeNote\(id, false\);\s*this\.focusNoteTab\(id\);\s*\}/);
+  assert.match(source, /private async revealTreeNote\(noteId: string, focusTreeRow: boolean\): Promise<void> \{[\s\S]*?this\.renderList\(focusTreeRow \? noteId : undefined\)[\s\S]*?scrollIntoView\(\{ block: 'nearest' \}\)/);
+  assert.match(source, /if \(generation !== this\.treeRevealGeneration \|\| this\.selectedId !== noteId\) return;[\s\S]*?this\.expandedNoteIds = new Set\(persistedIds\)/);
   assert.match(source, /private async closeNoteTab\(id: string\)[\s\S]*?await this\.flushNote\(id\)[\s\S]*?this\.openNoteIds\.splice\(index, 1\)/);
   assert.match(source, /recoveredTabs = openTabsBeforeReload\.map\(\(id\) => recoveredByOriginalId\.get\(id\) \?\? id\)/);
   assert.match(source, /async applyPersistentDelta[\s\S]*?noteTabFallbackAfterRemoval\([\s\S]*?this\.reconcileOpenNoteTabs\(\)/);
@@ -552,7 +555,8 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
   assert.match(source, /this\.applyWorkspace\(\{[\s\S]*?notes: this\.notes\.filter[\s\S]*?tree: result\.tree[\s\S]*?expandedNoteIds: result\.expandedNoteIds[\s\S]*?\}, editVersionBaseline, true\)/);
   assert.match(source, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
   assert.match(source, /button\.addEventListener\('click', \(\) => \{\s*if \(searchActive\) \{\s*void this\.revealSearchResult\(note\.id\);\s*return;\s*\}\s*void this\.selectNote\(note\.id\);/);
-  assert.match(source, /private async revealSearchResult\(noteId: string\): Promise<void> \{[\s\S]*?this\.searchInput\.value = '';[\s\S]*?noteTreeAncestorIdsFromIndexes\(noteId, this\.treeNodesById\)[\s\S]*?this\.renderedRowsById\.get\(noteId\)\?\.scrollIntoView\(\{ block: 'nearest' \}\)[\s\S]*?window\.notesApi\.setTreeExpanded\(\{\s*noteIds: collapsedAncestorIds,\s*expanded: true,/);
+  assert.match(source, /private async revealSearchResult\(noteId: string\): Promise<void> \{[\s\S]*?this\.clearWorkspaceSearch\(\);[\s\S]*?await this\.revealTreeNote\(noteId, true\)/);
+  assert.match(source, /private async revealTreeNote\(noteId: string, focusTreeRow: boolean\): Promise<void> \{[\s\S]*?noteTreeAncestorIdsFromIndexes\(noteId, this\.treeNodesById\)[\s\S]*?this\.renderedRowsById\.get\(noteId\)\?\.scrollIntoView\(\{ block: 'nearest' \}\)[\s\S]*?window\.notesApi\.setTreeExpanded\(\{\s*noteIds: collapsedAncestorIds,\s*expanded: true,/);
   assert.match(source, /if \(hasChildren && !searchActive\) \{\s*button\.setAttribute\('aria-expanded', String\(this\.expandedNoteIds\.has\(note\.id\)\)\);/);
   assert.match(source, /toggleButton\.addEventListener\('click', \(event\) => \{\s*event\.stopPropagation\(\);\s*void this\.toggleTreeExpanded\(note\.id\);/);
   assert.match(source, /resolveNoteTreeDropPlacement\(this\.treeNodes, this\.draggingNoteId, target\.noteId, position\)/);

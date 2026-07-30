@@ -79,6 +79,42 @@ test('SQL password hashing matches the byte-oriented jcjy-components login behav
   assert.equal(hashSqlPassword('密碼'), createHash('md5').update(Buffer.from('密碼', 'latin1')).digest('hex'));
 });
 
+test('SQL login failures use login-specific safe messages without changing query errors', async () => {
+  const unavailable = new SqlRuntime({
+    credentialsStore: credentialStore(),
+    fetchImpl: async () => response(undefined, { status: 502 }),
+  });
+  await assert.rejects(
+    unavailable.login({ environment: 'production', userName: 'owner', password: 'secret' }),
+    /Login failed \(502\)\./,
+  );
+
+  const offline = new SqlRuntime({
+    credentialsStore: credentialStore(),
+    fetchImpl: async () => { throw new Error('private network detail'); },
+  });
+  await assert.rejects(
+    offline.login({ environment: 'development', userName: 'owner', password: 'secret' }),
+    /Login failed\./,
+  );
+
+  const credentialsStore = credentialStore();
+  const queryFailure = new SqlRuntime({
+    credentialsStore,
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) return response({ token: 'token' });
+      if (pathname.endsWith('/user/detail')) return response({ id: 7, name: 'Owner', userName: 'owner' });
+      return response(undefined, { status: 502 });
+    },
+  });
+  await queryFailure.login({ environment: 'production', userName: 'owner', password: 'secret' });
+  await assert.rejects(
+    queryFailure.execute('production', 'select 1'),
+    /The SQL request failed \(502\)\./,
+  );
+});
+
 test('SQL runtime performs one saved-credential relogin and replays a request once after err 401', async () => {
   const saved = { userName: 'owner', passwd: 'c'.repeat(32) };
   const credentialsStore = credentialStore({ production: saved });
