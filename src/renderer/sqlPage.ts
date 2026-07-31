@@ -71,6 +71,9 @@ const MIN_RESULTS_HEIGHT = 120;
 const DEFAULT_EDITOR_FONT_SIZE = 21;
 const MIN_EDITOR_FONT_SIZE = 12;
 const MAX_EDITOR_FONT_SIZE = 24;
+const SQL_DEFAULT_SELECT_LIMIT = 100;
+const SQL_MIN_SELECT_LIMIT = 1;
+const SQL_MAX_SELECT_LIMIT = 10_000;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const SQL_ENUM_TOOLTIP_MAX_ROWS = 100;
 const SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS = 180;
@@ -220,6 +223,13 @@ export function clampSqlEditorFontSize(value: number): number {
 
 export function normalizeSqlEditorFontFamily(value: unknown): SqlEditorFontFamily {
   return value === 'comic-mono' ? value : 'default';
+}
+
+export function normalizeSqlSelectLimit(value: unknown): number {
+  if (typeof value === 'string' && value.trim() === '') return SQL_DEFAULT_SELECT_LIMIT;
+  const numeric = typeof value === 'string' ? Number(value.trim()) : Number(value);
+  if (!Number.isFinite(numeric)) return SQL_DEFAULT_SELECT_LIMIT;
+  return Math.min(SQL_MAX_SELECT_LIMIT, Math.max(SQL_MIN_SELECT_LIMIT, Math.trunc(numeric)));
 }
 
 export function sqlValueModesForKind(
@@ -471,6 +481,7 @@ class SqlPage {
   private readonly increaseFontSizeButton = requireElement<HTMLButtonElement>('#sql-font-size-increase');
   private readonly fontFamilySwitch = requireElement<HTMLButtonElement>('#sql-font-family-switch');
   private readonly sessionActions = requireElement<HTMLElement>('#sql-session-actions');
+  private readonly selectLimitInput = requireElement<HTMLInputElement>('#sql-select-limit');
   private readonly saveActionButton = requireElement<HTMLButtonElement>('#sql-save-action');
   private readonly runActionButton = requireElement<HTMLButtonElement>('#sql-run-action');
   private readonly sessionUser = requireElement<HTMLElement>('#sql-session-user');
@@ -642,6 +653,8 @@ class SqlPage {
       this.applyEditorFontFamily(fontFamily);
       writeStoredValue(EDITOR_FONT_FAMILY_KEY, fontFamily);
     });
+    this.selectLimitInput.addEventListener('change', () => this.normalizeSelectLimitInput());
+    this.selectLimitInput.addEventListener('blur', () => this.normalizeSelectLimitInput());
     this.saveActionButton.addEventListener('click', () => void this.saveCurrentQuery());
     this.runActionButton.addEventListener('click', () => void this.runCurrentStatement());
     this.loginForm.addEventListener('submit', (event) => {
@@ -1536,7 +1549,9 @@ class SqlPage {
     this.renderBusyState();
     this.renderResult();
     try {
-      const response = await window.sqlApi.execute(environment, executableSql);
+      const response = await window.sqlApi.execute(environment, executableSql, {
+        limit: this.normalizeSelectLimitInput(),
+      });
       if (version !== tab.executionVersion) return;
       tab.result = normalizeSqlResult(response.value);
       tab.lastResponseText = jsonText(response.value);
@@ -1728,8 +1743,15 @@ class SqlPage {
     const tab = this.currentTab();
     this.refreshButton.disabled = state.listLoading;
     this.newButton.disabled = state.auth?.status !== 'signed-in';
+    this.selectLimitInput.disabled = state.auth?.status !== 'signed-in' || !tab || tab.executing;
     this.saveActionButton.disabled = state.auth?.status !== 'signed-in' || !tab || tab.saving;
     this.runActionButton.disabled = state.auth?.status !== 'signed-in' || !tab || tab.executing;
+  }
+
+  private normalizeSelectLimitInput(): number {
+    const limit = normalizeSqlSelectLimit(this.selectLimitInput.value);
+    this.selectLimitInput.value = String(limit);
+    return limit;
   }
 
   private renderResult(): void {

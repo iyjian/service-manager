@@ -2764,10 +2764,10 @@ function registerIpcHandlers(): void {
     await getSqlRuntime().deleteQuery(input.environment, input.id);
   });
   ipcMain.handle(IPC_CHANNELS.sqlExecute, async (_event, input: unknown) => {
-    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'statement'].includes(key))) {
+    if (!isRecord(input) || Object.keys(input).some((key) => !['environment', 'statement', 'options'].includes(key))) {
       throw new Error('The SQL execution request is invalid.');
     }
-    return getSqlRuntime().execute(input.environment, input.statement);
+    return getSqlRuntime().execute(input.environment, input.statement, input.options);
   });
   ipcMain.handle(IPC_CHANNELS.sqlSchemaGet, async (_event, environment: unknown) =>
     getSqlRuntime().getSchema(environment)
@@ -3613,6 +3613,7 @@ app.whenReady()
     const sqlCredentialsStore = new SqlCredentialsStore({
       filePath: path.join(app.getPath('userData'), 'sql-login.json'),
       credentialProtector,
+      allowBasicTextFallback: process.platform === 'linux',
     });
     await sqlCredentialsStore.load();
     sqlRuntime = new SqlRuntime({ credentialsStore: sqlCredentialsStore });

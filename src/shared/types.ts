@@ -1040,6 +1040,10 @@ export interface SqlExecutionResult {
   durationMs: number;
 }
 
+export interface SqlExecutionOptions {
+  limit?: number;
+}
+
 export interface SqlSchemaEnumMetadata {
   comment: string;
   nullable: boolean;
@@ -1076,7 +1080,7 @@ export interface SqlApi {
   updateQuery(environment: SqlEnvironment, id: number, draft: SqlQueryDraft): Promise<SqlQueryRecord>;
   renameQuery(environment: SqlEnvironment, id: number, name: string): Promise<SqlQueryRecord>;
   deleteQuery(environment: SqlEnvironment, id: number): Promise<void>;
-  execute(environment: SqlEnvironment, statement: string): Promise<SqlExecutionResult>;
+  execute(environment: SqlEnvironment, statement: string, options?: SqlExecutionOptions): Promise<SqlExecutionResult>;
   getSchema(environment: SqlEnvironment): Promise<SqlDatabaseSchema>;
 }
 

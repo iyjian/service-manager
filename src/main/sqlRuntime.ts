@@ -4,6 +4,7 @@ import type {
   SqlAuthState,
   SqlDatabaseSchema,
   SqlEnvironment,
+  SqlExecutionOptions,
   SqlExecutionResult,
   SqlJsonValue,
   SqlLoginInput,
@@ -22,6 +23,8 @@ export const SQL_REQUEST_TIMEOUT_MS = 120_000;
 export const SQL_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 export const SQL_MAX_STATEMENT_CHARACTERS = 1_000_000;
 export const SQL_SCHEMA_TABLE_BATCH_SIZE = 20;
+export const SQL_DEFAULT_SELECT_LIMIT = 100;
+export const SQL_MAX_SELECT_LIMIT = 10_000;
 
 const MAX_USERNAME_CHARACTERS = 512;
 const MAX_PASSWORD_CHARACTERS = 16 * 1024;
@@ -38,6 +41,7 @@ const MAX_SCHEMA_ENUM_COMMENT_CHARACTERS = 2_048;
 const MAX_SCHEMA_ENUM_DEFAULT_CHARACTERS = 512;
 const SQL_SCHEMA_CACHE_TTL_MS = 5 * 60 * 1_000;
 const SQL_ENUM_COMMENT_PATTERN = String.raw`[0-9]+[[:space:]]*-[[:space:]]*[^0-9]+.*[0-9]+[[:space:]]*-[[:space:]]*[^0-9]+`;
+const SQL_MIN_SELECT_LIMIT = 1;
 
 const SQL_SCHEMA_TABLES_STATEMENT = `select table_name as tableName
 from information_schema.tables
@@ -74,6 +78,8 @@ class SqlApiError extends Error {
     super(message);
   }
 }
+
+type SqlScanState = 'normal' | 'single' | 'double' | 'backtick' | 'line-comment' | 'block-comment';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -205,6 +211,23 @@ function normalizeStatement(value: unknown): string {
   return value.trim();
 }
 
+function normalizeSqlExecutionOptions(value: unknown): SqlExecutionOptions {
+  if (value === undefined) return { limit: SQL_DEFAULT_SELECT_LIMIT };
+  if (!isRecord(value) || !hasOnlyKeys(value, ['limit'])) {
+    throw new Error('The SQL execution options are invalid.');
+  }
+  if (value.limit === undefined) return { limit: SQL_DEFAULT_SELECT_LIMIT };
+  if (
+    typeof value.limit !== 'number'
+    || !Number.isInteger(value.limit)
+    || value.limit < SQL_MIN_SELECT_LIMIT
+    || value.limit > SQL_MAX_SELECT_LIMIT
+  ) {
+    throw new Error(`The SELECT limit must be between ${SQL_MIN_SELECT_LIMIT} and ${SQL_MAX_SELECT_LIMIT}.`);
+  }
+  return { limit: value.limit };
+}
+
 function normalizeSearch(value: unknown): string {
   if (value === undefined) return '';
   if (typeof value !== 'string' || value.length > MAX_SEARCH_CHARACTERS || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -243,6 +266,110 @@ function normalizeSchemaText(
 
 function escapeSqlStringLiteral(value: string): string {
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+}
+
+function firstSqlKeyword(statement: string): string {
+  let index = 0;
+  while (index < statement.length) {
+    while (/\s/.test(statement[index] ?? '')) index += 1;
+    if ((statement.startsWith('--', index) && /\s/.test(statement[index + 2] ?? ' '))
+      || statement[index] === '#') {
+      const newline = statement.indexOf('\n', index + 1);
+      index = newline < 0 ? statement.length : newline + 1;
+      continue;
+    }
+    if (statement.startsWith('/*', index)) {
+      const end = statement.indexOf('*/', index + 2);
+      index = end < 0 ? statement.length : end + 2;
+      continue;
+    }
+    break;
+  }
+  return /^[a-z]+/i.exec(statement.slice(index))?.[0]?.toLocaleUpperCase() ?? '';
+}
+
+function hasTopLevelSqlLimit(statement: string): boolean {
+  let state: SqlScanState = 'normal';
+  let depth = 0;
+
+  for (let index = 0; index < statement.length; index += 1) {
+    const character = statement[index] ?? '';
+    const next = statement[index + 1] ?? '';
+
+    if (state === 'line-comment') {
+      if (character === '\n' || character === '\r') state = 'normal';
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (character === '*' && next === '/') {
+        state = 'normal';
+        index += 1;
+      }
+      continue;
+    }
+    if (state === 'single' || state === 'double' || state === 'backtick') {
+      const delimiter = state === 'single' ? "'" : state === 'double' ? '"' : '`';
+      if (character === '\\') {
+        index += 1;
+        continue;
+      }
+      if (character === delimiter) {
+        if (next === delimiter) index += 1;
+        else state = 'normal';
+      }
+      continue;
+    }
+
+    if (character === '-' && next === '-' && /\s/.test(statement[index + 2] ?? ' ')) {
+      state = 'line-comment';
+      index += 1;
+      continue;
+    }
+    if (character === '#') {
+      state = 'line-comment';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      state = 'block-comment';
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      state = 'single';
+      continue;
+    }
+    if (character === '"') {
+      state = 'double';
+      continue;
+    }
+    if (character === '`') {
+      state = 'backtick';
+      continue;
+    }
+    if (character === '(') {
+      depth += 1;
+      continue;
+    }
+    if (character === ')') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && /[a-z_]/i.test(character)) {
+      const match = /^[a-z_][a-z0-9_]*/i.exec(statement.slice(index));
+      const keyword = match?.[0]?.toLocaleUpperCase();
+      if (keyword === 'LIMIT') return true;
+      if (match) index += match[0].length - 1;
+    }
+  }
+
+  return false;
+}
+
+export function applySqlSelectLimit(statement: string, limit: number): string {
+  if (firstSqlKeyword(statement) !== 'SELECT' || hasTopLevelSqlLimit(statement)) return statement;
+  const trimmed = statement.trim();
+  const withoutTerminator = trimmed.endsWith(';') ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  return `${withoutTerminator} LIMIT ${limit}`;
 }
 
 export function buildSqlSchemaColumnsStatement(tableNames: readonly string[]): string {
@@ -536,12 +663,21 @@ export class SqlRuntime {
     });
   }
 
-  public async execute(environmentValue: unknown, statementValue: unknown): Promise<SqlExecutionResult> {
+  public async execute(
+    environmentValue: unknown,
+    statementValue: unknown,
+    optionsValue?: unknown,
+  ): Promise<SqlExecutionResult> {
     const environment = normalizeSqlEnvironment(environmentValue);
     const statement = normalizeStatement(statementValue);
+    const options = normalizeSqlExecutionOptions(optionsValue);
     const startedAt = Date.now();
     return this.withAuthentication(environment, async (session) => {
-      const value = await this.executeProfileStatement(environment, session, statement);
+      const value = await this.executeProfileStatement(
+        environment,
+        session,
+        applySqlSelectLimit(statement, options.limit ?? SQL_DEFAULT_SELECT_LIMIT),
+      );
       if (value !== undefined && !isJsonValue(value)) {
         throw new SqlApiError('The SQL response is invalid.');
       }

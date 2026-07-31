@@ -9,6 +9,7 @@ export const SQL_CREDENTIALS_SCHEMA_VERSION = 1 as const;
 const MAX_SETTINGS_BYTES = 256 * 1024;
 const MAX_PROTECTED_CREDENTIAL_CHARACTERS = 192 * 1024;
 const MAX_USERNAME_CHARACTERS = 512;
+const BASIC_TEXT_CREDENTIAL_PREFIX = 'service-manager-sql-basic-text-v1:';
 
 export interface SqlCredentialProtector {
   isEncryptionAvailable(): boolean;
@@ -26,6 +27,7 @@ export interface SqlReloginCredential {
 export interface SqlCredentialsStoreOptions {
   filePath: string;
   credentialProtector: SqlCredentialProtector;
+  allowBasicTextFallback?: boolean;
 }
 
 interface PersistedCredential {
@@ -110,6 +112,16 @@ function parsePersistedSettings(value: unknown): PersistedSqlCredentials {
   return { schemaVersion: SQL_CREDENTIALS_SCHEMA_VERSION, environments };
 }
 
+function protectBasicTextCredential(credential: SqlReloginCredential): string {
+  return Buffer.from(`${BASIC_TEXT_CREDENTIAL_PREFIX}${JSON.stringify(credential)}`, 'utf8').toString('base64');
+}
+
+function revealBasicTextCredential(encryptedCredential: string): SqlReloginCredential | undefined {
+  const plaintext = Buffer.from(encryptedCredential, 'base64').toString('utf8');
+  if (!plaintext.startsWith(BASIC_TEXT_CREDENTIAL_PREFIX)) return undefined;
+  return normalizeCredential(JSON.parse(plaintext.slice(BASIC_TEXT_CREDENTIAL_PREFIX.length)) as unknown);
+}
+
 async function syncDirectory(directory: string): Promise<void> {
   let handle: FileHandle | undefined;
   try {
@@ -170,10 +182,15 @@ export class SqlCredentialsStore {
   public reveal(environment: SqlEnvironment): Promise<SqlReloginCredential> {
     return this.enqueue(async () => {
       const encryptedCredential = this.settings.environments[environment]?.encryptedCredential;
-      if (!encryptedCredential || !this.hasSecureCredentialStorage()) {
+      if (!encryptedCredential) {
         throw new Error('The saved SQL login is unavailable. Sign in again.');
       }
       try {
+        const basicTextCredential = revealBasicTextCredential(encryptedCredential);
+        if (basicTextCredential) return basicTextCredential;
+        if (!this.hasUsableCredentialStorage()) {
+          throw new Error('credential storage unavailable');
+        }
         const plaintext = this.options.credentialProtector.decryptString(
           Buffer.from(encryptedCredential, 'base64'),
         );
@@ -209,17 +226,35 @@ export class SqlCredentialsStore {
     return result;
   }
 
-  private hasSecureCredentialStorage(): boolean {
+  private isEncryptionAvailable(): boolean {
     try {
-      return this.options.credentialProtector.isEncryptionAvailable()
-        && this.options.credentialProtector.getSelectedStorageBackend?.() !== 'basic_text';
+      return this.options.credentialProtector.isEncryptionAvailable();
     } catch {
       return false;
     }
   }
 
+  private isBasicTextCredentialStorage(): boolean {
+    try {
+      return this.options.credentialProtector.getSelectedStorageBackend?.() === 'basic_text';
+    } catch {
+      return false;
+    }
+  }
+
+  private canUseBasicTextFallback(): boolean {
+    return this.options.allowBasicTextFallback === true || this.isBasicTextCredentialStorage();
+  }
+
+  private hasUsableCredentialStorage(): boolean {
+    return this.isEncryptionAvailable() || this.canUseBasicTextFallback();
+  }
+
   private protectCredential(credential: SqlReloginCredential): string {
-    if (!this.hasSecureCredentialStorage()) {
+    const canUseBasicTextFallback = this.canUseBasicTextFallback();
+    if (this.isBasicTextCredentialStorage()) return protectBasicTextCredential(credential);
+    if (!this.isEncryptionAvailable()) {
+      if (canUseBasicTextFallback) return protectBasicTextCredential(credential);
       throw new Error('Secure credential storage is unavailable for SQL login.');
     }
     try {
@@ -229,6 +264,7 @@ export class SqlCredentialsStore {
       }
       return protectedCredential.toString('base64');
     } catch {
+      if (canUseBasicTextFallback) return protectBasicTextCredential(credential);
       throw new Error('The SQL login could not be protected.');
     }
   }

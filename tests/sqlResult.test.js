@@ -18,6 +18,11 @@ test('SQL results normalize tables, mutations, scalars, and multiple result sets
   const mutation = normalizeSqlResult({ affectedRows: 3, changedRows: 2, message: 'ok' });
   assert.equal(mutation.kind, 'summary');
   assert.equal(mutation.message, 'ok');
+  assert.deepEqual(mutation.items.map((item) => item.label), ['affectedRows', 'changedRows']);
+
+  const rawMutation = normalizeSqlResult([[], { affectedRows: 4, changedRows: 1, info: 'Rows matched: 4' }]);
+  assert.equal(rawMutation.kind, 'summary');
+  assert.equal(rawMutation.message, 'Rows matched: 4');
 
   const multi = normalizeSqlResult([[{ value: 1 }], 7, []]);
   assert.equal(multi.kind, 'multi');

@@ -31,6 +31,7 @@ import type {
   ServiceApi,
   SqlApi,
   SqlEnvironment,
+  SqlExecutionOptions,
   SqlLoginInput,
   SqlQueryDraft,
   S3SyncState,
@@ -271,8 +272,8 @@ const sqlApi: SqlApi = {
     ipcRenderer.invoke('sql:query:rename', { environment, id, name }),
   deleteQuery: (environment: SqlEnvironment, id: number) =>
     ipcRenderer.invoke('sql:query:delete', { environment, id }),
-  execute: (environment: SqlEnvironment, statement: string) =>
-    ipcRenderer.invoke('sql:execute', { environment, statement }),
+  execute: (environment: SqlEnvironment, statement: string, options?: SqlExecutionOptions) =>
+    ipcRenderer.invoke('sql:execute', { environment, statement, ...(options ? { options } : {}) }),
   getSchema: (environment: SqlEnvironment) =>
     ipcRenderer.invoke('sql:schema:get', environment),
 };

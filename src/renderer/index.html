@@ -343,6 +343,10 @@
             </div>
           </div>
           <div id="sql-session-actions" class="sql-session-actions hidden" aria-label="SQL session actions">
+            <label class="sql-select-limit-control">
+              <span>Limit</span>
+              <input id="sql-select-limit" type="number" min="1" max="10000" step="1" value="100" inputmode="numeric" aria-label="SELECT row limit" />
+            </label>
             <button id="sql-save-action" type="button" class="sql-session-action" data-action="save">
               <span>Save</span><kbd id="sql-save-shortcut">⌘S</kbd>
             </button>

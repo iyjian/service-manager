@@ -56,16 +56,64 @@ test('SQL relogin credentials are protected per environment and explicit removal
   assert.deepEqual(await store.reveal('development'), { userName: 'developer', passwd: 'b'.repeat(32) });
 });
 
-test('SQL credentials reload and reject insecure Linux-style basic-text protection', async (t) => {
+test('SQL credentials reload and permit Linux-style basic-text fallback', async (t) => {
   const { filePath, store } = await createStore(t);
   await store.save('production', productionCredential);
   const reloaded = new SqlCredentialsStore({ filePath, credentialProtector: protector() });
   await reloaded.load();
   assert.deepEqual(await reloaded.reveal('production'), productionCredential);
 
+  const fallback = new SqlCredentialsStore({
+    filePath: `${filePath}.fallback`,
+    credentialProtector: protector({
+      isEncryptionAvailable: () => false,
+      encryptString: () => { throw new Error('safeStorage failed'); },
+      decryptString: () => { throw new Error('safeStorage failed'); },
+      getSelectedStorageBackend: () => 'basic_text',
+    }),
+  });
+  await fallback.load();
+  await fallback.save('production', productionCredential);
+  assert.deepEqual(await fallback.reveal('production'), productionCredential);
+
+  const fallbackRaw = JSON.parse(await fs.readFile(`${filePath}.fallback`, 'utf8'));
+  const fallbackPayload = Buffer.from(
+    fallbackRaw.environments.production.encryptedCredential,
+    'base64',
+  ).toString('utf8');
+  assert.match(fallbackPayload, /^service-manager-sql-basic-text-v1:/);
+});
+
+test('SQL credentials use the explicit Linux fallback when safeStorage encryption fails', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-sql-login-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'sql-login.json');
+  const store = new SqlCredentialsStore({
+    filePath,
+    credentialProtector: protector({
+      encryptString: () => { throw new Error('safeStorage failed'); },
+      decryptString: () => { throw new Error('safeStorage failed'); },
+      getSelectedStorageBackend: () => 'unknown',
+    }),
+    allowBasicTextFallback: true,
+  });
+  await store.load();
+  await store.save('production', productionCredential);
+  assert.deepEqual(await store.reveal('production'), productionCredential);
+
+  const raw = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  const payload = Buffer.from(raw.environments.production.encryptedCredential, 'base64').toString('utf8');
+  assert.match(payload, /^service-manager-sql-basic-text-v1:/);
+});
+
+test('SQL credentials reject unavailable non-fallback protection', async (t) => {
+  const { filePath } = await createStore(t);
   const blocked = new SqlCredentialsStore({
     filePath: `${filePath}.blocked`,
-    credentialProtector: protector({ getSelectedStorageBackend: () => 'basic_text' }),
+    credentialProtector: protector({
+      isEncryptionAvailable: () => false,
+      getSelectedStorageBackend: () => 'unknown',
+    }),
   });
   await blocked.load();
   await assert.rejects(blocked.save('production', productionCredential), /Secure credential storage is unavailable/);

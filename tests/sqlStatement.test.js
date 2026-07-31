@@ -139,6 +139,7 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
   const {
     isSqlRunShortcut,
     isSqlSaveShortcut,
+    normalizeSqlSelectLimit,
     sqlSaveShortcutLabel,
     sqlShortcutLabel,
   } = await loadModule('sqlPage.js');
@@ -159,4 +160,8 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
   assert.equal(sqlShortcutLabel('Win32'), 'Ctrl+Enter');
   assert.equal(sqlSaveShortcutLabel('MacIntel'), '⌘S');
   assert.equal(sqlSaveShortcutLabel('Linux x86_64'), 'Ctrl+S');
+  assert.equal(normalizeSqlSelectLimit(''), 100);
+  assert.equal(normalizeSqlSelectLimit('0'), 1);
+  assert.equal(normalizeSqlSelectLimit('250.8'), 250);
+  assert.equal(normalizeSqlSelectLimit('10001'), 10000);
 });

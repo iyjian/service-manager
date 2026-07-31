@@ -4340,6 +4340,7 @@
   .sql-sidebar-actions,
   .sql-query-toolbar,
   .sql-session-action,
+  .sql-select-limit-control,
   .sql-results-head,
   .sql-results-head > div {
     @apply flex min-w-0 items-center;
@@ -4408,6 +4409,14 @@
 
   .sql-session-actions {
     @apply shrink gap-2 overflow-hidden;
+  }
+
+  .sql-select-limit-control {
+    @apply h-8 shrink-0 gap-1.5 rounded-lg border border-zinc-300 bg-white px-2 text-[11.5px] font-medium text-zinc-500;
+  }
+
+  .sql-select-limit-control input {
+    @apply h-6 w-16 rounded-md border border-zinc-200 bg-zinc-50 px-1.5 text-right font-mono text-[12px] text-zinc-900 outline-none focus:border-zinc-400 focus:bg-white focus:ring-1 focus:ring-zinc-300 disabled:opacity-50;
   }
 
   .sql-session-user {

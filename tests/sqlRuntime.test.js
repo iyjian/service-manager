@@ -3,9 +3,12 @@ const { createHash } = require('node:crypto');
 const test = require('node:test');
 
 const {
+  SQL_DEFAULT_SELECT_LIMIT,
+  SQL_MAX_SELECT_LIMIT,
   SQL_API_BASE_URLS,
   SQL_SCHEMA_TABLE_BATCH_SIZE,
   SqlRuntime,
+  applySqlSelectLimit,
   buildSqlSchemaColumnsStatement,
   hashSqlPassword,
 } = require('../dist/main/sqlRuntime');
@@ -159,6 +162,49 @@ test('SQL runtime performs one saved-credential relogin and replays a request on
   assert.equal(signedOut.status, 'signed-out');
   assert.equal(signedOut.hasSavedCredentials, false);
   assert.equal(credentialsStore.values.has('production'), false);
+});
+
+test('SQL runtime applies bounded client SELECT limits and preserves mutation metadata', async () => {
+  const statements = [];
+  const runtime = new SqlRuntime({
+    credentialsStore: credentialStore(),
+    fetchImpl: async (url, init = {}) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) return response({ token: 'dev-token' });
+      if (pathname.endsWith('/user/detail')) return response({ id: 4, name: 'Dev', userName: 'dev' });
+      if (pathname.endsWith('/system/profile')) {
+        const { statement } = JSON.parse(init.body);
+        statements.push(statement);
+        if (/^update\b/i.test(statement)) return response({ affectedRows: 2, changedRows: 1 });
+        return response([{ ok: 1 }]);
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    },
+  });
+
+  await runtime.login({ environment: 'development', userName: 'dev', password: 'secret' });
+  await runtime.execute('development', 'select * from users;');
+  await runtime.execute(
+    'development',
+    '/* keep */ select * from (select * from users limit 1) scoped',
+    { limit: 250 },
+  );
+  await runtime.execute('development', 'select * from users limit 5', { limit: 250 });
+  const mutation = await runtime.execute('development', 'update users set active = 1', { limit: 250 });
+
+  assert.deepEqual(statements, [
+    `select * from users LIMIT ${SQL_DEFAULT_SELECT_LIMIT}`,
+    '/* keep */ select * from (select * from users limit 1) scoped LIMIT 250',
+    'select * from users limit 5',
+    'update users set active = 1',
+  ]);
+  assert.deepEqual(mutation.value, { affectedRows: 2, changedRows: 1 });
+  assert.equal(applySqlSelectLimit("select 'limit' as value;", 10), "select 'limit' as value LIMIT 10");
+  assert.equal(applySqlSelectLimit('show tables', 10), 'show tables');
+  await assert.rejects(
+    runtime.execute('development', 'select 1', { limit: SQL_MAX_SELECT_LIMIT + 1 }),
+    /SELECT limit/i,
+  );
 });
 
 test('SQL runtime renames an owned record with a name-only patch', async () => {

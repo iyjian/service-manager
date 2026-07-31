@@ -25,6 +25,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-query-tabs"/);
   assert.match(html, /id="sql-save-shortcut"/);
   assert.match(html, /id="sql-run-shortcut">⌘Enter<\/kbd>/);
+  assert.match(html, /id="sql-select-limit"[^>]*max="10000"[^>]*value="100"/);
   assert.match(html, /id="sql-value-dialog"/);
   assert.match(
     html,
@@ -112,6 +113,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /sql:editor-font-size/);
   assert.match(page, /sql:editor-font-family/);
   assert.match(page, /clampSqlEditorFontSize/);
+  assert.match(page, /normalizeSqlSelectLimit/);
   assert.match(page, /normalizeSqlEditorFontFamily/);
   assert.match(page, /writeStoredValue\(EDITOR_FONT_SIZE_KEY,\s*String\(next\)\)/);
   assert.match(page, /writeStoredValue\(EDITOR_FONT_FAMILY_KEY,\s*fontFamily\)/);
@@ -130,6 +132,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /renderAuthenticated\(\) \{[\s\S]*?this\.setAuthenticatedHeaderVisible\(true\)/);
   assert.match(page, /window\.sqlApi\.renameQuery/);
   assert.match(page, /window\.sqlApi\.execute/);
+  assert.match(page, /limit:\s*this\.normalizeSelectLimitInput\(\)/);
   assert.match(page, /window\.sqlApi\.getSchema/);
   assert.match(page, /schemaCompletionSource/);
   assert.match(page, /hoverTooltip/);

@@ -23,6 +23,7 @@ const MUTATION_KEYS = [
   'fieldCount',
   'serverStatus',
   'message',
+  'info',
 ] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,12 +43,38 @@ function tableResult(rows: SqlResultRow[], title: string, preferredColumns: stri
   return { kind: 'table', title, rows, columns: [...columns] };
 }
 
+function mutationSummaryResult(value: Record<string, unknown>, title: string): SqlDisplayResult | undefined {
+  const summaryKeys = MUTATION_KEYS.filter((key) => key in value);
+  if (summaryKeys.length === 0) return undefined;
+  return {
+    kind: 'summary',
+    title,
+    items: summaryKeys
+      .filter((key) => key !== 'message' && key !== 'info')
+      .map((key) => ({ label: key, value: value[key] })),
+    ...(typeof value.message === 'string'
+      ? { message: value.message }
+      : typeof value.info === 'string'
+        ? { message: value.info }
+        : {}),
+  };
+}
+
 export function normalizeSqlResult(value: unknown, title = 'Result'): SqlDisplayResult {
   if (value === undefined || value === null) {
     return { kind: 'empty', title, message: 'No data returned.' };
   }
   if (isPrimitive(value)) return { kind: 'scalar', title, value };
   if (Array.isArray(value)) {
+    const metadata = value.length === 2 && isRecord(value[1]) ? mutationSummaryResult(value[1], title) : undefined;
+    if (metadata && (
+      value[0] === value[1]
+      || value[0] === undefined
+      || value[0] === null
+      || (Array.isArray(value[0]) && value[0].length === 0)
+    )) {
+      return metadata;
+    }
     if (value.length === 0) return { kind: 'empty', title, message: 'No rows returned.', rowCount: 0 };
     if (value.every(isRecord)) return tableResult(value, title);
     return {
@@ -66,15 +93,8 @@ export function normalizeSqlResult(value: unknown, title = 'Result'): SqlDisplay
         : [];
       return tableResult(rows, title, columns);
     }
-    const summaryKeys = MUTATION_KEYS.filter((key) => key in value);
-    if (summaryKeys.length > 0) {
-      return {
-        kind: 'summary',
-        title,
-        items: summaryKeys.filter((key) => key !== 'message').map((key) => ({ label: key, value: value[key] })),
-        ...(typeof value.message === 'string' ? { message: value.message } : {}),
-      };
-    }
+    const summary = mutationSummaryResult(value, title);
+    if (summary) return summary;
   }
   return { kind: 'json', title, value };
 }
