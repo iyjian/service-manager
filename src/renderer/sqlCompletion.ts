@@ -8,6 +8,21 @@ const SQL_TABLE_REFERENCE = new RegExp(
   String.raw`\b(?:from|join)\s+(${SQL_IDENTIFIER}(?:\s*\.\s*${SQL_IDENTIFIER})?)`,
   'gi',
 );
+const SQL_DIRECT_TABLE_REFERENCE = new RegExp(
+  String.raw`\b(?:from|join|update|into)\s+(${SQL_IDENTIFIER}(?:\s*\.\s*${SQL_IDENTIFIER})?)`,
+  'gi',
+);
+
+export interface SqlTableReference {
+  tableName: string;
+  from: number;
+  to: number;
+}
+
+export interface SqlEnumCommentPart {
+  text: string;
+  isDefault: boolean;
+}
 
 function completionApplyText(label: string): string | undefined {
   return /^[a-z_][a-z_\d]*$/i.test(label)
@@ -133,6 +148,91 @@ function unquoteLastIdentifier(reference: string): string | undefined {
   return identifier.startsWith('`') && identifier.endsWith('`')
     ? identifier.slice(1, -1).replace(/``/g, '`')
     : identifier;
+}
+
+function lastSqlIdentifierPart(
+  reference: string,
+  sourceOffset: number,
+): SqlTableReference | undefined {
+  const identifiers = [...reference.matchAll(new RegExp(SQL_IDENTIFIER, 'g'))];
+  const match = identifiers.at(-1);
+  const identifier = match?.[0];
+  if (!identifier || match?.index === undefined) return undefined;
+  const tableName = identifier.startsWith('`') && identifier.endsWith('`')
+    ? identifier.slice(1, -1).replace(/``/g, '`')
+    : identifier;
+  return {
+    tableName,
+    from: sourceOffset + match.index,
+    to: sourceOffset + match.index + identifier.length,
+  };
+}
+
+export function resolveSqlTableReferenceAt(
+  source: string,
+  position: number,
+  schema: SqlDatabaseSchema,
+): SqlTableReference | undefined {
+  if (!Number.isFinite(position)) return undefined;
+  const safePosition = Math.max(0, Math.min(source.length, Math.trunc(position)));
+  const windowFrom = Math.max(0, safePosition - SQL_COMPLETION_CONTEXT_CHARACTERS);
+  const windowTo = Math.min(source.length, safePosition + 1_024);
+  const sourceWindow = source.slice(windowFrom, windowTo);
+  const masked = maskSqlLiteralsAndComments(sourceWindow);
+  const canonicalNames = new Map(
+    schema.tables.map((table) => [table.name.toLowerCase(), table.name]),
+  );
+  SQL_DIRECT_TABLE_REFERENCE.lastIndex = 0;
+  for (const match of masked.matchAll(SQL_DIRECT_TABLE_REFERENCE)) {
+    const reference = match[1];
+    if (!reference || match.index === undefined) continue;
+    const referenceOffset = windowFrom + match.index + match[0].lastIndexOf(reference);
+    const part = lastSqlIdentifierPart(reference, referenceOffset);
+    if (!part || safePosition < part.from || safePosition > part.to) continue;
+    const canonicalName = canonicalNames.get(part.tableName.toLowerCase());
+    if (!canonicalName) return undefined;
+    return {
+      tableName: canonicalName,
+      from: part.from,
+      to: part.to,
+    };
+  }
+  return undefined;
+}
+
+function normalizeSqlEnumValue(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!/^[0-9]+$/.test(trimmed)) return undefined;
+  return trimmed.replace(/^0+(?=[0-9])/, '');
+}
+
+export function sqlEnumCommentParts(
+  comment: string,
+  defaultValue?: string,
+): readonly SqlEnumCommentPart[] {
+  const normalizedDefault = defaultValue === undefined
+    ? undefined
+    : normalizeSqlEnumValue(defaultValue);
+  if (normalizedDefault === undefined) return [{ text: comment, isDefault: false }];
+
+  const pattern = /(^|[^0-9])([0-9]+)(?=\s*-\s*)/g;
+  for (const match of comment.matchAll(pattern)) {
+    const prefix = match[1] ?? '';
+    const enumValue = match[2];
+    if (
+      enumValue === undefined
+      || normalizeSqlEnumValue(enumValue) !== normalizedDefault
+      || match.index === undefined
+    ) continue;
+    const valueFrom = match.index + prefix.length;
+    const valueTo = valueFrom + enumValue.length;
+    return [
+      ...(valueFrom > 0 ? [{ text: comment.slice(0, valueFrom), isDefault: false }] : []),
+      { text: enumValue, isDefault: true },
+      ...(valueTo < comment.length ? [{ text: comment.slice(valueTo), isDefault: false }] : []),
+    ];
+  }
+  return [{ text: comment, isDefault: false }];
 }
 
 export function resolveSqlDefaultTable(

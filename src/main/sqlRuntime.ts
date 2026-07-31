@@ -34,7 +34,10 @@ const MAX_SCHEMA_COLUMNS = 50_000;
 const MAX_SCHEMA_COLUMNS_PER_BATCH = 5_000;
 const MAX_SCHEMA_IDENTIFIER_CHARACTERS = 256;
 const MAX_SCHEMA_DATA_TYPE_CHARACTERS = 256;
+const MAX_SCHEMA_ENUM_COMMENT_CHARACTERS = 2_048;
+const MAX_SCHEMA_ENUM_DEFAULT_CHARACTERS = 512;
 const SQL_SCHEMA_CACHE_TTL_MS = 5 * 60 * 1_000;
+const SQL_ENUM_COMMENT_PATTERN = String.raw`[0-9]+[[:space:]]*-[[:space:]]*[^0-9]+.*[0-9]+[[:space:]]*-[[:space:]]*[^0-9]+`;
 
 const SQL_SCHEMA_TABLES_STATEMENT = `select table_name as tableName
 from information_schema.tables
@@ -253,7 +256,17 @@ export function buildSqlSchemaColumnsStatement(tableNames: readonly string[]): s
   const names = tableNames.map(escapeSqlStringLiteral).join(', ');
   return `select table_name as tableName,
 column_name as columnName,
-column_type as dataType
+column_type as dataType,
+is_nullable as isNullable,
+case
+  when column_comment regexp '${SQL_ENUM_COMMENT_PATTERN}' then column_comment
+  else null
+end as enumComment,
+case
+  when column_comment regexp '${SQL_ENUM_COMMENT_PATTERN}' and column_default is not null
+    then cast(column_default as char)
+  else null
+end as enumDefaultValue
 from information_schema.columns
 where table_schema = database()
 and table_name in (${names})
@@ -265,7 +278,10 @@ function cloneSqlDatabaseSchema(schema: SqlDatabaseSchema): SqlDatabaseSchema {
     environment: schema.environment,
     tables: schema.tables.map((table) => ({
       name: table.name,
-      columns: table.columns.map((column) => ({ ...column })),
+      columns: table.columns.map((column) => ({
+        ...column,
+        ...(column.enum ? { enum: { ...column.enum } } : {}),
+      })),
     })),
   };
 }
@@ -628,9 +644,28 @@ export class SqlRuntime {
         const table = tableName ? tables.get(tableName) : undefined;
         if (!table || !columnName || table.columns.some((column) => column.name === columnName)) continue;
         const dataType = normalizeSchemaText(row.dataType, MAX_SCHEMA_DATA_TYPE_CHARACTERS);
+        const enumComment = normalizeSchemaText(row.enumComment, MAX_SCHEMA_ENUM_COMMENT_CHARACTERS);
+        const nullable = row.isNullable === 'YES'
+          ? true
+          : row.isNullable === 'NO'
+            ? false
+            : undefined;
+        const enumDefaultValue = normalizeSchemaText(
+          row.enumDefaultValue,
+          MAX_SCHEMA_ENUM_DEFAULT_CHARACTERS,
+        );
         table.columns.push({
           name: columnName,
           ...(dataType ? { dataType } : {}),
+          ...(enumComment && nullable !== undefined
+            ? {
+              enum: {
+                comment: enumComment,
+                nullable,
+                ...(enumDefaultValue ? { defaultValue: enumDefaultValue } : {}),
+              },
+            }
+            : {}),
         });
       }
     }

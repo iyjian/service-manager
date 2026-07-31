@@ -5,11 +5,20 @@ import type {
   SqlJsonValue,
   SqlQueryDraft,
   SqlQueryRecord,
+  SqlSchemaColumn,
+  SqlSchemaEnumMetadata,
+  SqlSchemaTable,
 } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
 import { EditorState } from '@codemirror/state';
+import {
+  activateHover,
+  closeHoverTooltip,
+  hoverTooltip,
+  type Tooltip,
+} from '@codemirror/view';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from './codeHighlight.js';
 import { registerPage } from './nav.js';
@@ -17,7 +26,10 @@ import {
   buildSqlCompletionNamespace,
   defaultTableColumnCompletions,
   resolveSqlDefaultTable,
+  resolveSqlTableReferenceAt,
+  sqlEnumCommentParts,
   SQL_COMPLETION_CONTEXT_CHARACTERS,
+  type SqlTableReference,
 } from './sqlCompletion.js';
 import {
   extractSqlTemplateParamNames,
@@ -60,6 +72,8 @@ const DEFAULT_EDITOR_FONT_SIZE = 21;
 const MIN_EDITOR_FONT_SIZE = 12;
 const MAX_EDITOR_FONT_SIZE = 24;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
+const SQL_ENUM_TOOLTIP_MAX_ROWS = 100;
+const SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS = 180;
 const sqlValueLowlight = createLowlight(common);
 
 interface SqlQueryTab {
@@ -91,6 +105,13 @@ interface SqlEnvironmentState {
   loadVersion: number;
   recordLoadVersion: number;
 }
+
+interface SqlTableEnumHoverTarget extends SqlTableReference {
+  environment: SqlEnvironment;
+  tabKey?: string;
+}
+
+type SqlEnumColumn = SqlSchemaColumn & { enum: SqlSchemaEnumMetadata };
 
 type SqlShortcutEvent = Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>;
 export type SqlEditorFontFamily = 'default' | 'comic-mono';
@@ -506,6 +527,7 @@ class SqlPage {
       ],
     };
   };
+  private readonly tableEnumHover: ReturnType<typeof hoverTooltip>;
   private readonly editor: EditorView;
   private valueEditor?: EditorView;
   private environment: SqlEnvironment = 'production';
@@ -517,6 +539,8 @@ class SqlPage {
   private valueDialogGeneration = 0;
   private valueRaw = '';
   private valueCopyResetTimer?: number;
+  private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
+  private tableEnumHoverCloseTimer?: number;
 
   public constructor() {
     try {
@@ -525,6 +549,10 @@ class SqlPage {
     } catch {
       // Default to Production if local storage is unavailable.
     }
+    this.tableEnumHover = hoverTooltip(
+      (view, position) => this.tableEnumTooltipAt(view, position),
+      { hideOnChange: true },
+    );
     this.editor = new EditorView({
       state: EditorState.create({
         doc: '',
@@ -533,6 +561,27 @@ class SqlPage {
           sql({ dialect: MySQL, upperCaseKeywords: true }),
           MySQL.language.data.of({ autocomplete: this.contextualSchemaCompletion }),
           sqlCurrentStatementHighlight,
+          this.tableEnumHover,
+          EditorView.domEventHandlers({
+            dblclick: (event, view) => {
+              this.handleTableEnumDoubleClick(event, view);
+              return false;
+            },
+            pointermove: (event, view) => {
+              this.handleTableEnumPointerMove(event, view);
+              return false;
+            },
+            pointerleave: () => {
+              this.scheduleTableEnumHoverClose();
+              return false;
+            },
+            keydown: (event) => {
+              if (event.key !== 'Escape' || !this.tableEnumHoverTarget) return false;
+              event.preventDefault();
+              this.closeTableEnumHover();
+              return true;
+            },
+          }),
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({
             'aria-label': 'SQL source',
@@ -575,6 +624,7 @@ class SqlPage {
 
   public hide(): void {
     this.active = false;
+    this.closeTableEnumHover();
     this.destroyResultTable();
     this.resultContent.replaceChildren();
     this.closeValueDialog();
@@ -627,6 +677,206 @@ class SqlPage {
     }, true);
     this.bindSidebarResizer();
     this.bindResultResizer();
+  }
+
+  private enumTableDetails(
+    target: SqlTableEnumHoverTarget,
+  ): { table: SqlSchemaTable; columns: SqlEnumColumn[] } | undefined {
+    const state = this.currentState();
+    if (
+      target.environment !== this.environment
+      || target.tabKey !== state.activeTabKey
+      || state.auth?.status !== 'signed-in'
+    ) return undefined;
+    const table = state.schema?.tables.find((candidate) => candidate.name === target.tableName);
+    if (!table) return undefined;
+    const columns = table.columns.filter(
+      (column): column is SqlEnumColumn => column.enum !== undefined,
+    );
+    return columns.length > 0 ? { table, columns } : undefined;
+  }
+
+  private handleTableEnumDoubleClick(event: MouseEvent, view: EditorView): void {
+    if (event.button !== 0 || !this.active || this.currentState().auth?.status !== 'signed-in') {
+      this.closeTableEnumHover();
+      return;
+    }
+    const schema = this.currentState().schema;
+    const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    const reference = schema && position !== null
+      ? resolveSqlTableReferenceAt(view.state.doc.toString(), position, schema)
+      : undefined;
+    if (!reference) {
+      this.closeTableEnumHover();
+      return;
+    }
+    const table = schema?.tables.find((candidate) => candidate.name === reference.tableName);
+    if (!table?.columns.some((column) => column.enum)) {
+      this.closeTableEnumHover();
+      return;
+    }
+
+    this.closeTableEnumHover();
+    const target: SqlTableEnumHoverTarget = {
+      ...reference,
+      environment: this.environment,
+      tabKey: this.currentState().activeTabKey,
+    };
+    this.tableEnumHoverTarget = target;
+    window.requestAnimationFrame(() => {
+      if (this.tableEnumHoverTarget !== target || !this.active) return;
+      activateHover(view, target.from, 1, {
+        tooltip: this.tableEnumHover,
+        until: (transaction) => transaction.docChanged || transaction.selection !== undefined,
+      });
+    });
+  }
+
+  private handleTableEnumPointerMove(event: PointerEvent, view: EditorView): void {
+    const target = this.tableEnumHoverTarget;
+    if (!target) return;
+    if (
+      event.target instanceof Element
+      && event.target.closest('.sql-table-enum-tooltip')
+    ) {
+      this.cancelTableEnumHoverClose();
+      return;
+    }
+    const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (position !== null && position >= target.from && position <= target.to) {
+      this.cancelTableEnumHoverClose();
+      return;
+    }
+    this.scheduleTableEnumHoverClose();
+  }
+
+  private tableEnumTooltipAt(view: EditorView, position: number): Tooltip | null {
+    const target = this.tableEnumHoverTarget;
+    if (
+      view !== this.editor
+      || !target
+      || position < target.from
+      || position > target.to
+    ) return null;
+    const details = this.enumTableDetails(target);
+    if (!details) return null;
+    return {
+      pos: target.from,
+      end: target.to,
+      above: false,
+      create: () => {
+        const dom = this.createTableEnumTooltipDom(details.table, details.columns);
+        const handlePointerEnter = (): void => this.cancelTableEnumHoverClose();
+        const handlePointerLeave = (): void => this.scheduleTableEnumHoverClose();
+        dom.addEventListener('pointerenter', handlePointerEnter);
+        dom.addEventListener('pointerleave', handlePointerLeave);
+        return {
+          dom,
+          destroy: () => {
+            dom.removeEventListener('pointerenter', handlePointerEnter);
+            dom.removeEventListener('pointerleave', handlePointerLeave);
+            if (this.tableEnumHoverTarget === target) {
+              this.tableEnumHoverTarget = undefined;
+              this.cancelTableEnumHoverClose();
+            }
+          },
+        };
+      },
+    };
+  }
+
+  private createTableEnumTooltipDom(
+    schemaTable: SqlSchemaTable,
+    columns: readonly SqlEnumColumn[],
+  ): HTMLElement {
+    const root = document.createElement('section');
+    root.className = 'sql-table-enum-tooltip';
+    root.setAttribute('aria-label', `${schemaTable.name} enum field details`);
+
+    const heading = document.createElement('div');
+    heading.className = 'sql-table-enum-tooltip-heading';
+    const title = document.createElement('strong');
+    title.textContent = schemaTable.name;
+    const count = document.createElement('span');
+    count.textContent = `${columns.length} enum field${columns.length === 1 ? '' : 's'}`;
+    heading.append(title, count);
+
+    const scroll = document.createElement('div');
+    scroll.className = 'sql-table-enum-tooltip-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headingRow = document.createElement('tr');
+    for (const label of ['Field', 'Type', 'Nullable', 'Comment']) {
+      const cell = document.createElement('th');
+      cell.scope = 'col';
+      cell.textContent = label;
+      headingRow.append(cell);
+    }
+    head.append(headingRow);
+
+    const body = document.createElement('tbody');
+    for (const column of columns.slice(0, SQL_ENUM_TOOLTIP_MAX_ROWS)) {
+      const row = document.createElement('tr');
+      const field = document.createElement('td');
+      field.className = 'sql-table-enum-tooltip-identifier';
+      field.textContent = column.name;
+      const dataType = document.createElement('td');
+      dataType.className = 'sql-table-enum-tooltip-type';
+      dataType.textContent = column.dataType ?? '—';
+      const nullable = document.createElement('td');
+      nullable.className = 'sql-table-enum-tooltip-nullable';
+      nullable.textContent = column.enum.nullable ? 'Yes' : 'No';
+      const comment = document.createElement('td');
+      comment.className = 'sql-table-enum-tooltip-comment';
+      for (const part of sqlEnumCommentParts(column.enum.comment, column.enum.defaultValue)) {
+        if (!part.isDefault) {
+          comment.append(document.createTextNode(part.text));
+          continue;
+        }
+        const value = document.createElement('span');
+        value.className = 'sql-table-enum-tooltip-default-value';
+        value.textContent = part.text;
+        const badge = document.createElement('span');
+        badge.className = 'sql-table-enum-tooltip-default-badge';
+        badge.textContent = '(default)';
+        badge.title = 'Database default value';
+        comment.append(value, badge);
+      }
+      row.append(field, dataType, nullable, comment);
+      body.append(row);
+    }
+    table.append(head, body);
+    scroll.append(table);
+    root.append(heading, scroll);
+
+    if (columns.length > SQL_ENUM_TOOLTIP_MAX_ROWS) {
+      const bounded = document.createElement('p');
+      bounded.className = 'sql-table-enum-tooltip-bounded';
+      bounded.textContent = `${columns.length - SQL_ENUM_TOOLTIP_MAX_ROWS} more enum fields are not shown.`;
+      root.append(bounded);
+    }
+    return root;
+  }
+
+  private cancelTableEnumHoverClose(): void {
+    if (this.tableEnumHoverCloseTimer === undefined) return;
+    window.clearTimeout(this.tableEnumHoverCloseTimer);
+    this.tableEnumHoverCloseTimer = undefined;
+  }
+
+  private scheduleTableEnumHoverClose(): void {
+    if (!this.tableEnumHoverTarget || this.tableEnumHoverCloseTimer !== undefined) return;
+    this.tableEnumHoverCloseTimer = window.setTimeout(() => {
+      this.tableEnumHoverCloseTimer = undefined;
+      this.closeTableEnumHover();
+    }, SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS);
+  }
+
+  private closeTableEnumHover(): void {
+    this.cancelTableEnumHoverClose();
+    if (!this.tableEnumHoverTarget) return;
+    this.tableEnumHoverTarget = undefined;
+    this.editor.dispatch({ effects: closeHoverTooltip(this.tableEnumHover) });
   }
 
   private currentState(): SqlEnvironmentState {
@@ -712,6 +962,7 @@ class SqlPage {
   }
 
   private renderSignedOut(message?: string): void {
+    this.closeTableEnumHover();
     this.setAuthenticatedHeaderVisible(false);
     this.loadingView.classList.add('hidden');
     this.workspace.classList.add('hidden');
@@ -1089,6 +1340,7 @@ class SqlPage {
   }
 
   private replaceEditorDocument(source: string): void {
+    this.closeTableEnumHover();
     const current = this.editor.state.doc.toString();
     if (current === source) return;
     this.replacingDocument = true;

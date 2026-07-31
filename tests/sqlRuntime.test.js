@@ -243,6 +243,9 @@ test('SQL schema loading is bounded, batched, deduplicated, cached, and detached
           tableName,
           columnName: `${tableName}_id`,
           dataType: 'bigint',
+          isNullable: tableName === 't_0' ? 'NO' : 'YES',
+          enumComment: '状态-0 - 关闭 1 - 开启',
+          enumDefaultValue: '1',
         })));
       }
       throw new Error(`Unexpected request ${pathname}`);
@@ -257,19 +260,29 @@ test('SQL schema loading is bounded, batched, deduplicated, cached, and detached
 
   assert.deepEqual(left, right);
   assert.equal(left.tables.length, tableNames.length);
+  assert.deepEqual(left.tables[0].columns[0].enum, {
+    comment: '状态-0 - 关闭 1 - 开启',
+    nullable: false,
+    defaultValue: '1',
+  });
   assert.equal(schemaStatements.length, 3);
   assert.equal(schemaStatements.filter((statement) => /information_schema\.columns/i.test(statement)).length, 2);
   left.tables[0].name = 'mutated';
   left.tables[0].columns[0].name = 'mutated';
+  left.tables[0].columns[0].enum.comment = 'mutated';
   const cached = await runtime.getSchema('production');
   assert.equal(cached.tables[0].name, 't_0');
   assert.equal(cached.tables[0].columns[0].name, 't_0_id');
+  assert.equal(cached.tables[0].columns[0].enum.comment, '状态-0 - 关闭 1 - 开启');
   assert.equal(schemaStatements.length, 3);
 });
 
 test('SQL schema column statements quote server-owned names and enforce the batch bound', () => {
   const statement = buildSqlSchemaColumnsStatement(["ordinary", "quote'name", 'slash\\name']);
   assert.match(statement, /table_name in \('ordinary', 'quote''name', 'slash\\\\name'\)/);
+  assert.match(statement, /column_comment regexp '\[0-9\]\+\[\[:space:\]\]\*-\[\[:space:\]\]\*/);
+  assert.match(statement, /is_nullable as isNullable/);
+  assert.match(statement, /cast\(column_default as char\)/);
   assert.throws(
     () => buildSqlSchemaColumnsStatement(
       Array.from({ length: SQL_SCHEMA_TABLE_BATCH_SIZE + 1 }, (_value, index) => `t_${index}`),

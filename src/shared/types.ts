@@ -1040,9 +1040,16 @@ export interface SqlExecutionResult {
   durationMs: number;
 }
 
+export interface SqlSchemaEnumMetadata {
+  comment: string;
+  nullable: boolean;
+  defaultValue?: string;
+}
+
 export interface SqlSchemaColumn {
   name: string;
   dataType?: string;
+  enum?: SqlSchemaEnumMetadata;
 }
 
 export interface SqlSchemaTable {
