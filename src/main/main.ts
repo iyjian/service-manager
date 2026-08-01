@@ -177,6 +177,8 @@ const IPC_CHANNELS = {
   readClipboardText: 'clipboard:read-text',
   writeClipboardText: 'clipboard:write-text',
   confirmAction: 'dialog:confirm',
+  appCloseShortcutRequest: 'app:close-shortcut-request',
+  appCloseShortcutResult: 'app:close-shortcut-result',
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
@@ -337,6 +339,12 @@ const pendingRendererNotesFlushes = new Map<string, {
   timeout: ReturnType<typeof setTimeout>;
   resolve: () => void;
   reject: (error: Error) => void;
+}>();
+const CLOSE_SHORTCUT_RESPONSE_TIMEOUT_MS = 5_000;
+const pendingCloseShortcutRequests = new Map<string, {
+  senderId: number;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: (handled: boolean) => void;
 }>();
 const activeLlmModelRequests = new Set<AbortController>();
 const activeTriliumImportRequests = new Map<string, { senderId: number; controller: AbortController }>();
@@ -1113,6 +1121,38 @@ function requestRendererNotesFlush(
   });
 }
 
+function requestRendererCloseShortcut(window: BrowserWindow): Promise<boolean> {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve(false);
+  const requestId = randomUUID();
+  return new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingCloseShortcutRequests.delete(requestId);
+      resolve(true);
+    }, CLOSE_SHORTCUT_RESPONSE_TIMEOUT_MS);
+    timeout.unref();
+    pendingCloseShortcutRequests.set(requestId, {
+      senderId: window.webContents.id,
+      timeout,
+      resolve,
+    });
+    try {
+      window.webContents.send(IPC_CHANNELS.appCloseShortcutRequest, { requestId });
+    } catch {
+      clearTimeout(timeout);
+      pendingCloseShortcutRequests.delete(requestId);
+      resolve(false);
+    }
+  });
+}
+
+function isCloseWindowShortcut(input: Electron.Input): boolean {
+  if (input.type !== 'keyDown' || input.alt || input.shift) return false;
+  if (input.key.toLocaleLowerCase() !== 'w') return false;
+  return process.platform === 'darwin'
+    ? Boolean(input.meta) && !input.control
+    : Boolean(input.control) && !input.meta;
+}
+
 async function flushRendererNotes(): Promise<void> {
   const windows = rendererNotesWindows();
   await Promise.all(windows.map((window) => requestRendererNotesFlush(window)));
@@ -1419,6 +1459,21 @@ function createWindow(): BrowserWindow {
     if (event.isMainFrame && event.url === rendererUrl) return;
     if (!event.isMainFrame && (event.url === 'about:blank' || event.url.startsWith('blob:file:///'))) return;
     event.preventDefault();
+  });
+  let closeShortcutPending = false;
+  window.webContents.on('before-input-event', (event, input) => {
+    if (!isCloseWindowShortcut(input)) return;
+    event.preventDefault();
+    if (closeShortcutPending) return;
+    closeShortcutPending = true;
+    void requestRendererCloseShortcut(window).then((handled) => {
+      closeShortcutPending = false;
+      if (!handled && !window.isDestroyed()) window.close();
+    }).catch((error) => {
+      closeShortcutPending = false;
+      logRuntimeError('window:close-shortcut', error);
+      if (!window.isDestroyed()) window.close();
+    });
   });
 
   window.on('unresponsive', () => {
@@ -2095,6 +2150,15 @@ async function applyS3SharedAppData(
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on(IPC_CHANNELS.appCloseShortcutResult, (event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.handled !== 'boolean') return;
+    const pending = pendingCloseShortcutRequests.get(payload.requestId);
+    if (!pending || pending.senderId !== event.sender.id) return;
+    clearTimeout(pending.timeout);
+    pendingCloseShortcutRequests.delete(payload.requestId);
+    pending.resolve(payload.handled);
+  });
+
   ipcMain.handle(IPC_CHANNELS.listHosts, async () => {
     const hosts = getStore().listHosts();
     syncKnownForwards(hosts);

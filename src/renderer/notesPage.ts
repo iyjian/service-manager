@@ -875,6 +875,7 @@ class NotesPage {
       if (event.target === this.attachmentPreviewDialog) this.attachmentPreviewDialog.close();
     });
     window.addEventListener('beforeunload', () => this.clearAttachmentPreviewContent());
+    window.serviceApi.onCloseShortcutRequested(() => this.handleCloseShortcut());
     this.markdownToolbar.addEventListener('click', (event) => this.handleMarkdownToolbarClick(event));
     this.markdownOutlineButton.addEventListener('click', (event) => this.toggleMarkdownOutline(event));
     this.markdownOutlineMenu.addEventListener('click', (event) => this.handleMarkdownOutlineClick(event));
@@ -892,6 +893,13 @@ class NotesPage {
     this.sidebarResizeHandle.addEventListener('lostpointercapture', this.handleSidebarResizeLostCapture);
     this.sidebarResizeHandle.addEventListener('keydown', this.handleSidebarResizeKeyDown);
     document.addEventListener('keydown', this.handleDocumentFindKeyDown, true);
+  }
+
+  private async handleCloseShortcut(): Promise<boolean> {
+    if (!this.active || this.openNoteIds.length <= 1) return false;
+    const id = this.selectedId;
+    if (!id) return false;
+    return this.closeNoteTab(id);
   }
 
   show(): void {
@@ -1904,18 +1912,22 @@ class NotesPage {
     void this.selectNote(targetId, 'tab');
   }
 
-  private async closeNoteTab(id: string): Promise<void> {
+  private async closeNoteTab(id: string): Promise<boolean> {
     const index = this.openNoteIds.indexOf(id);
-    if (index < 0) return;
+    if (index < 0) return false;
     const active = this.selectedId === id;
     const selectionVersion = active ? ++this.selectionVersion : this.selectionVersion;
-    if (active) {
+    const canClose = await this.confirmCloseDirtyNoteTab(id);
+    if (!canClose) return true;
+    if (active && !this.isDirty(id)) {
       await this.flushNote(id);
       if (this.isDirty(id)) {
-        setMessage('Save the current Note before closing it.', 'error');
-        return;
+        const closeAfterFailedSave = await this.confirmCloseDirtyNoteTab(id);
+        if (!closeAfterFailedSave) return true;
       }
-      if (selectionVersion !== this.selectionVersion || this.selectedId !== id) return;
+    }
+    if (active) {
+      if (selectionVersion !== this.selectionVersion || this.selectedId !== id) return true;
     }
 
     this.openNoteIds.splice(index, 1);
@@ -1928,7 +1940,7 @@ class NotesPage {
           this.renderedTabButtonsById.get(focusId)?.select.focus({ preventScroll: true });
         });
       }
-      return;
+      return true;
     }
 
     this.releaseNoteBody(id);
@@ -1938,6 +1950,39 @@ class NotesPage {
     if (focusId) this.focusNoteTab(focusId);
     else this.newButton.focus();
     this.updateSelectedSaveStatus();
+    return true;
+  }
+
+  private async confirmCloseDirtyNoteTab(id: string): Promise<boolean> {
+    const note = this.notesById.get(id);
+    if (!note || this.deletedIds.has(id)) return true;
+    let captureError: unknown;
+    try {
+      this.captureEditorContent(id);
+    } catch (error) {
+      captureError = error;
+      this.saveErrorNoteIds.add(id);
+      this.updateListSaveIndicator(id);
+      if (this.selectedId === id) {
+        this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+      }
+    }
+    if (!captureError && !this.isDirty(id)) return true;
+
+    try {
+      return await window.serviceApi.confirmAction({
+        title: 'Close Unsaved Note?',
+        message: `Close “${note.name.trim() || 'Untitled'}” with unsaved changes?`,
+        detail: captureError
+          ? `The latest editor content could not be prepared for saving: ${toErrorMessage(captureError)}`
+          : 'The Note has changes that have not been saved yet.',
+        kind: 'warning',
+        confirmLabel: 'Close Anyway',
+      });
+    } catch (error) {
+      setMessage(`Unable to confirm Note close: ${toErrorMessage(error)}`, 'error');
+      return false;
+    }
   }
 
   private renderList(focusId?: string): void {

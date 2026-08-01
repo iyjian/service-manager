@@ -673,6 +673,7 @@ class SqlPage {
     });
     this.valueDialog.addEventListener('keydown', (event) => this.handleValueDialogSelectAll(event), true);
     this.valueDialog.addEventListener('close', () => this.clearValueDialog());
+    window.serviceApi.onCloseShortcutRequested(() => this.handleCloseShortcut());
     window.addEventListener('keydown', (event) => {
       if (!this.active || this.currentState().auth?.status !== 'signed-in') return;
       if (document.querySelector('dialog[open]')) return;
@@ -690,6 +691,16 @@ class SqlPage {
     }, true);
     this.bindSidebarResizer();
     this.bindResultResizer();
+  }
+
+  private async handleCloseShortcut(): Promise<boolean> {
+    if (!this.active) return false;
+    const state = this.currentState();
+    if (state.tabs.length <= 1) return false;
+    const key = state.activeTabKey;
+    if (!key) return false;
+    await this.closeTab(key);
+    return true;
   }
 
   private enumTableDetails(
@@ -1319,30 +1330,36 @@ class SqlPage {
     });
   }
 
-  private async closeTab(key: string): Promise<void> {
+  private async closeTab(key: string): Promise<boolean> {
     const state = this.currentState();
     const index = state.tabs.findIndex((tab) => tab.key === key);
-    if (index < 0) return;
+    if (index < 0) return false;
     const tab = state.tabs[index];
     if (!tab || tab.executing || tab.saving) {
       toast('Wait for the current query operation to finish.', 'error');
-      return;
+      return true;
     }
     if (this.isTabDirty(tab)) {
-      const confirmed = await window.serviceApi.confirmAction({
-        title: 'Close Unsaved Query?',
-        message: `Discard unsaved changes in “${tab.title}”?`,
-        detail: 'The SQL text in this tab has not been saved.',
-        kind: 'warning',
-        confirmLabel: 'Discard',
-      });
-      if (!confirmed) return;
+      let confirmed = false;
+      try {
+        confirmed = await window.serviceApi.confirmAction({
+          title: 'Close Unsaved Query?',
+          message: `Discard unsaved changes in “${tab.title}”?`,
+          detail: 'The SQL text in this tab has not been saved.',
+          kind: 'warning',
+          confirmLabel: 'Discard',
+        });
+      } catch (error) {
+        toast(toErrorMessage(error), 'error');
+        return true;
+      }
+      if (!confirmed) return true;
     }
     const wasActive = state.activeTabKey === key;
     state.tabs.splice(index, 1);
     if (state.tabs.length === 0) {
       this.createNewTab(false);
-      return;
+      return true;
     }
     if (wasActive) state.activeTabKey = state.tabs[Math.min(index, state.tabs.length - 1)]?.key;
     if (wasActive) this.replaceEditorDocument(this.currentTab()?.source ?? '');
@@ -1350,6 +1367,7 @@ class SqlPage {
     this.renderRecordList();
     this.renderResult();
     this.renderBusyState();
+    return true;
   }
 
   private replaceEditorDocument(source: string): void {

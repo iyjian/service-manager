@@ -50,6 +50,21 @@ import type {
   UpdateState,
 } from '../shared/types';
 
+const closeShortcutListeners = new Set<() => boolean | Promise<boolean>>();
+
+ipcRenderer.on('app:close-shortcut-request', (_event: Electron.IpcRendererEvent, value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const { requestId } = value as { requestId?: unknown };
+  if (typeof requestId !== 'string' || requestId.length === 0 || requestId.length > 128) return;
+  void Promise.all([...closeShortcutListeners].map((listener) => (
+    Promise.resolve()
+      .then(() => listener())
+      .then(Boolean, () => false)
+  ))).then((results) => {
+    ipcRenderer.send('app:close-shortcut-result', { requestId, handled: results.some(Boolean) });
+  });
+});
+
 const api: ServiceApi = {
   listHosts: () => ipcRenderer.invoke('host:list'),
   getAppMemoryUsage: () => ipcRenderer.invoke('app:memory-usage'),
@@ -82,6 +97,10 @@ const api: ServiceApi = {
   readClipboardText: () => ipcRenderer.invoke('clipboard:read-text'),
   writeClipboardText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   confirmAction: (options) => ipcRenderer.invoke('dialog:confirm', options),
+  onCloseShortcutRequested: (listener) => {
+    closeShortcutListeners.add(listener);
+    return () => closeShortcutListeners.delete(listener);
+  },
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, change: ServiceStatusChange): void => {
       listener(change);

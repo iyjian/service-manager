@@ -53,6 +53,19 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /if \(!wasDirty \|\| hadSaveError\)\s*this\.updateListSaveIndicator\(note\.id\)[\s\S]*?if \(refreshSearchResults\)\s*this\.queueSearchRender\(\)/);
   assert.match(notesPage, /if \(!this\.deletedIds\.has\(id\)\) \{[\s\S]*?this\.saveErrorNoteIds\.add\(id\)[\s\S]*?if \(this\.selectedId === id\)/);
   assert.ok((notesPage.match(/this\.updateListSaveIndicator\(id\)/g) ?? []).length >= 2);
+  assert.match(notesPage, /window\.serviceApi\.onCloseShortcutRequested\(\(\) => this\.handleCloseShortcut\(\)\)/);
+  assert.match(
+    notesPage,
+    /async handleCloseShortcut\(\) \{[\s\S]*?if \(!this\.active \|\| this\.openNoteIds\.length <= 1\)\s*return false;[\s\S]*?return this\.closeNoteTab\(id\);/,
+  );
+  assert.match(
+    notesPage,
+    /async closeNoteTab\(id\) \{[\s\S]*?const canClose = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?if \(!canClose\)\s*return true;[\s\S]*?await this\.flushNote\(id\);[\s\S]*?const closeAfterFailedSave = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?this\.openNoteIds\.splice\(index, 1\);/,
+  );
+  assert.match(
+    notesPage,
+    /async confirmCloseDirtyNoteTab\(id\) \{[\s\S]*?this\.captureEditorContent\(id\);[\s\S]*?Close Unsaved Note\?[\s\S]*?Close Anyway[\s\S]*?return false;/,
+  );
   assert.match(notesPage, /normalizedNameChanged = current\.name !== saved\.name[\s\S]*?if \(normalizedNameChanged && current\) \{[\s\S]*?this\.updateListNoteName\(current\)[\s\S]*?this\.queueSearchRender\(\)[\s\S]*?\}\s*this\.updateListSaveIndicator\(id\)/);
   assert.match(notesPage, /if \(this\.saveStatus\.textContent === text && this\.saveStatus\.dataset\.state === state\)\s*return/);
   assert.match(html, /<script type="importmap">[\s\S]*?"codemirror": "\.\/vendor\/codemirror\.js"/);

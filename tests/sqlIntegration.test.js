@@ -110,6 +110,15 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /sqlCurrentStatementHighlight/);
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
+  assert.match(page, /window\.serviceApi\.onCloseShortcutRequested\(\(\) => this\.handleCloseShortcut\(\)\)/);
+  assert.match(
+    page,
+    /async handleCloseShortcut\(\) \{[\s\S]*?if \(!this\.active\)\s*return false;[\s\S]*?if \(state\.tabs\.length <= 1\)\s*return false;[\s\S]*?await this\.closeTab\(key\);[\s\S]*?return true;/,
+  );
+  assert.match(
+    page,
+    /async closeTab\(key\) \{[\s\S]*?if \(index < 0\)\s*return false;[\s\S]*?toast\('Wait for the current query operation to finish\.', 'error'\);\s*return true;[\s\S]*?Close Unsaved Query\?[\s\S]*?if \(!confirmed\)\s*return true;/,
+  );
   assert.match(page, /sql:editor-font-size/);
   assert.match(page, /sql:editor-font-family/);
   assert.match(page, /clampSqlEditorFontSize/);
@@ -178,6 +187,18 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.doesNotMatch(page, /sessionUser\.textContent\s*=.*user\?\.name/);
   assert.match(page, /textContent = formatSqlCell/);
   assert.doesNotMatch(page, /innerHTML\s*=\s*[^;]*(?:record\.name|result|row\[)/);
+  assert.match(preload, /const closeShortcutListeners = new Set\(\)/);
+  assert.match(preload, /onCloseShortcutRequested/);
+  assert.match(preload, /closeShortcutListeners\.add\(listener\)/);
+  assert.match(preload, /return \(\) => closeShortcutListeners\.delete\(listener\)/);
+  assert.match(preload, /ipcRenderer\.on\('app:close-shortcut-request'/);
+  assert.match(preload, /Promise\.all\(\[\.\.\.closeShortcutListeners\]\.map/);
+  assert.match(preload, /ipcRenderer\.send\('app:close-shortcut-result', \{ requestId, handled: results\.some\(Boolean\) \}\)/);
+  assert.match(main, /window\.webContents\.on\('before-input-event', \(event, input\) =>/);
+  assert.match(main, /requestRendererCloseShortcut\(window\)/);
+  assert.match(main, /pendingCloseShortcutRequests\.delete\(requestId\);\s*resolve\(true\);/);
+  assert.match(main, /if \(!handled && !window\.isDestroyed\(\)\)\s*window\.close\(\)/);
+  assert.match(main, /pending\.senderId !== event\.sender\.id/);
 
   for (const channel of [
     'sql:auth-state',

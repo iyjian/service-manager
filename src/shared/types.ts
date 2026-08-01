@@ -1269,6 +1269,7 @@ export interface ServiceApi {
   readClipboardText: () => Promise<string>;
   writeClipboardText: (text: string) => Promise<void>;
   confirmAction: (options: ConfirmDialogOptions) => Promise<boolean>;
+  onCloseShortcutRequested: (listener: () => boolean | Promise<boolean>) => () => void;
   onServiceStatusChanged: (listener: (change: ServiceStatusChange) => void) => () => void;
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;
   onUpdateStateChanged: (listener: (state: UpdateState) => void) => () => void;
