@@ -4953,7 +4953,7 @@
 
   .sql-value-dialog-shell {
     @apply grid h-full min-h-0 overflow-hidden;
-    grid-template-rows: 48px auto minmax(0, 1fr);
+    grid-template-rows: 48px auto auto minmax(0, 1fr);
   }
 
   .sql-value-dialog-head,
@@ -5002,6 +5002,48 @@
     @apply bg-white text-zinc-950 shadow-sm ring-1 ring-zinc-200;
   }
 
+  .sql-value-find-bar {
+    @apply flex h-10 items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5;
+  }
+
+  .sql-value-find-input-wrap {
+    @apply flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-transparent bg-white px-1.5 text-zinc-400 transition focus-within:border-zinc-300 focus-within:ring-2 focus-within:ring-zinc-200;
+  }
+
+  .sql-value-find-input-wrap > svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .sql-value-find-input {
+    @apply h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-zinc-900 outline-none placeholder:text-zinc-400;
+  }
+
+  .sql-value-find-input::-webkit-search-cancel-button { display: none; }
+
+  .sql-value-find-counter {
+    @apply min-w-[52px] shrink-0 text-center text-[10.5px] tabular-nums text-zinc-500;
+  }
+
+  .sql-value-find-button {
+    @apply inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-500;
+  }
+
+  .sql-value-find-button svg {
+    @apply h-4 w-4;
+  }
+
+  .sql-value-find-bar[data-no-results='true'] .sql-value-find-input-wrap {
+    @apply border-red-200 bg-red-50 focus-within:border-red-300 focus-within:bg-red-50 focus-within:ring-red-100;
+  }
+
+  .sql-value-find-match {
+    @apply rounded-sm bg-amber-200/80;
+  }
+
+  .sql-value-find-match-active {
+    @apply bg-orange-300 ring-1 ring-inset ring-orange-500;
+  }
+
   .sql-value-content {
     @apply min-h-0 min-w-0 overflow-hidden bg-white;
   }
@@ -5012,7 +5054,7 @@
   }
 
   .sql-value-code {
-    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-zinc-950 p-4 font-mono leading-5 text-zinc-100 outline-none;
+    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-white p-4 font-mono leading-5 text-zinc-900 outline-none;
     font-size: calc(var(--sql-editor-font-size) * 0.8888889);
     tab-size: 2;
   }
@@ -5072,7 +5114,7 @@
   }
 
   .sql-value-code .hljs-comment,
-  .sql-value-code .hljs-quote { color: #8b949e; }
+  .sql-value-code .hljs-quote { color: #6e7781; }
   .sql-value-code .hljs-variable,
   .sql-value-code .hljs-template-variable,
   .sql-value-code .hljs-attribute,
@@ -5081,21 +5123,21 @@
   .sql-value-code .hljs-regexp,
   .sql-value-code .hljs-link,
   .sql-value-code .hljs-selector-id,
-  .sql-value-code .hljs-selector-class { color: #f98181; }
+  .sql-value-code .hljs-selector-class { color: #cf222e; }
   .sql-value-code .hljs-number,
   .sql-value-code .hljs-meta,
   .sql-value-code .hljs-built_in,
   .sql-value-code .hljs-builtin-name,
   .sql-value-code .hljs-literal,
   .sql-value-code .hljs-type,
-  .sql-value-code .hljs-params { color: #fbbc88; }
+  .sql-value-code .hljs-params { color: #0550ae; }
   .sql-value-code .hljs-string,
   .sql-value-code .hljs-symbol,
-  .sql-value-code .hljs-bullet { color: #b9f18d; }
+  .sql-value-code .hljs-bullet { color: #0a3069; }
   .sql-value-code .hljs-title,
-  .sql-value-code .hljs-section { color: #faf594; }
+  .sql-value-code .hljs-section { color: #8250df; }
   .sql-value-code .hljs-keyword,
-  .sql-value-code .hljs-selector-tag { color: #70cff8; }
+  .sql-value-code .hljs-selector-tag { color: #cf222e; }
   .sql-value-code .hljs-emphasis { font-style: italic; }
   .sql-value-code .hljs-strong { font-weight: 700; }
 

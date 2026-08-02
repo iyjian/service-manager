@@ -12,16 +12,24 @@ import type {
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
-import { EditorState } from '@codemirror/state';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
 import {
   activateHover,
   closeHoverTooltip,
+  Decoration,
   hoverTooltip,
+  type DecorationSet,
   type Tooltip,
 } from '@codemirror/view';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from './codeHighlight.js';
 import { registerPage } from './nav.js';
+import {
+  findNotesTextMatches,
+  initialNotesFindIndex,
+  moveNotesFindIndex,
+  type NotesFindMatch,
+} from './notesFind.js';
 import {
   buildSqlCompletionNamespace,
   defaultTableColumnCompletions,
@@ -77,7 +85,36 @@ const SQL_MAX_SELECT_LIMIT = 10_000;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const SQL_ENUM_TOOLTIP_MAX_ROWS = 100;
 const SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS = 180;
+const SQL_VALUE_DETECT_LANGUAGES: ReadonlySet<string> = new Set(['markdown']);
+const SQL_VALUE_DETECT_MIN_RELEVANCE = 5;
+const SQL_VALUE_MARKDOWN_PATTERNS: readonly RegExp[] = Object.freeze([
+  /^#{1,6}\s+\S/m,
+  /^\s*>\s?/m,
+  /^\s*[-*+]\s+\S/m,
+  /^\s*(?:\d{1,3})[.)]\s+\S/m,
+  /^```/m,
+  /^~~~/m,
+  /!\[[^\]]*\]\([^)\s]+\)/,
+  /\[[^\]\n]*[A-Za-z\u4e00-\u9fa5][^\]\n]*\]\([^)\s]+\)/,
+  /^\s*\|.*\|/m,
+  /\*\*[^*\n]+\*\*/,
+  /^\s*([-*_])\s*\1\s*\1\s*$/m,
+  /^[^\n]+\n\s*(?:={3,}|-{3,})\s*$/m,
+]);
 const sqlValueLowlight = createLowlight(common);
+
+const SQL_VALUE_FIND_DECORATION = StateEffect.define<DecorationSet>();
+const sqlValueFindDecorationField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decorations, transaction) {
+    let next = decorations.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(SQL_VALUE_FIND_DECORATION)) next = effect.value;
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 interface SqlQueryTab {
   key: string;
@@ -346,14 +383,23 @@ function boundedSqlValue(value: string): { text: string; truncated: boolean } {
   };
 }
 
+function isMarkdownStructure(value: string): boolean {
+  return SQL_VALUE_MARKDOWN_PATTERNS.some((pattern) => pattern.test(value));
+}
+
 export function detectSqlValueLanguage(value: string): string | undefined {
   const bounded = boundedSqlValue(value);
   if (bounded.text.length > CODE_HIGHLIGHT_LIMITS.automaticCharacters) return undefined;
+  if (isMarkdownStructure(bounded.text)) return 'markdown';
   try {
     const root = sqlValueLowlight.highlightAuto(bounded.text);
-    return typeof root.data?.language === 'string'
+    const candidate = typeof root.data?.language === 'string'
       ? findCodeHighlightLanguage(root.data.language)?.value
       : undefined;
+    if (!candidate || !SQL_VALUE_DETECT_LANGUAGES.has(candidate)) return undefined;
+    const relevance = typeof root.data?.relevance === 'number' ? root.data.relevance : 0;
+    if (relevance < SQL_VALUE_DETECT_MIN_RELEVANCE) return undefined;
+    return candidate;
   } catch {
     return undefined;
   }
@@ -373,13 +419,15 @@ function highlightedSqlValue(
   const bounded = boundedSqlValue(value);
   let detectedLanguage: string | undefined = language;
   try {
-    const root = language
-      ? bounded.text.length <= CODE_HIGHLIGHT_LIMITS.explicitCharacters
+    let root: ReturnType<typeof sqlValueLowlight.highlight> | undefined;
+    if (language) {
+      root = bounded.text.length <= CODE_HIGHLIGHT_LIMITS.explicitCharacters
         ? sqlValueLowlight.highlight(language, bounded.text)
-        : undefined
-      : detectAutomatically && bounded.text.length <= CODE_HIGHLIGHT_LIMITS.automaticCharacters
-        ? sqlValueLowlight.highlightAuto(bounded.text)
         : undefined;
+    } else if (detectAutomatically && bounded.text.length <= CODE_HIGHLIGHT_LIMITS.automaticCharacters) {
+      const detected = detectSqlValueLanguage(bounded.text);
+      if (detected) root = sqlValueLowlight.highlight(detected, bounded.text);
+    }
     if (root) {
       detectedLanguage = typeof root.data?.language === 'string' ? root.data.language : detectedLanguage;
       for (const child of root.children) appendSqlHighlightNode(code, child);
@@ -509,6 +557,12 @@ class SqlPage {
   private readonly valueModes = requireElement<HTMLElement>('#sql-value-modes');
   private readonly valueContent = requireElement<HTMLElement>('#sql-value-content');
   private readonly valueClose = requireElement<HTMLButtonElement>('#sql-value-close');
+  private readonly valueFindBar = requireElement<HTMLElement>('#sql-value-find-bar');
+  private readonly valueFindInput = requireElement<HTMLInputElement>('#sql-value-find-input');
+  private readonly valueFindCounter = requireElement<HTMLElement>('#sql-value-find-counter');
+  private readonly valueFindPrevious = requireElement<HTMLButtonElement>('#sql-value-find-previous');
+  private readonly valueFindNext = requireElement<HTMLButtonElement>('#sql-value-find-next');
+  private readonly valueFindClose = requireElement<HTMLButtonElement>('#sql-value-find-close');
   private readonly sidebarResizer = requireElement<HTMLElement>('#sql-sidebar-resizer');
   private readonly resultResizer = requireElement<HTMLElement>('#sql-result-resizer');
   private readonly queryWorkspace = requireElement<HTMLElement>('#sql-query-workspace');
@@ -549,6 +603,16 @@ class SqlPage {
   private resultTable?: SqlVirtualResultTable;
   private valueDialogGeneration = 0;
   private valueRaw = '';
+  private valueFormatted?: string;
+  private valuePresentation?: SqlCellPresentation;
+  private valueMode: SqlValueModeId = 'raw';
+  private valueDetectedLanguage?: string;
+  private valueFindOpen = false;
+  private valueFindMatches: readonly NotesFindMatch[] = [];
+  private valueFindActiveIndex = -1;
+  private valueFindTruncated = false;
+  private valueFindFrame?: number;
+  private valueFindEscapeGuard = false;
   private valueCopyResetTimer?: number;
   private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
   private tableEnumHoverCloseTimer?: number;
@@ -667,10 +731,29 @@ class SqlPage {
     this.searchInput.addEventListener('input', () => this.renderRecordList());
     this.valueCopyRaw.addEventListener('click', () => void this.copyRawValue());
     this.valueClose.addEventListener('click', () => this.closeValueDialog());
+    this.valueFindInput.addEventListener('input', () => this.scheduleValueFind());
+    this.valueFindPrevious.addEventListener('click', () => this.moveValueFind(-1));
+    this.valueFindNext.addEventListener('click', () => this.moveValueFind(1));
+    this.valueFindClose.addEventListener('click', () => this.closeValueFind());
+    this.valueFindInput.addEventListener('keydown', (event) => {
+      if (event.isComposing) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this.moveValueFind(event.shiftKey ? -1 : 1);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        this.closeValueFind();
+      }
+    });
     this.valueDialog.addEventListener('cancel', (event) => {
       event.preventDefault();
+      if (this.valueFindEscapeGuard) {
+        this.valueFindEscapeGuard = false;
+        return;
+      }
       this.closeValueDialog();
     });
+    window.addEventListener('keydown', (event) => this.handleValueDialogFindShortcut(event), true);
     this.valueDialog.addEventListener('keydown', (event) => this.handleValueDialogSelectAll(event), true);
     this.valueDialog.addEventListener('close', () => this.clearValueDialog());
     window.serviceApi.onCloseShortcutRequested(() => this.handleCloseShortcut());
@@ -1959,11 +2042,14 @@ class SqlPage {
     this.clearValueDialog();
     this.valueDialogTitle.textContent = column;
     this.valueRaw = presentation.raw;
+    this.valueFormatted = presentation.kind === 'json' ? presentation.formatted : undefined;
+    this.valuePresentation = presentation;
     this.valueCopyRaw.disabled = false;
     this.resetRawCopyFeedback();
     const detectedLanguage = presentation.kind === 'text'
       ? detectSqlValueLanguage(presentation.raw)
       : undefined;
+    this.valueDetectedLanguage = detectedLanguage;
     const modes = sqlValueModesForKind(presentation.kind, detectedLanguage);
 
     const buttons = modes.map((mode, index) => {
@@ -1981,12 +2067,15 @@ class SqlPage {
           candidate.setAttribute('aria-selected', String(selected));
           candidate.tabIndex = selected ? 0 : -1;
         }
+        this.valueMode = mode.id;
         this.renderValueMode(presentation, mode.id, detectedLanguage);
+        if (this.valueFindOpen) this.scheduleValueFind();
       });
       return button;
     });
     this.valueModes.classList.remove('hidden');
     this.valueModes.replaceChildren(...buttons);
+    this.valueMode = modes[0]?.id ?? 'raw';
     this.renderValueMode(presentation, modes[0]?.id ?? 'raw', detectedLanguage);
     this.valueDialog.showModal();
     window.requestAnimationFrame(() => (buttons[0] ?? this.valueClose).focus());
@@ -2033,6 +2122,7 @@ class SqlPage {
           extensions: [
             basicSetup,
             json(),
+            sqlValueFindDecorationField,
             EditorState.readOnly.of(true),
             EditorView.editable.of(false),
             EditorView.contentAttributes.of({
@@ -2047,7 +2137,9 @@ class SqlPage {
       return;
     }
 
-    const source = presentation.raw;
+    const source = presentation.kind === 'json' && presentation.formatted !== undefined
+      ? presentation.formatted
+      : presentation.raw;
     const language = mode === 'highlighted'
       ? detectedLanguage
       : presentation.kind === 'json'
@@ -2076,6 +2168,8 @@ class SqlPage {
       || event.shiftKey
       || event.isComposing
       || event.key.toLocaleLowerCase() !== 'a') return;
+
+    if (document.activeElement === this.valueFindInput) return;
 
     if (this.valueEditor) {
       const selection = this.valueEditor.state.selection;
@@ -2122,6 +2216,213 @@ class SqlPage {
     selected.addRange(contentRange);
   }
 
+  private handleValueDialogFindShortcut(event: KeyboardEvent): void {
+    if (!this.valueDialog.open || event.isComposing) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    if (modifier && !event.altKey && !event.shiftKey
+      && event.key.toLocaleLowerCase() === 'f') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openValueFind();
+      return;
+    }
+    if (event.key === 'F3') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.valueFindOpen) {
+        this.moveValueFind(event.shiftKey ? -1 : 1);
+      } else {
+        this.openValueFind();
+      }
+      return;
+    }
+    if (event.key === 'Escape' && this.valueFindOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.valueFindEscapeGuard = true;
+      this.closeValueFind();
+    }
+  }
+
+  private openValueFind(): void {
+    if (!this.valueDialog.open) return;
+    this.valueFindOpen = true;
+    this.valueFindBar.classList.remove('hidden');
+    this.valueFindBar.setAttribute('aria-hidden', 'false');
+    this.valueFindInput.focus({ preventScroll: true });
+    this.valueFindInput.select();
+    window.requestAnimationFrame(() => {
+      if (this.valueFindOpen && this.valueDialog.open) {
+        this.valueFindInput.focus({ preventScroll: true });
+        this.valueFindInput.select();
+      }
+    });
+    this.refreshValueFind(false);
+  }
+
+  private scheduleValueFind(): void {
+    if (!this.valueFindOpen || this.valueFindFrame !== undefined) return;
+    this.valueFindFrame = window.requestAnimationFrame(() => {
+      this.valueFindFrame = undefined;
+      this.refreshValueFind(true);
+    });
+  }
+
+  private refreshValueFind(reveal: boolean): void {
+    if (!this.valueFindOpen) return;
+    const anchor = this.valueFindActiveIndex >= 0
+      ? (this.valueFindMatches[this.valueFindActiveIndex]?.from ?? 0)
+      : 0;
+    const result = findNotesTextMatches(this.currentValueFindText(), this.valueFindInput.value);
+    this.valueFindMatches = result.matches;
+    this.valueFindTruncated = result.truncated;
+    this.valueFindActiveIndex = initialNotesFindIndex(this.valueFindMatches, anchor);
+    this.applyValueFindHighlights();
+    this.updateValueFindControls();
+    if (reveal) this.revealValueFindMatch();
+  }
+
+  private currentValueFindText(): string {
+    if (this.valueEditor) return this.valueEditor.state.doc.toString();
+    const code = this.valueContent.querySelector<HTMLElement>('.sql-value-code > code');
+    if (code?.textContent) return code.textContent;
+    if (this.valueMode === 'preview') return this.valueRaw;
+    return '';
+  }
+
+  private applyValueFindHighlights(): void {
+    if (this.valueEditor) {
+      this.applyValueEditorFindHighlights();
+      return;
+    }
+    const code = this.valueContent.querySelector<HTMLElement>('.sql-value-code > code');
+    if (!code) return;
+    const text = code.textContent ?? '';
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const [index, match] of this.valueFindMatches.entries()) {
+      if (match.from < cursor || match.from > text.length || match.to > text.length) continue;
+      if (match.from > cursor) fragment.append(text.slice(cursor, match.from));
+      const mark = document.createElement('mark');
+      mark.className = index === this.valueFindActiveIndex
+        ? 'sql-value-find-match-active'
+        : 'sql-value-find-match';
+      mark.textContent = text.slice(match.from, match.to);
+      fragment.append(mark);
+      cursor = match.to;
+    }
+    if (cursor < text.length) fragment.append(text.slice(cursor));
+    code.replaceChildren(fragment);
+  }
+
+  private applyValueEditorFindHighlights(): void {
+    const editor = this.valueEditor;
+    if (!editor) return;
+    const decorations = this.valueFindMatches.map((match, index) =>
+      Decoration.mark({
+        class: index === this.valueFindActiveIndex
+          ? 'sql-value-find-match-active'
+          : 'sql-value-find-match',
+      }).range(match.from, match.to),
+    );
+    editor.dispatch({
+      effects: SQL_VALUE_FIND_DECORATION.of(Decoration.set(decorations, true)),
+    });
+  }
+
+  private moveValueFind(direction: 1 | -1): void {
+    if (!this.valueFindOpen) return;
+    this.valueFindActiveIndex = moveNotesFindIndex(
+      this.valueFindActiveIndex,
+      this.valueFindMatches.length,
+      direction,
+    );
+    this.applyValueFindHighlights();
+    this.updateValueFindControls();
+    this.revealValueFindMatch();
+    this.valueFindInput.focus({ preventScroll: true });
+  }
+
+  private revealValueFindMatch(): void {
+    const match = this.valueFindMatches[this.valueFindActiveIndex];
+    if (!match) return;
+    if (this.valueEditor) {
+      this.valueEditor.dispatch({
+        effects: EditorView.scrollIntoView(match.from, { y: 'center' }),
+      });
+      return;
+    }
+    const active = this.valueContent.querySelector<HTMLElement>('.sql-value-find-match-active');
+    const container = this.valueContent.querySelector<HTMLElement>('.sql-value-code');
+    if (!active || !container) return;
+    const containerRect = container.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    if (activeRect.top < containerRect.top + 16 || activeRect.bottom > containerRect.bottom - 16) {
+      container.scrollTop += activeRect.top - containerRect.top - 24;
+    }
+    if (activeRect.left < containerRect.left + 8 || activeRect.right > containerRect.right - 8) {
+      container.scrollLeft += activeRect.left - containerRect.left - 24;
+    }
+  }
+
+  private updateValueFindControls(): void {
+    const count = this.valueFindMatches.length;
+    const current = this.valueFindActiveIndex >= 0 ? this.valueFindActiveIndex + 1 : 0;
+    const total = `${count.toLocaleString('en-US')}${this.valueFindTruncated ? '+' : ''}`;
+    this.valueFindCounter.textContent = `${current.toLocaleString('en-US')} / ${total}`;
+    this.valueFindCounter.setAttribute(
+      'aria-label',
+      count > 0
+        ? `${current.toLocaleString('en-US')} of ${total} matches`
+        : 'No matches',
+    );
+    this.valueFindPrevious.disabled = count === 0;
+    this.valueFindNext.disabled = count === 0;
+    this.valueFindBar.dataset.noResults = String(Boolean(this.valueFindInput.value) && count === 0);
+  }
+
+  private closeValueFind(): void {
+    if (!this.valueFindOpen) return;
+    this.valueFindOpen = false;
+    if (this.valueFindFrame !== undefined) {
+      window.cancelAnimationFrame(this.valueFindFrame);
+      this.valueFindFrame = undefined;
+    }
+    this.valueFindInput.value = '';
+    this.valueFindInput.blur();
+    if (this.valuePresentation) {
+      this.renderValueMode(this.valuePresentation, this.valueMode, this.valueDetectedLanguage);
+    }
+    this.resetValueFindControls();
+  }
+
+  private resetValueFind(): void {
+    this.valueFindEscapeGuard = false;
+    this.valueFindOpen = false;
+    this.valueFindMatches = [];
+    this.valueFindActiveIndex = -1;
+    this.valueFindTruncated = false;
+    if (this.valueFindFrame !== undefined) {
+      window.cancelAnimationFrame(this.valueFindFrame);
+      this.valueFindFrame = undefined;
+    }
+    this.valueFindInput.value = '';
+    this.resetValueFindControls();
+    this.valuePresentation = undefined;
+    this.valueMode = 'raw';
+    this.valueDetectedLanguage = undefined;
+  }
+
+  private resetValueFindControls(): void {
+    this.valueFindBar.classList.add('hidden');
+    this.valueFindBar.setAttribute('aria-hidden', 'true');
+    this.valueFindCounter.textContent = '0 / 0';
+    this.valueFindCounter.setAttribute('aria-label', 'No matches');
+    this.valueFindPrevious.disabled = true;
+    this.valueFindNext.disabled = true;
+    delete this.valueFindBar.dataset.noResults;
+  }
+
   private closeValueDialog(): void {
     if (this.valueDialog.open) {
       this.valueDialog.close();
@@ -2133,14 +2434,15 @@ class SqlPage {
   private async copyRawValue(): Promise<void> {
     if (!this.valueDialog.open || this.valueCopyRaw.disabled) return;
     const generation = this.valueDialogGeneration;
-    const raw = this.valueRaw;
+    const text = this.valueFormatted ?? this.valueRaw;
     this.valueCopyRaw.disabled = true;
     try {
-      await window.serviceApi.writeClipboardText(raw);
+      await window.serviceApi.writeClipboardText(text);
       if (generation !== this.valueDialogGeneration || !this.valueDialog.open) return;
       this.valueCopyRaw.dataset.copied = 'true';
-      this.valueCopyRaw.setAttribute('aria-label', 'Raw value copied');
-      this.valueCopyRaw.title = 'Raw value copied';
+      const copiedLabel = this.valueFormatted !== undefined ? 'Formatted value copied' : 'Raw value copied';
+      this.valueCopyRaw.setAttribute('aria-label', copiedLabel);
+      this.valueCopyRaw.title = copiedLabel;
       if (this.valueCopyResetTimer !== undefined) window.clearTimeout(this.valueCopyResetTimer);
       this.valueCopyResetTimer = window.setTimeout(() => {
         this.valueCopyResetTimer = undefined;
@@ -2160,9 +2462,10 @@ class SqlPage {
   private resetRawCopyFeedback(): void {
     delete this.valueCopyRaw.dataset.copied;
     const column = this.valueDialogTitle.textContent?.trim();
+    const verb = this.valueFormatted !== undefined ? 'formatted' : 'raw';
     const label = column && column !== 'Cell value'
-      ? `Copy raw ${column} value`
-      : 'Copy raw cell value';
+      ? `Copy ${verb} ${column} value`
+      : `Copy ${verb} cell value`;
     this.valueCopyRaw.setAttribute('aria-label', label);
     this.valueCopyRaw.title = label;
   }
@@ -2170,6 +2473,8 @@ class SqlPage {
   private clearValueDialog(): void {
     this.valueDialogGeneration += 1;
     this.valueRaw = '';
+    this.valueFormatted = undefined;
+    this.resetValueFind();
     if (this.valueCopyResetTimer !== undefined) {
       window.clearTimeout(this.valueCopyResetTimer);
       this.valueCopyResetTimer = undefined;

@@ -33,6 +33,11 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   );
   assert.match(html, /id="sql-value-modes"/);
   assert.match(html, /id="sql-value-content"/);
+  assert.match(html, /id="sql-value-find-bar" class="sql-value-find-bar hidden"/);
+  assert.match(html, /id="sql-value-find-input"/);
+  assert.match(html, /id="sql-value-find-previous"/);
+  assert.match(html, /id="sql-value-find-next"/);
+  assert.match(html, /id="sql-value-find-close"/);
   assert.doesNotMatch(html, /id="sql-result-status"/);
   assert.match(html, /id="sql-session-actions" class="sql-session-actions hidden"/);
   assert.doesNotMatch(html, /Tips:/);
@@ -90,6 +95,9 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-result-cell-detail/);
   assert.match(styles, /\.sql-value-dialog/);
   assert.match(styles, /\.sql-value-copy-raw/);
+  assert.match(styles, /\.sql-value-find-bar\{/);
+  assert.match(styles, /\.sql-value-find-input\{/);
+  assert.match(styles, /\.sql-value-find-match-active\{/);
   assert.match(
     styles,
     /\.sql-value-code\.sql-value-code-raw\{[^}]*white-space:pre-wrap[^}]*overflow-wrap:anywhere/,
@@ -161,7 +169,12 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /detectSqlValueLanguage/);
   assert.match(page, /mode === 'highlighted'/);
   assert.match(page, /valueModes\.classList\.remove\('hidden'\)/);
-  assert.match(page, /window\.serviceApi\.writeClipboardText\(raw\)/);
+  assert.match(page, /const text = this\.valueFormatted \?\? this\.valueRaw;/);
+  assert.match(page, /window\.serviceApi\.writeClipboardText\(text\)/);
+  assert.match(page, /findNotesTextMatches\(this\.currentValueFindText\(\), this\.valueFindInput\.value\)/);
+  assert.match(page, /openValueFind\(\)/);
+  assert.match(page, /moveValueFind\(event\.shiftKey \? -1 : 1\)/);
+  assert.match(page, /sql-value-find-match-active/);
   assert.match(page, /rawCode\?\.classList\.add\('sql-value-code-raw'\)/);
   assert.match(page, /handleValueDialogSelectAll/);
   assert.match(page, /selectedRange\.compareBoundaryPoints\(Range\.START_TO_START, contentRange\)/);
