@@ -30,6 +30,7 @@ export class SqlVirtualResultTable {
   private rowHeight = SQL_RESULT_ESTIMATED_ROW_HEIGHT;
   private renderedStart = -1;
   private renderedEnd = -1;
+  private selectedRowIndex: number | undefined;
   private renderFrame?: number;
   private measureFrame?: number;
   private destroyed = false;
@@ -79,6 +80,7 @@ export class SqlVirtualResultTable {
     if (columnElements.length > 0) this.applyStableColumnWidths(table, columnElements);
     this.host.addEventListener('scroll', this.handleScroll, { passive: true });
     this.host.addEventListener('click', this.handleClick);
+    this.host.addEventListener('dblclick', this.handleDblClick);
     this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
     this.resizeObserver.observe(this.host);
     this.renderWindow(true);
@@ -89,6 +91,7 @@ export class SqlVirtualResultTable {
     this.destroyed = true;
     this.host.removeEventListener('scroll', this.handleScroll);
     this.host.removeEventListener('click', this.handleClick);
+    this.host.removeEventListener('dblclick', this.handleDblClick);
     this.resizeObserver.disconnect();
     if (this.renderFrame !== undefined) window.cancelAnimationFrame(this.renderFrame);
     if (this.measureFrame !== undefined) window.cancelAnimationFrame(this.measureFrame);
@@ -103,6 +106,11 @@ export class SqlVirtualResultTable {
   private readonly handleClick = (event: MouseEvent): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    const clickedRow = target.closest<HTMLTableRowElement>('tr[data-sql-result-row]');
+    if (clickedRow && this.host.contains(clickedRow)) {
+      const rowIndex = Number(clickedRow.dataset.sqlResultRow);
+      this.selectRow(Number.isInteger(rowIndex) ? rowIndex : undefined);
+    }
     const detail = target.closest<HTMLButtonElement>('[data-sql-cell-detail="true"]');
     if (!detail || !this.host.contains(detail)) return;
     const rowIndex = Number(detail.dataset.sqlRowIndex);
@@ -112,6 +120,38 @@ export class SqlVirtualResultTable {
     if (!row || column === undefined) return;
     this.onOpenValue(column, sqlCellPresentation(row[column]));
   };
+
+  private readonly handleDblClick = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const cell = target.closest<HTMLTableCellElement>('td');
+    if (!cell || !this.host.contains(cell)) return;
+    const row = cell.closest<HTMLTableRowElement>('tr[data-sql-result-row]');
+    if (!row) return;
+    const rowIndex = Number(row.dataset.sqlResultRow);
+    const dataRow = this.result.rows[rowIndex];
+    if (!dataRow) return;
+    const columnIndex = Array.from(row.cells).indexOf(cell);
+    const column = this.result.columns[columnIndex];
+    if (column === undefined) return;
+    this.onOpenValue(column, sqlCellPresentation(dataRow[column]));
+  };
+
+  private selectRow(rowIndex: number | undefined): void {
+    if (this.selectedRowIndex === rowIndex) return;
+    const previous = this.selectedRowIndex;
+    this.selectedRowIndex = rowIndex;
+    if (previous !== undefined) {
+      this.body
+        .querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${previous}"]`)
+        ?.classList.remove('sql-result-row-selected');
+    }
+    if (rowIndex !== undefined) {
+      this.body
+        .querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${rowIndex}"]`)
+        ?.classList.add('sql-result-row-selected');
+    }
+  }
 
   private scheduleRender(): void {
     if (this.destroyed || this.renderFrame !== undefined) return;
@@ -209,7 +249,11 @@ export class SqlVirtualResultTable {
   ): HTMLTableRowElement {
     const rowNode = document.createElement('tr');
     rowNode.dataset.sqlResultRow = String(rowIndex);
+    rowNode.setAttribute('aria-selected', String(rowIndex === this.selectedRowIndex));
     rowNode.setAttribute('aria-rowindex', String(rowIndex + 2));
+    if (rowIndex === this.selectedRowIndex) {
+      rowNode.classList.add('sql-result-row-selected');
+    }
     for (const [columnIndex, column] of this.result.columns.entries()) {
       const cell = document.createElement('td');
       cell.setAttribute('aria-colindex', String(columnIndex + 1));

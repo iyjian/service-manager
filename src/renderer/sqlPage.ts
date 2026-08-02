@@ -1845,6 +1845,25 @@ class SqlPage {
       const body = document.createElement('tbody');
       for (const row of result.rows) {
         const rowNode = document.createElement('tr');
+        rowNode.setAttribute('aria-selected', 'false');
+        rowNode.addEventListener('click', () => {
+          for (const sibling of Array.from(body.rows)) {
+            sibling.classList.remove('sql-result-row-selected');
+            sibling.setAttribute('aria-selected', 'false');
+          }
+          rowNode.classList.add('sql-result-row-selected');
+          rowNode.setAttribute('aria-selected', 'true');
+        });
+        rowNode.addEventListener('dblclick', (event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          const cell = target.closest<HTMLTableCellElement>('td');
+          if (!cell || !rowNode.contains(cell)) return;
+          const columnIndex = Array.from(rowNode.cells).indexOf(cell);
+          const column = result.columns[columnIndex];
+          if (column === undefined) return;
+          this.openValueDialog(column, sqlCellPresentation(row[column]));
+        });
         for (const column of result.columns) {
           const cell = document.createElement('td');
           const presentation = sqlCellPresentation(row[column]);
