@@ -109,6 +109,10 @@ export const RESOURCE_CATEGORIES = {
 const SEARCH_DEBOUNCE_MS = 200;
 const VIRTUAL_ROW_HEIGHT = 36;
 const VIRTUAL_OVERSCAN = 8;
+/** Lens-style reactive Age: tick every second while young rows are visible, then once a minute. */
+const AGE_REFRESH_SECOND_MS = 1_000;
+const AGE_REFRESH_MINUTE_MS = 60_000;
+const AGE_REFRESH_SECONDS_UP_TO_MINUTES = 10;
 
 type KubernetesCategory = keyof typeof RESOURCE_CATEGORIES;
 type KubernetesSortColumn = string;
@@ -1055,7 +1059,11 @@ function detailName(detail: ActiveDetail): string {
     : detail.summary.name;
 }
 
-/** A filtered loaded-only view must never consume every continuation page. */
+/**
+ * Scroll-near-end continuation stays available only for unfiltered views. A
+ * filtered view instead drains every remaining page through `loadMorePages`
+ * so search covers the complete resource list like Lens's full-list filter.
+ */
 export function shouldAutomaticallyLoadMore(query: KubernetesResourceQuery): boolean {
   return !query.nameFilter?.trim();
 }
@@ -1231,6 +1239,7 @@ class KubernetesPage implements KubernetesPageController {
   private snapshot: KubernetesListSnapshot | undefined;
   private table: KubernetesVirtualTable | undefined;
   private visible = false;
+  private ageRefreshTimer?: number;
   private loadingMore = false;
   private requestedContinuation: string | undefined;
   private requestedWindow: string | undefined;
@@ -1278,6 +1287,7 @@ class KubernetesPage implements KubernetesPageController {
   public show(): void {
     if (this.visible) return;
     this.visible = true;
+    this.startAgeRefresh();
     const pageGeneration = ++this.pageGeneration;
     this.ensureBound();
     this.ensureTable();
@@ -1298,6 +1308,7 @@ class KubernetesPage implements KubernetesPageController {
     this.cancelContextActivation();
     this.clearDrawerEnvironment();
     this.visible = false;
+    this.stopAgeRefresh();
     this.pageGeneration += 1;
     this.requestGeneration += 1;
     this.invalidateNamespaceOptions();
@@ -2452,6 +2463,59 @@ class KubernetesPage implements KubernetesPageController {
       this.emptyState.textContent = query.nameFilter ? 'No loaded resources match this name.' : 'No resources found.';
       this.emptyState.classList.remove('hidden');
     }
+    if (this.visible && snapshot.continueToken && query.nameFilter?.trim()) {
+      this.loadMorePages();
+    }
+  }
+
+  /** Lens-style reactive Age: refresh only the mounted Age cells on an adaptive clock. */
+  private startAgeRefresh(): void {
+    if (this.ageRefreshTimer !== undefined) return;
+    this.scheduleAgeRefresh(AGE_REFRESH_SECOND_MS);
+  }
+
+  private stopAgeRefresh(): void {
+    if (this.ageRefreshTimer !== undefined) {
+      window.clearTimeout(this.ageRefreshTimer);
+      this.ageRefreshTimer = undefined;
+    }
+  }
+
+  private scheduleAgeRefresh(delayMs: number): void {
+    if (!this.visible || this.ageRefreshTimer !== undefined) return;
+    this.ageRefreshTimer = window.setTimeout(() => {
+      this.ageRefreshTimer = undefined;
+      if (!this.visible) return;
+      this.refreshVisibleAges();
+      this.scheduleAgeRefresh(this.nextAgeRefreshDelay());
+    }, delayMs);
+  }
+
+  private refreshVisibleAges(): void {
+    for (const cell of Array.from(
+      this.tableViewport.querySelectorAll<HTMLElement>('[data-kubernetes-age-cell]'),
+    )) {
+      const createdAt = cell.dataset.kubernetesAgeCell;
+      if (createdAt) cell.textContent = formatAge(createdAt);
+    }
+  }
+
+  /** Ticks every second while a visible row is younger than 10 minutes, then once a minute. */
+  private nextAgeRefreshDelay(): number {
+    let youngest: number | undefined;
+    for (const cell of Array.from(
+      this.tableViewport.querySelectorAll<HTMLElement>('[data-kubernetes-age-cell]'),
+    )) {
+      const created = Date.parse(cell.dataset.kubernetesAgeCell ?? '');
+      if (Number.isFinite(created) && (youngest === undefined || created < youngest)) {
+        youngest = created;
+      }
+    }
+    if (youngest === undefined) return AGE_REFRESH_MINUTE_MS;
+    const minutes = Math.floor((Date.now() - youngest) / 60_000);
+    return minutes < AGE_REFRESH_SECONDS_UP_TO_MINUTES
+      ? AGE_REFRESH_SECOND_MS
+      : AGE_REFRESH_MINUTE_MS;
   }
 
   private requestVisibleWindow(range: { start: number; end: number }): void {
@@ -2487,21 +2551,32 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private loadMoreIfNeeded(): void {
+    const query = this.currentQuery();
+    if (!query) return;
+    if (!shouldAutomaticallyLoadMore(query)) return;
+    this.loadMorePages();
+  }
+
+  /** Loads the next continuation page; a search filter keeps draining until the list is complete. */
+  private loadMorePages(): void {
     const snapshot = this.snapshot;
     const query = this.currentQuery();
     if (!this.visible || !snapshot?.continueToken || !query || this.loadingMore) return;
-    if (!shouldAutomaticallyLoadMore(query)) return;
     if (this.requestedContinuation === snapshot.continueToken) return;
     this.loadingMore = true;
     this.requestedContinuation = snapshot.continueToken;
     void window.kubernetesApi.loadMoreResources(query).then((next) => {
-      if (!this.visible || !sameQuery(next.query, this.currentQuery() ?? next.query)) return;
-      this.snapshot = next;
       this.loadingMore = false;
       this.requestedContinuation = undefined;
+      if (!this.visible || !sameQuery(next.query, this.currentQuery() ?? next.query)) return;
+      this.snapshot = next;
       this.renderList();
+      if (next.continueToken && next.query.nameFilter?.trim()) {
+        this.loadMorePages();
+      }
     }).catch((error) => {
       this.loadingMore = false;
+      this.requestedContinuation = undefined;
       if (!this.visible) return;
       if (isPermissionError(error)) this.showNoPermission(toErrorMessage(error));
       else this.showError(toErrorMessage(error));
@@ -4011,6 +4086,9 @@ class KubernetesPage implements KubernetesPageController {
         }
       } else {
         cell.textContent = value;
+      }
+      if (column?.key === 'age') {
+        cell.dataset.kubernetesAgeCell = item.createdAt ?? '';
       }
       row.appendChild(cell);
     }

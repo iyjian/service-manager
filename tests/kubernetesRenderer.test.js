@@ -634,7 +634,7 @@ test('Kubernetes virtual table renders a bounded main-process window for ten tho
   }
 });
 
-test('Kubernetes page never auto-loads more pages for an active name filter', async () => {
+test('Kubernetes page gates scroll loading but drains all pages for an active name filter', async () => {
   const { shouldAutomaticallyLoadMore } = await import(path.join(distRenderer, 'kubernetesPage.js'));
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
 
@@ -645,6 +645,8 @@ test('Kubernetes page never auto-loads more pages for an active name filter', as
     context: 'development', kind: 'pods', namespaceScope: { mode: 'selected', namespaces: ['apps'] },
   }), true);
   assert.match(page, /if \(!shouldAutomaticallyLoadMore\(query\)\)\s+return;/);
+  assert.match(page, /if \(this\.visible && snapshot\.continueToken && query\.nameFilter\?\.trim\(\)\)/);
+  assert.match(page, /if \(next\.continueToken && next\.query\.nameFilter\?\.trim\(\)\)/);
 });
 
 test('Kubernetes resource details use a read-only overlay drawer and clear active Secret data on close', async () => {

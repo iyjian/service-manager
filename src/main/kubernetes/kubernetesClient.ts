@@ -375,6 +375,15 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * @kubernetes/client-node deserializes the API's `metadata.continue` field to
+ * `metadata._continue` on its list models; raw custom-object responses keep
+ * the wire key. Accept both so paged LIST continuation never silently stops.
+ */
+export function listContinueToken(value: { metadata?: { _continue?: string; continue?: string } }): string | undefined {
+  return stringValue(value.metadata?._continue) ?? stringValue(value.metadata?.continue);
+}
+
 interface KubernetesControllerOwner {
   name: string;
   uid: string;
@@ -819,7 +828,7 @@ class KubernetesClientAdapter implements KubernetesClient {
       throw new Error('Namespace page continuation does not match the active query.');
     }
     const response = await this.listOne(query, namespace, continuation.continueToken);
-    const serverContinue = stringValue(response.metadata?.continue);
+    const serverContinue = listContinueToken(response);
     const nextContinuation = serverContinue
       ? encodeMultiNamespaceContinuation({ namespaceIndex: continuation.namespaceIndex, continueToken: serverContinue })
       : continuation.namespaceIndex + 1 < namespaces.length
@@ -944,7 +953,7 @@ class KubernetesClientAdapter implements KubernetesClient {
           seenNames.add(podName);
           pods.push({ uid, podName });
         }
-        const next = stringValue(page.metadata?.continue);
+        const next = listContinueToken(page);
         if (next && seenContinuations.has(next)) {
           throw new Error('Kubernetes API returned a repeated Pod list continuation.');
         }
@@ -1675,7 +1684,7 @@ class KubernetesClientAdapter implements KubernetesClient {
   }
 
   private toPage(query: KubernetesResourceQuery, value: KubernetesListObject): KubernetesResourcePage {
-    const continueToken = stringValue(value.metadata?.continue);
+    const continueToken = listContinueToken(value);
     return {
       items: this.summaryItems(query.kind, value.items, query.customResourcePrinterColumns),
       ...(continueToken ? { continueToken } : {}),
