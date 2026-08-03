@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,13 @@ interface LockRecord {
   acquiredAt: string;
 }
 
+interface ProcessIdentity {
+  /** Epoch milliseconds at which the process started, when determinable. */
+  startTimeMs?: number;
+  /** Numeric real user ID of the process owner, when determinable. */
+  uid?: number;
+}
+
 interface LockSnapshot {
   identity: string;
   modifiedAtMs: number;
@@ -36,6 +44,10 @@ export interface UserDataInstanceLockOptions {
   createOwnerToken?: () => string;
   /** Process liveness override used by focused lock tests. */
   isProcessAlive?: (pid: number) => boolean;
+  /** Process identity override used by focused lock tests. */
+  processIdentityForPid?: (pid: number) => ProcessIdentity | undefined;
+  /** Current process UID override used by focused lock tests. */
+  currentUid?: number;
   /** Damaged locks newer than this remain owned in case their writer is mid-write. */
   corruptLockStaleMs?: number;
 }
@@ -50,7 +62,7 @@ export interface UserDataInstanceLock {
 
 export type UserDataInstanceLockProbeOptions = Pick<
   UserDataInstanceLockOptions,
-  'pid' | 'platform' | 'now' | 'isProcessAlive' | 'corruptLockStaleMs'
+  'pid' | 'platform' | 'now' | 'isProcessAlive' | 'processIdentityForPid' | 'currentUid' | 'corruptLockStaleMs'
 >;
 
 export class UserDataInstanceLockError extends Error {
@@ -147,6 +159,95 @@ function defaultIsProcessAlive(pid: number): boolean {
   }
 }
 
+function linuxProcessIdentity(pid: number): ProcessIdentity | undefined {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const statClose = stat.lastIndexOf(')');
+    if (statClose < 0) return undefined;
+    const fields = stat.slice(statClose + 2).split(' ');
+    // After "pid (comm) ", field 22 (starttime in USER_HZ ticks) is index 19.
+    const startTicks = Number(fields[19]);
+
+    let uid: number | undefined;
+    try {
+      const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const uidMatch = /^Uid:\s+(\d+)/m.exec(status);
+      uid = uidMatch ? Number(uidMatch[1]) : undefined;
+    } catch {
+      // The UID stays unknown; the start-time check still applies.
+    }
+    if (!Number.isFinite(startTicks)) return { ...(uid !== undefined ? { uid } : {}) };
+
+    const statBtime = fs.readFileSync('/proc/stat', 'utf8');
+    const btimeMatch = /^btime\s+(\d+)/m.exec(statBtime);
+    if (!btimeMatch) return { ...(uid !== undefined ? { uid } : {}) };
+    return {
+      startTimeMs: (Number(btimeMatch[1]) + startTicks / 100) * 1_000,
+      ...(uid !== undefined ? { uid } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function darwinProcessIdentity(pid: number): ProcessIdentity | undefined {
+  try {
+    const output = execFileSync('ps', ['-o', 'lstart=', '-o', 'uid=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      windowsHide: true,
+    });
+    const trimmed = output.trim();
+    if (!trimmed) return undefined;
+    const uidMatch = /(\d+)\s*$/.exec(trimmed);
+    const startText = trimmed.replace(/\s+\d+\s*$/, '').trim();
+    const startTimeMs = startText ? Date.parse(startText) : NaN;
+    return {
+      ...(Number.isFinite(startTimeMs) ? { startTimeMs } : {}),
+      ...(uidMatch ? { uid: Number(uidMatch[1]) } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultProcessIdentityForPid(pid: number, platform: NodeJS.Platform): ProcessIdentity | undefined {
+  if (platform === 'linux') return linuxProcessIdentity(pid);
+  if (platform === 'darwin') return darwinProcessIdentity(pid);
+  return undefined;
+}
+
+/**
+ * Decides whether the on-disk lock's PID is really the Service Manager
+ * instance that wrote it. PID existence alone is not enough: an unrelated
+ * process (for example a macOS system daemon) can reuse the PID after the
+ * original owner exits without cleanup. Identity checks fail closed, so an
+ * undeterminable identity never steals a live owner's lock.
+ */
+function isLockOwnerAlive(
+  record: LockRecord,
+  isProcessAlive: (pid: number) => boolean,
+  processIdentityForPid: (pid: number) => ProcessIdentity | undefined,
+  currentUid: number | undefined,
+): boolean {
+  if (!isProcessAlive(record.pid)) return false;
+  const identity = processIdentityForPid(record.pid);
+  if (!identity) return true;
+  if (currentUid !== undefined && identity.uid !== undefined && identity.uid !== currentUid) {
+    // A different user owns the PID; it cannot be this app instance.
+    return false;
+  }
+  if (identity.startTimeMs !== undefined) {
+    const acquiredAtMs = Date.parse(record.acquiredAt);
+    // The original owner must have started before it wrote the lock. A holder
+    // that started afterwards can only be a reused PID, so the lock is stale.
+    if (Number.isFinite(acquiredAtMs) && identity.startTimeMs > acquiredAtMs) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function chromiumSingletonPid(userDataPath: string): number | undefined {
   const singletonPath = path.join(userDataPath, CHROMIUM_SINGLETON_LOCK_FILE_NAME);
   try {
@@ -191,6 +292,9 @@ export function assertUserDataInstanceLockAvailable(
   const platform = options.platform ?? process.platform;
   const now = options.now ?? (() => new Date());
   const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+  const processIdentityForPid = options.processIdentityForPid
+    ?? ((pid: number) => defaultProcessIdentityForPid(pid, options.platform ?? process.platform));
+  const currentUid = options.currentUid ?? process.getuid?.();
   const corruptLockStaleMs = options.corruptLockStaleMs ?? DEFAULT_CORRUPT_LOCK_STALE_MS;
   if (!Number.isFinite(corruptLockStaleMs) || corruptLockStaleMs < 0) {
     throw new Error('The corrupt lock stale interval is invalid.');
@@ -198,7 +302,7 @@ export function assertUserDataInstanceLockAvailable(
 
   fs.mkdirSync(userDataPath, { recursive: true, mode: 0o700 });
   const existing = readLockSnapshot(path.join(userDataPath, USER_DATA_INSTANCE_LOCK_FILE_NAME));
-  if (existing?.record && isProcessAlive(existing.record.pid)) {
+  if (existing?.record && isLockOwnerAlive(existing.record, isProcessAlive, processIdentityForPid, currentUid)) {
     throw new UserDataInstanceLockError('service-manager', existing.record.pid);
   }
   if (existing && !existing.record && now().getTime() - existing.modifiedAtMs < corruptLockStaleMs) {
@@ -311,6 +415,9 @@ export function acquireUserDataInstanceLock(
   const now = options.now ?? (() => new Date());
   const createOwnerToken = options.createOwnerToken ?? randomUUID;
   const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+  const processIdentityForPid = options.processIdentityForPid
+    ?? ((pid: number) => defaultProcessIdentityForPid(pid, options.platform ?? process.platform));
+  const currentUid = options.currentUid ?? process.getuid?.();
   const corruptLockStaleMs = options.corruptLockStaleMs ?? DEFAULT_CORRUPT_LOCK_STALE_MS;
   if (!Number.isFinite(corruptLockStaleMs) || corruptLockStaleMs < 0) {
     throw new Error('The corrupt lock stale interval is invalid.');
@@ -331,7 +438,7 @@ export function acquireUserDataInstanceLock(
     const existing = readLockSnapshot(lockPath);
     if (!existing) continue;
     if (existing.record) {
-      if (isProcessAlive(existing.record.pid)) {
+      if (isLockOwnerAlive(existing.record, isProcessAlive, processIdentityForPid, currentUid)) {
         throw new UserDataInstanceLockError('service-manager', existing.record.pid);
       }
     } else if (now().getTime() - existing.modifiedAtMs < corruptLockStaleMs) {

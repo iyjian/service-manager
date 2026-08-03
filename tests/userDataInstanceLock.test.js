@@ -212,3 +212,86 @@ test('ignores a dead, malformed, or current-process Chromium SingletonLock', asy
     assert.equal(acquired.release(), true);
   }
 });
+
+test('reclaims a lock whose PID was reused by a process started after lock creation', async (t) => {
+  const directory = await temporaryUserData(t);
+  writeLock(directory, lockRecord(518, 'reused_pid_owner'));
+
+  const options = {
+    pid: 222,
+    platform: 'darwin',
+    now: () => NOW,
+    createOwnerToken: () => 'replacement_token',
+    isProcessAlive: () => true,
+    currentUid: 501,
+    processIdentityForPid: (pid) => (pid === 518
+      ? { startTimeMs: Date.parse(NOW.toISOString()) + 60_000, uid: 501 }
+      : undefined),
+  };
+
+  assert.doesNotThrow(() => assertUserDataInstanceLockAvailable(directory, options));
+  const acquired = acquireUserDataInstanceLock(directory, options);
+  assert.equal(JSON.parse(fs.readFileSync(acquired.lockPath, 'utf8')).ownerToken, 'replacement_token');
+  assert.equal(acquired.release(), true);
+});
+
+test('reclaims a lock whose PID now belongs to a different user', async (t) => {
+  const directory = await temporaryUserData(t);
+  writeLock(directory, lockRecord(518, 'system_daemon_pid'));
+
+  const options = {
+    pid: 222,
+    platform: 'darwin',
+    now: () => NOW,
+    createOwnerToken: () => 'replacement_token',
+    isProcessAlive: () => true,
+    currentUid: 501,
+    processIdentityForPid: () => ({ uid: 0 }),
+  };
+
+  assert.doesNotThrow(() => assertUserDataInstanceLockAvailable(directory, options));
+  const acquired = acquireUserDataInstanceLock(directory, options);
+  assert.equal(JSON.parse(fs.readFileSync(acquired.lockPath, 'utf8')).ownerToken, 'replacement_token');
+  assert.equal(acquired.release(), true);
+});
+
+test('keeps a live lock whose PID identity matches the recorded owner', async (t) => {
+  const directory = await temporaryUserData(t);
+  writeLock(directory, lockRecord(111, 'live_owner_token'));
+
+  const options = {
+    pid: 222,
+    platform: 'darwin',
+    now: () => NOW,
+    createOwnerToken: () => 'contender_token',
+    isProcessAlive: () => true,
+    currentUid: 501,
+    processIdentityForPid: (pid) => (pid === 111
+      ? { startTimeMs: Date.parse(NOW.toISOString()) - 60_000, uid: 501 }
+      : undefined),
+  };
+
+  assert.throws(
+    () => acquireUserDataInstanceLock(directory, options),
+    (error) => error instanceof UserDataInstanceLockError && error.ownerPid === 111,
+  );
+  assert.equal(JSON.parse(fs.readFileSync(lockPath(directory), 'utf8')).ownerToken, 'live_owner_token');
+});
+
+test('fails closed when a live PID identity cannot be determined', async (t) => {
+  const directory = await temporaryUserData(t);
+  writeLock(directory, lockRecord(111, 'unverifiable_owner'));
+
+  assert.throws(
+    () => acquireUserDataInstanceLock(directory, {
+      pid: 222,
+      platform: 'darwin',
+      now: () => NOW,
+      createOwnerToken: () => 'contender_token',
+      isProcessAlive: () => true,
+      currentUid: 501,
+      processIdentityForPid: () => undefined,
+    }),
+    (error) => error instanceof UserDataInstanceLockError && error.ownerPid === 111,
+  );
+});
