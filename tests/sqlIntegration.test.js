@@ -167,6 +167,10 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /Formatted JSON cell value/);
   assert.match(page, /sqlValueModesForKind/);
   assert.match(page, /detectSqlValueLanguage/);
+  assert.match(page, /retryTableEnumAfterSchemaLoad\(view, position\)/);
+  assert.match(page, /ensureSchemaLoaded\(environment, true\)/);
+  assert.match(page, /const existing = this\.schemaFlights\.get\(environment\)/);
+  assert.match(page, /The SQL schema could not be loaded\. Double-click a table name to retry\./);
   assert.match(page, /mode === 'highlighted'/);
   assert.match(page, /valueModes\.classList\.remove\('hidden'\)/);
   assert.match(page, /const text = this\.valueFormatted \?\? this\.valueRaw;/);

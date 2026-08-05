@@ -12,7 +12,7 @@ import type {
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
-import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { EditorState, StateEffect, StateField, type Text } from '@codemirror/state';
 import {
   activateHover,
   closeHoverTooltip,
@@ -616,6 +616,13 @@ class SqlPage {
   private valueCopyResetTimer?: number;
   private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
   private tableEnumHoverCloseTimer?: number;
+  private tableEnumPendingPosition?: {
+    view: EditorView;
+    doc: Text;
+    position: number;
+    environment: SqlEnvironment;
+  };
+  private schemaFlights = new Map<SqlEnvironment, Promise<void>>();
 
   public constructor() {
     try {
@@ -699,6 +706,7 @@ class SqlPage {
 
   public hide(): void {
     this.active = false;
+    this.tableEnumPendingPosition = undefined;
     this.closeTableEnumHover();
     this.destroyResultTable();
     this.resultContent.replaceChildren();
@@ -808,21 +816,37 @@ class SqlPage {
       this.closeTableEnumHover();
       return;
     }
-    const schema = this.currentState().schema;
     const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
-    const reference = schema && position !== null
-      ? resolveSqlTableReferenceAt(view.state.doc.toString(), position, schema)
-      : undefined;
+    if (position === null) {
+      this.closeTableEnumHover();
+      return;
+    }
+    if (!this.currentState().schema) {
+      // The schema is not loaded yet: trigger a deduplicated reload and retry
+      // the tooltip once it arrives instead of failing silently.
+      this.closeTableEnumHover();
+      this.retryTableEnumAfterSchemaLoad(view, position);
+      return;
+    }
+    this.tryOpenTableEnumTooltip(view, position);
+  }
+
+  private tryOpenTableEnumTooltip(view: EditorView, position: number): void {
+    const schema = this.currentState().schema;
+    if (!schema || !this.active || this.currentState().auth?.status !== 'signed-in') {
+      this.closeTableEnumHover();
+      return;
+    }
+    const reference = resolveSqlTableReferenceAt(view.state.doc.toString(), position, schema);
     if (!reference) {
       this.closeTableEnumHover();
       return;
     }
-    const table = schema?.tables.find((candidate) => candidate.name === reference.tableName);
+    const table = schema.tables.find((candidate) => candidate.name === reference.tableName);
     if (!table?.columns.some((column) => column.enum)) {
       this.closeTableEnumHover();
       return;
     }
-
     this.closeTableEnumHover();
     const target: SqlTableEnumHoverTarget = {
       ...reference,
@@ -836,6 +860,27 @@ class SqlPage {
         tooltip: this.tableEnumHover,
         until: (transaction) => transaction.docChanged || transaction.selection !== undefined,
       });
+    });
+  }
+
+  private retryTableEnumAfterSchemaLoad(view: EditorView, position: number): void {
+    const environment = this.environment;
+    this.tableEnumPendingPosition = {
+      view,
+      doc: view.state.doc,
+      position,
+      environment,
+    };
+    void this.ensureSchemaLoaded(environment, true).then(() => {
+      const pending = this.tableEnumPendingPosition;
+      if (!pending
+        || pending.view !== view
+        || pending.doc !== view.state.doc
+        || pending.environment !== this.environment) {
+        return;
+      }
+      this.tableEnumPendingPosition = undefined;
+      this.tryOpenTableEnumTooltip(view, position);
     });
   }
 
@@ -1039,7 +1084,7 @@ class SqlPage {
       if (!this.active || environment !== this.environment) return;
       if (auth.status === 'signed-in') {
         this.renderAuthenticated();
-        void this.fetchSchema(environment, version);
+        void this.ensureSchemaLoaded(environment, false);
         await this.fetchRecords(false, environment, version);
       } else {
         this.renderSignedOut(auth.message);
@@ -1123,7 +1168,7 @@ class SqlPage {
       if (version !== state.loadVersion) return;
       state.auth = auth;
       this.renderAuthenticated();
-      void this.fetchSchema(environment, version);
+      void this.ensureSchemaLoaded(environment, false);
       await this.fetchRecords(false, environment, version);
     } catch (error) {
       if (version === state.loadVersion) this.renderSignedOut(toErrorMessage(error));
@@ -1181,9 +1226,26 @@ class SqlPage {
     }
   }
 
+  /** Loads a missing schema at most once per environment; callers await the shared flight. */
+  private ensureSchemaLoaded(environment: SqlEnvironment, userInitiated: boolean): Promise<void> {
+    const state = this.states[environment];
+    if (state.schema) return Promise.resolve();
+    const existing = this.schemaFlights.get(environment);
+    if (existing) return existing;
+    const flight = this.fetchSchema(environment, state.loadVersion, userInitiated);
+    this.schemaFlights.set(environment, flight);
+    void flight.finally(() => {
+      if (this.schemaFlights.get(environment) === flight) {
+        this.schemaFlights.delete(environment);
+      }
+    }).catch(() => undefined);
+    return flight;
+  }
+
   private async fetchSchema(
     environment = this.environment,
     loadVersion = this.states[environment].loadVersion,
+    userInitiated = false,
   ): Promise<void> {
     const state = this.states[environment];
     state.schemaLoading = true;
@@ -1198,6 +1260,9 @@ class SqlPage {
     } catch {
       if (loadVersion === state.loadVersion) {
         console.warn('[renderer:sql-schema] SQL schema completion is temporarily unavailable.');
+        if (this.active && environment === this.environment) {
+          toast('The SQL schema could not be loaded. Double-click a table name to retry.', 'error');
+        }
       }
     } finally {
       if (loadVersion === state.loadVersion) state.schemaLoading = false;
