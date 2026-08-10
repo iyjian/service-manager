@@ -31,6 +31,7 @@ export interface KubernetesPodInteractionTarget {
   namespace: string;
   podName: string;
   container: string;
+  containerStartedAt?: string;
 }
 
 export interface KubernetesPortForwardInput {
@@ -373,20 +374,31 @@ export class PodInteractionManager {
 
   public async openLogs(input: KubernetesPodInteractionTarget): Promise<KubernetesLogState> {
     this.validatePodTarget(input);
+    const requestedContainerStartedAt = input.containerStartedAt
+      ? normalizeKubernetesLogStartTime(input.containerStartedAt)
+      : undefined;
+    const containerStartedAt = requestedContainerStartedAt
+      ? new Date(Math.min(new Date(requestedContainerStartedAt).getTime(), Date.now())).toISOString()
+      : undefined;
+    const normalizedInput: KubernetesPodInteractionTarget = {
+      ...input,
+      ...(containerStartedAt ? { containerStartedAt } : {}),
+    };
     const sessionId = this.createId();
     const session: LogSession = {
       state: {
         sessionId,
-        podName: input.podName,
-        namespace: input.namespace,
-        container: input.container,
+        podName: normalizedInput.podName,
+        namespace: normalizedInput.namespace,
+        container: normalizedInput.container,
         lines: [],
         following: true,
+        ...(containerStartedAt ? { availableSince: containerStartedAt } : {}),
         hasOlder: true,
         scope: 'pod',
         revision: 0,
       },
-      input: { ...input },
+      input: normalizedInput,
       pageGeneration: this.pageGeneration,
       allGeneration: this.allGeneration,
       closed: false,
@@ -410,6 +422,7 @@ export class PodInteractionManager {
       if (deployment) {
         session.deploymentTargets = deployment;
         session.state.scope = 'deployment';
+        session.state.availableSince = undefined;
         session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
         session.state.hasOlder = false;
       }
@@ -468,7 +481,9 @@ export class PodInteractionManager {
     const received: string[] = [];
     try {
       const handle = await this.options.client().openPodLog({
-        ...session.input,
+        namespace: session.input.namespace,
+        podName: session.input.podName,
+        container: session.input.container,
         tailLines,
         follow: false,
       }, {
@@ -514,7 +529,14 @@ export class PodInteractionManager {
   public async setLogStartTime(sessionId: string, value?: string): Promise<KubernetesLogState> {
     const session = this.requireLog(sessionId);
     this.flushPendingLogBatch(session);
-    const startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
+    let startTime = value === undefined ? undefined : normalizeKubernetesLogStartTime(value);
+    if (startTime && new Date(startTime).getTime() > Date.now()) {
+      throw new Error('Kubernetes log start time cannot be in the future.');
+    }
+    if (startTime && session.state.availableSince
+      && new Date(startTime).getTime() < new Date(session.state.availableSince).getTime()) {
+      throw new Error('Kubernetes log start time cannot be earlier than the current container start.');
+    }
     if (session.state.startTime === startTime && !session.state.following && session.timeLoads.size === 0) {
       return copyLogState(session.state);
     }
@@ -559,8 +581,15 @@ export class PodInteractionManager {
           session.deploymentTargets = undefined;
           session.state.deployment = undefined;
           session.state.scope = 'pod';
+          session.state.availableSince = session.input.containerStartedAt;
+          if (session.state.availableSince
+            && new Date(startTime).getTime() < new Date(session.state.availableSince).getTime()) {
+            startTime = session.state.availableSince;
+            session.state.startTime = startTime;
+          }
         } else {
           session.deploymentTargets = deployment;
+          session.state.availableSince = undefined;
           session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
         }
       }
@@ -621,9 +650,11 @@ export class PodInteractionManager {
           session.deploymentTargets = undefined;
           session.state.deployment = undefined;
           session.state.scope = 'pod';
+          session.state.availableSince = session.input.containerStartedAt;
           session.state.hasOlder = true;
         } else {
           session.deploymentTargets = deployment;
+          session.state.availableSince = undefined;
           session.state.deployment = { name: deployment.name, podCount: deployment.pods.length };
         }
       }
@@ -668,6 +699,11 @@ export class PodInteractionManager {
     const streams = this.detachLogStreams(session);
     const timeLoads = this.detachTimeLogLoads(session);
     session.state.scope = scope;
+    session.state.availableSince = scope === 'pod' ? session.input.containerStartedAt : undefined;
+    if (session.state.startTime && session.state.availableSince
+      && new Date(session.state.startTime).getTime() < new Date(session.state.availableSince).getTime()) {
+      session.state.startTime = session.state.availableSince;
+    }
     session.state.lines = [];
     session.state.hasOlder = scope === 'pod';
     session.lastRawLines.clear();
@@ -1421,7 +1457,9 @@ export class PodInteractionManager {
     let handle: KubernetesPodExecHandle;
     try {
       handle = await this.options.client().openPodExec({
-        ...input,
+        namespace: input.namespace,
+        podName: input.podName,
+        container: input.container,
         shell,
         allowDegradedDash: shellIndex === SHELL_FALLBACKS.length - 1,
       }, {

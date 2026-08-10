@@ -111,6 +111,8 @@ test('resource-specific count and readiness columns sort numerically', () => {
   assert.ok(compareKubernetesSortValues('data', '2', '10') < 0);
   assert.ok(compareKubernetesSortValues('generation', '10', '2') > 0);
   assert.ok(compareKubernetesSortValues('ready', '2/10', '10/10') < 0);
+  assert.ok(compareKubernetesSortValues('cpu', '900m', '2') < 0);
+  assert.ok(compareKubernetesSortValues('memory', '900Mi', '1Gi') < 0);
 
   const items = [
     { ...summary('ten', '1'), columns: { data: '10' } },

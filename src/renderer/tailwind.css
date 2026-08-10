@@ -2972,7 +2972,7 @@
   }
 
   .kubernetes-log-panel {
-    @apply grid h-full min-h-0 min-w-0 gap-0 overflow-hidden rounded-lg border border-zinc-200 bg-white;
+    @apply relative grid h-full min-h-0 min-w-0 gap-0 overflow-hidden rounded-lg border border-zinc-200 bg-white;
     grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
@@ -3010,11 +3010,36 @@
   }
 
   .kubernetes-log-start-time {
-    @apply inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-zinc-200 bg-white pl-1.5 text-[10.5px] font-medium text-zinc-500;
+    @apply inline-flex h-6 shrink-0 items-center gap-1;
+  }
+
+  .kubernetes-log-start-time-label {
+    @apply shrink-0 px-0.5 text-[10.5px] font-semibold text-zinc-500;
   }
 
   .kubernetes-log-toolbar .kubernetes-log-start-time-input {
-    @apply h-[22px] w-[184px] rounded-l-none border-0 border-l border-zinc-200 px-1.5 font-mono text-[10.5px] shadow-none focus:ring-1 focus:ring-inset focus:ring-zinc-300;
+    @apply h-6 w-[168px] shrink-0 rounded-md border-zinc-300 px-2 font-mono text-[10.5px] shadow-none focus:border-amber-400 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .kubernetes-log-toolbar .kubernetes-log-start-time-input[aria-invalid='true'] {
+    @apply border-red-500 bg-red-50 focus:border-red-500 focus:ring-red-200;
+  }
+
+  .kubernetes-log-time-step,
+  .kubernetes-log-time-preset {
+    @apply inline-flex h-6 shrink-0 cursor-pointer items-center justify-center rounded-md border border-zinc-300 bg-white px-1.5 text-[10.5px] font-semibold text-zinc-700 outline-none transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-950 focus-visible:ring-2 focus-visible:ring-amber-300 active:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .kubernetes-log-time-step {
+    @apply min-w-[42px];
+  }
+
+  .kubernetes-log-time-preset {
+    @apply min-w-[34px];
+  }
+
+  .kubernetes-log-time-divider {
+    @apply mx-0.5 h-4 w-px shrink-0 bg-zinc-300;
   }
 
   .kubernetes-log-scope-switch {
@@ -3047,6 +3072,11 @@
   .kubernetes-log-output {
     @apply m-0 min-h-0 min-w-0 overflow-x-auto overflow-y-auto border-0 bg-zinc-950 p-2 font-mono text-[12px] leading-5 text-zinc-100;
     white-space: pre;
+  }
+
+  .kubernetes-log-output::selection,
+  .kubernetes-log-output *::selection {
+    @apply bg-sky-500 text-white;
   }
 
   .kubernetes-log-status {
@@ -3983,6 +4013,225 @@
 
   .host-dialog::backdrop {
     @apply bg-zinc-950/45 backdrop-blur-sm;
+  }
+
+  #host-dialog .host-edit-dialog-panel {
+    @apply flex w-full flex-col overflow-hidden p-0;
+    height: min(700px, calc(100vh - 40px));
+  }
+
+  #host-dialog .host-edit-dialog-panel > .dialog-head {
+    @apply mb-0 shrink-0 border-b border-zinc-200 px-4 py-3;
+  }
+
+  #host-dialog #host-dialog-message {
+    @apply mx-3 mt-3 shrink-0;
+  }
+
+  #host-dialog .host-edit-form {
+    @apply flex min-h-0 flex-1 flex-col;
+  }
+
+  #host-dialog .host-edit-tabs {
+    @apply flex h-10 shrink-0 items-stretch gap-1 overflow-x-auto border-b border-zinc-200 bg-zinc-50 px-3;
+  }
+
+  #host-dialog .host-edit-tab {
+    @apply relative shrink-0 border-0 bg-transparent px-2.5 text-[12px] font-medium text-zinc-500 outline-none transition hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500;
+  }
+
+  #host-dialog .host-edit-tab[aria-selected='true'] {
+    @apply text-zinc-950;
+  }
+
+  #host-dialog .host-edit-tab[aria-selected='true']::after {
+    content: '';
+    @apply absolute inset-x-2 bottom-[-1px] h-0.5 bg-zinc-950;
+  }
+
+  #host-dialog .host-edit-tab-count {
+    @apply ml-1 font-normal tabular-nums text-zinc-400;
+  }
+
+  #host-dialog .host-edit-panel {
+    @apply flex min-h-0 flex-1 flex-col overflow-hidden bg-white;
+  }
+
+  #host-dialog .host-edit-path-toolbar {
+    @apply grid shrink-0 items-end gap-3 border-b border-zinc-200 bg-zinc-50/70 px-3 py-2;
+    grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) auto;
+  }
+
+  #host-dialog .host-edit-name-field {
+    @apply min-w-0;
+  }
+
+  #host-dialog .host-edit-panel-actions,
+  #host-dialog .host-edit-key-actions,
+  #host-dialog .host-edit-actions-end {
+    @apply flex shrink-0 items-center gap-2;
+  }
+
+  #host-dialog .host-edit-route {
+    @apply flex min-w-0 items-center justify-end gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-[12px] text-zinc-600;
+  }
+
+  #host-dialog .host-edit-route-endpoint,
+  #host-dialog .host-edit-route-hop {
+    @apply inline-flex h-7 shrink-0 items-center gap-1 px-1 font-medium;
+  }
+
+  #host-dialog .host-edit-route-endpoint svg,
+  #host-dialog .host-edit-step-cell svg {
+    @apply h-4 w-4 shrink-0;
+  }
+
+  #host-dialog .host-edit-route-target {
+    @apply text-zinc-950;
+  }
+
+  #host-dialog .host-edit-route-arrow {
+    @apply h-3.5 w-3.5 shrink-0 text-zinc-400;
+  }
+
+  #host-dialog .host-edit-panel-actionbar {
+    @apply flex h-10 shrink-0 items-center justify-end border-b border-zinc-200 bg-white px-3;
+  }
+
+  #host-dialog .host-edit-table-scroll {
+    @apply min-h-0 flex-1 overflow-auto bg-white;
+  }
+
+  #host-dialog .host-edit-table {
+    @apply min-h-full w-full;
+  }
+
+  #host-dialog .host-edit-path-table {
+    min-width: 900px;
+  }
+
+  #host-dialog .host-edit-forward-table {
+    min-width: 880px;
+  }
+
+  #host-dialog .host-edit-service-table {
+    min-width: 860px;
+  }
+
+  #host-dialog .host-edit-path-grid,
+  #host-dialog .host-edit-forward-grid,
+  #host-dialog .host-edit-service-grid {
+    @apply grid items-start gap-2 px-2;
+  }
+
+  #host-dialog .host-edit-path-grid {
+    grid-template-columns: 104px minmax(170px, 1.25fr) 72px minmax(130px, 0.9fr) 124px minmax(170px, 1fr) 32px;
+  }
+
+  #host-dialog .host-edit-forward-grid {
+    grid-template-columns: minmax(130px, 0.9fr) minmax(145px, 1fr) 88px minmax(145px, 1fr) 88px 48px 32px;
+  }
+
+  #host-dialog .host-edit-service-grid {
+    grid-template-columns: minmax(145px, 0.9fr) 180px 200px minmax(280px, 2.1fr) 32px;
+  }
+
+  #host-dialog .host-edit-table-head {
+    @apply sticky top-0 z-[2] min-h-8 items-center border-b border-zinc-200 bg-zinc-100/95 py-1.5 text-[11px] font-medium text-zinc-500 backdrop-blur;
+  }
+
+  #host-dialog .host-edit-table-body:empty::before {
+    content: attr(data-empty);
+    @apply block border-b border-zinc-100 px-3 py-3 text-[12px] text-zinc-400;
+  }
+
+  #host-dialog .host-edit-path-row,
+  #host-dialog .host-edit-resource-row {
+    @apply min-h-10 border-0 border-b border-zinc-100 bg-white py-1.5 shadow-none;
+    border-radius: 0;
+  }
+
+  #host-dialog .host-edit-target-row {
+    @apply bg-zinc-50/70;
+  }
+
+  #host-dialog .host-edit-cell-label,
+  #host-dialog .host-edit-credential-cell {
+    @apply block min-w-0;
+  }
+
+  #host-dialog .host-edit-table .input {
+    @apply h-7 rounded px-2 text-[12px];
+  }
+
+  #host-dialog .host-edit-step-cell {
+    @apply flex h-7 min-w-0 items-center gap-1.5 font-medium text-zinc-800;
+  }
+
+  #host-dialog .host-edit-step-number {
+    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-zinc-300 bg-white font-mono text-[10px] text-zinc-600;
+  }
+
+  #host-dialog .host-edit-credential-toggle {
+    @apply flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded border border-zinc-300 bg-white px-2 text-left text-[11px] text-zinc-700 outline-none transition hover:border-zinc-400 hover:bg-zinc-50 focus-visible:border-blue-500 focus-visible:ring-4 focus-visible:ring-blue-500/10;
+  }
+
+  #host-dialog .host-edit-credential-toggle > span {
+    @apply min-w-0 truncate;
+  }
+
+  #host-dialog .host-edit-credential-toggle svg {
+    @apply h-3.5 w-3.5 shrink-0 transition-transform;
+  }
+
+  #host-dialog .host-edit-credential-toggle[aria-expanded='true'] svg {
+    @apply rotate-180;
+  }
+
+  #host-dialog .host-edit-target-marker {
+    @apply flex h-7 items-center justify-center text-zinc-400;
+  }
+
+  #host-dialog .host-edit-target-marker svg {
+    @apply h-4 w-4;
+  }
+
+  #host-dialog .host-edit-path-details {
+    @apply col-span-full grid items-end gap-2 border-t border-zinc-100 pt-2;
+    grid-template-columns: minmax(280px, 1fr) minmax(180px, 0.55fr) auto;
+  }
+
+  #host-dialog .host-edit-path-details textarea.input {
+    @apply min-h-[52px] max-h-40 resize-y font-mono text-[12px] leading-5;
+  }
+
+  #host-dialog .host-edit-key-actions {
+    @apply h-7 self-end;
+  }
+
+  #host-dialog .host-edit-auto-cell {
+    @apply flex h-7 items-center justify-center;
+  }
+
+  #host-dialog .host-edit-center {
+    @apply text-center;
+  }
+
+  #host-dialog .host-edit-row-remove {
+    @apply inline-flex h-7 w-7 items-center justify-center self-start rounded border border-transparent bg-transparent p-0 text-red-500 outline-none transition hover:border-red-200 hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-red-300;
+  }
+
+  #host-dialog .host-edit-row-remove svg {
+    @apply h-4 w-4;
+  }
+
+  #host-dialog .host-edit-service-table .service-command-input {
+    @apply h-7 min-h-7 resize-y py-1 font-mono text-[12px] leading-5;
+    max-height: 120px;
+  }
+
+  #host-dialog .host-edit-actions {
+    @apply static z-auto m-0 mt-0 shrink-0 items-center justify-between rounded-none border-t border-zinc-200 bg-white px-3 py-2.5 backdrop-blur-none;
   }
 
   .dialog-panel {

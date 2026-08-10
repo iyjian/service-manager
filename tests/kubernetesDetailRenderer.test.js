@@ -563,6 +563,7 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
   assert.match(drawer, /logs\.setAttribute\('aria-label', `View logs for \$\{container\.name\}`\)/);
   assert.match(drawer, /shell\.setAttribute\('aria-label', `Open shell for \$\{container\.name\}`\)/);
   assert.match(drawer, /this\.workspace\.openLogs\(container\.target\)/);
+  assert.match(drawer, /this\.workspace\.openLogs\(container\.target\);\s*this\.closeDetail\(\)/);
   assert.match(drawer, /this\.workspace\.openShell\(container\.target\)/);
 });
 

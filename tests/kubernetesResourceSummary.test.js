@@ -352,7 +352,7 @@ test('Pod and Event summaries retain their existing columns and Event message bo
     spec: { nodeName: 'worker-a', containers: [{ resources: { requests: { cpu: '250m', memory: '128Mi' } } }] },
     status: { phase: 'Running', containerStatuses: [{ restartCount: 2 }] },
   });
-  assert.deepEqual(pod.columns, { cpu: '250m', memory: '128Mi', restarts: '2', node: 'worker-a', status: 'Running' });
+  assert.deepEqual(pod.columns, { cpu: '—', memory: '—', restarts: '2', node: 'worker-a', status: 'Running' });
 
   const message = 'x'.repeat(20_000);
   const event = mapKubernetesResourceSummary('events', {

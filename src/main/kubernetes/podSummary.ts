@@ -7,6 +7,13 @@ export interface KubernetesPodListColumns {
   node: string;
 }
 
+export interface KubernetesPodMetric {
+  namespace: string;
+  name: string;
+  cpu: string;
+  memory: string;
+}
+
 interface DecimalQuantity {
   coefficient: bigint;
   scale: number;
@@ -111,7 +118,7 @@ function scaledInteger(decimal: DecimalQuantity, multiplier: bigint, unitScale =
   return numerator % divisor === 0n ? numerator / divisor : undefined;
 }
 
-function parseCpu(value: unknown): bigint | undefined {
+export function parseKubernetesCpuQuantity(value: unknown): bigint | undefined {
   const quantity = parseQuantity(value);
   if (!quantity) return undefined;
 
@@ -121,7 +128,7 @@ function parseCpu(value: unknown): bigint | undefined {
   return unitScale === undefined ? undefined : scaledInteger(quantity.decimal, CPU_NANO, unitScale);
 }
 
-function parseMemory(value: unknown): bigint | undefined {
+export function parseKubernetesMemoryQuantity(value: unknown): bigint | undefined {
   const quantity = parseQuantity(value);
   if (!quantity) return undefined;
 
@@ -165,23 +172,38 @@ function restartCount(value: unknown): number {
 
 export function summarizePodListColumns(pod: Record<string, unknown>): KubernetesPodListColumns {
   const spec = record(pod.spec);
-  const regular = array(spec?.containers);
   const statuses = [
     ...array(record(pod.status)?.containerStatuses),
     ...array(record(pod.status)?.initContainerStatuses),
   ];
-  const cpu = sum(regular.map((container) => {
-    const requests = record(record(container)?.resources)?.requests;
-    return parseCpu(record(requests)?.cpu);
-  }));
-  const memory = sum(regular.map((container) => {
-    const requests = record(record(container)?.resources)?.requests;
-    return parseMemory(record(requests)?.memory);
-  }));
   return {
-    cpu: cpu === undefined ? POD_SUMMARY_EMPTY : formatCpu(cpu),
-    memory: memory === undefined ? POD_SUMMARY_EMPTY : formatMemory(memory),
+    // CPU and Memory are live usage columns. They are filled independently
+    // from metrics.k8s.io so requests/limits can never masquerade as usage.
+    cpu: POD_SUMMARY_EMPTY,
+    memory: POD_SUMMARY_EMPTY,
     restarts: String(statuses.reduce<number>((total, status) => total + restartCount(status), 0)),
     node: text(spec?.nodeName) ?? POD_SUMMARY_EMPTY,
+  };
+}
+
+/** Maps one metrics.k8s.io PodMetrics object to display-safe aggregate usage. */
+export function summarizePodMetric(value: Record<string, unknown>): KubernetesPodMetric | undefined {
+  const metadata = record(value.metadata);
+  const namespace = text(metadata?.namespace);
+  const name = text(metadata?.name);
+  if (!namespace || !name) return undefined;
+  const containers = array(value.containers);
+  const cpu = sum(containers.map((container) => (
+    parseKubernetesCpuQuantity(record(record(container)?.usage)?.cpu)
+  )));
+  const memory = sum(containers.map((container) => (
+    parseKubernetesMemoryQuantity(record(record(container)?.usage)?.memory)
+  )));
+  if (cpu === undefined && memory === undefined) return undefined;
+  return {
+    namespace,
+    name,
+    cpu: cpu === undefined ? POD_SUMMARY_EMPTY : formatCpu(cpu),
+    memory: memory === undefined ? POD_SUMMARY_EMPTY : formatMemory(memory),
   };
 }

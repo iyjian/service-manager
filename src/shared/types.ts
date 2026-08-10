@@ -258,6 +258,11 @@ export interface KubernetesLogState {
   following: boolean;
   /** RFC3339 lower bound for a paused API snapshot. Omitted for ordinary live logs. */
   startTime?: string;
+  /**
+   * Earliest trustworthy query bound for the selected source, normally the
+   * current container start. Omitted when Kubernetes exposes no safe bound.
+   */
+  availableSince?: string;
   hasOlder: boolean;
   /** Current source selection. Deployment scope is resolved only in main. */
   scope: KubernetesLogScope;
@@ -415,12 +420,16 @@ export interface KubernetesListSnapshot {
   watchActive: boolean;
   permissionDenied?: boolean;
   error?: string;
+  /** Live usage capability for Pod CPU/Memory columns. */
+  podMetricsState?: 'loading' | 'available' | 'unavailable';
 }
 
 export interface KubernetesPodTarget {
   namespace: string;
   podName: string;
   container: string;
+  /** Display-safe current-container lifetime bound read from Pod status. */
+  containerStartedAt?: string;
 }
 
 export type KubernetesPodEnvironmentSource =

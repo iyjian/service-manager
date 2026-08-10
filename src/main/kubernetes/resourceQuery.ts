@@ -4,6 +4,7 @@ import type {
   KubernetesResourceKind,
 } from '../../shared/types';
 import { normalizeNamespaceScope } from './kubeconfigStore';
+import { parseKubernetesCpuQuantity, parseKubernetesMemoryQuantity } from './podSummary';
 
 export interface KubernetesResourceQuery {
   context: string;
@@ -200,6 +201,14 @@ export function compareKubernetesSortValues(
   right: string,
   printerType?: KubernetesCustomResourcePrinterColumn['type'],
 ): number {
+  if (column === 'cpu' || column === 'memory') {
+    const parse = column === 'cpu' ? parseKubernetesCpuQuantity : parseKubernetesMemoryQuantity;
+    const leftQuantity = parse(left);
+    const rightQuantity = parse(right);
+    if (leftQuantity !== undefined && rightQuantity !== undefined) {
+      return leftQuantity < rightQuantity ? -1 : leftQuantity > rightQuantity ? 1 : 0;
+    }
+  }
   if (printerType === 'integer' || printerType === 'number') {
     const leftNumber = finiteSortValue(left);
     const rightNumber = finiteSortValue(right);

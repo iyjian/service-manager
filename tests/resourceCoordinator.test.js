@@ -148,6 +148,71 @@ test('ResourceCoordinator creates one all-namespace Pod Watch, not one Watch per
   assert.equal(fakeClient.watchCalls[0].query.namespaceScope.mode, 'all');
 });
 
+test('ResourceCoordinator refreshes live Pod metrics and preserves them across Pod Watch updates', async () => {
+  const fakeClient = createFakeClient([
+    { items: [pod('pod-1', 'api', '10')], resourceVersion: '10' },
+  ]);
+  let metricReads = 0;
+  let useUpdatedMetric = false;
+  fakeClient.listPodMetrics = async () => {
+    metricReads += 1;
+    return [{
+      namespace: 'apps',
+      name: 'api',
+      cpu: useUpdatedMetric ? '250m' : '125m',
+      memory: useUpdatedMetric ? '96Mi' : '64Mi',
+    }];
+  };
+  const updates = [];
+  const coordinator = new ResourceCoordinator({
+    client: () => fakeClient,
+    cache: new ResourceCache(20, 120_000),
+    podMetricsRefreshMs: 0,
+    onSnapshotChanged: (snapshot) => updates.push(snapshot.items[0]?.columns.cpu),
+  });
+  const snapshot = await coordinator.activate(POD_QUERY);
+  assert.equal(snapshot.podMetricsState, 'loading');
+  await waitFor(() => snapshot.podMetricsState === 'available' && snapshot.items[0]?.columns.cpu === '125m');
+
+  fakeClient.emitWatch('10', {
+    type: 'MODIFIED',
+    object: { ...pod('pod-1', 'api', '11'), columns: { status: 'Running', cpu: '—', memory: '—' } },
+  });
+  await flushMicrotasks();
+  assert.equal(snapshot.items[0].columns.cpu, '125m');
+  assert.equal(snapshot.items[0].columns.memory, '64Mi');
+
+  const readsBeforeUpdate = metricReads;
+  useUpdatedMetric = true;
+  await waitFor(() => metricReads > readsBeforeUpdate && snapshot.items[0]?.columns.cpu === '250m');
+  assert.equal(snapshot.items[0].columns.memory, '96Mi');
+  assert.ok(updates.includes('125m'));
+  assert.ok(updates.includes('250m'));
+  await coordinator.deactivate(POD_QUERY);
+});
+
+test('ResourceCoordinator keeps an optional Metrics API failure local to Pod usage columns', async () => {
+  const fakeClient = createFakeClient([
+    { items: [{ ...pod('pod-1', 'api', '10'), columns: { cpu: '500m', memory: '1Gi' } }], resourceVersion: '10' },
+  ]);
+  fakeClient.listPodMetrics = async () => {
+    throw Object.assign(new Error('metrics forbidden'), { statusCode: 403 });
+  };
+  const coordinator = new ResourceCoordinator({
+    client: () => fakeClient,
+    cache: new ResourceCache(20, 120_000),
+    podMetricsRefreshMs: 60_000,
+  });
+  const snapshot = await coordinator.activate(POD_QUERY);
+  await waitFor(() => snapshot.podMetricsState === 'unavailable');
+  assert.equal(snapshot.watchActive, true);
+  assert.equal(snapshot.error, undefined);
+  assert.equal(snapshot.permissionDenied, undefined);
+  assert.equal(snapshot.items[0].columns.cpu, '—');
+  assert.equal(snapshot.items[0].columns.memory, '—');
+  await coordinator.deactivate(POD_QUERY);
+});
+
 test('ResourceCoordinator reconciles Watch resource versions and relists only an active query after 410', async () => {
   const relist = deferred();
   const fakeClient = createFakeClient([

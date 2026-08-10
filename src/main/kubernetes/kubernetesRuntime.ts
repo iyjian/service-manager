@@ -247,6 +247,7 @@ function projectSnapshotWindow(
     watchActive: snapshot.watchActive,
     ...(snapshot.permissionDenied ? { permissionDenied: true } : {}),
     ...(snapshot.error ? { error: snapshot.error } : {}),
+    ...(snapshot.podMetricsState ? { podMetricsState: snapshot.podMetricsState } : {}),
   };
 }
 
@@ -1712,6 +1713,11 @@ export class KubernetesRuntime {
       namespace: assertText(value.namespace, 'Namespace'),
       podName: assertText(value.podName, 'Pod name'),
       container: assertText(value.container, 'container'),
+      ...(value.containerStartedAt === undefined ? {} : {
+        containerStartedAt: normalizeKubernetesLogStartTime(
+          assertText(value.containerStartedAt, 'container start time')
+        ),
+      }),
     };
   }
 

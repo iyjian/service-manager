@@ -118,6 +118,25 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /sqlCurrentStatementHighlight/);
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
+  assert.match(page, /EditorState\.tabSize\.of\(SQL_INDENT\.length\)/);
+  assert.match(page, /key:\s*['"]Enter['"],\s*run:\s*insertSqlNewline/);
+  const sqlEditorExtensions = page.slice(
+    page.indexOf('this.editor = new EditorView'),
+    page.indexOf('EditorView.clipboardInputFilter', page.indexOf('this.editor = new EditorView')),
+  );
+  assert.ok(
+    sqlEditorExtensions.indexOf('Prec.highest(keymap.of([')
+      < sqlEditorExtensions.indexOf('basicSetup,'),
+    'SQL Enter keymap must register before basicSetup completion bindings',
+  );
+  assert.match(page, /key:\s*['"]Tab['"],\s*run:\s*insertSqlIndent/);
+  assert.match(page, /key:\s*['"]Shift-Tab['"],\s*run:\s*removeSqlIndent/);
+  assert.match(page, /clipboardInputFilter\.of\(\(?text\)?\s*=>\s*normalizeSqlEditorSource\(text\)\)/);
+  assert.match(page, /restoreUntitledDrafts\(\)/);
+  assert.match(page, /tab\.recordId === undefined\)\s*this\.scheduleUntitledDraftPersistence\(\)/);
+  assert.match(page, /window\.addEventListener\(['"]beforeunload['"], \(\) => this\.persistUntitledDrafts\(\)\)/);
+  assert.match(page, /state\.tabs\.filter\(\(?tab\)? => tab\.recordId === undefined\)/);
+  assert.match(page, /SQL_UNTITLED_DRAFTS_STORAGE_KEY/);
   assert.match(page, /window\.serviceApi\.onCloseShortcutRequested\(\(\) => this\.handleCloseShortcut\(\)\)/);
   assert.match(
     page,

@@ -768,6 +768,49 @@ test('workspace height clamps between a compact minimum and eighty percent of it
   assert.equal(clampKubernetesWorkspaceHeight(200, 100), 80, 'small pages keep the maximum authoritative');
 });
 
+test('Since text, quick ranges, and five-minute adjustment helpers enforce source bounds', async () => {
+  const {
+    adjustKubernetesLogStartTime,
+    kubernetesLogPresetStartTime,
+    kubernetesLogStartTimeInputValue,
+    kubernetesLogStartTimeIso,
+  } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const now = new Date(2026, 7, 10, 12, 0, 0).getTime();
+  const availableSince = new Date(2026, 7, 10, 11, 40, 0).toISOString();
+
+  assert.equal(
+    kubernetesLogStartTimeInputValue(new Date(2026, 7, 10, 11, 45, 30).toISOString()),
+    '2026-08-10 11:45:30',
+  );
+  assert.equal(
+    kubernetesLogStartTimeIso('2026-08-10 11:45:30', availableSince, now),
+    new Date(2026, 7, 10, 11, 45, 30).toISOString(),
+  );
+  const subsecondBoundary = new Date(2026, 7, 10, 11, 40, 0, 345).toISOString();
+  assert.equal(
+    kubernetesLogStartTimeIso('2026-08-10 11:40:00', subsecondBoundary, now),
+    subsecondBoundary,
+    'the displayed second accepts an exact container boundary with hidden milliseconds',
+  );
+  assert.equal(kubernetesLogStartTimeIso('2026-08-10 11:39:59', availableSince, now), undefined);
+  assert.equal(kubernetesLogStartTimeIso('2026-08-10 12:00:01', availableSince, now), undefined);
+  assert.equal(kubernetesLogStartTimeIso('2026-02-30 11:45:00', availableSince, now), undefined);
+  assert.equal(kubernetesLogPresetStartTime(30, availableSince, now), availableSince);
+  assert.equal(
+    kubernetesLogPresetStartTime(5, new Date(now + 60_000).toISOString(), now),
+    new Date(now).toISOString(),
+  );
+  assert.equal(adjustKubernetesLogStartTime(availableSince, -5, availableSince, now), availableSince);
+  assert.equal(
+    adjustKubernetesLogStartTime(availableSince, 5, availableSince, now),
+    new Date(2026, 7, 10, 11, 45, 0).toISOString(),
+  );
+  assert.equal(
+    adjustKubernetesLogStartTime(new Date(now - 2 * 60_000).toISOString(), 5, availableSince, now),
+    new Date(now).toISOString(),
+  );
+});
+
 test('a newly created Shell uses half the page height without changing the Logs default or an explicit height', async () => {
   await withWorkspaceDom(async ({ flushAnimationFrames }) => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
@@ -946,12 +989,13 @@ test('workspace panes omit duplicate target titles while tab accessible names re
   });
 });
 
-test('log start time reloads a paused second-precision snapshot and Resume clears the filter', async () => {
+test('inline Since text applies a second-precision snapshot and Resume clears it', async () => {
   await withWorkspaceDom(async () => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
+    const availableSince = new Date('2026-07-17T12:00:00').toISOString();
     const target = { namespace: 'apps', podName: 'api', container: 'web' };
     const snapshot = deferred();
     const startTimeCalls = [];
@@ -965,6 +1009,7 @@ test('log start time reloads a paused second-precision snapshot and Resume clear
         ...target,
         lines: ['live'],
         following: true,
+        availableSince,
         hasOlder: true,
         scope: 'pod',
         revision: 1,
@@ -996,14 +1041,13 @@ test('log start time reloads a paused second-precision snapshot and Resume clear
     });
 
     await workspace.openLogs(target);
-    const localValue = '2026-07-17T12:34:56';
     const startTime = findByAriaLabel(pane, 'Log start time for Logs apps/api · web');
-    startTime.value = localValue;
+    startTime.value = '2026-07-17 12:34:56';
     startTime.listeners.get('change')();
-    const expectedIso = new Date(localValue).toISOString();
+    const expectedIso = new Date('2026-07-17T12:34:56').toISOString();
     assert.deepEqual(startTimeCalls, [['log-api', expectedIso]]);
     assert.ok(findByAriaLabel(pane, 'Resume log follow'));
-    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').disabled, true);
+    assert.equal(startTime.disabled, true);
 
     snapshot.resolve({
       sessionId: 'log-api',
@@ -1011,27 +1055,152 @@ test('log start time reloads a paused second-precision snapshot and Resume clear
       lines: ['snapshot'],
       following: false,
       startTime: expectedIso,
+      availableSince,
       hasOlder: false,
       scope: 'pod',
       revision: 2,
     });
+    await new Promise((resolve) => setImmediate(resolve));
     await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, localValue);
+    assert.equal(startTime.value, '2026-07-17 12:34:56');
 
     startTime.value = 'invalid';
-    startTime.focus();
     startTime.listeners.get('change')();
-    assert.equal(startTime.value, localValue, 'an invalid focused edit restores the authoritative snapshot time');
+    assert.equal(startTime.getAttribute('aria-invalid'), 'true');
     assert.equal(startTimeCalls.length, 1);
 
     findByAriaLabel(pane, 'Resume log follow').listeners.get('click')();
-    assert.equal(findByAriaLabel(pane, 'Log start time for Logs apps/api · web').value, '');
-    await Promise.resolve();
-    await Promise.resolve();
+    assert.equal(startTime.value, '');
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(followingCalls, [['log-api', true]]);
     assert.ok(findByAriaLabel(pane, 'Pause log follow'));
+    await workspace.dispose();
+  });
+});
+
+test('inline Since toolbar exposes Last 5m, 10m, 30m and working five-minute adjustments', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const testStartedAt = Math.floor(Date.now() / 1_000) * 1_000;
+    const availableSince = new Date(testStartedAt - (20 * 60_000)).toISOString();
+    const initialStart = new Date(testStartedAt - (10 * 60_000)).toISOString();
+    const calls = [];
+    let revision = 1;
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['snapshot'], following: false,
+        startTime: initialStart, availableSince, hasOlder: false, scope: 'pod', revision,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: async (id, startTime) => {
+        calls.push([id, startTime]);
+        return {
+          sessionId: id, ...target, lines: ['snapshot'], following: false,
+          startTime, availableSince, hasOlder: false, scope: 'pod', revision: ++revision,
+        };
+      },
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const earlier = findByAriaLabel(pane, 'Move log start 5 minutes earlier for Logs apps/api · web');
+    const later = findByAriaLabel(pane, 'Move log start 5 minutes later for Logs apps/api · web');
+    const startTimeGroup = findByClassName(pane, 'kubernetes-log-start-time');
+    const presets = startTimeGroup.children.filter((child) => (
+      child.className.split(/\s+/).includes('kubernetes-log-time-preset')
+    ));
+    assert.deepEqual(presets.map((button) => button.textContent), ['5m', '10m', '30m']);
+    const lastFive = findByAriaLabel(pane, 'Last 5 minutes for Logs apps/api · web');
+    const lastTen = findByAriaLabel(pane, 'Last 10 minutes for Logs apps/api · web');
+    const lastThirty = findByAriaLabel(pane, 'Last 30 minutes for Logs apps/api · web');
+    assert.ok(lastFive && lastTen && lastThirty);
+
+    earlier.listeners.get('click')();
+    assert.equal(calls[0][1], new Date(new Date(initialStart).getTime() - (5 * 60_000)).toISOString());
+    await new Promise((resolve) => setImmediate(resolve));
+    later.listeners.get('click')();
+    assert.equal(calls[1][1], initialStart);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    let beforePreset = Date.now();
+    lastFive.listeners.get('click')();
+    let presetTimestamp = new Date(calls[2][1]).getTime();
+    assert.ok(presetTimestamp >= beforePreset - (5 * 60_000) - 100);
+    assert.ok(presetTimestamp <= Date.now() - (5 * 60_000) + 100);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    beforePreset = Date.now();
+    lastTen.listeners.get('click')();
+    presetTimestamp = new Date(calls[3][1]).getTime();
+    assert.ok(presetTimestamp >= beforePreset - (10 * 60_000) - 100);
+    assert.ok(presetTimestamp <= Date.now() - (10 * 60_000) + 100);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    lastThirty.listeners.get('click')();
+    assert.equal(calls[4][1], availableSince, 'Last 30m clamps to this container start');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(earlier.disabled, true, '−5m disables at the current container boundary');
+    earlier.listeners.get('click')();
+    assert.equal(calls.length, 5, 'a boundary adjustment never clears and reloads the same snapshot');
+    await workspace.dispose();
+  });
+});
+
+test('inline Since minus five minutes starts a snapshot directly from live logs', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api', container: 'web' };
+    const calls = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['live'], following: true,
+        hasOlder: true, scope: 'pod', revision: 1,
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogStartTime: async (id, startTime) => {
+        calls.push([id, startTime]);
+        return {
+          sessionId: id, ...target, lines: ['snapshot'], following: false,
+          startTime, hasOlder: false, scope: 'pod', revision: 2,
+        };
+      },
+      setLogFollowing: async () => assert.fail('not used'),
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const beforeClick = Date.now();
+    findByAriaLabel(pane, 'Move log start 5 minutes earlier for Logs apps/api · web').listeners.get('click')();
+    assert.equal(calls.length, 1);
+    const timestamp = new Date(calls[0][1]).getTime();
+    assert.ok(timestamp >= beforeClick - (5 * 60_000) - 100);
+    assert.ok(timestamp <= Date.now() - (5 * 60_000) + 100);
     await workspace.dispose();
   });
 });
@@ -1223,6 +1392,62 @@ test('pausing logs restores the exact attached viewport after optimistic and con
   }, { deferAnimationFrames: true, clampDetachedPreScroll: true });
 });
 
+test('log follow remains interactive so Resume can supersede in-flight Pause cleanup', async () => {
+  await withWorkspaceDom(async () => {
+    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const root = new FakeElement('section');
+    const tabList = new FakeElement('div');
+    const pane = new FakeElement('div');
+    const target = { namespace: 'apps', podName: 'api-a', container: 'web' };
+    const pauseResult = deferred();
+    const resumeResult = deferred();
+    const requests = [];
+    const workspace = createKubernetesWorkspace({
+      root,
+      tabList,
+      pane,
+      openLogs: async () => ({
+        sessionId: 'log-api', ...target, lines: ['one'],
+        following: true, hasOlder: false, revision: 1, scope: 'pod',
+      }),
+      setLogScope: async () => assert.fail('not used'),
+      setLogFollowing: (_id, following) => {
+        requests.push(following);
+        return following ? resumeResult.promise : pauseResult.promise;
+      },
+      clearLogs: async () => assert.fail('not used'),
+      closeLogs: async () => {},
+      openTerminal: async () => assert.fail('not used'),
+      writeTerminal: async () => assert.fail('not used'),
+      resizeTerminal: async () => assert.fail('not used'),
+      closeTerminal: async () => assert.fail('not used'),
+      reportError: (error) => assert.fail(String(error)),
+    });
+
+    await workspace.openLogs(target);
+    const pause = findByAriaLabel(pane, 'Pause log follow');
+    pause.listeners.get('click')();
+    const resume = findByAriaLabel(pane, 'Resume log follow');
+    assert.equal(resume.disabled, false);
+    resume.listeners.get('click')();
+    assert.deepEqual(requests, [false, true]);
+
+    pauseResult.resolve({
+      sessionId: 'log-api', ...target, lines: ['stale pause'],
+      following: false, hasOlder: false, revision: 2, scope: 'pod',
+    });
+    resumeResult.resolve({
+      sessionId: 'log-api', ...target, lines: ['resumed'],
+      following: true, hasOlder: false, revision: 3, scope: 'pod',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(findByAriaLabel(pane, 'Pause log follow'));
+    assert.equal(descendantText(findByClassName(pane, 'kubernetes-log-output')), 'resumed');
+    await workspace.dispose();
+  });
+});
+
 test('incremental log appends retain the toolbar, search field, pre, and unaffected line DOM', async () => {
   await withWorkspaceDom(async () => {
     const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
@@ -1281,13 +1506,13 @@ test('incremental log appends retain the toolbar, search field, pre, and unaffec
     assert.equal(descendantText(output), 'red');
 
     const startTime = findByClassName(pane, 'kubernetes-log-start-time-input');
-    startTime.value = '2026-07-20T12:34:56';
+    startTime.value = '2026-07-20 12:34:56';
     startTime.focus();
     workspace.onLogChanged({
       kind: 'append', sessionId: 'log-api', ...target, scope: 'pod', following: true,
       baseRevision: 2, revision: 3, removeLeading: 0, lines: ['not visible'],
     });
-    assert.equal(startTime.value, '2026-07-20T12:34:56', 'live appends preserve an in-progress Since edit');
+    assert.equal(startTime.value, '2026-07-20 12:34:56', 'live appends preserve an in-progress Since edit');
     assert.equal(descendantText(output), 'red');
     assert.equal(findByClassName(pane, 'kubernetes-log-status').children[1].textContent, '1 of 3 lines');
     await workspace.dispose();

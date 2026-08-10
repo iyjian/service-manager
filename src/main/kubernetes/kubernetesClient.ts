@@ -31,6 +31,7 @@ import {
   parseKubeVirtVncTargetFromPod,
 } from './kubeVirtVnc';
 import { mapKubernetesResourceSummary } from './resourceSummary';
+import { summarizePodMetric, type KubernetesPodMetric } from './podSummary';
 import type {
   KubernetesResourcePage,
   KubernetesResourceQuery,
@@ -140,6 +141,8 @@ export interface KubernetesClient {
   /** Verifies API transport/TLS reachability without reading a cluster resource. */
   probeConnection(): Promise<void>;
   list(query: KubernetesResourceQuery, continueToken?: string): Promise<KubernetesResourcePage>;
+  /** Optional for compatibility with focused client fakes; production reads metrics.k8s.io. */
+  listPodMetrics?(query: KubernetesResourceQuery): Promise<KubernetesPodMetric[]>;
   get(query: KubernetesResourceQuery, name: string, namespace?: string): Promise<Record<string, unknown>>;
   listEvents(reference: { uid: string; namespace?: string }): Promise<KubernetesResourceSummary[]>;
   listCustomResourceDefinitions(): Promise<KubernetesCustomResourceDefinition[]>;
@@ -208,6 +211,11 @@ type KubeConfigLike = {
 };
 
 const PAGE_SIZE = 200;
+const POD_METRICS_PAGE_SIZE = 500;
+const MAX_POD_METRICS = 10_000;
+const POD_METRICS_GROUP = 'metrics.k8s.io';
+const POD_METRICS_VERSION = 'v1beta1';
+const POD_METRICS_PLURAL = 'pods';
 const MAX_ACTIVE_VNC_SESSIONS = 3;
 const MULTI_NAMESPACE_CONTINUE_PREFIX = 'service-manager-kubernetes-v1:';
 
@@ -840,6 +848,64 @@ class KubernetesClientAdapter implements KubernetesClient {
       ...(nextContinuation ? { continueToken: nextContinuation } : {}),
       resourceVersion: stringValue(response.metadata?.resourceVersion) ?? '',
     };
+  }
+
+  /**
+   * Reads bounded live Pod usage separately from ordinary Pod LIST/Watch.
+   * Metrics failures remain an optional active-view capability failure and
+   * are handled by ResourceCoordinator without disconnecting the Context.
+   */
+  public async listPodMetrics(query: KubernetesResourceQuery): Promise<KubernetesPodMetric[]> {
+    this.assertOpen();
+    if (query.kind !== 'pods') {
+      throw new Error('Kubernetes Pod metrics require an active Pod query.');
+    }
+    const namespaces = query.namespaceScope.mode === 'all'
+      ? [undefined]
+      : [...new Set(query.namespaceScope.namespaces.map((namespace) => namespace.trim()).filter(Boolean))].sort();
+    if (namespaces.length === 0) {
+      throw new Error('Select at least one Namespace.');
+    }
+
+    const metrics: KubernetesPodMetric[] = [];
+    const seen = new Set<string>();
+    for (const namespace of namespaces) {
+      let continueToken: string | undefined;
+      const seenContinuations = new Set<string>();
+      do {
+        const remaining = MAX_POD_METRICS - metrics.length;
+        if (remaining <= 0) return metrics;
+        const method = namespace ? 'listNamespacedCustomObject' : 'listClusterCustomObject';
+        const response = asRecord(await this.call(this.custom, method, {
+          group: POD_METRICS_GROUP,
+          version: POD_METRICS_VERSION,
+          plural: POD_METRICS_PLURAL,
+          ...(namespace ? { namespace } : {}),
+          limit: Math.min(POD_METRICS_PAGE_SIZE, remaining),
+          ...(continueToken ? { _continue: continueToken } : {}),
+          ...(query.labelSelector ? { labelSelector: query.labelSelector } : {}),
+        })) as KubernetesListObject;
+        if (response.items !== undefined && !Array.isArray(response.items)) {
+          throw new Error('Kubernetes Metrics API returned an invalid Pod metrics list.');
+        }
+        for (const item of response.items ?? []) {
+          if (metrics.length >= MAX_POD_METRICS) return metrics;
+          const metric = summarizePodMetric(asRecord(item));
+          if (!metric) continue;
+          const key = `${metric.namespace}\u0000${metric.name}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          metrics.push(metric);
+        }
+        const next = listContinueToken(response);
+        if (next && seenContinuations.has(next)) {
+          throw new Error('Kubernetes Metrics API returned a repeated continuation.');
+        }
+        if (next) seenContinuations.add(next);
+        continueToken = next;
+      } while (continueToken);
+    }
+    return metrics;
   }
 
   public async get(

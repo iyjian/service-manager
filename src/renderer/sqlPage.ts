@@ -11,13 +11,15 @@ import type {
 } from '../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
+import { indentUnit } from '@codemirror/language';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
-import { EditorState, StateEffect, StateField, type Text } from '@codemirror/state';
+import { EditorState, Prec, StateEffect, StateField, type Text } from '@codemirror/state';
 import {
   activateHover,
   closeHoverTooltip,
   Decoration,
   hoverTooltip,
+  keymap,
   type DecorationSet,
   type Tooltip,
 } from '@codemirror/view';
@@ -41,7 +43,6 @@ import {
 } from './sqlCompletion.js';
 import {
   extractSqlTemplateParamNames,
-  isLikelyReadOnlySql,
   replaceSqlTemplateParams,
   resolveSqlStatement,
 } from './sqlStatement.js';
@@ -55,7 +56,17 @@ import {
   type SqlCellPresentation,
   type SqlDisplayResult,
 } from './sqlResult.js';
+import {
+  emptySqlUntitledDraftState,
+  normalizeSqlEditorSource,
+  parseSqlUntitledDraftState,
+  serializeSqlUntitledDraftState,
+  SQL_UNTITLED_DRAFTS_STORAGE_KEY,
+  type SqlUntitledDraftState,
+} from './sqlUntitledDrafts.js';
 import { SqlVirtualResultTable } from './sqlVirtualResultTable.js';
+
+export { normalizeSqlEditorSource } from './sqlUntitledDrafts.js';
 
 const SQL_NAV_ICON = `
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -85,6 +96,8 @@ const SQL_MAX_SELECT_LIMIT = 10_000;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const SQL_ENUM_TOOLTIP_MAX_ROWS = 100;
 const SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS = 180;
+const SQL_UNTITLED_DRAFT_PERSIST_DELAY_MS = 250;
+const SQL_INDENT = '  ';
 const SQL_VALUE_DETECT_LANGUAGES: ReadonlySet<string> = new Set(['markdown']);
 const SQL_VALUE_DETECT_MIN_RELEVANCE = 5;
 const SQL_VALUE_MARKDOWN_PATTERNS: readonly RegExp[] = Object.freeze([
@@ -267,6 +280,58 @@ export function normalizeSqlSelectLimit(value: unknown): number {
   const numeric = typeof value === 'string' ? Number(value.trim()) : Number(value);
   if (!Number.isFinite(numeric)) return SQL_DEFAULT_SELECT_LIMIT;
   return Math.min(SQL_MAX_SELECT_LIMIT, Math.max(SQL_MIN_SELECT_LIMIT, Math.trunc(numeric)));
+}
+
+function selectedSqlLineStarts(state: EditorState): number[] {
+  const starts = new Set<number>();
+  for (const range of state.selection.ranges) {
+    const firstLine = state.doc.lineAt(range.from).number;
+    let lastLine = state.doc.lineAt(range.to).number;
+    if (!range.empty && range.to === state.doc.line(lastLine).from) lastLine -= 1;
+    for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber += 1) {
+      starts.add(state.doc.line(lineNumber).from);
+    }
+  }
+  return [...starts].sort((left, right) => left - right);
+}
+
+function insertSqlIndent(view: EditorView): boolean {
+  const { state } = view;
+  if (state.selection.ranges.every((range) => range.empty)) {
+    view.dispatch(state.update(
+      state.replaceSelection(SQL_INDENT),
+      { scrollIntoView: true, userEvent: 'input' },
+    ));
+    return true;
+  }
+  view.dispatch({
+    changes: selectedSqlLineStarts(state).map((from) => ({ from, insert: SQL_INDENT })),
+    scrollIntoView: true,
+    userEvent: 'input.indent',
+  });
+  return true;
+}
+
+function removeSqlIndent(view: EditorView): boolean {
+  const { state } = view;
+  const changes = selectedSqlLineStarts(state).flatMap((from) => {
+    const line = state.doc.lineAt(from);
+    if (line.text.startsWith(SQL_INDENT)) return [{ from, to: from + SQL_INDENT.length }];
+    if (line.text.startsWith(' ') || line.text.startsWith('\t')) return [{ from, to: from + 1 }];
+    return [];
+  });
+  if (changes.length > 0) {
+    view.dispatch({ changes, scrollIntoView: true, userEvent: 'delete.dedent' });
+  }
+  return true;
+}
+
+function insertSqlNewline(view: EditorView): boolean {
+  view.dispatch(view.state.update(
+    view.state.replaceSelection(view.state.lineBreak),
+    { scrollIntoView: true, userEvent: 'input' },
+  ));
+  return true;
 }
 
 export function sqlValueModesForKind(
@@ -500,9 +565,10 @@ function sandboxedHtmlDocument(value: string): string {
 
 function tabFromRecord(environment: SqlEnvironment, record: SqlQueryRecord): SqlQueryTab {
   const tab = newQueryTab(environment);
+  const normalizedSource = normalizeSqlEditorSource(record.sql);
   tab.recordId = record.id;
   tab.title = record.name;
-  tab.source = record.sql;
+  tab.source = normalizedSource;
   tab.savedSource = record.sql;
   tab.params = parseConfigParams(record.config);
   tab.lastResponseText = record.lastQueryResult ?? '';
@@ -614,6 +680,8 @@ class SqlPage {
   private valueFindFrame?: number;
   private valueFindEscapeGuard = false;
   private valueCopyResetTimer?: number;
+  private untitledDraftPersistTimer?: number;
+  private untitledDraftPersistWarningShown = false;
   private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
   private tableEnumHoverCloseTimer?: number;
   private tableEnumPendingPosition?: {
@@ -631,6 +699,7 @@ class SqlPage {
     } catch {
       // Default to Production if local storage is unavailable.
     }
+    this.restoreUntitledDrafts();
     this.tableEnumHover = hoverTooltip(
       (view, position) => this.tableEnumTooltipAt(view, position),
       { hideOnChange: true },
@@ -639,8 +708,18 @@ class SqlPage {
       state: EditorState.create({
         doc: '',
         extensions: [
+          // CodeMirror's completion Enter binding also uses the highest precedence.
+          // Register SQL editing keys first so Enter always inserts a plain newline.
+          Prec.highest(keymap.of([
+            { key: 'Enter', run: insertSqlNewline, shift: insertSqlNewline },
+            { key: 'Tab', run: insertSqlIndent },
+            { key: 'Shift-Tab', run: removeSqlIndent },
+          ])),
           basicSetup,
           sql({ dialect: MySQL, upperCaseKeywords: true }),
+          EditorState.tabSize.of(SQL_INDENT.length),
+          indentUnit.of(SQL_INDENT),
+          EditorView.clipboardInputFilter.of((text) => normalizeSqlEditorSource(text)),
           MySQL.language.data.of({ autocomplete: this.contextualSchemaCompletion }),
           sqlCurrentStatementHighlight,
           this.tableEnumHover,
@@ -668,14 +747,19 @@ class SqlPage {
           EditorView.contentAttributes.of({
             'aria-label': 'SQL source',
             'aria-multiline': 'true',
+            autocapitalize: 'off',
+            autocomplete: 'off',
+            autocorrect: 'off',
             spellcheck: 'false',
+            translate: 'no',
           }),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged || this.replacingDocument) return;
             const tab = this.currentTab();
             if (!tab) return;
             const wasDirty = this.isTabDirty(tab);
-            tab.source = update.state.doc.toString();
+            tab.source = normalizeSqlEditorSource(update.state.doc.toString());
+            if (tab.recordId === undefined) this.scheduleUntitledDraftPersistence();
             if (wasDirty !== this.isTabDirty(tab)) this.renderTabs();
           }),
         ],
@@ -780,6 +864,7 @@ class SqlPage {
         void this.runCurrentStatement();
       }
     }, true);
+    window.addEventListener('beforeunload', () => this.persistUntitledDrafts());
     this.bindSidebarResizer();
     this.bindResultResizer();
   }
@@ -1042,6 +1127,65 @@ class SqlPage {
 
   private isTabDirty(tab: SqlQueryTab): boolean {
     return tab.source !== tab.savedSource;
+  }
+
+  private restoreUntitledDrafts(): void {
+    let restored = emptySqlUntitledDraftState();
+    try {
+      restored = parseSqlUntitledDraftState(localStorage.getItem(SQL_UNTITLED_DRAFTS_STORAGE_KEY));
+    } catch {
+      // A missing or unavailable renderer store simply starts with no drafts.
+    }
+    for (const environment of ['production', 'development'] as const) {
+      const draftState = restored[environment];
+      const tabs = draftState.sources.map((source) => {
+        const tab = newQueryTab(environment);
+        tab.source = source;
+        return tab;
+      });
+      this.states[environment].tabs = tabs;
+      this.states[environment].activeTabKey = tabs[draftState.activeIndex]?.key;
+    }
+  }
+
+  private collectUntitledDrafts(): SqlUntitledDraftState {
+    const drafts = emptySqlUntitledDraftState();
+    for (const environment of ['production', 'development'] as const) {
+      const state = this.states[environment];
+      const tabs = state.tabs.filter((tab) => tab.recordId === undefined);
+      drafts[environment].sources = tabs.map((tab) => normalizeSqlEditorSource(tab.source));
+      const activeIndex = tabs.findIndex((tab) => tab.key === state.activeTabKey);
+      drafts[environment].activeIndex = activeIndex >= 0 ? activeIndex : 0;
+    }
+    return drafts;
+  }
+
+  private scheduleUntitledDraftPersistence(): void {
+    if (this.untitledDraftPersistTimer !== undefined) {
+      window.clearTimeout(this.untitledDraftPersistTimer);
+    }
+    this.untitledDraftPersistTimer = window.setTimeout(() => {
+      this.untitledDraftPersistTimer = undefined;
+      this.persistUntitledDrafts();
+    }, SQL_UNTITLED_DRAFT_PERSIST_DELAY_MS);
+  }
+
+  private persistUntitledDrafts(): void {
+    if (this.untitledDraftPersistTimer !== undefined) {
+      window.clearTimeout(this.untitledDraftPersistTimer);
+      this.untitledDraftPersistTimer = undefined;
+    }
+    try {
+      localStorage.setItem(
+        SQL_UNTITLED_DRAFTS_STORAGE_KEY,
+        serializeSqlUntitledDraftState(this.collectUntitledDrafts()),
+      );
+      this.untitledDraftPersistWarningShown = false;
+    } catch {
+      if (this.untitledDraftPersistWarningShown) return;
+      this.untitledDraftPersistWarningShown = true;
+      toast('Untitled SQL drafts could not be saved locally.', 'error');
+    }
   }
 
   private async switchEnvironment(environment: SqlEnvironment): Promise<void> {
@@ -1367,6 +1511,7 @@ class SqlPage {
     const tab = newQueryTab(this.environment);
     state.tabs.push(tab);
     state.activeTabKey = tab.key;
+    this.persistUntitledDrafts();
     this.replaceEditorDocument('');
     this.renderTabs();
     this.renderRecordList();
@@ -1380,6 +1525,7 @@ class SqlPage {
     const tab = state.tabs.find((item) => item.key === key);
     if (!tab) return;
     state.activeTabKey = key;
+    if (tab.recordId === undefined) this.persistUntitledDrafts();
     this.replaceEditorDocument(tab.source);
     this.renderTabs();
     this.renderRecordList();
@@ -1510,6 +1656,7 @@ class SqlPage {
       return true;
     }
     if (wasActive) state.activeTabKey = state.tabs[Math.min(index, state.tabs.length - 1)]?.key;
+    this.persistUntitledDrafts();
     if (wasActive) this.replaceEditorDocument(this.currentTab()?.source ?? '');
     this.renderTabs();
     this.renderRecordList();
@@ -1520,6 +1667,7 @@ class SqlPage {
 
   private replaceEditorDocument(source: string): void {
     this.closeTableEnumHover();
+    source = normalizeSqlEditorSource(source);
     const current = this.editor.state.doc.toString();
     if (current === source) return;
     this.replacingDocument = true;
@@ -1535,7 +1683,7 @@ class SqlPage {
     const state = this.states[environment];
     const tab = this.currentTab();
     if (!tab || tab.saving) return;
-    tab.source = this.editor.state.doc.toString();
+    tab.source = normalizeSqlEditorSource(this.editor.state.doc.toString());
     if (!tab.source.trim()) {
       toast('Enter SQL before saving.', 'error');
       this.editor.focus();
@@ -1564,7 +1712,8 @@ class SqlPage {
         : await window.sqlApi.updateQuery(environment, tab.recordId, draft);
       tab.recordId = saved.id;
       tab.title = saved.name;
-      tab.savedSource = saved.sql;
+      tab.savedSource = normalizeSqlEditorSource(saved.sql);
+      this.persistUntitledDrafts();
       if (tab.source === sourceAtSave) {
         tab.params = parseConfigParams(saved.config ?? draft.config);
       }
@@ -1680,7 +1829,7 @@ class SqlPage {
     const tab = this.currentTab();
     if (!tab || tab.executing) return;
     const selection = this.editor.state.selection.main;
-    const source = this.editor.state.doc.toString();
+    const source = normalizeSqlEditorSource(this.editor.state.doc.toString());
     tab.source = source;
     const resolution = resolveSqlStatement(source, selection.from, selection.to);
     if (!resolution.ok) {
@@ -1692,17 +1841,6 @@ class SqlPage {
     if (params === null) return;
     tab.params = { ...tab.params, ...params };
     const executableSql = replaceSqlTemplateParams(resolution.statement.sql, tab.params);
-
-    if (environment === 'production' && !isLikelyReadOnlySql(executableSql)) {
-      const confirmed = await window.serviceApi.confirmAction({
-        title: 'Run in Production?',
-        message: 'This statement may change Production data.',
-        detail: 'Review the selected statement and environment before continuing.',
-        kind: 'warning',
-        confirmLabel: 'Run in Production',
-      });
-      if (!confirmed) return;
-    }
 
     const version = ++tab.executionVersion;
     tab.executing = true;

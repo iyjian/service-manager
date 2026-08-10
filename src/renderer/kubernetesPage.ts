@@ -1971,6 +1971,9 @@ class KubernetesPage implements KubernetesPageController {
       button.className = 'kubernetes-table-sort';
       button.dataset.kubernetesSort = column.key;
       button.dataset.sortLabel = column.label;
+      if (this.resourceKind === 'pods' && (column.key === 'cpu' || column.key === 'memory')) {
+        button.title = `Live ${column.label} usage from metrics.k8s.io`;
+      }
       const label = document.createElement('span');
       label.textContent = column.label;
       button.append(label, createKubernetesSortIcon());
@@ -2456,9 +2459,15 @@ class KubernetesPage implements KubernetesPageController {
     this.clearTransientStates();
     this.table?.setWindow(snapshot);
     this.renderSortHeaders();
+    const metricsStatus = query.kind !== 'pods' || snapshot.podMetricsState === 'available'
+      ? ''
+      : snapshot.podMetricsState === 'loading'
+        ? ' · loading metrics'
+        : ' · metrics unavailable';
     this.loadedCount.textContent = snapshot.continueToken
       ? `Loaded ${snapshot.loadedCount} ${resourceLabel(query.kind)} · more available`
       : `Loaded ${snapshot.loadedCount} ${resourceLabel(query.kind)}`;
+    this.loadedCount.textContent += metricsStatus;
     if (snapshot.total === 0) {
       this.emptyState.textContent = query.nameFilter ? 'No loaded resources match this name.' : 'No resources found.';
       this.emptyState.classList.remove('hidden');
@@ -3326,6 +3335,7 @@ class KubernetesPage implements KubernetesPageController {
         logs.addEventListener('click', () => {
           if (!this.workspace) return;
           void this.workspace.openLogs(container.target);
+          this.closeDetail();
         });
         const shell = document.createElement('button');
         shell.type = 'button';

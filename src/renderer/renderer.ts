@@ -58,6 +58,8 @@ const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-privat
 const togglePrivateKeyButton = requireElement<HTMLButtonElement>('#toggle-private-key-btn');
 const privateKeyContent = requireElement<HTMLElement>('#private-key-content');
 const privateKeySourceStatus = requireElement<HTMLElement>('#private-key-source-status');
+const privateKeySummaryToggle = requireElement<HTMLButtonElement>('#private-key-summary-toggle');
+const targetPrivateKeyDetails = requireElement<HTMLElement>('#target-private-key-details');
 const useJumpHostInput = requireElement<HTMLInputElement>('#use-jump-host');
 const jumpHostSection = requireElement<HTMLElement>('#jump-host-section');
 const jumpHostEditorList = requireElement<HTMLDivElement>('#jump-host-editor-list');
@@ -68,6 +70,12 @@ const serviceEditorList = requireElement<HTMLDivElement>('#service-editor-list')
 const addServiceButton = requireElement<HTMLButtonElement>('#add-service-btn');
 const saveHostButton = requireElement<HTMLButtonElement>('#save-host-btn');
 const resetButton = requireElement<HTMLButtonElement>('#reset-btn');
+const hostEditRoute = requireElement<HTMLElement>('#host-edit-route');
+const hostEditPathCount = requireElement<HTMLElement>('#host-edit-path-count');
+const hostEditForwardsCount = requireElement<HTMLElement>('#host-edit-forwards-count');
+const hostEditServicesCount = requireElement<HTMLElement>('#host-edit-services-count');
+const hostEditTabButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-host-edit-tab]'));
+const hostEditPanels = Array.from(document.querySelectorAll<HTMLElement>('[data-host-edit-panel]'));
 const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
 const pageMessageTextElement = requireElement<HTMLButtonElement>('#page-message-text');
 const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
@@ -100,6 +108,7 @@ const MAX_CONCURRENT_HOST_SERVICE_REFRESHES = 4;
 const startupS3SyncReady = waitForStartupS3Sync();
 
 type LogLoadReason = 'refresh' | 'older';
+type HostEditSection = 'path' | 'forwards' | 'services';
 
 let hosts: HostView[] = [];
 let hostDialogMode: 'create' | 'edit' = 'create';
@@ -395,6 +404,7 @@ function clearHostDialogMessage(): void {
 function setPrivateKeyExpanded(expanded: boolean): void {
   privateKeyContent.classList.toggle('hidden', !expanded);
   togglePrivateKeyButton.innerHTML = renderButtonContent('key', expanded ? 'Hide Key' : 'Paste Key');
+  privateKeySummaryToggle.setAttribute('aria-expanded', String(expanded));
 }
 
 function updatePrivateKeySourceStatus(): void {
@@ -413,12 +423,64 @@ function toggleAuthFields(): void {
     passwordRow.classList.remove('hidden');
     privateKeyRow.classList.add('hidden');
     passphraseRow.classList.add('hidden');
+    targetPrivateKeyDetails.classList.add('hidden');
   } else {
     passwordRow.classList.add('hidden');
     privateKeyRow.classList.remove('hidden');
     passphraseRow.classList.remove('hidden');
+    targetPrivateKeyDetails.classList.remove('hidden');
   }
   updatePrivateKeySourceStatus();
+}
+
+function renderHostEditRoute(hopCount: number): void {
+  const arrow = `
+    <svg class="host-edit-route-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+      <path d="m6 3.5 4.5 4.5L6 12.5"></path>
+    </svg>
+  `;
+  const hops = Array.from({ length: hopCount }, (_, index) => `
+    ${arrow}
+    <span class="host-edit-route-hop">Hop ${index + 1}</span>
+  `).join('');
+  hostEditRoute.innerHTML = `
+    <span class="host-edit-route-endpoint">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"></rect><path d="M5.5 13.5h5M8 10.5v3"></path></svg>
+      Local
+    </span>
+    ${hops}
+    ${arrow}
+    <span class="host-edit-route-endpoint host-edit-route-target">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.5" y="2" width="11" height="5" rx="1"></rect><rect x="2.5" y="9" width="11" height="5" rx="1"></rect><path d="M5 4.5h.01M5 11.5h.01"></path></svg>
+      Target
+    </span>
+  `;
+  const path = ['Local', ...Array.from({ length: hopCount }, (_, index) => `Hop ${index + 1}`), 'Target'];
+  hostEditRoute.setAttribute('aria-label', path.join(' connects to '));
+}
+
+function updateHostEditCounts(): void {
+  const hopCount = jumpHostEditorList.querySelectorAll('.jump-host-editor-row').length;
+  const forwardCount = forwardEditorList.querySelectorAll('.forward-editor-row').length;
+  const serviceCount = serviceEditorList.querySelectorAll('.service-editor-row').length;
+  hostEditPathCount.textContent = `${hopCount} ${hopCount === 1 ? 'hop' : 'hops'}`;
+  hostEditForwardsCount.textContent = String(forwardCount);
+  hostEditServicesCount.textContent = String(serviceCount);
+  renderHostEditRoute(hopCount);
+}
+
+function setActiveHostEditSection(section: HostEditSection, focusTab = false): void {
+  for (const tab of hostEditTabButtons) {
+    const selected = tab.dataset.hostEditTab === section;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && focusTab) {
+      tab.focus();
+    }
+  }
+  for (const panel of hostEditPanels) {
+    panel.classList.toggle('hidden', panel.dataset.hostEditPanel !== section);
+  }
 }
 
 function syncJumpSection(): void {
@@ -426,11 +488,62 @@ function syncJumpSection(): void {
   useJumpHostInput.checked = hasJumpHosts;
   if (!hasJumpHosts) {
     jumpHostSection.classList.add('hidden');
-    return;
+  } else {
+    jumpHostSection.classList.remove('hidden');
+    refreshJumpHostEditorTitles();
   }
+  updateHostEditCounts();
+}
 
-  jumpHostSection.classList.remove('hidden');
-  refreshJumpHostEditorTitles();
+function isNumericPortText(value: string): boolean {
+  return /^\d{0,5}$/.test(value);
+}
+
+function numericReplacementValue(input: HTMLInputElement, insertedText: string): string {
+  const selectionStart = input.selectionStart ?? input.value.length;
+  const selectionEnd = input.selectionEnd ?? selectionStart;
+  return `${input.value.slice(0, selectionStart)}${insertedText}${input.value.slice(selectionEnd)}`;
+}
+
+function bindNumericPortInput(input: HTMLInputElement): void {
+  if (input.dataset.portInputBound === 'true') return;
+  input.dataset.portInputBound = 'true';
+  input.dataset.lastValidPort = isNumericPortText(input.value) ? input.value : '';
+
+  input.addEventListener('focus', () => {
+    if (isNumericPortText(input.value)) {
+      input.dataset.lastValidPort = input.value;
+    }
+  });
+  input.addEventListener('beforeinput', (event) => {
+    if (!(event instanceof InputEvent) || event.data === null) return;
+    if (!isNumericPortText(numericReplacementValue(input, event.data))) {
+      event.preventDefault();
+    }
+  });
+  input.addEventListener('paste', (event) => {
+    const pastedText = event.clipboardData?.getData('text') ?? '';
+    if (!isNumericPortText(numericReplacementValue(input, pastedText))) {
+      event.preventDefault();
+    }
+  });
+  input.addEventListener('input', () => {
+    if (isNumericPortText(input.value)) {
+      input.dataset.lastValidPort = input.value;
+      return;
+    }
+    input.value = input.dataset.lastValidPort ?? '';
+  });
+}
+
+function bindNumericPortInputs(root: ParentNode): void {
+  root.querySelectorAll<HTMLInputElement>('input[data-port-input]').forEach(bindNumericPortInput);
+}
+
+function syncNumericPortBaselines(root: ParentNode): void {
+  root.querySelectorAll<HTMLInputElement>('input[data-port-input]').forEach((input) => {
+    input.dataset.lastValidPort = isNumericPortText(input.value) ? input.value : '';
+  });
 }
 
 function parsePort(raw: string, label: string): number {
@@ -636,6 +749,7 @@ function parseHostDraftFromClipboard(raw: string): ClipboardHostDraft {
 function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   hostDialogMode = 'create';
   hostDialogTitle.textContent = 'Add Host';
+  setActiveHostEditSection('path');
   hostIdInput.value = '';
   nameInput.value = draft.name ?? '';
   sshHostInput.value = draft.sshHost ?? '';
@@ -667,6 +781,8 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   setPrivateKeyExpanded(Boolean(privateKeyInput.value && !editingPrivateKeyPath));
   updatePrivateKeySourceStatus();
   syncJumpSection();
+  updateHostEditCounts();
+  syncNumericPortBaselines(form);
 }
 
 function buildCopyableHostPayload(host: HostView): Record<string, unknown> {
@@ -956,72 +1072,40 @@ function getEditorValue(row: HTMLElement, field: string): string {
   return row.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
 }
 
-function setEditorExpanded(row: HTMLElement, expanded: boolean): void {
-  row.classList.toggle('editor-row-expanded', expanded);
-  const toggle = row.querySelector<HTMLElement>('.editor-summary-toggle');
-  if (toggle) {
-    toggle.textContent = expanded ? 'Collapse' : 'Edit';
+function updateJumpPrivateKeyStatus(row: HTMLElement): void {
+  const privateKey = getEditorValue(row, 'privateKey');
+  const status = row.querySelector<HTMLElement>('.jump-private-key-status');
+  if (status) {
+    status.textContent = privateKey ? 'Private key configured' : 'Private Key';
   }
 }
 
-function updateForwardEditorSummary(row: HTMLElement): void {
-  const name = getEditorValue(row, 'name') || 'Unnamed rule';
-  const localHost = getEditorValue(row, 'localHost') || 'local host';
-  const localPort = getEditorValue(row, 'localPort') || '-';
-  const remoteHost = getEditorValue(row, 'remoteHost') || 'remote host';
-  const remotePort = getEditorValue(row, 'remotePort') || '-';
-  const autoStart = row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false;
-
-  row.querySelector<HTMLElement>('.editor-summary-title')!.textContent = name;
-  row.querySelector<HTMLElement>('.editor-summary-meta')!.textContent =
-    `L:${localHost}:${localPort} -> R:${remoteHost}:${remotePort}${autoStart ? ' · auto-start' : ''}`;
-}
-
-function updateServiceEditorSummary(row: HTMLElement): void {
-  const name = getEditorValue(row, 'name') || 'Unnamed service';
-  const port = getEditorValue(row, 'port');
-  const forwardPort = getEditorValue(row, 'forwardLocalPort');
-  const command = getEditorValue(row, 'startCommand');
-  const portText = port === '0'
-    ? 'port disabled'
-    : port
-      ? `:${port}${forwardPort ? ` -> L:${forwardPort}` : ''}`
-      : 'port required';
-  const commandText = command ? ` · ${command}` : ' · no start command';
-
-  row.querySelector<HTMLElement>('.editor-summary-title')!.textContent = name;
-  row.querySelector<HTMLElement>('.editor-summary-meta')!.textContent = `${portText}${commandText}`;
-}
-
-function bindEditorRowSummary(row: HTMLElement, updateSummary: (row: HTMLElement) => void): void {
-  row.querySelector<HTMLButtonElement>('.editor-summary')?.addEventListener('click', () => {
-    setEditorExpanded(row, !row.classList.contains('editor-row-expanded'));
-  });
-
-  row.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select').forEach((field) => {
-    field.addEventListener('input', () => updateSummary(row));
-    field.addEventListener('change', () => updateSummary(row));
-  });
-
-  updateSummary(row);
+function setJumpPrivateKeyExpanded(row: HTMLElement, expanded: boolean): void {
+  const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
+  const toggle = row.querySelector<HTMLButtonElement>('.jump-private-key-row');
+  const details = row.querySelector<HTMLElement>('.jump-private-key-details');
+  const nextExpanded = authType !== 'password' && expanded;
+  toggle?.setAttribute('aria-expanded', String(nextExpanded));
+  details?.classList.toggle('hidden', !nextExpanded);
 }
 
 function toggleJumpHostEditorAuthFields(row: HTMLElement): void {
   const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
   const passwordRow = row.querySelector<HTMLElement>('.jump-password-row');
   const privateKeyRow = row.querySelector<HTMLElement>('.jump-private-key-row');
-  const passphraseRow = row.querySelector<HTMLElement>('.jump-passphrase-row');
 
   if (authType === 'password') {
     passwordRow?.classList.remove('hidden');
     privateKeyRow?.classList.add('hidden');
-    passphraseRow?.classList.add('hidden');
+    setJumpPrivateKeyExpanded(row, false);
     return;
   }
 
   passwordRow?.classList.add('hidden');
   privateKeyRow?.classList.remove('hidden');
-  passphraseRow?.classList.remove('hidden');
+  const expanded = privateKeyRow?.getAttribute('aria-expanded') === 'true';
+  setJumpPrivateKeyExpanded(row, expanded);
+  updateJumpPrivateKeyStatus(row);
 }
 
 function refreshJumpHostEditorTitles(): void {
@@ -1030,54 +1114,63 @@ function refreshJumpHostEditorTitles(): void {
     if (title) {
       title.textContent = `Hop ${index + 1}`;
     }
+    row.querySelector<HTMLElement>('.host-edit-step-number')!.textContent = String(index + 1);
+    row.querySelector<HTMLButtonElement>('.jump-host-remove')?.setAttribute('aria-label', `Remove Hop ${index + 1}`);
   });
+  updateHostEditCounts();
 }
 
 function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row jump-host-editor-row';
+  row.className = 'forward-row jump-host-editor-row host-edit-path-row host-edit-path-grid';
+  row.setAttribute('role', 'row');
   row.innerHTML = `
-    <div class="jump-host-editor-head">
-      <div class="jump-host-editor-title">Jump Server</div>
-      <button type="button" class="btn btn-danger btn-sm jump-host-remove">${renderButtonContent('delete', 'Remove')}</button>
+    <div class="host-edit-step-cell" role="cell">
+      <span class="host-edit-step-number"></span>
+      <span class="jump-host-editor-title">Hop</span>
     </div>
-    <div class="form-row">
-      <label class="field field-host field-xs">
-        SSH Host
-        <input class="input" data-field="sshHost" value="${safeValue(draft?.sshHost)}" />
+    <label class="host-edit-cell-label" role="cell">
+      <span class="sr-only">Hop SSH Host</span>
+      <input class="input" data-field="sshHost" value="${safeValue(draft?.sshHost)}" aria-label="Hop SSH Host" />
+    </label>
+    <label class="host-edit-cell-label" role="cell">
+      <span class="sr-only">Hop SSH Port</span>
+      <input class="input" data-field="sshPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.sshPort ?? 22)}" data-port-input aria-label="Hop SSH Port" />
+    </label>
+    <label class="host-edit-cell-label" role="cell">
+      <span class="sr-only">Hop Username</span>
+      <input class="input" data-field="username" value="${safeValue(draft?.username)}" aria-label="Hop Username" />
+    </label>
+    <label class="host-edit-cell-label" role="cell">
+      <span class="sr-only">Hop Auth Type</span>
+      <select class="input" data-field="authType" aria-label="Hop Auth Type">
+        <option value="privateKey" ${draft?.authType !== 'password' ? 'selected' : ''}>Private Key</option>
+        <option value="password" ${draft?.authType === 'password' ? 'selected' : ''}>Password</option>
+      </select>
+    </label>
+    <div class="host-edit-credential-cell" role="cell">
+      <label class="host-edit-cell-label jump-password-row hidden">
+        <span class="sr-only">Hop Password</span>
+        <input class="input" data-field="password" type="password" value="${safeValue(draft?.password)}" aria-label="Hop Password" />
       </label>
-      <label class="field field-port field-xs">
-        SSH Port
-        <input class="input" data-field="sshPort" type="number" min="1" max="65535" value="${safeValue(draft?.sshPort ?? 22)}" />
-      </label>
-      <label class="field field-user field-xs">
-        Username
-        <input class="input" data-field="username" value="${safeValue(draft?.username)}" />
-      </label>
+      <button type="button" class="host-edit-credential-toggle jump-private-key-row" aria-expanded="false">
+        <span class="jump-private-key-status">Private Key</span>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+      </button>
     </div>
-    <div class="form-row">
-      <label class="field field-auth field-xs">
-        Auth Type
-        <select class="input" data-field="authType">
-          <option value="privateKey" ${draft?.authType !== 'password' ? 'selected' : ''}>Private Key</option>
-          <option value="password" ${draft?.authType === 'password' ? 'selected' : ''}>Password</option>
-        </select>
+    <button type="button" class="host-edit-row-remove jump-host-remove" aria-label="Remove Hop">${renderButtonIcon('delete')}</button>
+    <div class="host-edit-path-details jump-private-key-details hidden" role="cell">
+      <label class="field field-privatekey field-xs">
+        Private Key
+        <textarea class="input" data-field="privateKey" rows="2" spellcheck="false">${escapeHtml(draft?.privateKey ?? '')}</textarea>
       </label>
-      <label class="field field-password field-xs jump-password-row hidden">
-        Password
-        <input class="input" data-field="password" type="password" value="${safeValue(draft?.password)}" />
-      </label>
-      <div class="private-key-wrap jump-private-key-row">
-        <label class="field field-privatekey field-xs">
-          Private Key
-          <textarea class="input" data-field="privateKey" rows="1">${escapeHtml(draft?.privateKey ?? '')}</textarea>
-        </label>
-        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">${renderButtonContent('key', 'Import')}</button>
-      </div>
-      <label class="field field-passphrase field-xs jump-passphrase-row hidden">
+      <label class="field field-xs jump-passphrase-row">
         Passphrase (Optional)
         <input class="input" data-field="passphrase" type="password" value="${safeValue(draft?.passphrase)}" />
       </label>
+      <div class="host-edit-key-actions">
+        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">${renderButtonContent('key', 'Import')}</button>
+      </div>
     </div>
   `;
 
@@ -1090,6 +1183,15 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
     toggleJumpHostEditorAuthFields(row);
   });
 
+  row.querySelector<HTMLButtonElement>('.jump-private-key-row')?.addEventListener('click', () => {
+    const expanded = row.querySelector<HTMLButtonElement>('.jump-private-key-row')?.getAttribute('aria-expanded') === 'true';
+    setJumpPrivateKeyExpanded(row, !expanded);
+  });
+
+  row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]')?.addEventListener('input', () => {
+    updateJumpPrivateKeyStatus(row);
+  });
+
   row.querySelector<HTMLButtonElement>('.jump-import-private-key')?.addEventListener('click', async () => {
     try {
       const field = row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]');
@@ -1097,105 +1199,61 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
         throw new Error('Jump private key field not found.');
       }
       await importPrivateKeyIntoField(field, (path) => `Imported jump private key from ${path}`);
+      updateJumpPrivateKeyStatus(row);
     } catch (error) {
       setHostDialogMessage((error as Error).message, 'error');
     }
   });
 
+  bindNumericPortInputs(row);
   toggleJumpHostEditorAuthFields(row);
+  updateJumpPrivateKeyStatus(row);
   return row;
 }
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row forward-editor-row editor-row';
+  row.className = 'forward-row forward-editor-row host-edit-resource-row host-edit-forward-grid';
+  row.setAttribute('role', 'row');
   row.innerHTML = `
-    <button type="button" class="editor-summary" aria-label="Edit forwarding rule">
-      <span class="editor-summary-main">
-        <span class="editor-summary-title">Forwarding Rule</span>
-        <span class="editor-summary-meta"></span>
-      </span>
-      <span class="editor-summary-toggle">Edit</span>
-    </button>
-    <div class="editor-body forward-editor-fields">
-      <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-      <label class="field field-xs forward-name">
-        Name
-        <input class="input" data-field="name" value="${safeValue(draft?.name)}" placeholder="web / db / redis" />
-      </label>
-      <label class="field field-xs forward-local-host">
-        Local Host
-        <input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" />
-      </label>
-      <label class="field field-xs forward-local-port">
-        Local Port
-        <input class="input" data-field="localPort" type="number" min="1" max="65535" value="${safeValue(draft?.localPort)}" />
-      </label>
-      <label class="field field-xs forward-remote-host">
-        Remote Host
-        <input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" />
-      </label>
-      <label class="field field-xs forward-remote-port">
-        Remote Port
-        <input class="input" data-field="remotePort" type="number" min="1" max="65535" value="${safeValue(draft?.remotePort)}" />
-      </label>
-      <label class="forward-auto">
-        <input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} />
-        Auto Start
-      </label>
-      <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Delete Rule')}</button>
-    </div>
+    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Rule Name</span><input class="input" data-field="name" value="${safeValue(draft?.name)}" aria-label="Rule Name" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Local Host</span><input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" aria-label="Local Host" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Local Port</span><input class="input" data-field="localPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.localPort)}" data-port-input aria-label="Local Port" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Remote Host</span><input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" aria-label="Remote Host" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Remote Port</span><input class="input" data-field="remotePort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.remotePort)}" data-port-input aria-label="Remote Port" /></label>
+    <label class="host-edit-auto-cell" role="cell"><input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} /><span class="sr-only">Auto Start</span></label>
+    <button type="button" class="host-edit-row-remove forward-remove" aria-label="Remove forwarding rule">${renderButtonIcon('delete')}</button>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
     row.remove();
+    updateHostEditCounts();
   });
 
-  bindEditorRowSummary(row, updateForwardEditorSummary);
-  setEditorExpanded(row, !draft);
+  bindNumericPortInputs(row);
   return row;
 }
 
 function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row service-editor-row editor-row';
+  row.className = 'forward-row service-editor-row host-edit-resource-row host-edit-service-grid';
+  row.setAttribute('role', 'row');
   row.innerHTML = `
-    <button type="button" class="editor-summary" aria-label="Edit service">
-      <span class="editor-summary-main">
-        <span class="editor-summary-title">Service</span>
-        <span class="editor-summary-meta"></span>
-      </span>
-      <span class="editor-summary-toggle">Edit</span>
-    </button>
-    <div class="editor-body service-editor-fields">
-      <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-      <label class="field field-xs service-name-field">
-        Name
-        <input class="input" data-field="name" value="${safeValue(draft?.name)}" />
-      </label>
-      <label class="field field-xs service-port-field">
-        Exposed Port (0 = disabled)
-        <input class="input" data-field="port" type="number" min="0" max="65535" value="${safeValue(draft?.port)}" />
-      </label>
-      <label class="field field-xs service-forward-port-field">
-        Forward Local Port (Optional)
-        <input class="input" data-field="forwardLocalPort" type="number" min="1" max="65535" value="${safeValue(draft?.forwardLocalPort)}" />
-      </label>
-      <button type="button" class="btn btn-danger btn-sm forward-remove">${renderButtonContent('delete', 'Remove')}</button>
-      <label class="field field-xs service-command-field">
-        Start Command
-        <textarea class="input service-command-input" data-field="startCommand" rows="5" spellcheck="false" placeholder="cd /home/user/app && yarn start:dev">${escapeHtml(draft?.startCommand ?? '')}</textarea>
-      </label>
-      <div class="service-command-hint">Runs through the remote login shell.</div>
-    </div>
+    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Service Name</span><input class="input" data-field="name" value="${safeValue(draft?.name)}" aria-label="Service Name" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Exposed Port (0 = disabled)</span><input class="input" data-field="port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.port)}" data-port-input aria-label="Exposed Port (0 = disabled)" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Forward Local Port (Optional)</span><input class="input" data-field="forwardLocalPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.forwardLocalPort)}" data-port-input aria-label="Forward Local Port (Optional)" /></label>
+    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Start Command</span><textarea class="input service-command-input" data-field="startCommand" rows="1" spellcheck="false" aria-label="Start Command">${escapeHtml(draft?.startCommand ?? '')}</textarea></label>
+    <button type="button" class="host-edit-row-remove forward-remove" aria-label="Remove service">${renderButtonIcon('delete')}</button>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
     row.remove();
+    updateHostEditCounts();
   });
 
-  bindEditorRowSummary(row, updateServiceEditorSummary);
-  setEditorExpanded(row, !draft);
+  bindNumericPortInputs(row);
   return row;
 }
 
@@ -1328,11 +1386,15 @@ function resetForm(): void {
   clearHostDialogMessage();
   toggleAuthFields();
   syncJumpSection();
+  updateHostEditCounts();
+  syncNumericPortBaselines(form);
+  setActiveHostEditSection('path');
 }
 
 function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   hostDialogMode = mode;
   clearHostDialogMessage();
+  setActiveHostEditSection('path');
   if (mode === 'edit' && host) {
     hostDialogTitle.textContent = 'Edit Host';
     hostIdInput.value = host.id;
@@ -1377,6 +1439,8 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   setPrivateKeyExpanded(false);
   updatePrivateKeySourceStatus();
   syncJumpSection();
+  updateHostEditCounts();
+  syncNumericPortBaselines(form);
   showDialog(hostDialog, 'host');
 }
 
@@ -2335,7 +2399,28 @@ registerNotesPage();
 registerSettingsDialog();
 
 applyStaticButtonIcons();
+bindNumericPortInputs(form);
+updateHostEditCounts();
+setActiveHostEditSection('path');
 resetServiceLogState();
+
+hostEditTabButtons.forEach((tab, index) => {
+  tab.addEventListener('click', () => {
+    const section = tab.dataset.hostEditTab as HostEditSection | undefined;
+    if (section) setActiveHostEditSection(section);
+  });
+  tab.addEventListener('keydown', (event) => {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % hostEditTabButtons.length;
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + hostEditTabButtons.length) % hostEditTabButtons.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = hostEditTabButtons.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const section = hostEditTabButtons[nextIndex]?.dataset.hostEditTab as HostEditSection | undefined;
+    if (section) setActiveHostEditSection(section, true);
+  });
+});
 
 addHostButton.addEventListener('click', () => {
   openHostDialog('create');
@@ -2355,6 +2440,7 @@ hostTableBody.addEventListener('click', (event) => {
 
 addForwardButton.addEventListener('click', () => {
   forwardEditorList.appendChild(createForwardEditorRow());
+  updateHostEditCounts();
 });
 
 addJumpHostButton.addEventListener('click', () => {
@@ -2364,6 +2450,7 @@ addJumpHostButton.addEventListener('click', () => {
 
 addServiceButton.addEventListener('click', () => {
   serviceEditorList.appendChild(createServiceEditorRow());
+  updateHostEditCounts();
 });
 
 importPrivateKeyButton.addEventListener('click', async () => {
@@ -2421,6 +2508,9 @@ privateKeyInput.addEventListener('input', () => {
   updatePrivateKeySourceStatus();
 });
 togglePrivateKeyButton.addEventListener('click', () => {
+  setPrivateKeyExpanded(privateKeyContent.classList.contains('hidden'));
+});
+privateKeySummaryToggle.addEventListener('click', () => {
   setPrivateKeyExpanded(privateKeyContent.classList.contains('hidden'));
 });
 useJumpHostInput.addEventListener('change', syncJumpSection);
@@ -2541,6 +2631,14 @@ exportConfigButton.addEventListener('click', async () => {
   }
 });
 
+form.addEventListener('invalid', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const panel = target.closest<HTMLElement>('[data-host-edit-panel]');
+  const section = panel?.dataset.hostEditPanel as HostEditSection | undefined;
+  if (section) setActiveHostEditSection(section);
+}, true);
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
@@ -2567,7 +2665,15 @@ form.addEventListener('submit', async (event) => {
     closeHostDialog();
     setMessage(hostDialogMode === 'create' ? `Host "${draft.name}" created.` : `Host "${draft.name}" updated.`, 'success');
   } catch (error) {
-    setHostDialogMessage((error as Error).message, 'error');
+    const message = (error as Error).message;
+    if (/^Rule \d+:/.test(message)) {
+      setActiveHostEditSection('forwards');
+    } else if (/^Service \d+:/.test(message)) {
+      setActiveHostEditSection('services');
+    } else {
+      setActiveHostEditSection('path');
+    }
+    setHostDialogMessage(message, 'error');
   }
 });
 

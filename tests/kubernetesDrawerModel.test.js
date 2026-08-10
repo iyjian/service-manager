@@ -21,7 +21,11 @@ test('buildKubernetesDrawerModel exposes compact Pod header and container values
       phase: 'Running',
       podIP: '10.0.0.5',
       podIPs: [{ ip: '10.0.0.5' }],
-      containerStatuses: [{ name: 'api', ready: true, state: { running: {} } }],
+      containerStatuses: [{
+        name: 'api',
+        ready: true,
+        state: { running: { startedAt: '2026-08-10T03:04:05Z' } },
+      }],
     },
   }, { name: 'api', namespace: 'apps', status: 'Running' });
 
@@ -34,7 +38,12 @@ test('buildKubernetesDrawerModel exposes compact Pod header and container values
     ['Pod IPs', '10.0.0.5'],
   ]);
   assert.deepEqual(model.labels, [['app', 'api'], ['tier', 'backend']]);
-  assert.deepEqual(model.containers[0].target, { namespace: 'apps', podName: 'api', container: 'api' });
+  assert.deepEqual(model.containers[0].target, {
+    namespace: 'apps',
+    podName: 'api',
+    container: 'api',
+    containerStartedAt: '2026-08-10T03:04:05.000Z',
+  });
   assert.equal(model.containers[0].status, 'Running');
   assert.equal(model.containers[0].environmentDeclared, true);
   assert.doesNotMatch(JSON.stringify(model), /db|password|PASSWORD/);

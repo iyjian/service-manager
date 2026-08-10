@@ -126,7 +126,23 @@ test('SQL production guard is conservative and template parameters preserve refe
 
   assert.equal(isLikelyReadOnlySql('/* safe */ SELECT 1'), true);
   assert.equal(isLikelyReadOnlySql('-- comment\nshow tables'), true);
-  assert.equal(isLikelyReadOnlySql('with rows as (select 1) select * from rows'), false);
+  assert.equal(isLikelyReadOnlySql('with rows as (select 1) select * from rows'), true);
+  assert.equal(isLikelyReadOnlySql('with rows as (select 1) update rows set x = 1'), false);
+  assert.equal(isLikelyReadOnlySql('with rows as (select 1) delete from rows'), false);
+  assert.equal(isLikelyReadOnlySql('with rows as (select 1) insert into rows select 1'), false);
+  assert.equal(isLikelyReadOnlySql('with a as (select 1), b as (select 2) select * from b'), true);
+  assert.equal(isLikelyReadOnlySql('with recursive a as (select 1 union all select n + 1 from a where n < 10) select * from a'), true);
+  assert.equal(isLikelyReadOnlySql("with rows as (select ')' as c) select * from rows"), true);
+  assert.equal(
+    isLikelyReadOnlySql(
+      'with submits as (select ifnull(tpp.problemId, p.id) as problemId, '
+      + 'count(case when s.status = 1 then 1 end) as submits '
+      + 'from t_solution_submit s left join t_problem p on s.problemSyncKey = p.syncKey '
+      + 'group by ifnull(tpp.problemId, p.id)) '
+      + 'select submits.name, submits.submits from submits',
+    ),
+    true,
+  );
   assert.equal(isLikelyReadOnlySql('update users set active = 1'), false);
   assert.deepEqual(extractSqlTemplateParamNames('select {{ id }}, {{name}}, {{id}}'), ['id', 'name']);
   assert.equal(
@@ -139,6 +155,7 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
   const {
     isSqlRunShortcut,
     isSqlSaveShortcut,
+    normalizeSqlEditorSource,
     normalizeSqlSelectLimit,
     sqlSaveShortcutLabel,
     sqlShortcutLabel,
@@ -164,4 +181,6 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
   assert.equal(normalizeSqlSelectLimit('0'), 1);
   assert.equal(normalizeSqlSelectLimit('250.8'), 250);
   assert.equal(normalizeSqlSelectLimit('10001'), 10000);
+  assert.equal(normalizeSqlEditorSource('SELECT\t*\nFROM\tusers;'), 'SELECT  *\nFROM  users;');
+  assert.equal(normalizeSqlEditorSource('SELECT  *\nFROM users;'), 'SELECT  *\nFROM users;');
 });

@@ -40,8 +40,9 @@ test('Kubernetes documentation states the supported read-only, bounded drawer-wo
     assert.match(document, /per-resource.*eight columns|eight-column.*per-resource|resource-specific.*eight columns/i);
     assert.match(document, /searchable.*Namespace|Namespace.*searchable/i);
     assert.match(document, /Context.*Namespace.*matching.*selector|matching.*Context.*Namespace.*selector/i);
-    assert.match(document, /ordinary containers.*resources\.requests|resources\.requests.*ordinary containers/i);
-    assert.match(document, /not limits.*live metrics|not live metrics.*limits/i);
+    assert.match(document, /metrics\.k8s\.io/i);
+    assert.match(document, /15 seconds|15-second/i);
+    assert.match(document, /metrics unavailable/i);
     assert.match(document, /active(?:-view| view) Watch/i);
     assert.match(document, /Version (?:endpoint )?(?:reachability )?probe|Version reachability probe/i);
     assert.match(document, /(?:probe-before-connected|before.*publish.*connected|before.*connected.*probe)/i);
@@ -77,6 +78,13 @@ test('Kubernetes documentation describes overlay drawers and reusable bottom wor
     assert.match(document, /multiple.*closable.*Logs.*Shell|Logs.*Shell.*multiple.*closable/i);
     assert.match(document, /namespace.*Pod.*container.*type|Pod.*container.*type.*namespace/i);
     assert.match(document, /(?:closing|close).*drawer.*preserv(?:es|e).*tabs|preserv(?:es|e).*tabs.*(?:closing|close).*drawer/i);
+    assert.match(document, /single-line.*Since|Since.*single-line/i);
+    assert.match(document, /Since.*YYYY-MM-DD HH:mm:ss|YYYY-MM-DD HH:mm:ss.*Since/i);
+    assert.match(document, /without (?:opening )?a native date panel|without a native date panel/i);
+    assert.match(document, /−5m.*\+5m/);
+    assert.match(document, /Last 5m \/ 10m \/ 30m/);
+    assert.match(document, /startedAt.*(?:bound|clamp|reject)|(?:bound|clamp|reject).*startedAt/i);
+    assert.match(document, /does not expose.*(?:oldest retained log|log-retention boundary)|exposes no log-retention boundary/i);
     assert.match(document, /Context.*page.*shutdown.*(?:close|clean)|(?:close|clean).*Context.*page.*shutdown/i);
     assert.match(document, /bottom workspace/i);
     assert.match(document, /Pod basics.*Name.*Namespace.*Status.*Node.*Pod IP/i);
@@ -178,6 +186,9 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
   assert.match(page, /context\.supported \? context\.displayName : `\$\{context\.displayName\} \(unsupported\)`/);
   assert.match(page, /option\.dataset\.context = context\.name/);
   assert.doesNotMatch(page, /option\.textContent = context\.supported \? context\.name/);
+  assert.match(page, /Live \$\{column\.label\} usage from metrics\.k8s\.io/);
+  assert.match(page, /snapshot\.podMetricsState === 'loading'/);
+  assert.match(page, /metrics unavailable/);
   assert.match(page, /listCustomResourceDefinitions\(\)/);
   assert.match(page, /apiVersion: `\$\{definition\.group\}\/\$\{definition\.version\}`/);
   for (const mutation of ['Delete', 'Scale', 'Apply', 'Restart']) {
@@ -2066,6 +2077,7 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   const workspaceRule = styles.match(/\.kubernetes-workspace\s*\{([^}]*)\}/);
   const logPanelRule = styles.match(/\.kubernetes-log-panel\s*\{([^}]*)\}/);
   const logOutputRule = styles.match(/\.kubernetes-log-output\s*\{([^}]*)\}/);
+  const logSelectionRule = styles.match(/\.kubernetes-log-output::selection,\s*\.kubernetes-log-output \*::selection\s*\{([^}]*)\}/);
   const shellRule = styles.match(/\.kubernetes-shell-panel\s*\{([^}]*)\}/);
   const shellHostRule = styles.match(/\.kubernetes-shell-pane-host\s*\{([^}]*)\}/);
   const resizeHandleRule = styles.match(/\.kubernetes-workspace-resize-handle\s*\{([^}]*)\}/);
@@ -2073,6 +2085,7 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   assert.ok(workspaceRule);
   assert.ok(logPanelRule);
   assert.ok(logOutputRule);
+  assert.ok(logSelectionRule);
   assert.ok(shellRule);
   assert.ok(shellHostRule);
   assert.ok(resizeHandleRule);
@@ -2085,6 +2098,7 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
   assert.match(logPanelRule[1], /@apply[^;]*h-full[^;]*min-h-0/);
   assert.match(logPanelRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/);
   assert.match(logOutputRule[1], /min-h-0[^;]*overflow-y-auto/);
+  assert.match(logSelectionRule[1], /bg-sky-500[^;]*text-white/);
   assert.doesNotMatch(shellRule[1], /grid-rows-\[auto_minmax\(0,1fr\)\]/);
   assert.match(shellHostRule[1], /h-full/);
   assert.match(forwardRule[1], /width:\s*min\(760px,\s*calc\(100vw\s*-\s*32px\)\)\s*!important/);
@@ -2096,6 +2110,7 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
 test('Kubernetes workspace tabs and Pod container actions use semantic typed palettes', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const builtStyles = await readFile(path.join(distRenderer, 'tailwind.css'), 'utf8');
+  const workspaceSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'kubernetesWorkspace.ts'), 'utf8');
   const logsTabRule = styles.match(/\.kubernetes-workspace-tab-logs\s*\{([^}]*)\}/);
   const shellTabRule = styles.match(/\.kubernetes-workspace-tab-shell\s*\{([^}]*)\}/);
   const selectedLogsTabRule = styles.match(/\.kubernetes-workspace-tab-logs:has\(\.kubernetes-workspace-tab-select\[aria-selected='true'\]\)\s*\{([^}]*)\}/);
@@ -2105,6 +2120,9 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   const tabsRule = styles.match(/\.kubernetes-workspace-tabs\s*\{([^}]*)\}/);
   const logToolbarRule = styles.match(/\.kubernetes-log-toolbar\s*\{([^}]*)\}/);
   const logSearchRule = styles.match(/\.kubernetes-log-toolbar \.kubernetes-log-search-field\s*\{([^}]*)\}/);
+  const logStartRule = styles.match(/\.kubernetes-log-start-time\s*\{([^}]*)\}/);
+  const logStartInputRule = styles.match(/\.kubernetes-log-toolbar \.kubernetes-log-start-time-input\s*\{([^}]*)\}/);
+  const logTimeButtonRule = styles.match(/\.kubernetes-log-time-step,\s*\.kubernetes-log-time-preset\s*\{([^}]*)\}/);
   const logScopeRule = styles.match(/\.kubernetes-log-scope-switch\s*\{([^}]*)\}/);
   const activeLogScopeRule = styles.match(/\.kubernetes-log-scope-switch\[aria-checked='true'\]\s*\{([^}]*)\}/);
   const containersContentRule = styles.match(/\.kubernetes-drawer-containers-content\s*\{([^}]*)\}/);
@@ -2123,6 +2141,9 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   assert.ok(tabsRule);
   assert.ok(logToolbarRule);
   assert.ok(logSearchRule);
+  assert.ok(logStartRule);
+  assert.ok(logStartInputRule);
+  assert.ok(logTimeButtonRule);
   assert.ok(logScopeRule);
   assert.ok(activeLogScopeRule);
   assert.ok(containersContentRule);
@@ -2144,7 +2165,21 @@ test('Kubernetes workspace tabs and Pod container actions use semantic typed pal
   assert.match(tabsRule[1], /px-1\.5[^;]*py-0\.5/);
   assert.match(logToolbarRule[1], /gap-1/);
   assert.match(logToolbarRule[1], /px-1\.5[^;]*py-1/);
+  assert.match(logToolbarRule[1], /flex-nowrap/);
   assert.match(logSearchRule[1], /h-6/);
+  assert.match(logStartRule[1], /inline-flex[^;]*h-6[^;]*shrink-0/);
+  assert.match(logStartInputRule[1], /h-6[^;]*w-\[168px\]/);
+  assert.match(logTimeButtonRule[1], /inline-flex[^;]*h-6[^;]*shrink-0/);
+  assert.match(builtStyles, /\.kubernetes-log-start-time\{/);
+  assert.match(builtStyles, /\.kubernetes-log-time-preset(?:\{|,)/);
+  assert.match(workspaceSource, /startTime\.type = 'text'/);
+  assert.doesNotMatch(workspaceSource, /datetime-local/);
+  assert.doesNotMatch(workspaceSource, /kubernetes-log-since-popover/);
+  assert.match(workspaceSource, /startTimeLabel\.textContent = 'Since'/);
+  assert.match(workspaceSource, /startEarlier\.textContent = '−5m'/);
+  assert.match(workspaceSource, /startLater\.textContent = '\+5m'/);
+  assert.match(workspaceSource, /lastLabel\.textContent = 'Last'/);
+  assert.match(workspaceSource, /\{ minutes: 5, label: '5m' \},\s*\{ minutes: 10, label: '10m' \},\s*\{ minutes: 30, label: '30m' \}/);
   assert.match(logScopeRule[1], /h-6/);
   assert.match(logScopeRule[1], /shrink-0/);
   assert.match(activeLogScopeRule[1], /amber/);

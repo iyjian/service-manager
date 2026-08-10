@@ -191,8 +191,7 @@ export function resolveSqlStatement(source: string, from: number, to = from): Sq
   );
 }
 
-function firstSqlKeyword(statement: string): string {
-  let index = 0;
+function skipSqlSpaceAndComments(statement: string, index: number): number {
   while (index < statement.length) {
     while (/\s/.test(statement[index] ?? '')) index += 1;
     if ((statement.startsWith('--', index) && /\s/.test(statement[index + 2] ?? ' '))
@@ -208,12 +207,140 @@ function firstSqlKeyword(statement: string): string {
     }
     break;
   }
-  return /^[a-z]+/i.exec(statement.slice(index))?.[0]?.toLocaleUpperCase() ?? '';
+  return index;
 }
 
-/** Conservative production guard: unknown and CTE statements require confirmation. */
+function firstSqlKeyword(statement: string): string {
+  return /^[a-z]+/i.exec(statement.slice(skipSqlSpaceAndComments(statement, 0)))?.[0]?.toLocaleUpperCase() ?? '';
+}
+
+const READ_ONLY_SQL_KEYWORDS = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'];
+
+function readSqlWord(statement: string, index: number): { word: string; next: number } {
+  let next = index;
+  while (next < statement.length && /[a-z0-9_$]/i.test(statement[next] ?? '')) next += 1;
+  return { word: statement.slice(index, next).toLocaleUpperCase(), next };
+}
+
+function skipSqlBalancedParens(statement: string, openIndex: number): number {
+  let depth = 0;
+  let state: ScanState = 'normal';
+  for (let index = openIndex; index < statement.length; index += 1) {
+    const character = statement[index] ?? '';
+    const next = statement[index + 1] ?? '';
+
+    if (state === 'single' || state === 'double' || state === 'backtick') {
+      const delimiter = state === 'single' ? "'" : state === 'double' ? '"' : '`';
+      if (character === '\\') {
+        index += 1;
+        continue;
+      }
+      if (character === delimiter) {
+        if (next === delimiter) index += 1;
+        else state = 'normal';
+      }
+      continue;
+    }
+    if (state === 'line-comment') {
+      if (character === '\n' || character === '\r') state = 'normal';
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (character === '*' && next === '/') {
+        state = 'normal';
+        index += 1;
+      }
+      continue;
+    }
+    if (character === '-' && next === '-' && /\s/.test(statement[index + 2] ?? ' ')) {
+      state = 'line-comment';
+      index += 1;
+      continue;
+    }
+    if (character === '#') {
+      state = 'line-comment';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      state = 'block-comment';
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      state = 'single';
+      continue;
+    }
+    if (character === '"') {
+      state = 'double';
+      continue;
+    }
+    if (character === '`') {
+      state = 'backtick';
+      continue;
+    }
+    if (character === '(') {
+      depth += 1;
+      continue;
+    }
+    if (character === ')') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+  return statement.length;
+}
+
+/**
+ * Reads the terminating statement keyword of a `WITH ...` statement by
+ * consuming every CTE definition. Returns '' for anything malformed so the
+ * production guard stays conservative.
+ */
+function sqlKeywordAfterCteList(statement: string): string {
+  let index = skipSqlSpaceAndComments(statement, 0);
+  const withWord = readSqlWord(statement, index);
+  if (withWord.word !== 'WITH') return '';
+  index = skipSqlSpaceAndComments(statement, withWord.next);
+  const recursive = readSqlWord(statement, index);
+  if (recursive.word === 'RECURSIVE') {
+    index = skipSqlSpaceAndComments(statement, recursive.next);
+  }
+
+  for (;;) {
+    index = skipSqlSpaceAndComments(statement, index);
+    if (statement[index] === '`') {
+      const closing = statement.indexOf('`', index + 1);
+      if (closing < 0) return '';
+      index = closing + 1;
+    } else {
+      const name = readSqlWord(statement, index);
+      if (name.word === '') return '';
+      index = name.next;
+    }
+    index = skipSqlSpaceAndComments(statement, index);
+    if (statement[index] === '(') {
+      index = skipSqlBalancedParens(statement, index);
+      index = skipSqlSpaceAndComments(statement, index);
+    }
+    const asWord = readSqlWord(statement, index);
+    if (asWord.word !== 'AS') return '';
+    index = skipSqlSpaceAndComments(statement, asWord.next);
+    if (statement[index] !== '(') return '';
+    index = skipSqlBalancedParens(statement, index);
+    index = skipSqlSpaceAndComments(statement, index);
+    if (statement[index] === ',') {
+      index += 1;
+      continue;
+    }
+    return readSqlWord(statement, index).word;
+  }
+}
+
+/** Conservative production guard: unknown and mutating statements require confirmation. */
 export function isLikelyReadOnlySql(statement: string): boolean {
-  return ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'].includes(firstSqlKeyword(statement));
+  const keyword = firstSqlKeyword(statement);
+  if (READ_ONLY_SQL_KEYWORDS.includes(keyword)) return true;
+  if (keyword === 'WITH') return READ_ONLY_SQL_KEYWORDS.includes(sqlKeywordAfterCteList(statement));
+  return false;
 }
 
 const SQL_TEMPLATE_PARAM_PATTERN = /\{\{\s*([^{}\s]+)\s*\}\}/g;

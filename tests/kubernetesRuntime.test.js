@@ -1195,6 +1195,10 @@ test('KubernetesRuntime validates renderer inputs before calling resource intera
   await assert.rejects(runtime.selectContext(''), /Context name is required/i);
   await assert.rejects(runtime.activateResources({ ...POD_QUERY, context: 'other' }), /selected Context/i);
   await assert.rejects(runtime.openTerminal({ ...POD_TARGET, container: '  ' }), /container is required/i);
+  await assert.rejects(
+    runtime.openLogs({ ...POD_TARGET, containerStartedAt: 'not-a-timestamp' }),
+    /RFC3339/i,
+  );
   await assert.rejects(runtime.startPortForward({ ...FORWARD, remotePort: 0 }), /remote port/i);
   await assert.rejects(runtime.writeTerminal('terminal-1', 42), /input must be text/i);
   await assert.rejects(runtime.resizeTerminal('terminal-1', 0, 24), /dimensions/i);

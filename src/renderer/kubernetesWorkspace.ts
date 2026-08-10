@@ -104,6 +104,9 @@ interface MountedLogPane {
   scopeSwitch: HTMLButtonElement;
   search: HTMLInputElement;
   startTime: HTMLInputElement;
+  startEarlier: HTMLButtonElement;
+  startLater: HTMLButtonElement;
+  startPresets: HTMLButtonElement[];
   follow: HTMLButtonElement;
   clear: HTMLButtonElement;
   output: HTMLPreElement;
@@ -152,6 +155,11 @@ const KUBERNETES_WORKSPACE_MIN_HEIGHT = 120;
 const KUBERNETES_WORKSPACE_MAX_HEIGHT_RATIO = 0.8;
 const KUBERNETES_WORKSPACE_KEYBOARD_STEP = 20;
 const KUBERNETES_SHELL_DEFAULT_HEIGHT_RATIO = 0.5;
+const KUBERNETES_LOG_SINCE_PRESETS = [
+  { minutes: 5, label: '5m' },
+  { minutes: 10, label: '10m' },
+  { minutes: 30, label: '30m' },
+] as const;
 
 export function clampKubernetesWorkspaceHeight(requestedHeight: number, pageHeight: number): number {
   const safePageHeight = Number.isFinite(pageHeight) ? Math.max(0, pageHeight) : 0;
@@ -169,20 +177,74 @@ function padLogDatePart(value: number): string {
   return String(value).padStart(2, '0');
 }
 
-/** Formats an RFC3339 value for a local, second-precision datetime input. */
+/** Formats an RFC3339 value as the local, second-precision editable text. */
 export function kubernetesLogStartTimeInputValue(startTime?: string): string {
   if (!startTime) return '';
   const date = new Date(startTime);
   if (Number.isNaN(date.getTime())) return '';
   return `${date.getFullYear()}-${padLogDatePart(date.getMonth() + 1)}-${padLogDatePart(date.getDate())}`
-    + `T${padLogDatePart(date.getHours())}:${padLogDatePart(date.getMinutes())}:${padLogDatePart(date.getSeconds())}`;
+    + ` ${padLogDatePart(date.getHours())}:${padLogDatePart(date.getMinutes())}:${padLogDatePart(date.getSeconds())}`;
 }
 
-/** Converts a datetime-local value to the only timestamp shape sent over IPC. */
-export function kubernetesLogStartTimeIso(value: string): string | undefined {
-  if (!value.trim()) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+/** Returns a quick-range timestamp, clamped to the selected container lifetime. */
+export function kubernetesLogPresetStartTime(
+  minutes: number,
+  availableSince?: string,
+  now = Date.now(),
+): string | undefined {
+  if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(now)) return undefined;
+  const requested = now - (Math.round(minutes) * 60_000);
+  const available = availableSince ? new Date(availableSince).getTime() : Number.NaN;
+  const bounded = Math.min(now, Number.isFinite(available) ? Math.max(requested, available) : requested);
+  return new Date(bounded).toISOString();
+}
+
+/** Parses directly entered local text without invoking a native date picker. */
+export function kubernetesLogStartTimeIso(
+  value: string,
+  availableSince?: string,
+  now = Date.now(),
+): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value.trim());
+  if (!match || !Number.isFinite(now)) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] ?? '0');
+  const date = new Date(year, month - 1, day, hour, minute, second, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+    || date.getHours() !== hour || date.getMinutes() !== minute || date.getSeconds() !== second) {
+    return undefined;
+  }
+  const timestamp = date.getTime();
+  if (timestamp > now) return undefined;
+  const available = availableSince ? new Date(availableSince).getTime() : Number.NaN;
+  if (Number.isFinite(available) && timestamp < available) {
+    if (kubernetesLogStartTimeInputValue(date.toISOString())
+      !== kubernetesLogStartTimeInputValue(new Date(available).toISOString())) {
+      return undefined;
+    }
+    return new Date(available).toISOString();
+  }
+  return date.toISOString();
+}
+
+/** Moves an existing lower bound and clamps it to container start and now. */
+export function adjustKubernetesLogStartTime(
+  startTime: string | undefined,
+  deltaMinutes: number,
+  availableSince?: string,
+  now = Date.now(),
+): string | undefined {
+  if (!Number.isFinite(deltaMinutes) || !Number.isFinite(now)) return undefined;
+  const current = startTime ? new Date(startTime).getTime() : now;
+  if (!Number.isFinite(current)) return undefined;
+  const available = availableSince ? new Date(availableSince).getTime() : Number.NaN;
+  const adjusted = current + (Math.round(deltaMinutes) * 60_000);
+  const bounded = Math.min(now, Number.isFinite(available) ? Math.max(available, adjusted) : adjusted);
+  return new Date(bounded).toISOString();
 }
 
 function copyTarget(target: KubernetesPodTarget): KubernetesPodTarget {
@@ -1008,6 +1070,43 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     mountedLogPane = undefined;
   };
 
+  const startTimeValidationMessage = (log: KubernetesLogState): string => (
+    log.availableSince
+      ? `Use YYYY-MM-DD HH:mm:ss between ${kubernetesLogStartTimeInputValue(log.availableSince)} and now.`
+      : 'Use YYYY-MM-DD HH:mm:ss no later than now.'
+  );
+
+  const updateStartTimeButtons = (view: MountedLogPane, log: KubernetesLogState): void => {
+    const pending = startTimeRequests.has(log.sessionId)
+      || followRequests.has(log.sessionId)
+      || scopeRequests.has(log.sessionId);
+    const edited = kubernetesLogStartTimeIso(view.startTime.value, log.availableSince);
+    const current = edited ?? log.startTime;
+    const currentTime = current ? new Date(current).getTime() : Number.NaN;
+    const availableTime = log.availableSince ? new Date(log.availableSince).getTime() : Number.NaN;
+    view.startEarlier.disabled = pending || (
+      Number.isFinite(currentTime) && Number.isFinite(availableTime) && currentTime <= availableTime
+    );
+    view.startLater.disabled = pending || !Number.isFinite(currentTime) || currentTime >= Date.now() - 1_000;
+    view.startPresets.forEach((button) => { button.disabled = pending; });
+  };
+
+  const applyEnteredStartTime = (tab: KubernetesWorkspaceTab, view: MountedLogPane): void => {
+    const log = tab.log;
+    if (!log || startTimeRequests.has(log.sessionId)) return;
+    const timestamp = kubernetesLogStartTimeIso(view.startTime.value, log.availableSince);
+    if (!timestamp) {
+      const message = startTimeValidationMessage(log);
+      view.startTime.setAttribute('aria-invalid', 'true');
+      view.startTime.setCustomValidity?.(message);
+      view.startTime.reportValidity?.();
+      return;
+    }
+    view.startTime.setAttribute('aria-invalid', 'false');
+    view.startTime.setCustomValidity?.('');
+    setLogStartTime(tab.id, timestamp);
+  };
+
   const ensureMountedLogPane = (tab: KubernetesWorkspaceTab): MountedLogPane => {
     if (mountedLogPane?.tabId === tab.id && mountedLogPane.panel.parentElement === options.pane) {
       return mountedLogPane;
@@ -1032,17 +1131,52 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     search.placeholder = 'Search logs';
     search.value = tab.logSearch;
     search.setAttribute('aria-label', `Search ${tabLabel(tab)}`);
-    const startTimeField = document.createElement('label');
-    startTimeField.className = 'kubernetes-log-start-time';
+    const startTimeGroup = document.createElement('div');
+    startTimeGroup.className = 'kubernetes-log-start-time';
     const startTimeLabel = document.createElement('span');
+    startTimeLabel.className = 'kubernetes-log-start-time-label';
     startTimeLabel.textContent = 'Since';
     const startTime = document.createElement('input');
-    startTime.type = 'datetime-local';
-    startTime.step = '1';
+    startTime.type = 'text';
+    startTime.inputMode = 'numeric';
     startTime.className = 'input kubernetes-log-start-time-input';
+    startTime.placeholder = 'YYYY-MM-DD HH:mm:ss';
+    startTime.setAttribute('autocomplete', 'off');
+    startTime.setAttribute('spellcheck', 'false');
     startTime.setAttribute('aria-label', `Log start time for ${tabLabel(tab)}`);
-    startTime.title = 'Load logs beginning at this local date and time';
-    startTimeField.append(startTimeLabel, startTime);
+    const startEarlier = document.createElement('button');
+    startEarlier.type = 'button';
+    startEarlier.className = 'kubernetes-log-time-step';
+    startEarlier.textContent = '−5m';
+    startEarlier.setAttribute('aria-label', `Move log start 5 minutes earlier for ${tabLabel(tab)}`);
+    const startLater = document.createElement('button');
+    startLater.type = 'button';
+    startLater.className = 'kubernetes-log-time-step';
+    startLater.textContent = '+5m';
+    startLater.setAttribute('aria-label', `Move log start 5 minutes later for ${tabLabel(tab)}`);
+    const lastDivider = document.createElement('span');
+    lastDivider.className = 'kubernetes-log-time-divider';
+    lastDivider.setAttribute('aria-hidden', 'true');
+    const lastLabel = document.createElement('span');
+    lastLabel.className = 'kubernetes-log-start-time-label';
+    lastLabel.textContent = 'Last';
+    const startPresets = KUBERNETES_LOG_SINCE_PRESETS.map((preset) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'kubernetes-log-time-preset';
+      button.textContent = preset.label;
+      button.setAttribute('aria-label', `Last ${preset.minutes} minutes for ${tabLabel(tab)}`);
+      return button;
+    });
+    startTimeGroup.append(
+      startTimeLabel,
+      startTime,
+      startEarlier,
+      startLater,
+      lastDivider,
+      lastLabel,
+      ...startPresets,
+    );
     const follow = document.createElement('button');
     follow.type = 'button';
     follow.className = 'icon-btn';
@@ -1058,7 +1192,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const stateLabel = document.createElement('span');
     const count = document.createElement('span');
     status.append(stateLabel, count);
-    toolbar.append(search, startTimeField, follow, clear);
+    toolbar.append(search, startTimeGroup, follow, clear);
     panel.append(toolbar, output, status);
     options.pane.appendChild(panel);
 
@@ -1069,6 +1203,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       scopeSwitch,
       search,
       startTime,
+      startEarlier,
+      startLater,
+      startPresets,
       follow,
       clear,
       output,
@@ -1094,16 +1231,45 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
         renderLogPane(current, 'none', { forceSearchReset: true });
       });
     });
-    startTime.addEventListener('change', () => {
+    startTime.addEventListener('input', () => {
       const current = isCurrentLogTab(tab.id);
       if (!current?.log) return;
-      const timestamp = kubernetesLogStartTimeIso(startTime.value);
-      if (!timestamp) {
-        startTime.value = kubernetesLogStartTimeInputValue(current.log.startTime);
-        renderLogPane(current, 'none');
-        return;
-      }
-      setLogStartTime(tab.id, timestamp);
+      startTime.setAttribute('aria-invalid', 'false');
+      startTime.setCustomValidity?.('');
+      updateStartTimeButtons(view, current.log);
+    });
+    startTime.addEventListener('change', () => {
+      const current = isCurrentLogTab(tab.id);
+      if (current) applyEnteredStartTime(current, view);
+    });
+    startTime.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      const current = isCurrentLogTab(tab.id);
+      if (current) applyEnteredStartTime(current, view);
+    });
+    const adjustStartTime = (deltaMinutes: number) => {
+      const current = isCurrentLogTab(tab.id);
+      if (!current?.log) return;
+      const edited = kubernetesLogStartTimeIso(startTime.value, current.log.availableSince);
+      const timestamp = adjustKubernetesLogStartTime(
+        edited ?? current.log.startTime,
+        deltaMinutes,
+        current.log.availableSince,
+      );
+      if (timestamp) setLogStartTime(tab.id, timestamp);
+    };
+    startEarlier.addEventListener('click', () => adjustStartTime(-5));
+    startLater.addEventListener('click', () => adjustStartTime(5));
+    startPresets.forEach((button, index) => {
+      button.addEventListener('click', () => {
+        const current = isCurrentLogTab(tab.id);
+        const preset = KUBERNETES_LOG_SINCE_PRESETS[index];
+        if (!current?.log || !preset) return;
+        const timestamp = kubernetesLogPresetStartTime(preset.minutes, current.log.availableSince);
+        if (!timestamp) return;
+        setLogStartTime(tab.id, timestamp);
+      });
     });
     follow.addEventListener('click', () => toggleLogFollowing(tab.id));
     clear.addEventListener('click', () => clearLog(tab.id));
@@ -1120,6 +1286,9 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       view.scopeSwitch.remove();
       view.startTime.value = '';
       view.startTime.disabled = true;
+      view.startEarlier.disabled = true;
+      view.startLater.disabled = true;
+      view.startPresets.forEach((button) => { button.disabled = true; });
       view.follow.disabled = true;
       view.clear.disabled = true;
       view.follow.setAttribute('aria-label', 'Pause log follow');
@@ -1129,13 +1298,19 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       return;
     }
 
-    const startTimeValue = kubernetesLogStartTimeInputValue(log.startTime);
+    const pendingStartTime = startTimeRequests.has(log.sessionId);
     if (document.activeElement !== view.startTime) {
-      view.startTime.value = startTimeValue;
+      view.startTime.value = kubernetesLogStartTimeInputValue(log.startTime);
+      view.startTime.setAttribute('aria-invalid', 'false');
+      view.startTime.setCustomValidity?.('');
     }
-    view.startTime.disabled = startTimeRequests.has(log.sessionId)
+    view.startTime.title = log.availableSince
+      ? `Current container logs cannot predate ${kubernetesLogStartTimeInputValue(log.availableSince)}`
+      : 'Kubernetes does not expose the oldest retained log time for this source';
+    view.startTime.disabled = pendingStartTime
       || followRequests.has(log.sessionId)
       || scopeRequests.has(log.sessionId);
+    updateStartTimeButtons(view, log);
     if (log.deployment) {
       if (!view.scopeSwitch.parentElement) view.toolbar.insertBefore(view.scopeSwitch, view.search);
       view.scopeSwitch.setAttribute('aria-checked', String(log.scope === 'deployment'));
@@ -1144,15 +1319,18 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
         ? `Showing all ${log.deployment.name} Deployment Pods; click for this Pod only`
         : `Showing this Pod only; click for all ${log.deployment.name} Deployment Pods`;
       view.scopeSwitch.textContent = `Deployment pods (${log.deployment.podCount})`;
-      view.scopeSwitch.disabled = scopeRequests.has(log.sessionId) || startTimeRequests.has(log.sessionId);
+      view.scopeSwitch.disabled = scopeRequests.has(log.sessionId) || pendingStartTime;
     } else {
       view.scopeSwitch.remove();
     }
-    view.follow.disabled = startTimeRequests.has(log.sessionId) || followRequests.has(log.sessionId);
+    // Keep follow interactive while an older follow mutation settles. The
+    // main-process generation fence allows a newer pause/resume intent to
+    // supersede stream cleanup that is still in flight.
+    view.follow.disabled = pendingStartTime;
     view.follow.setAttribute('aria-label', log.following ? 'Pause log follow' : 'Resume log follow');
     view.follow.setAttribute('title', log.following ? 'Pause log follow' : 'Resume log follow');
     view.follow.textContent = log.following ? 'Ⅱ' : '▶';
-    view.clear.disabled = startTimeRequests.has(log.sessionId);
+    view.clear.disabled = pendingStartTime;
     view.stateLabel.textContent = log.following ? 'Live' : 'Paused';
   };
 
@@ -1461,8 +1639,12 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       following: desired,
       ...(desired ? { startTime: undefined } : {}),
     });
-    if (desired && mountedLogPane?.tabId === tab.id) {
-      mountedLogPane.startTime.value = '';
+    if (desired) {
+      if (mountedLogPane?.tabId === tab.id) {
+        mountedLogPane.startTime.value = '';
+        mountedLogPane.startTime.setAttribute('aria-invalid', 'false');
+        mountedLogPane.startTime.setCustomValidity?.('');
+      }
     }
     if (selectedTabId === tab.id) renderPane(desired ? 'follow' : 'none');
     void options.setLogFollowing(previous.sessionId, desired).then((next) => {
@@ -1483,7 +1665,11 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       if (selectedTabId === tab.id) renderPane(previous.following ? 'follow' : 'none');
       options.reportError(error);
     }).finally(() => {
-      if (followRequests.get(previous.sessionId) === token) followRequests.delete(previous.sessionId);
+      if (followRequests.get(previous.sessionId) !== token) return;
+      followRequests.delete(previous.sessionId);
+      if (selectedTabId === tab.id && isCurrentLogTab(tab.id, previous.sessionId)) {
+        renderPane('none');
+      }
     });
   };
 
@@ -1491,6 +1677,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     const tab = isCurrentLogTab(tabId);
     const previous = tab?.log;
     if (!tab || !previous || startTimeRequests.has(previous.sessionId)) return;
+    if (!previous.following && previous.startTime === startTime) return;
     captureRenderedLogScroll(tab.id);
     cancelAutoScroll();
     logScrollTops.set(tab.id, 0);

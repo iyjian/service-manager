@@ -1302,6 +1302,104 @@ test('PodInteractionManager replaces live Pod logs with a paused start-time API 
   await manager.closeLogs(opened.sessionId);
 });
 
+test('PodInteractionManager exposes and enforces the current container log lifetime bound', async () => {
+  const fakeClient = createFakeClient({ logLineBatches: [[], ['bounded snapshot']] });
+  const manager = createManager(fakeClient);
+  const containerStartedAt = '2026-07-17T08:00:00.000Z';
+  const opened = await manager.openLogs({ ...POD_INPUT, containerStartedAt });
+
+  assert.equal(opened.availableSince, containerStartedAt);
+  await assert.rejects(
+    manager.setLogStartTime(opened.sessionId, '2026-07-17T07:59:59.000Z'),
+    /earlier than the current container start/i,
+  );
+  await assert.rejects(
+    manager.setLogStartTime(opened.sessionId, new Date(Date.now() + 60_000).toISOString()),
+    /future/i,
+  );
+  const bounded = await manager.setLogStartTime(opened.sessionId, '2026-07-17T08:05:00.000Z');
+  assert.equal(bounded.startTime, '2026-07-17T08:05:00.000Z');
+  assert.equal(bounded.availableSince, containerStartedAt);
+  assert.deepEqual(bounded.lines, ['bounded snapshot']);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager caps a clock-skewed future container start to a usable current bound', async () => {
+  const fakeClient = createFakeClient();
+  const manager = createManager(fakeClient);
+  const beforeOpen = Date.now();
+  const opened = await manager.openLogs({
+    ...POD_INPUT,
+    containerStartedAt: new Date(beforeOpen + 60_000).toISOString(),
+  });
+  const afterOpen = Date.now();
+  const available = new Date(opened.availableSince).getTime();
+
+  assert.ok(available >= beforeOpen);
+  assert.ok(available <= afterOpen);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager clamps a paused Deployment snapshot when switching to the current Pod', async () => {
+  const logInputs = [];
+  const containerStartedAt = '2026-07-17T08:00:00.000Z';
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      return {
+        name: 'api',
+        pods: [{ uid: 'pod-current', podName: POD_INPUT.podName }],
+      };
+    },
+    async openPodLog(input) {
+      logInputs.push(input);
+      return createHandle();
+    },
+  });
+  const opened = await manager.openLogs({ ...POD_INPUT, containerStartedAt });
+  const deploymentStart = '2026-07-17T07:30:00.000Z';
+
+  const deploymentSnapshot = await manager.setLogStartTime(opened.sessionId, deploymentStart);
+  assert.equal(deploymentSnapshot.scope, 'deployment');
+  assert.equal(deploymentSnapshot.availableSince, undefined);
+  assert.equal(deploymentSnapshot.startTime, deploymentStart);
+
+  const podSnapshot = await manager.setLogScope(opened.sessionId, 'pod');
+  assert.equal(podSnapshot.scope, 'pod');
+  assert.equal(podSnapshot.availableSince, containerStartedAt);
+  assert.equal(podSnapshot.startTime, containerStartedAt);
+  assert.equal(logInputs.at(-1).sinceTime, containerStartedAt);
+  await manager.closeLogs(opened.sessionId);
+});
+
+test('PodInteractionManager clamps a Deployment snapshot when membership loss falls back to the current Pod', async () => {
+  const logInputs = [];
+  let resolutions = 0;
+  const containerStartedAt = '2026-07-17T08:00:00.000Z';
+  const manager = createManager({
+    async resolvePodDeploymentLogTargets() {
+      resolutions += 1;
+      return resolutions === 1 ? {
+        name: 'api',
+        pods: [{ uid: 'pod-current', podName: POD_INPUT.podName }],
+      } : undefined;
+    },
+    async openPodLog(input) {
+      logInputs.push(input);
+      return createHandle();
+    },
+  });
+  const opened = await manager.openLogs({ ...POD_INPUT, containerStartedAt });
+
+  const snapshot = await manager.setLogStartTime(opened.sessionId, '2026-07-17T07:30:00.000Z');
+
+  assert.equal(snapshot.scope, 'pod');
+  assert.equal(snapshot.deployment, undefined);
+  assert.equal(snapshot.availableSince, containerStartedAt);
+  assert.equal(snapshot.startTime, containerStartedAt);
+  assert.equal(logInputs.at(-1).sinceTime, containerStartedAt);
+  await manager.closeLogs(opened.sessionId);
+});
+
 test('PodInteractionManager reloads bounded Deployment snapshots from one start time', async () => {
   const streams = [];
   let resolutions = 0;

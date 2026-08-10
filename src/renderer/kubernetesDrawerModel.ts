@@ -154,6 +154,14 @@ function containerStatusText(status: Record<string, unknown> | undefined): strin
   return 'Unknown';
 }
 
+function containerStartedAt(status: Record<string, unknown> | undefined): string | undefined {
+  const state = record(status?.state);
+  const raw = text(record(state?.running)?.startedAt) ?? text(record(state?.terminated)?.startedAt);
+  if (!raw) return undefined;
+  const timestamp = new Date(raw);
+  return Number.isNaN(timestamp.getTime()) ? undefined : timestamp.toISOString();
+}
+
 function toContainer(
   container: Record<string, unknown>,
   init: boolean,
@@ -162,6 +170,7 @@ function toContainer(
   podName: string,
 ): KubernetesDrawerContainer {
   const name = text(container.name) ?? 'Unnamed container';
+  const startedAt = containerStartedAt(status);
   const command = [...strings(container.command), ...strings(container.args)].join(' ') || '—';
   const mounts = array(container.volumeMounts)
     .flatMap((item) => {
@@ -172,7 +181,12 @@ function toContainer(
   return {
     name,
     init,
-    target: { namespace, podName, container: name },
+    target: {
+      namespace,
+      podName,
+      container: name,
+      ...(startedAt ? { containerStartedAt: startedAt } : {}),
+    },
     status: containerStatusText(status),
     image: text(container.image) ?? '—',
     imagePullPolicy: text(container.imagePullPolicy) ?? 'Default',

@@ -2,7 +2,10 @@ import type { KubernetesResourceSummary } from './resourceQuery';
 import { baseResourceQuery, mergeResourcePage, resourceQueryKey } from './resourceQuery';
 import type { KubernetesResourceQuery } from './resourceQuery';
 import type { KubernetesClient, KubernetesWatchEvent } from './kubernetesClient';
+import { POD_SUMMARY_EMPTY, type KubernetesPodMetric } from './podSummary';
 import { ResourceCache } from './resourceCache';
+
+const DEFAULT_POD_METRICS_REFRESH_MS = 15_000;
 
 export interface KubernetesListSnapshot {
   query: KubernetesResourceQuery;
@@ -13,6 +16,7 @@ export interface KubernetesListSnapshot {
   watchActive: boolean;
   permissionDenied?: boolean;
   error?: string;
+  podMetricsState?: 'loading' | 'available' | 'unavailable';
 }
 
 export interface ResourceCoordinatorOptions {
@@ -22,6 +26,8 @@ export interface ResourceCoordinatorOptions {
   onWatchError?: (event: KubernetesWatchEvent) => void;
   /** A coalesced Watch/relist snapshot changed; callers may publish one view. */
   onSnapshotChanged?: (snapshot: KubernetesListSnapshot) => void;
+  /** Test seam; production refreshes active Pod metrics every 15 seconds. */
+  podMetricsRefreshMs?: number;
 }
 
 interface ActiveRecord {
@@ -37,6 +43,14 @@ interface ActiveRecord {
   recovering?: Promise<void>;
   pendingWatchEvents: KubernetesWatchEvent[];
   watchFlushQueued: boolean;
+  podMetricsGeneration: number;
+  podMetrics?: Map<string, KubernetesPodMetric>;
+  podMetricsTimer?: ReturnType<typeof setTimeout>;
+  podMetricsRefresh?: Promise<void>;
+}
+
+function podMetricKey(namespace: string | undefined, name: string): string {
+  return `${namespace ?? ''}\u0000${name}`;
 }
 
 function snapshotCacheKey(query: KubernetesResourceQuery): string {
@@ -88,6 +102,7 @@ export class ResourceCoordinator {
       listGeneration: 0,
       pendingWatchEvents: [],
       watchFlushQueued: false,
+      podMetricsGeneration: 0,
     };
     record.ready = this.initialize(record);
     this.active.set(key, record);
@@ -124,6 +139,7 @@ export class ResourceCoordinator {
         return this.snapshotAfterRecovery(record, snapshot);
       }
       snapshot.items = mergeResourcePage(snapshot.items, page.items);
+      this.applyPodMetrics(record, snapshot);
       snapshot.loadedCount = snapshot.items.length;
       snapshot.continueToken = page.continueToken;
       snapshot.resourceVersion = page.resourceVersion || snapshot.resourceVersion;
@@ -151,6 +167,7 @@ export class ResourceCoordinator {
       }
       this.active.delete(record.key);
       this.stopWatch(record);
+      this.stopPodMetrics(record);
       return;
     }
 
@@ -158,6 +175,7 @@ export class ResourceCoordinator {
       record.consumers = 0;
       this.active.delete(record.key);
       this.stopWatch(record);
+      this.stopPodMetrics(record);
     }
   }
 
@@ -208,8 +226,16 @@ export class ResourceCoordinator {
     }
 
     record.snapshot = snapshot;
+    if (record.query.kind === 'pods' && this.options.client().listPodMetrics) {
+      // Cached resource snapshots may outlive a metrics sample. Clear usage
+      // before reuse and publish only a fresh active-view sample.
+      record.podMetrics = new Map();
+      this.applyPodMetrics(record, snapshot);
+      snapshot.podMetricsState = 'loading';
+    }
     snapshot.watchActive = false;
     await this.startWatch(record);
+    this.schedulePodMetrics(record, 0);
     return snapshot;
   }
 
@@ -224,6 +250,9 @@ export class ResourceCoordinator {
       ...(page.continueToken ? { continueToken: page.continueToken } : {}),
       resourceVersion: page.resourceVersion,
       watchActive: false,
+      ...(query.kind === 'pods' && this.options.client().listPodMetrics
+        ? { podMetricsState: 'loading' as const }
+        : {}),
     };
   }
 
@@ -280,7 +309,7 @@ export class ResourceCoordinator {
 
     for (const event of events) {
       if (isGone(event)) {
-        this.applyWatchEvents(snapshot, normalEvents);
+        this.applyWatchEvents(record, snapshot, normalEvents);
         this.invalidatePageRequests(record);
         void this.recoverGoneWatch(record).catch(() => {
           if (this.isActive(record) && record.snapshot) {
@@ -291,7 +320,7 @@ export class ResourceCoordinator {
         return;
       }
       if (event.type === 'ERROR') {
-        this.applyWatchEvents(snapshot, normalEvents);
+        this.applyWatchEvents(record, snapshot, normalEvents);
         snapshot.permissionDenied = isPermissionDenied(event) || undefined;
         snapshot.error = snapshot.permissionDenied
           ? 'No permission to watch this Kubernetes resource.'
@@ -304,14 +333,18 @@ export class ResourceCoordinator {
       normalEvents.push(event);
     }
 
-    if (this.applyWatchEvents(snapshot, normalEvents)) {
+    if (this.applyWatchEvents(record, snapshot, normalEvents)) {
       this.options.cache.set(snapshotCacheKey(record.query), snapshot);
       this.options.onSnapshotChanged?.(snapshot);
     }
   }
 
   /** Applies ordered Watch mutations with at most one full loaded-page scan. */
-  private applyWatchEvents(snapshot: KubernetesListSnapshot, events: KubernetesWatchEvent[]): boolean {
+  private applyWatchEvents(
+    record: ActiveRecord,
+    snapshot: KubernetesListSnapshot,
+    events: KubernetesWatchEvent[],
+  ): boolean {
     if (events.length === 0) {
       return false;
     }
@@ -340,12 +373,13 @@ export class ResourceCoordinator {
 
       if ((event.type === 'ADDED' || event.type === 'MODIFIED') && event.object) {
         ensureWorkingSet();
-        const existingLocation = locations?.get(event.object.uid);
+        const object = this.withPodMetrics(record, event.object);
+        const existingLocation = locations?.get(object.uid);
         if (existingLocation === undefined) {
-          locations?.set(event.object.uid, order?.length ?? 0);
-          order?.push(event.object.uid);
+          locations?.set(object.uid, order?.length ?? 0);
+          order?.push(object.uid);
         }
-        values?.set(event.object.uid, event.object);
+        values?.set(object.uid, object);
         continue;
       }
 
@@ -397,6 +431,7 @@ export class ResourceCoordinator {
     }
 
     const replacement = this.createSnapshot(record.query, page);
+    this.applyPodMetrics(record, replacement);
     record.snapshot.items = replacement.items;
     record.snapshot.loadedCount = replacement.loadedCount;
     record.snapshot.continueToken = replacement.continueToken;
@@ -407,6 +442,83 @@ export class ResourceCoordinator {
     if (record.snapshot) {
       this.options.onSnapshotChanged?.(record.snapshot);
     }
+  }
+
+  private schedulePodMetrics(record: ActiveRecord, delayMs: number): void {
+    if (!this.isActive(record) || record.query.kind !== 'pods' || !this.options.client().listPodMetrics) return;
+    if (record.podMetricsTimer !== undefined) clearTimeout(record.podMetricsTimer);
+    const generation = record.podMetricsGeneration;
+    record.podMetricsTimer = setTimeout(() => {
+      record.podMetricsTimer = undefined;
+      if (!this.isActive(record) || record.podMetricsGeneration !== generation) return;
+      void this.refreshPodMetrics(record, generation);
+    }, Math.max(0, delayMs));
+    record.podMetricsTimer.unref?.();
+  }
+
+  private refreshPodMetrics(record: ActiveRecord, generation: number): Promise<void> {
+    if (record.podMetricsRefresh) return record.podMetricsRefresh;
+    const client = this.options.client();
+    if (!client.listPodMetrics) return Promise.resolve();
+    const refresh = client.listPodMetrics(record.query).then((metrics) => {
+      if (!this.isActive(record) || record.podMetricsGeneration !== generation || !record.snapshot) return;
+      record.podMetrics = new Map(metrics.map((metric) => [
+        podMetricKey(metric.namespace, metric.name),
+        { ...metric },
+      ]));
+      const changed = this.applyPodMetrics(record, record.snapshot);
+      const stateChanged = record.snapshot.podMetricsState !== 'available';
+      record.snapshot.podMetricsState = 'available';
+      if (changed || stateChanged) this.publishPodMetrics(record);
+    }).catch(() => {
+      if (!this.isActive(record) || record.podMetricsGeneration !== generation || !record.snapshot) return;
+      record.podMetrics = new Map();
+      const changed = this.applyPodMetrics(record, record.snapshot);
+      const stateChanged = record.snapshot.podMetricsState !== 'unavailable';
+      record.snapshot.podMetricsState = 'unavailable';
+      if (changed || stateChanged) this.publishPodMetrics(record);
+    }).finally(() => {
+      if (record.podMetricsRefresh === refresh) record.podMetricsRefresh = undefined;
+      if (this.isActive(record) && record.podMetricsGeneration === generation) {
+        this.schedulePodMetrics(record, this.options.podMetricsRefreshMs ?? DEFAULT_POD_METRICS_REFRESH_MS);
+      }
+    });
+    record.podMetricsRefresh = refresh;
+    return refresh;
+  }
+
+  private applyPodMetrics(record: ActiveRecord, snapshot: KubernetesListSnapshot): boolean {
+    if (snapshot.query.kind !== 'pods' || !record.podMetrics) return false;
+    let changed = false;
+    snapshot.items = snapshot.items.map((item) => {
+      const next = this.withPodMetrics(record, item);
+      if (next !== item) changed = true;
+      return next;
+    });
+    return changed;
+  }
+
+  private withPodMetrics(record: ActiveRecord, item: KubernetesResourceSummary): KubernetesResourceSummary {
+    if (record.query.kind !== 'pods' || !record.podMetrics) return item;
+    const metric = record.podMetrics.get(podMetricKey(item.namespace, item.name));
+    const cpu = metric?.cpu ?? POD_SUMMARY_EMPTY;
+    const memory = metric?.memory ?? POD_SUMMARY_EMPTY;
+    if (item.columns.cpu === cpu && item.columns.memory === memory) return item;
+    return { ...item, columns: { ...item.columns, cpu, memory } };
+  }
+
+  private publishPodMetrics(record: ActiveRecord): void {
+    if (!record.snapshot || !this.isActive(record)) return;
+    this.options.cache.set(snapshotCacheKey(record.query), record.snapshot);
+    this.options.onSnapshotChanged?.(record.snapshot);
+  }
+
+  private stopPodMetrics(record: ActiveRecord): void {
+    record.podMetricsGeneration += 1;
+    if (record.podMetricsTimer !== undefined) clearTimeout(record.podMetricsTimer);
+    record.podMetricsTimer = undefined;
+    record.podMetricsRefresh = undefined;
+    record.podMetrics = undefined;
   }
 
   private stopWatch(record: ActiveRecord): void {

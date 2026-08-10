@@ -601,7 +601,7 @@ test('mapKubernetesResourceSummary normalizes Date creation timestamps and strip
   assert.equal(Object.hasOwn(summary, 'stringData'), false);
 });
 
-test('Pod summary ignores invalid or negative requests and renders missing requests as em dashes', () => {
+test('Pod base summary reserves CPU and Memory columns for live metrics', () => {
   const { summarizePodListColumns } = require('../dist/main/kubernetes/podSummary');
   const invalid = summarizePodListColumns({
     spec: {
@@ -848,6 +848,72 @@ test('KubernetesClient preserves generated Object API receivers for read-only li
 
   assert.equal(page.resourceVersion, '7');
   assert.deepEqual(calls, [{ limit: 200 }]);
+  await client.close();
+});
+
+test('KubernetesClient reads bounded paginated live Pod metrics through CustomObjectsApi', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-pod-metrics-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const kubeconfigPath = path.join(directory, 'config.yaml');
+  await fs.writeFile(kubeconfigPath, [
+    'apiVersion: v1', 'kind: Config',
+    'clusters:', '- name: local', '  cluster:', '    server: https://127.0.0.1:6443',
+    'users:', '- name: token-user', '  user:', '    token: test-token',
+    'contexts:', '- name: token', '  context:', '    cluster: local', '    user: token-user', '',
+  ].join('\n'));
+  const calls = [];
+  const custom = {
+    marker: 'metrics',
+    async listClusterCustomObject(params) {
+      assert.equal(this.marker, 'metrics');
+      calls.push(params);
+      if (!params._continue) {
+        return {
+          metadata: { continue: 'metrics-page-2' },
+          items: [{
+            metadata: { namespace: 'apps', name: 'api' },
+            containers: [{ usage: { cpu: '250m', memory: '128Mi' } }],
+          }],
+        };
+      }
+      return {
+        metadata: {},
+        items: [{
+          metadata: { namespace: 'jobs', name: 'worker' },
+          containers: [{ usage: { cpu: '0.5', memory: '1Gi' } }],
+        }],
+      };
+    },
+  };
+  class CustomObjectsApi {}
+  class KubeConfig {
+    loadFromString() {}
+    makePathsAbsolute() {}
+    setCurrentContext() {}
+    getContextObject() { return { name: 'token' }; }
+    getCurrentUser() { return { token: 'test-token' }; }
+    makeApiClient(Api) { return Api === CustomObjectsApi ? custom : {}; }
+  }
+  const client = await createKubernetesClient({ kubeconfigPath, context: 'token' }, {
+    loadKubernetesNode: async () => ({
+      KubeConfig, CustomObjectsApi,
+      VersionApi: class VersionApi {}, CoreV1Api: class CoreV1Api {},
+      DiscoveryV1Api: class DiscoveryV1Api {}, AppsV1Api: class AppsV1Api {},
+      NetworkingV1Api: class NetworkingV1Api {}, ApiextensionsV1Api: class ApiextensionsV1Api {},
+      Watch: class Watch {}, Log: class Log {}, Exec: class Exec {}, PortForward: class PortForward {},
+    }),
+  });
+
+  assert.deepEqual(await client.listPodMetrics({
+    context: 'token', kind: 'pods', namespaceScope: { mode: 'all', namespaces: [] },
+  }), [
+    { namespace: 'apps', name: 'api', cpu: '250m', memory: '128Mi' },
+    { namespace: 'jobs', name: 'worker', cpu: '500m', memory: '1Gi' },
+  ]);
+  assert.deepEqual(calls, [
+    { group: 'metrics.k8s.io', version: 'v1beta1', plural: 'pods', limit: 500 },
+    { group: 'metrics.k8s.io', version: 'v1beta1', plural: 'pods', limit: 500, _continue: 'metrics-page-2' },
+  ]);
   await client.close();
 });
 
