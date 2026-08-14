@@ -13,7 +13,7 @@ import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { indentUnit } from '@codemirror/language';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
-import { EditorState, Prec, StateEffect, StateField, type Text } from '@codemirror/state';
+import { EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import {
   activateHover,
   closeHoverTooltip,
@@ -162,6 +162,11 @@ interface SqlEnvironmentState {
 interface SqlTableEnumHoverTarget extends SqlTableReference {
   environment: SqlEnvironment;
   tabKey?: string;
+}
+
+interface SqlSchemaFlight {
+  loadVersion: number;
+  promise: Promise<void>;
 }
 
 type SqlEnumColumn = SqlSchemaColumn & { enum: SqlSchemaEnumMetadata };
@@ -686,11 +691,12 @@ class SqlPage {
   private tableEnumHoverCloseTimer?: number;
   private tableEnumPendingPosition?: {
     view: EditorView;
-    doc: Text;
+    source: string;
     position: number;
     environment: SqlEnvironment;
+    tabKey?: string;
   };
-  private schemaFlights = new Map<SqlEnvironment, Promise<void>>();
+  private schemaFlights = new Map<SqlEnvironment, SqlSchemaFlight>();
 
   public constructor() {
     try {
@@ -702,7 +708,10 @@ class SqlPage {
     this.restoreUntitledDrafts();
     this.tableEnumHover = hoverTooltip(
       (view, position) => this.tableEnumTooltipAt(view, position),
-      { hideOnChange: true },
+      // Native double-click selection can be committed after the dblclick handler.
+      // Keep the explicitly opened tooltip through that selection transaction;
+      // document edits and the owned pointer/Escape handlers still close it.
+      { hideOnChange: false },
     );
     this.editor = new EditorView({
       state: EditorState.create({
@@ -943,29 +952,34 @@ class SqlPage {
       if (this.tableEnumHoverTarget !== target || !this.active) return;
       activateHover(view, target.from, 1, {
         tooltip: this.tableEnumHover,
-        until: (transaction) => transaction.docChanged || transaction.selection !== undefined,
+        until: (transaction) => transaction.docChanged,
       });
     });
   }
 
   private retryTableEnumAfterSchemaLoad(view: EditorView, position: number): void {
     const environment = this.environment;
-    this.tableEnumPendingPosition = {
+    const pending = {
       view,
-      doc: view.state.doc,
+      source: view.state.doc.toString(),
       position,
       environment,
+      tabKey: this.currentState().activeTabKey,
     };
+    this.tableEnumPendingPosition = pending;
     void this.ensureSchemaLoaded(environment, true).then(() => {
-      const pending = this.tableEnumPendingPosition;
-      if (!pending
-        || pending.view !== view
-        || pending.doc !== view.state.doc
-        || pending.environment !== this.environment) {
+      if (
+        this.tableEnumPendingPosition !== pending
+        || pending.view !== this.editor
+        || pending.source !== view.state.doc.toString()
+        || pending.environment !== this.environment
+        || pending.tabKey !== this.currentState().activeTabKey
+        || !this.active
+      ) {
         return;
       }
       this.tableEnumPendingPosition = undefined;
-      this.tryOpenTableEnumTooltip(view, position);
+      this.tryOpenTableEnumTooltip(view, pending.position);
     });
   }
 
@@ -1374,16 +1388,18 @@ class SqlPage {
   private ensureSchemaLoaded(environment: SqlEnvironment, userInitiated: boolean): Promise<void> {
     const state = this.states[environment];
     if (state.schema) return Promise.resolve();
+    const loadVersion = state.loadVersion;
     const existing = this.schemaFlights.get(environment);
-    if (existing) return existing;
-    const flight = this.fetchSchema(environment, state.loadVersion, userInitiated);
+    if (existing?.loadVersion === loadVersion) return existing.promise;
+    const promise = this.fetchSchema(environment, loadVersion, userInitiated);
+    const flight: SqlSchemaFlight = { loadVersion, promise };
     this.schemaFlights.set(environment, flight);
-    void flight.finally(() => {
+    void promise.finally(() => {
       if (this.schemaFlights.get(environment) === flight) {
         this.schemaFlights.delete(environment);
       }
     }).catch(() => undefined);
-    return flight;
+    return promise;
   }
 
   private async fetchSchema(
