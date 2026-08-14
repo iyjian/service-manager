@@ -96,7 +96,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.node-linker=hoisted
 
-      - name: Build mac package
+      - name: Build macOS packages (Apple Silicon and Intel)
         run: pnpm run package:mac
 
       - name: Upload mac artifacts

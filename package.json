@@ -15,7 +15,8 @@
     "test": "pnpm run build && node --test tests/*.test.js",
     "start": "pnpm run build && electron .",
     "dev": "pnpm run build && electron .",
-    "package:mac": "pnpm run build && electron-builder --mac dmg zip --publish never",
+    "package:mac": "pnpm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
+    "package:mac:intel": "pnpm run build && electron-builder --mac dmg zip --x64 --publish never",
     "package:win": "pnpm run build && electron-builder --win nsis --publish never",
     "package:linux": "pnpm run build && electron-builder --linux AppImage --x64 --publish never"
   },

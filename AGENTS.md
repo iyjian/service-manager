@@ -362,7 +362,7 @@ Logs:
 
 ## Release And Updates
 
-- GitHub Actions must build macOS, Windows, and Linux artifacts.
+- GitHub Actions must build Apple Silicon and Intel macOS artifacts, plus Windows and Linux artifacts.
 - Auto update uses `electron-updater` with state broadcast to renderer.
 - `Restart Now` must route through the shutdown coordinator and launch the downloaded installer only after app-owned runtime cleanup and diagnostic flush, or after the coordinator's eight-second final deadline; never start Windows NSIS first and race ordinary cleanup of the old executable. Once installation starts, the shared 1.5-second final-exit fallback must prevent a stale Electron process from retaining installed files.
 - Automatic update checks retry transient network failures once and remain quiet after a failed retry; manual update-check failures use a top-right toast.
