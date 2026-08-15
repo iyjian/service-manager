@@ -348,11 +348,12 @@ Single-writer protection still applies within each profile: the active profile f
 
 ```bash
 pnpm run package:mac
+pnpm run package:mac:intel
 pnpm run package:win
 pnpm run package:linux
 ```
 
-Artifacts are generated under `release/`.
+`package:mac` generates both Apple Silicon (`arm64`) and Intel (`x64`) DMG/ZIP artifacts. Use `package:mac:intel` when only an Intel macOS build is needed. Artifacts are generated under `release/`.
 
 ## Auto Update
 
@@ -373,7 +374,7 @@ Artifacts are generated under `release/`.
 - Behavior:
   - auto bump patch version
   - create git tag
-  - build artifacts for macOS / Windows / Linux
+  - build Apple Silicon and Intel macOS artifacts, plus Windows and Linux artifacts
   - publish GitHub Release with generated artifacts
   - inject current repository owner/name into electron-builder publish config during CI build (for updater metadata)
 
