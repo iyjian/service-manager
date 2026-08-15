@@ -522,8 +522,8 @@ test('Kubernetes Pod list emphasizes stable Deployment names and fades only gene
   assert.match(pageSource, /primary\.textContent = parts\.primary/);
   assert.match(pageSource, /suffix\.textContent = parts\.suffix/);
   assert.doesNotMatch(pageSource, /(?:primary|suffix)\.innerHTML/);
-  assert.match(styles, /\.kubernetes-table-cell\.kubernetes-table-pod-namespace\s*\{[^}]*font-semibold[^}]*text-zinc-900/);
-  assert.match(styles, /\.kubernetes-table-pod-name-primary\s*\{[^}]*font-semibold[^}]*text-zinc-950/);
+  assert.match(styles, /\.kubernetes-table-cell\.kubernetes-table-pod-namespace\s*\{[^}]*font-normal[^}]*text-secondary/);
+  assert.match(styles, /\.kubernetes-table-pod-name-primary\s*\{[^}]*font-medium[^}]*text-zinc-950/);
   assert.match(styles, /\.kubernetes-table-pod-name-suffix\s*\{[^}]*font-normal[^}]*text-zinc-400/);
 });
 
@@ -695,7 +695,7 @@ test('Kubernetes resource details use a read-only overlay drawer and clear activ
   assert.doesNotMatch(kubernetesHtml, />Restart</);
 });
 
-test('Kubernetes detail YAML uses the copied browser serializer and text-safe rendering without Copy', async () => {
+test('Kubernetes detail YAML uses the copied browser serializer and text-safe highlighted rendering', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
@@ -728,9 +728,13 @@ test('Kubernetes detail YAML uses the copied browser serializer and text-safe re
   assert.match(html, /<script src="\.\/js-yaml\.umd\.min\.js"><\/script>/);
   assert.match(browserYaml, /jsyaml/);
   assert.match(page, /serializeKubernetesDetailYaml/);
-  assert.match(page, /detailYaml\.textContent = serializeKubernetesDetailYaml\(detail\)/);
-  assert.doesNotMatch(page, /copyKubernetesDetailYaml/);
-  assert.doesNotMatch(html, /id="kubernetes-detail-copy"/);
+  assert.match(page, /kubernetesYamlLowlight\.highlight\('yaml', source\)/);
+  assert.match(page, /appendKubernetesHighlightNode\(code, child\)/);
+  assert.match(page, /this\.detailYaml\.replaceChildren\(code\)/);
+  assert.match(page, /copyDrawerYaml/);
+  assert.match(page, /handleYamlFindShortcut/);
+  assert.match(page, /findNotesTextMatches\(this\.detailYaml\.textContent/);
+  assert.match(html, /id="kubernetes-detail-yaml-copy"/);
   assert.doesNotMatch(page, /JSON\.stringify\(detail/);
 });
 
@@ -954,8 +958,8 @@ test('Kubernetes drawer rendering keeps YAML opt-in and Events guarded to the ac
     page.indexOf('    renderDrawerPortForward(active) {'),
   );
 
-  assert.match(renderDetail, /if \(!this\.detailYaml\.classList\.contains\('hidden'\)\)\s*this\.renderDrawerYaml\(detail\)/);
-  assert.match(yaml, /this\.detailYaml\.classList\.toggle\('hidden', !opening\)/);
+  assert.match(renderDetail, /if \(!this\.detailYamlWrap\.classList\.contains\('hidden'\)\)[\s\S]*?this\.renderDrawerYaml\(detail\)/);
+  assert.match(yaml, /this\.detailYamlWrap\.classList\.toggle\('hidden', !opening\)/);
   assert.match(yaml, /this\.detailYaml\.textContent = ''/);
   assert.match(events, /if \(!this\.isCurrentActiveDrawer\(active\)\)\s*return/);
   assert.match(events, /window\.kubernetesApi\.getResourceEvents/);
@@ -2044,10 +2048,10 @@ test('Kubernetes-only visual hierarchy keeps table rows and drawer sections clea
   assert.ok(tableShell && tableHeader);
   assert.ok(namespaceCell && nameCell && drawerBody && drawerSection && drawerToggle);
   assert.match(tableShell[1], /border-zinc-300[^;]*bg-white/);
-  assert.match(tableHeader[1], /border-zinc-300[^;]*bg-zinc-100[^;]*text-zinc-600/);
-  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply px-3[^;]*font-sans[^;]*text-\[13px\][^;]*text-zinc-800;\s*border-bottom:\s*0\.5px solid rgb\(212 212 216\)/);
+  assert.match(tableHeader[1], /border-zinc-300[^;]*bg-zinc-100[^;]*text-zinc-500/);
+  assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply px-3[^;]*font-sans[^;]*text-\[13px\][^;]*text-secondary;\s*border-bottom:\s*0\.5px solid rgb\(212 212 216\)/);
   assert.match(styles, /\.kubernetes-table-row\s*\{\s*@apply cursor-pointer[^;]*hover:bg-sky-50[^;]*focus-visible:bg-sky-50/);
-  assert.match(namespaceCell[1], /font-normal[^;]*text-zinc-500/);
+  assert.match(namespaceCell[1], /font-normal[^;]*text-secondary/);
   assert.match(nameCell[1], /font-medium[^;]*text-zinc-950/);
   assert.match(drawerBody[1], /bg-zinc-50/);
   assert.match(drawerSection[1], /border-zinc-300[^;]*bg-white/);

@@ -17,6 +17,14 @@ import type {
   KubernetesState,
   KubernetesTerminalState,
 } from '../shared/types';
+import { common, createLowlight } from 'lowlight';
+import { CODE_HIGHLIGHT_LIMITS } from './codeHighlight.js';
+import {
+  findNotesTextMatches,
+  initialNotesFindIndex,
+  moveNotesFindIndex,
+  type NotesFindMatch,
+} from './notesFind.js';
 import {
   customResourcePrinterColumnKey,
 } from './kubernetesCustomResourcePrinterColumns.js';
@@ -1053,6 +1061,37 @@ export function serializeKubernetesDetailYaml(detail: Record<string, unknown>): 
   return browserYamlSerializer().dump(detail, { lineWidth: -1, noRefs: true });
 }
 
+const kubernetesYamlLowlight = createLowlight(common);
+
+interface KubernetesHighlightNode {
+  type?: unknown;
+  value?: unknown;
+  tagName?: unknown;
+  properties?: unknown;
+  children?: unknown;
+}
+
+function appendKubernetesHighlightNode(parent: Node, value: unknown): void {
+  if (!value || typeof value !== 'object') return;
+  const node = value as KubernetesHighlightNode;
+  if (node.type === 'text' && typeof node.value === 'string') {
+    parent.appendChild(document.createTextNode(node.value));
+    return;
+  }
+  if (node.type !== 'element' || node.tagName !== 'span' || !Array.isArray(node.children)) return;
+  const span = document.createElement('span');
+  if (node.properties && typeof node.properties === 'object') {
+    const classNames = (node.properties as { className?: unknown }).className;
+    if (Array.isArray(classNames)) {
+      for (const className of classNames) {
+        if (typeof className === 'string' && /^hljs-[a-z0-9_-]+$/.test(className)) span.classList.add(className);
+      }
+    }
+  }
+  for (const child of node.children) appendKubernetesHighlightNode(span, child);
+  parent.appendChild(span);
+}
+
 function detailName(detail: ActiveDetail): string {
   return detail.summary.namespace
     ? `${detail.summary.namespace}/${detail.summary.name}`
@@ -1195,13 +1234,20 @@ class KubernetesPage implements KubernetesPageController {
   private readonly detailDrawerScrim = requireElement<HTMLButtonElement>('#kubernetes-detail-drawer-scrim');
   private readonly detailCloseButton = requireElement<HTMLButtonElement>('#kubernetes-detail-close');
   private readonly detailTitle = requireElement<HTMLElement>('#kubernetes-detail-title');
-  private readonly detailSubtitle = requireElement<HTMLElement>('#kubernetes-detail-subtitle');
   private readonly detailVncButton = requireElement<HTMLButtonElement>('#kubernetes-detail-vnc');
   private readonly detailVncLabel = requireElement<HTMLElement>('#kubernetes-detail-vnc-label');
   private readonly detailPortForwardButton = requireElement<HTMLButtonElement>('#kubernetes-detail-port-forward');
   private readonly detailYamlToggle = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-toggle');
+  private readonly detailYamlCopy = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-copy');
   private readonly detailOverview = requireElement<HTMLElement>('#kubernetes-detail-overview');
+  private readonly detailYamlWrap = requireElement<HTMLElement>('#kubernetes-detail-yaml-wrap');
   private readonly detailYaml = requireElement<HTMLPreElement>('#kubernetes-detail-yaml');
+  private readonly detailYamlFind = requireElement<HTMLElement>('#kubernetes-detail-yaml-find');
+  private readonly detailYamlFindInput = requireElement<HTMLInputElement>('#kubernetes-detail-yaml-find-input');
+  private readonly detailYamlFindCounter = requireElement<HTMLElement>('#kubernetes-detail-yaml-find-counter');
+  private readonly detailYamlFindPrevious = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-find-previous');
+  private readonly detailYamlFindNext = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-find-next');
+  private readonly detailYamlFindClose = requireElement<HTMLButtonElement>('#kubernetes-detail-yaml-find-close');
   private readonly workspaceRoot = requireElement<HTMLElement>('#kubernetes-workspace');
   private readonly workspaceResizeHandle = requireElement<HTMLElement>('#kubernetes-workspace-resize-handle');
   private readonly workspaceTabs = requireElement<HTMLElement>('#kubernetes-workspace-tabs');
@@ -1265,6 +1311,12 @@ class KubernetesPage implements KubernetesPageController {
   private deactivation: Promise<void> = Promise.resolve();
   private activeDetail: ActiveDetail | undefined;
   private detailGeneration = 0;
+  private detailYamlCopyResetTimer?: number;
+  private yamlFindOpen = false;
+  private yamlFindMatches: readonly NotesFindMatch[] = [];
+  private yamlFindActiveIndex = -1;
+  private yamlFindTruncated = false;
+  private yamlFindFrame?: number;
   private vncOpening: { drawerGeneration: number } | undefined;
   private drawerRequest: KubernetesDrawerRequest = {
     visible: false,
@@ -1532,6 +1584,7 @@ class KubernetesPage implements KubernetesPageController {
       else if (namespaceOpen) this.namespaceToggle.focus();
       else this.customResourceToggle.focus();
     });
+    document.addEventListener('keydown', (event) => this.handleYamlFindShortcut(event), true);
     this.contextControl.addEventListener('focusout', () => {
       window.requestAnimationFrame(() => {
         if (!this.contextControl.contains(document.activeElement)) this.setContextMenuOpen(false);
@@ -1568,6 +1621,21 @@ class KubernetesPage implements KubernetesPageController {
     this.detailVncButton.addEventListener('click', () => { void this.openVnc(); });
     this.detailPortForwardButton.addEventListener('click', () => this.openPortForwardDialog());
     this.detailYamlToggle.addEventListener('click', () => this.toggleDrawerYaml());
+    this.detailYamlCopy.addEventListener('click', () => { void this.copyDrawerYaml(); });
+    this.detailYamlFindInput.addEventListener('input', () => this.scheduleYamlFind());
+    this.detailYamlFindPrevious.addEventListener('click', () => this.moveYamlFind(-1));
+    this.detailYamlFindNext.addEventListener('click', () => this.moveYamlFind(1));
+    this.detailYamlFindClose.addEventListener('click', () => this.closeYamlFind());
+    this.detailYamlFindInput.addEventListener('keydown', (event) => {
+      if (event.isComposing) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this.moveYamlFind(event.shiftKey ? -1 : 1);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        this.closeYamlFind();
+      }
+    });
     this.portForwardsToggle.addEventListener('click', () => this.openPortForwardsDialog());
     this.portForwardsClose.addEventListener('click', () => this.closePortForwardsDialog());
     this.portForwardsCloseAll.addEventListener('click', () => { void this.stopAllListedPortForwards(); });
@@ -2616,11 +2684,14 @@ class KubernetesPage implements KubernetesPageController {
     this.detailPortForwardButton.setAttribute('aria-label', 'Port Forward');
     this.detailPortForwardButton.removeAttribute('title');
     this.closePortForwardDialog();
+    this.detailOverview.classList.remove('hidden');
     this.detailOverview.replaceChildren();
     this.detailYaml.textContent = '';
-    this.detailYaml.classList.add('hidden');
+    this.detailYamlWrap.classList.add('hidden');
+    this.resetYamlFind();
     this.detailYamlToggle.setAttribute('aria-pressed', 'false');
     this.detailYamlToggle.setAttribute('aria-label', 'View YAML');
+    this.resetDrawerYamlCopyAction();
     this.detailDrawer.classList.remove('hidden');
     return generation;
   }
@@ -2659,7 +2730,6 @@ class KubernetesPage implements KubernetesPageController {
     const request = this.createDrawerRequest(summary, detailGeneration);
     this.drawerRequest = request;
     this.detailTitle.textContent = `Loading ${resourceLabel(query.kind)}…`;
-    this.detailSubtitle.textContent = '';
     try {
       const detail = await window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace);
       if (!this.isCurrentDrawerRequest(request, query)) return;
@@ -2695,11 +2765,14 @@ class KubernetesPage implements KubernetesPageController {
     this.detailPortForwardButton.disabled = true;
     this.detailPortForwardButton.setAttribute('aria-label', 'Port Forward');
     this.detailPortForwardButton.removeAttribute('title');
+    this.detailOverview.classList.remove('hidden');
     this.detailOverview.replaceChildren();
     this.detailYaml.textContent = '';
-    this.detailYaml.classList.add('hidden');
+    this.detailYamlWrap.classList.add('hidden');
+    this.resetYamlFind();
     this.detailYamlToggle.setAttribute('aria-pressed', 'false');
     this.detailYamlToggle.setAttribute('aria-label', 'View YAML');
+    this.resetDrawerYamlCopyAction();
     this.detailDrawer.classList.add('hidden');
   }
 
@@ -2713,11 +2786,6 @@ class KubernetesPage implements KubernetesPageController {
     const detail = this.displayDetail();
     if (!active || !detail) return;
     this.detailTitle.textContent = detailName(active);
-    this.detailSubtitle.textContent = active.query.kind === 'custom-resources' && this.selectedCustomDefinition
-      ? `${String(detail.kind ?? this.selectedCustomDefinition.kind)} · ${String(
-        detail.apiVersion ?? `${this.selectedCustomDefinition.group}/${this.selectedCustomDefinition.version}`,
-      )}`
-      : resourceLabel(active.query.kind);
     this.drawerEnvironmentElement = undefined;
     this.detailOverview.replaceChildren();
     if (active.query.kind === 'pods') this.renderPodDrawer(detail, active);
@@ -2731,7 +2799,10 @@ class KubernetesPage implements KubernetesPageController {
     const related = this.renderRelatedDetail(detail, active);
     if (related) this.detailOverview.appendChild(related);
     this.detailOverview.appendChild(this.renderDrawerEvents(active));
-    if (!this.detailYaml.classList.contains('hidden')) this.renderDrawerYaml(detail);
+    if (!this.detailYamlWrap.classList.contains('hidden')) {
+      this.renderDrawerYaml(detail);
+      if (this.yamlFindOpen) this.applyYamlFindHighlights();
+    }
   }
 
   private renderOverview(detail: Record<string, unknown>, active: ActiveDetail): void {
@@ -3076,20 +3147,244 @@ class KubernetesPage implements KubernetesPageController {
     const active = this.activeDetail;
     const detail = this.displayDetail();
     if (!active || !detail || !this.isCurrentActiveDrawer(active)) return;
-    const opening = this.detailYaml.classList.contains('hidden');
-    this.detailYaml.classList.toggle('hidden', !opening);
+    const opening = this.detailYamlWrap.classList.contains('hidden');
+    this.detailYamlWrap.classList.toggle('hidden', !opening);
+    this.detailOverview.classList.toggle('hidden', opening);
+    this.detailYamlCopy.classList.toggle('hidden', !opening);
     this.detailYamlToggle.setAttribute('aria-pressed', String(opening));
     this.detailYamlToggle.setAttribute('aria-label', opening ? 'Hide YAML' : 'View YAML');
     if (opening) this.renderDrawerYaml(detail);
-    else this.detailYaml.textContent = '';
+    else {
+      this.detailYaml.textContent = '';
+      this.resetYamlFind();
+    }
   }
 
   private renderDrawerYaml(detail: Record<string, unknown>): void {
+    let source: string;
     try {
-      this.detailYaml.textContent = serializeKubernetesDetailYaml(detail);
+      source = serializeKubernetesDetailYaml(detail);
     } catch (error) {
       this.detailYaml.textContent = toErrorMessage(error);
+      return;
     }
+    const code = document.createElement('code');
+    code.className = 'hljs';
+    code.textContent = source;
+    if (source.length <= CODE_HIGHLIGHT_LIMITS.explicitCharacters) {
+      try {
+        const root = kubernetesYamlLowlight.highlight('yaml', source);
+        code.replaceChildren();
+        for (const child of root.children) appendKubernetesHighlightNode(code, child);
+      } catch {
+        // Fall back to the plain-text content already assigned above.
+      }
+    }
+    this.detailYaml.replaceChildren(code);
+  }
+
+  private async copyDrawerYaml(): Promise<void> {
+    if (this.detailYamlWrap.classList.contains('hidden') || this.detailYamlCopy.disabled) return;
+    const text = this.detailYaml.textContent ?? '';
+    this.detailYamlCopy.disabled = true;
+    try {
+      await window.serviceApi.writeClipboardText(text);
+      this.detailYamlCopy.dataset.copied = 'true';
+      this.detailYamlCopy.setAttribute('aria-label', 'YAML copied');
+      this.detailYamlCopy.title = 'YAML copied';
+      if (this.detailYamlCopyResetTimer !== undefined) window.clearTimeout(this.detailYamlCopyResetTimer);
+      this.detailYamlCopyResetTimer = window.setTimeout(() => this.resetDrawerYamlCopyFeedback(), 1_200);
+    } catch (error) {
+      setMessage(`Unable to copy YAML: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.detailYamlCopy.disabled = false;
+    }
+  }
+
+  private resetDrawerYamlCopyFeedback(): void {
+    this.detailYamlCopyResetTimer = undefined;
+    delete this.detailYamlCopy.dataset.copied;
+    this.detailYamlCopy.setAttribute('aria-label', 'Copy YAML');
+    this.detailYamlCopy.title = 'Copy YAML';
+  }
+
+  private resetDrawerYamlCopyAction(): void {
+    if (this.detailYamlCopyResetTimer !== undefined) {
+      window.clearTimeout(this.detailYamlCopyResetTimer);
+      this.detailYamlCopyResetTimer = undefined;
+    }
+    this.resetDrawerYamlCopyFeedback();
+    this.detailYamlCopy.classList.add('hidden');
+    this.detailYamlCopy.disabled = false;
+  }
+
+  private isYamlVisible(): boolean {
+    return this.visible
+      && !this.detailDrawer.classList.contains('hidden')
+      && !this.detailYamlWrap.classList.contains('hidden');
+  }
+
+  private handleYamlFindShortcut(event: KeyboardEvent): void {
+    if (!this.isYamlVisible() || event.isComposing) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    if (modifier && !event.altKey && !event.shiftKey
+      && event.key.toLocaleLowerCase() === 'f') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.openYamlFind();
+      return;
+    }
+    if (event.key === 'F3') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.yamlFindOpen) this.moveYamlFind(event.shiftKey ? -1 : 1);
+      else this.openYamlFind();
+      return;
+    }
+    if (event.key === 'Escape' && this.yamlFindOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeYamlFind();
+    }
+  }
+
+  private openYamlFind(): void {
+    if (!this.isYamlVisible()) return;
+    this.yamlFindOpen = true;
+    this.detailYamlFind.classList.remove('hidden');
+    this.detailYamlFind.setAttribute('aria-hidden', 'false');
+    this.detailYamlFindInput.focus({ preventScroll: true });
+    this.detailYamlFindInput.select();
+    window.requestAnimationFrame(() => {
+      if (this.yamlFindOpen && this.isYamlVisible()) {
+        this.detailYamlFindInput.focus({ preventScroll: true });
+        this.detailYamlFindInput.select();
+      }
+    });
+    this.refreshYamlFind(false);
+  }
+
+  private scheduleYamlFind(): void {
+    if (!this.yamlFindOpen || this.yamlFindFrame !== undefined) return;
+    this.yamlFindFrame = window.requestAnimationFrame(() => {
+      this.yamlFindFrame = undefined;
+      this.refreshYamlFind(true);
+    });
+  }
+
+  private refreshYamlFind(reveal: boolean): void {
+    if (!this.yamlFindOpen) return;
+    const anchor = this.yamlFindActiveIndex >= 0
+      ? (this.yamlFindMatches[this.yamlFindActiveIndex]?.from ?? 0)
+      : 0;
+    const result = findNotesTextMatches(this.detailYaml.textContent ?? '', this.detailYamlFindInput.value);
+    this.yamlFindMatches = result.matches;
+    this.yamlFindTruncated = result.truncated;
+    this.yamlFindActiveIndex = initialNotesFindIndex(this.yamlFindMatches, anchor);
+    this.applyYamlFindHighlights();
+    this.updateYamlFindControls();
+    if (reveal) this.revealYamlFindMatch();
+  }
+
+  private applyYamlFindHighlights(): void {
+    const code = this.detailYaml.querySelector<HTMLElement>('code');
+    if (!code) return;
+    const text = code.textContent ?? '';
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    for (const [index, match] of this.yamlFindMatches.entries()) {
+      if (match.from < cursor || match.from > text.length || match.to > text.length) continue;
+      if (match.from > cursor) fragment.append(text.slice(cursor, match.from));
+      const mark = document.createElement('mark');
+      mark.className = index === this.yamlFindActiveIndex
+        ? 'kubernetes-find-match-active'
+        : 'kubernetes-find-match';
+      mark.textContent = text.slice(match.from, match.to);
+      fragment.append(mark);
+      cursor = match.to;
+    }
+    if (cursor < text.length) fragment.append(text.slice(cursor));
+    code.replaceChildren(fragment);
+  }
+
+  private moveYamlFind(direction: 1 | -1): void {
+    if (!this.yamlFindOpen) return;
+    this.yamlFindActiveIndex = moveNotesFindIndex(
+      this.yamlFindActiveIndex,
+      this.yamlFindMatches.length,
+      direction,
+    );
+    this.applyYamlFindHighlights();
+    this.updateYamlFindControls();
+    this.revealYamlFindMatch();
+    this.detailYamlFindInput.focus({ preventScroll: true });
+  }
+
+  private revealYamlFindMatch(): void {
+    if (this.yamlFindActiveIndex < 0) return;
+    const active = this.detailYaml.querySelector<HTMLElement>('.kubernetes-find-match-active');
+    if (!active) return;
+    const containerRect = this.detailYaml.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    if (activeRect.top < containerRect.top + 16 || activeRect.bottom > containerRect.bottom - 16) {
+      this.detailYaml.scrollTop += activeRect.top - containerRect.top - 24;
+    }
+    if (activeRect.left < containerRect.left + 8 || activeRect.right > containerRect.right - 8) {
+      this.detailYaml.scrollLeft += activeRect.left - containerRect.left - 24;
+    }
+  }
+
+  private updateYamlFindControls(): void {
+    const count = this.yamlFindMatches.length;
+    const current = this.yamlFindActiveIndex >= 0 ? this.yamlFindActiveIndex + 1 : 0;
+    const total = `${count.toLocaleString('en-US')}${this.yamlFindTruncated ? '+' : ''}`;
+    this.detailYamlFindCounter.textContent = `${current.toLocaleString('en-US')} / ${total}`;
+    this.detailYamlFindCounter.setAttribute(
+      'aria-label',
+      count > 0
+        ? `${current.toLocaleString('en-US')} of ${total} matches`
+        : 'No matches',
+    );
+    this.detailYamlFindPrevious.disabled = count === 0;
+    this.detailYamlFindNext.disabled = count === 0;
+    this.detailYamlFind.dataset.noResults = String(Boolean(this.detailYamlFindInput.value) && count === 0);
+  }
+
+  private closeYamlFind(): void {
+    if (!this.yamlFindOpen) return;
+    this.yamlFindOpen = false;
+    if (this.yamlFindFrame !== undefined) {
+      window.cancelAnimationFrame(this.yamlFindFrame);
+      this.yamlFindFrame = undefined;
+    }
+    this.detailYamlFindInput.value = '';
+    this.detailYamlFindInput.blur();
+    const detail = this.displayDetail();
+    if (detail) this.renderDrawerYaml(detail);
+    this.resetYamlFindControls();
+  }
+
+  private resetYamlFind(): void {
+    this.yamlFindOpen = false;
+    this.yamlFindMatches = [];
+    this.yamlFindActiveIndex = -1;
+    this.yamlFindTruncated = false;
+    if (this.yamlFindFrame !== undefined) {
+      window.cancelAnimationFrame(this.yamlFindFrame);
+      this.yamlFindFrame = undefined;
+    }
+    this.detailYamlFindInput.value = '';
+    this.resetYamlFindControls();
+  }
+
+  private resetYamlFindControls(): void {
+    this.detailYamlFind.classList.add('hidden');
+    this.detailYamlFind.setAttribute('aria-hidden', 'true');
+    this.detailYamlFindCounter.textContent = '0 / 0';
+    this.detailYamlFindCounter.setAttribute('aria-label', 'No matches');
+    this.detailYamlFindPrevious.disabled = true;
+    this.detailYamlFindNext.disabled = true;
+    delete this.detailYamlFind.dataset.noResults;
   }
 
   private requestDrawerEvents(active: ActiveDetail): void {
@@ -3841,7 +4136,6 @@ class KubernetesPage implements KubernetesPageController {
     const request = this.createDrawerRequest(summary, generation);
     this.drawerRequest = request;
     this.detailTitle.textContent = 'Loading Pod…';
-    this.detailSubtitle.textContent = '';
     await runKubernetesDrawerDetailRequest(
       () => window.kubernetesApi.getResourceDetail(query, summary.name, summary.namespace),
       {

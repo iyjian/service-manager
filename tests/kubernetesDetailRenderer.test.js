@@ -344,7 +344,8 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
   assert.doesNotMatch(detail, /kubernetes-detail-port-summary|declared TCP ports/);
   assert.match(detail, /id="kubernetes-detail-overview"/);
   assert.match(detail, /id="kubernetes-detail-yaml"/);
-  assert.doesNotMatch(detail, /id="kubernetes-detail-copy"/);
+  assert.match(detail, /id="kubernetes-detail-yaml-copy"/);
+  assert.match(detail, /id="kubernetes-detail-yaml-find"/);
   assert.doesNotMatch(html, /id="kubernetes-detail-page"/);
   assert.doesNotMatch(html, /id="kubernetes-terminal-drawer"/);
   assert.doesNotMatch(html, /id="kubernetes-log-panel"/);

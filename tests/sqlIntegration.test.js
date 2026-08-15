@@ -98,13 +98,12 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-value-find-bar\{/);
   assert.match(styles, /\.sql-value-find-input\{/);
   assert.match(styles, /\.sql-value-find-match-active\{/);
+  assert.doesNotMatch(styles, /\.sql-value-code\.sql-value-code-raw/);
+  assert.match(styles, /\.sql-value-line-numbers\{[^}]*position:sticky[^}]*left:0/);
+  assert.match(styles, /\.sql-value-code>code\{[^}]*min-width:max-content/);
   assert.match(
     styles,
-    /\.sql-value-code\.sql-value-code-raw\{[^}]*white-space:pre-wrap[^}]*overflow-wrap:anywhere/,
-  );
-  assert.match(
-    styles,
-    /\.sql-value-code\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/,
+    /\.sql-value-code,\.sql-value-line-numbers\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/,
   );
   assert.match(styles, /\.sql-value-code code::selection\{[^}]*background-color:rgb\(37 99 235/);
   assert.match(styles, /\.sql-value-json-editor/);
@@ -119,7 +118,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /isSqlRunShortcut/);
   assert.match(page, /isSqlSaveShortcut/);
   assert.match(page, /EditorState\.tabSize\.of\(SQL_INDENT\.length\)/);
-  assert.match(page, /key:\s*['"]Enter['"],\s*run:\s*insertSqlNewline/);
+  assert.match(page, /key:\s*['"]Enter['"],\s*run:\s*acceptSqlCompletionOrInsertNewline/);
+  assert.match(page, /function acceptSqlCompletionOrInsertNewline\(view\) \{[\s\S]*?acceptCompletion\(view\) \|\| insertSqlNewline\(view\)/);
   const sqlEditorExtensions = page.slice(
     page.indexOf('this.editor = new EditorView'),
     page.indexOf('EditorView.clipboardInputFilter', page.indexOf('this.editor = new EditorView')),
@@ -204,7 +204,9 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /openValueFind\(\)/);
   assert.match(page, /moveValueFind\(event\.shiftKey \? -1 : 1\)/);
   assert.match(page, /sql-value-find-match-active/);
-  assert.match(page, /rawCode\?\.classList\.add\('sql-value-code-raw'\)/);
+  assert.match(page, /lineNumbers\.className = 'sql-value-line-numbers'/);
+  assert.match(page, /pre\.append\(lineNumbers, code\)/);
+  assert.match(page, /function sqlValueLineNumbers\(lineCount\)/);
   assert.match(page, /handleValueDialogSelectAll/);
   assert.match(page, /selectedRange\.compareBoundaryPoints\(Range\.START_TO_START, contentRange\)/);
   assert.match(page, /if \(!event\.repeat\)\s*return/);

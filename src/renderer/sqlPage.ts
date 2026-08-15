@@ -9,6 +9,7 @@ import type {
   SqlSchemaEnumMetadata,
   SqlSchemaTable,
 } from '../shared/types';
+import { acceptCompletion } from '@codemirror/autocomplete';
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { indentUnit } from '@codemirror/language';
@@ -339,6 +340,10 @@ function insertSqlNewline(view: EditorView): boolean {
   return true;
 }
 
+function acceptSqlCompletionOrInsertNewline(view: EditorView): boolean {
+  return acceptCompletion(view) || insertSqlNewline(view);
+}
+
 export function sqlValueModesForKind(
   kind: SqlCellPresentation['kind'],
   detectedLanguage?: string,
@@ -475,6 +480,12 @@ export function detectSqlValueLanguage(value: string): string | undefined {
   }
 }
 
+function sqlValueLineNumbers(lineCount: number): string {
+  const numbers = new Array<string>(lineCount);
+  for (let index = 0; index < lineCount; index += 1) numbers[index] = String(index + 1);
+  return numbers.join('\n');
+}
+
 function highlightedSqlValue(
   value: string,
   language?: string,
@@ -483,10 +494,14 @@ function highlightedSqlValue(
   const pre = document.createElement('pre');
   pre.className = 'sql-value-code';
   pre.tabIndex = 0;
+  const lineNumbers = document.createElement('div');
+  lineNumbers.className = 'sql-value-line-numbers';
+  lineNumbers.setAttribute('aria-hidden', 'true');
   const code = document.createElement('code');
   code.className = 'hljs';
-  pre.append(code);
+  pre.append(lineNumbers, code);
   const bounded = boundedSqlValue(value);
+  lineNumbers.textContent = sqlValueLineNumbers(bounded.text.split('\n').length);
   let detectedLanguage: string | undefined = language;
   try {
     let root: ReturnType<typeof sqlValueLowlight.highlight> | undefined;
@@ -718,9 +733,11 @@ class SqlPage {
         doc: '',
         extensions: [
           // CodeMirror's completion Enter binding also uses the highest precedence.
-          // Register SQL editing keys first so Enter always inserts a plain newline.
+          // Register SQL editing keys first: Enter accepts the selected completion
+          // (including the default-selected first item) when the popup is open,
+          // and otherwise inserts a plain newline.
           Prec.highest(keymap.of([
-            { key: 'Enter', run: insertSqlNewline, shift: insertSqlNewline },
+            { key: 'Enter', run: acceptSqlCompletionOrInsertNewline, shift: insertSqlNewline },
             { key: 'Tab', run: insertSqlIndent },
             { key: 'Shift-Tab', run: removeSqlIndent },
           ])),
@@ -2367,10 +2384,6 @@ class SqlPage {
           ? 'xml'
           : undefined;
     const highlighted = highlightedSqlValue(source, language, false);
-    const rawCode = highlighted.node.matches('.sql-value-code')
-      ? highlighted.node
-      : highlighted.node.querySelector<HTMLElement>('.sql-value-code');
-    if (mode === 'raw') rawCode?.classList.add('sql-value-code-raw');
     this.valueKind.textContent = presentation.kind === 'json'
       ? 'JSON'
       : presentation.kind === 'html'

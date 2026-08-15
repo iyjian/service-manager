@@ -2427,7 +2427,7 @@
   }
 
   .kubernetes-control-label {
-    @apply text-[12px] font-medium text-zinc-700;
+    @apply text-[12px] font-normal text-zinc-500;
   }
 
   .kubernetes-selector-control {
@@ -2444,6 +2444,10 @@
 
   .kubernetes-selector-toggle {
     @apply h-8 w-full min-w-0 justify-between gap-1.5 overflow-hidden px-2 text-left;
+  }
+
+  .btn.kubernetes-selector-toggle {
+    @apply font-normal text-[13px];
   }
 
   .kubernetes-selector-value {
@@ -2474,7 +2478,7 @@
   }
 
   .kubernetes-selector-option {
-    @apply flex min-h-6 w-full min-w-0 cursor-pointer items-center rounded border-0 bg-transparent px-1.5 py-1 text-left text-[12px] text-zinc-700 outline-none hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
+    @apply flex min-h-6 w-full min-w-0 cursor-pointer items-center rounded border-0 bg-transparent px-1.5 py-1 text-left text-[13px] text-zinc-700 outline-none hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-300;
   }
 
   .kubernetes-selector-option > span {
@@ -2544,7 +2548,7 @@
 
   .kubernetes-category-tab,
   .kubernetes-resource-tab {
-    @apply inline-flex h-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent px-2.5 text-[12.5px] font-medium text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+    @apply inline-flex h-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent px-2.5 text-[12.5px] font-normal text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
   }
 
   .kubernetes-resource-tabs {
@@ -2593,7 +2597,7 @@
   }
 
   .kubernetes-tab-active {
-    @apply border-zinc-950 bg-zinc-950 text-white shadow-sm hover:bg-zinc-800 hover:text-white;
+    @apply border-zinc-950 bg-zinc-950 font-medium text-white shadow-sm hover:bg-zinc-800 hover:text-white;
   }
 
   .kubernetes-search-field {
@@ -2601,7 +2605,7 @@
   }
 
   .kubernetes-loaded-count {
-    @apply font-mono text-[12px] text-zinc-500;
+    @apply font-mono text-[11px] text-zinc-500;
   }
 
   .kubernetes-table-shell {
@@ -2666,7 +2670,7 @@
   }
 
   .kubernetes-table-header {
-    @apply sticky top-0 z-10 border-b border-zinc-300 bg-zinc-100 px-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-600;
+    @apply sticky top-0 z-10 border-b border-zinc-300 bg-zinc-100 px-3 font-mono text-[11px] font-medium uppercase tracking-[0.05em] text-zinc-500;
     height: 32px;
     align-items: center;
   }
@@ -2739,7 +2743,7 @@
   }
 
   .kubernetes-table-row {
-    @apply px-3 font-sans text-[13px] text-zinc-800;
+    @apply px-3 font-sans text-[13px] text-secondary;
     border-bottom: 0.5px solid rgb(212 212 216);
     height: 36px;
     align-items: center;
@@ -2753,7 +2757,7 @@
   }
 
   .kubernetes-table-cell:first-child {
-    @apply font-normal text-zinc-500;
+    @apply font-normal text-secondary;
   }
 
   .kubernetes-table-cell:nth-child(2) {
@@ -2761,11 +2765,11 @@
   }
 
   .kubernetes-table-cell.kubernetes-table-pod-namespace {
-    @apply font-semibold text-zinc-900;
+    @apply font-normal text-secondary;
   }
 
   .kubernetes-table-pod-name-primary {
-    @apply font-semibold text-zinc-950;
+    @apply font-medium text-zinc-950;
   }
 
   .kubernetes-table-pod-name-suffix {
@@ -2836,10 +2840,6 @@
     @apply truncate text-[17px];
   }
 
-  .kubernetes-detail-subtitle {
-    @apply m-0 min-w-0 truncate font-mono text-[12px] text-zinc-500;
-  }
-
   .kubernetes-detail-tabs {
     @apply flex min-w-0 flex-nowrap gap-1.5 overflow-x-auto;
   }
@@ -2896,9 +2896,24 @@
   }
 
   .kubernetes-detail-code {
-    @apply m-0 h-full min-h-0 overflow-auto rounded-md border border-zinc-200 bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-zinc-100;
+    @apply m-0 h-full min-h-0 overflow-auto rounded-md border border-zinc-200 bg-zinc-950 p-3 font-mono text-[12.5px] text-zinc-300;
     white-space: pre;
+    line-height: 1.55;
   }
+
+  .kubernetes-detail-code .hljs-comment,
+  .kubernetes-detail-code .hljs-quote { color: #71717a; }
+  .kubernetes-detail-code .hljs-attr { color: #d4d4d8; }
+  .kubernetes-detail-code .hljs-string,
+  .kubernetes-detail-code .hljs-symbol { color: #a3e635; }
+  .kubernetes-detail-code .hljs-number,
+  .kubernetes-detail-code .hljs-literal { color: #fbbf24; }
+  .kubernetes-detail-code .hljs-type,
+  .kubernetes-detail-code .hljs-meta,
+  .kubernetes-detail-code .hljs-bullet,
+  .kubernetes-detail-code .hljs-template-variable { color: #71717a; }
+  .kubernetes-detail-code .hljs-emphasis { font-style: italic; }
+  .kubernetes-detail-code .hljs-strong { font-weight: 700; }
 
   .kubernetes-events-list {
     @apply grid gap-1.5;
@@ -3252,7 +3267,7 @@
   }
 
   .kubernetes-detail-drawer-head .section-title {
-    @apply truncate text-[17px];
+    @apply truncate text-[16px];
   }
 
   .kubernetes-detail-drawer-actions {
@@ -3275,13 +3290,66 @@
     @apply !border-emerald-300 !bg-emerald-100 !text-emerald-800 hover:!border-emerald-400 hover:!bg-emerald-200 hover:!text-emerald-900;
   }
 
+  #kubernetes-detail-yaml-copy[data-copied='true'] {
+    @apply bg-emerald-50 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-700;
+  }
+
   .kubernetes-detail-drawer-body {
     @apply grid min-h-0 min-w-0 content-start gap-3 overflow-y-auto bg-zinc-50 p-3;
     grid-auto-rows: max-content;
   }
 
-  .kubernetes-detail-drawer-panel > .kubernetes-detail-code {
-    @apply col-start-1 row-start-2 min-h-0 rounded-none border-0;
+  .kubernetes-detail-yaml-wrap {
+    @apply col-start-1 row-start-2 grid min-h-0 min-w-0;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .kubernetes-detail-yaml-wrap > .kubernetes-detail-code {
+    @apply min-h-0 rounded-none border-0;
+  }
+
+  .kubernetes-find-bar {
+    @apply flex h-10 items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-1.5;
+  }
+
+  .kubernetes-find-input-wrap {
+    @apply flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-transparent bg-white px-1.5 text-zinc-400 transition focus-within:border-zinc-300 focus-within:ring-2 focus-within:ring-zinc-200;
+  }
+
+  .kubernetes-find-input-wrap > svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .kubernetes-find-input {
+    @apply h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-[12px] text-zinc-900 outline-none placeholder:text-zinc-400;
+  }
+
+  .kubernetes-find-input::-webkit-search-cancel-button { display: none; }
+
+  .kubernetes-find-counter {
+    @apply min-w-[52px] shrink-0 text-center text-[10.5px] tabular-nums text-zinc-500;
+  }
+
+  .kubernetes-find-button {
+    @apply inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-zinc-500 outline-none transition hover:bg-zinc-100 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-500;
+  }
+
+  .kubernetes-find-button svg {
+    @apply h-4 w-4;
+  }
+
+  .kubernetes-find-bar[data-no-results='true'] .kubernetes-find-input-wrap {
+    @apply border-red-200 bg-red-50 focus-within:border-red-300 focus-within:bg-red-50 focus-within:ring-red-100;
+  }
+
+  .kubernetes-detail-code .kubernetes-find-match {
+    background-color: rgb(250 204 21 / 0.32);
+    border-radius: 2px;
+  }
+
+  .kubernetes-detail-code .kubernetes-find-match-active {
+    background-color: rgb(249 115 22 / 0.62);
+    border-radius: 2px;
   }
 
   .kubernetes-detail-drawer-body .kubernetes-detail-overview-grid {
@@ -3613,7 +3681,7 @@
   }
 
   .page-title {
-    @apply m-0 text-[17px] font-semibold tracking-[-0.03em] text-zinc-950;
+    @apply m-0 text-[18px] font-semibold tracking-[-0.01em] text-zinc-950;
   }
 
   .page-stats {
@@ -5303,14 +5371,19 @@
   }
 
   .sql-value-code {
-    @apply m-0 h-full min-h-0 overflow-auto whitespace-pre bg-white p-4 font-mono leading-5 text-zinc-900 outline-none;
+    @apply m-0 flex h-full min-h-0 items-start overflow-auto whitespace-pre bg-white p-0 font-mono leading-5 text-zinc-900 outline-none;
     font-size: calc(var(--sql-editor-font-size) * 0.8888889);
     tab-size: 2;
   }
 
-  .sql-value-code.sql-value-code-raw {
-    @apply whitespace-pre-wrap;
-    overflow-wrap: anywhere;
+  .sql-value-line-numbers {
+    @apply sticky left-0 shrink-0 select-none whitespace-pre border-r border-zinc-200 bg-zinc-50 px-3 py-4 text-right font-mono leading-5 text-zinc-400;
+    font-size: calc(var(--sql-editor-font-size) * 0.8888889);
+  }
+
+  .sql-value-code > code {
+    @apply min-w-max whitespace-pre px-4 py-4;
+    flex: 1 1 auto;
   }
 
   .sql-value-code code::selection,
