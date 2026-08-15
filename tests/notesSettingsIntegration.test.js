@@ -398,8 +398,6 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
   assert.match(styles, /\.notes-language-option\[aria-selected=true\]\{[^}]*background-color:rgb\(244 244 245/);
   assert.match(styles, /\.notes-editor-toolbar \.notes-name-input\{[^}]*width:auto/);
   assert.doesNotMatch(styles, /@media \(max-width:640px\)\{\.notes-page\{/);
-  assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes UI'[^}]*notes-ui-variable\.woff2[^}]*font-weight:\s*100 900/);
-  assert.match(baseStyles, /@font-face\s*\{[^}]*font-family:\s*'STM Notes Code'[^}]*notes-code-variable\.woff2[^}]*font-weight:\s*100 800/);
   assert.match(baseStyles, /--font-family-notes-ui:\s*ui-sans-serif,\s*system-ui,\s*sans-serif,\s*'Apple Color Emoji',\s*'Segoe UI Emoji',\s*'Segoe UI Symbol',\s*'Noto Color Emoji'/);
   assert.match(baseStyles, /--font-family-notes-code:\s*ui-monospace,\s*SFMono-Regular,\s*Menlo,\s*Monaco,\s*Consolas,\s*'Liberation Mono',\s*'Courier New',\s*monospace/);
   assert.match(baseStyles, /--font-family-notes-code-block:\s*'JetBrainsMono',\s*monospace/);
@@ -483,14 +481,10 @@ test('Notes releases hidden tree DOM and patches ordinary selection without rebu
   assert.match(notesPage, /const fragment = document\.createDocumentFragment\(\);[\s\S]*?this\.list\.replaceChildren\(fragment\);/);
 });
 
-test('Bundled compatibility fonts retain their local licenses', async () => {
+test('Bundled comic-mono font retains its local license', async () => {
   const fontRoot = path.join(projectRoot, 'assets', 'fonts');
-  const [uiFont, codeFont, comicFont, uiLicense, codeLicense, comicLicense, packageJson, baseStyles] = await Promise.all([
-    stat(path.join(fontRoot, 'notes-ui-variable.woff2')),
-    stat(path.join(fontRoot, 'notes-code-variable.woff2')),
+  const [comicFont, comicLicense, packageJson, baseStyles] = await Promise.all([
     stat(path.join(fontRoot, 'comic-mono.ttf')),
-    readFile(path.join(fontRoot, 'OFL-NotoSansCJK.txt'), 'utf8'),
-    readFile(path.join(fontRoot, 'OFL-JetBrainsMono.txt'), 'utf8'),
     readFile(path.join(fontRoot, 'LICENSE-ComicMono.txt'), 'utf8'),
     readFile(path.join(projectRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(path.join(projectRoot, 'src', 'renderer', 'styles.css'), 'utf8'),
@@ -499,13 +493,9 @@ test('Bundled compatibility fonts retain their local licenses', async () => {
     .map((match) => path.resolve(projectRoot, 'src', 'renderer', match[1]));
   const declaredFonts = await Promise.all(declaredFontPaths.map((fontPath) => stat(fontPath)));
 
-  assert.ok(uiFont.size > 1_000_000);
-  assert.ok(codeFont.size > 50_000);
   assert.ok(comicFont.size > 10_000);
-  assert.equal(declaredFonts.length, 6);
+  assert.equal(declaredFonts.length, 4);
   assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
-  assert.match(uiLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
-  assert.match(codeLicense, /SIL OPEN FONT LICENSE Version 1\.1/);
   assert.match(comicLicense, /MIT License[\s\S]*Original work Copyright \(c\) 2018 Shannon Miwa[\s\S]*Modified work Copyright \(c\) 2019 dtinth/);
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
