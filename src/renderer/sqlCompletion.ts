@@ -264,6 +264,22 @@ export function resolveSqlDefaultTable(
   return references.size === 1 ? references.values().next().value : undefined;
 }
 
+export function resolveSqlSelectTables(statement: string): string[] {
+  const masked = maskSqlLiteralsAndComments(statement);
+  const references: string[] = [];
+  const seen = new Set<string>();
+  SQL_TABLE_REFERENCE.lastIndex = 0;
+  for (const match of masked.matchAll(SQL_TABLE_REFERENCE)) {
+    const identifier = unquoteLastIdentifier(match[1] ?? '');
+    if (!identifier) continue;
+    const key = identifier.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push(identifier);
+  }
+  return references;
+}
+
 export function defaultTableColumnCompletions(
   schema: SqlDatabaseSchema,
   tableName: string | undefined,

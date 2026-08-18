@@ -1062,6 +1062,8 @@ export interface SqlSchemaEnumMetadata {
 export interface SqlSchemaColumn {
   name: string;
   dataType?: string;
+  /** Marks a column that participates in the table's primary key. */
+  primaryKey?: boolean;
   enum?: SqlSchemaEnumMetadata;
 }
 

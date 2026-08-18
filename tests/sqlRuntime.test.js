@@ -328,6 +328,7 @@ test('SQL schema column statements quote server-owned names and enforce the batc
   assert.match(statement, /table_name in \('ordinary', 'quote''name', 'slash\\\\name'\)/);
   assert.match(statement, /column_comment regexp '\[0-9\]\+\[\[:space:\]\]\*-\[\[:space:\]\]\*/);
   assert.match(statement, /is_nullable as isNullable/);
+  assert.match(statement, /column_key as columnKey/);
   assert.match(statement, /cast\(column_default as char\)/);
   assert.throws(
     () => buildSqlSchemaColumnsStatement(
@@ -335,6 +336,37 @@ test('SQL schema column statements quote server-owned names and enforce the batc
     ),
     /schema table batch is invalid/i,
   );
+});
+
+test('SQL schema marks primary-key columns from information_schema column_key', async () => {
+  const credentialsStore = credentialStore({ production: { userName: 'owner', passwd: 'a'.repeat(32) } });
+  const runtime = new SqlRuntime({
+    credentialsStore,
+    fetchImpl: async (url, init) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) return response({ token: 'pk-token' });
+      if (pathname.endsWith('/user/detail')) return response({ id: 7, name: 'Owner', userName: 'owner' });
+      if (pathname.endsWith('/system/profile')) {
+        const { statement } = JSON.parse(init.body);
+        if (/from information_schema\.tables/i.test(statement)) {
+          return response([{ tableName: 't_user' }]);
+        }
+        return response([
+          { tableName: 't_user', columnName: 'id', dataType: 'bigint', columnKey: 'PRI' },
+          { tableName: 't_user', columnName: 'name', dataType: 'varchar(255)', columnKey: '' },
+        ]);
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    },
+  });
+
+  await runtime.getAuthState('production');
+  const schema = await runtime.getSchema('production');
+
+  const table = schema.tables.find((candidate) => candidate.name === 't_user');
+  assert.ok(table);
+  assert.equal(table.columns.find((column) => column.name === 'id').primaryKey, true);
+  assert.equal(table.columns.find((column) => column.name === 'name').primaryKey, undefined);
 });
 
 test('SQL schema cache is environment-session scoped and cleared by explicit sign out', async () => {
