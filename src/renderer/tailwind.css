@@ -2884,7 +2884,7 @@
   }
 
   .kubernetes-detail-overview-grid dt {
-    @apply whitespace-nowrap font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-zinc-500;
+    @apply whitespace-nowrap font-mono text-[11px] font-semibold text-zinc-500;
   }
 
   .kubernetes-detail-overview-grid dd {
@@ -3356,6 +3356,10 @@
     @apply min-w-0 grid-cols-1;
   }
 
+  .kubernetes-detail-drawer-body .kubernetes-detail-overview-grid > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+
   .kubernetes-drawer-header-grid {
     @apply m-0 grid min-w-0 grid-cols-1 gap-1.5;
   }
@@ -3367,13 +3371,13 @@
   }
 
   .kubernetes-drawer-header-grid > div {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   }
 
   .kubernetes-drawer-header-grid dt,
   .kubernetes-drawer-facts dt,
   .kubernetes-drawer-label-row span:first-child {
-    @apply whitespace-nowrap font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
+    @apply whitespace-nowrap font-mono text-[11px] font-semibold text-zinc-500;
   }
 
   .kubernetes-drawer-header-grid dd,
@@ -3387,11 +3391,11 @@
   }
 
   .kubernetes-drawer-header-grid dd {
-    @apply min-w-0 justify-self-stretch truncate text-right;
+    @apply min-w-0 justify-self-stretch truncate text-left;
   }
 
   .kubernetes-drawer-label-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   }
 
   .kubernetes-drawer-label-row > span:first-child {
@@ -3399,7 +3403,7 @@
   }
 
   .kubernetes-drawer-label-row > span:last-child {
-    @apply min-w-0 justify-self-stretch truncate text-right;
+    @apply min-w-0 justify-self-stretch truncate text-left;
   }
 
   .kubernetes-drawer-section {
@@ -3423,7 +3427,7 @@
   .kubernetes-builtin-resource-properties > h3,
   .kubernetes-custom-resource-properties > h3,
   .kubernetes-custom-resource-conditions > h3 {
-    @apply m-0 bg-sky-100 px-2.5 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-sky-800;
+    @apply m-0 bg-sky-100 px-2.5 py-1.5 font-mono text-[12px] font-semibold text-sky-800;
   }
 
   .kubernetes-builtin-resource-property-list,
@@ -3438,12 +3442,12 @@
 
   .kubernetes-builtin-resource-property-list dt,
   .kubernetes-custom-resource-property-list dt {
-    @apply min-w-0 truncate font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-500;
+    @apply min-w-0 truncate font-mono text-[11px] font-semibold text-zinc-500;
   }
 
   .kubernetes-builtin-resource-property-list dd,
   .kubernetes-custom-resource-property-list dd {
-    @apply m-0 min-w-0 break-all text-right font-mono text-[11.5px] text-zinc-800;
+    @apply m-0 min-w-0 break-all text-left font-mono text-[11.5px] text-zinc-800;
   }
 
   .kubernetes-builtin-resource-property-list dd {
@@ -3580,7 +3584,7 @@
   }
 
   .kubernetes-drawer-container-subtitle {
-    @apply flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.08em];
+    @apply flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[11px] font-semibold;
   }
 
   .kubernetes-drawer-container-info {

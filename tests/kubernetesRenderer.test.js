@@ -1998,6 +1998,8 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   const podHeaderRowRule = styles.match(/\.kubernetes-drawer-header-grid\s*>\s*div\s*\{([^}]*)\}/);
   const podHeaderTermRule = styles.match(/\.kubernetes-drawer-header-grid\s+dt\s*\{([^}]*)\}/);
   const podHeaderValueRule = styles.match(/\.kubernetes-drawer-header-grid\s+dd\s*\{([^}]*)\}/);
+  const propertyTermRule = styles.match(/\.kubernetes-builtin-resource-property-list dt,\s*\.kubernetes-custom-resource-property-list dt\s*\{([^}]*)\}/);
+  const propertyValueRule = styles.match(/\.kubernetes-builtin-resource-property-list dd,\s*\.kubernetes-custom-resource-property-list dd\s*\{([^}]*)\}/);
 
   assert.ok(listRule);
   assert.ok(drawerRule);
@@ -2010,6 +2012,8 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.ok(podHeaderRowRule);
   assert.ok(podHeaderTermRule);
   assert.ok(podHeaderValueRule);
+  assert.ok(propertyTermRule);
+  assert.ok(propertyValueRule);
   assert.match(listRule[1], /grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;/);
   assert.match(drawerRule[1], /@apply[^;]*absolute[^;]*inset-0/);
   assert.match(panelRule[1], /width:\s*clamp\(560px,\s*38vw,\s*720px\)/);
@@ -2019,9 +2023,13 @@ test('Kubernetes layout uses a full-width list with a bounded overlay drawer and
   assert.match(tableRule[1], /grid-template-rows:\s*auto minmax\(0, 1fr\)/);
   assert.match(workspaceRule[1], /grid-template-rows:\s*6px auto minmax\(0,\s*1fr\)/);
   assert.match(podHeaderRule[1], /grid-cols-1/);
-  assert.match(podHeaderRowRule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*1fr\)/);
+  assert.match(podHeaderRowRule[1], /grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*2fr\)/);
   assert.match(podHeaderTermRule[1], /text-left/);
-  assert.match(podHeaderValueRule[1], /text-right/);
+  assert.doesNotMatch(podHeaderTermRule[1], /uppercase/);
+  assert.match(podHeaderValueRule[1], /text-left/);
+  assert.match(propertyTermRule[1], /text-\[11px\]/);
+  assert.doesNotMatch(propertyTermRule[1], /uppercase/);
+  assert.match(propertyValueRule[1], /text-left/);
   assert.match(styles, /#kubernetes-detail-port-forward\.kubernetes-detail-port-forward-active\s*\{[\s\S]*?emerald/);
   assert.match(styles, /#kubernetes-detail-port-forward\s*\{[\s\S]*?bg-zinc-100/);
   assert.doesNotMatch(styles, /kubernetes-tls-warning|kubernetes-detail-port-summary/);
@@ -2622,7 +2630,7 @@ test('Kubernetes active drawer Env remains lazy, local, and text-safe', async ()
   assert.doesNotMatch(envValueRule[1], /py-1/);
   assert.match(envValueRule[1], /whitespace-pre-wrap/);
   assert.match(labelKeyRule[1], /justify-self-start[^;]*text-left|text-left[^;]*justify-self-start/);
-  assert.match(labelValueRule[1], /justify-self-stretch[^;]*text-right|text-right[^;]*justify-self-stretch/);
+  assert.match(labelValueRule[1], /justify-self-stretch[^;]*text-left|text-left[^;]*justify-self-stretch/);
   assert.match(environment, /No permission to read referenced Secret/);
   assert.match(environment, /Unable to load environment/);
   assert.match(environment, /Environment values truncated for safe display/);
