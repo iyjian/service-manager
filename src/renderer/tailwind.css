@@ -4811,6 +4811,33 @@
     @apply h-7 w-7;
   }
 
+  .sql-sidebar-collapse .sql-sidebar-expand-ico {
+    display: none;
+  }
+
+  .sql-page[data-sidebar-collapsed='true'] .sql-workspace {
+    grid-template-columns: 40px 6px minmax(0, 1fr);
+  }
+
+  .sql-page[data-sidebar-collapsed='true'] .sql-query-search,
+  .sql-page[data-sidebar-collapsed='true'] #sql-refresh-queries,
+  .sql-page[data-sidebar-collapsed='true'] #sql-new-query,
+  .sql-page[data-sidebar-collapsed='true'] #sql-query-list {
+    display: none;
+  }
+
+  .sql-page[data-sidebar-collapsed='true'] .sql-sidebar-tools {
+    @apply justify-center px-1;
+  }
+
+  .sql-page[data-sidebar-collapsed='true'] .sql-sidebar-collapse .sql-sidebar-collapse-ico {
+    display: none;
+  }
+
+  .sql-page[data-sidebar-collapsed='true'] .sql-sidebar-collapse .sql-sidebar-expand-ico {
+    display: block;
+  }
+
   .sql-query-search {
     @apply flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-2 text-zinc-400 focus-within:border-zinc-500 focus-within:ring-1 focus-within:ring-zinc-300;
   }
@@ -4941,6 +4968,14 @@
 
   .sql-query-tab-title {
     @apply min-w-0 flex-1 truncate;
+  }
+
+  .sql-query-tab-add {
+    @apply inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-dashed border-zinc-300 bg-transparent text-zinc-400 outline-none transition hover:border-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-zinc-400;
+  }
+
+  .sql-query-tab-add svg {
+    @apply h-3.5 w-3.5;
   }
 
   .sql-query-tab-close {
@@ -5277,6 +5312,22 @@
     grid-template-rows: 48px auto auto minmax(0, 1fr);
   }
 
+  #sql-value-dialog[data-mode='multi'] .sql-value-dialog-shell {
+    grid-template-rows: 48px auto auto minmax(0, 1fr) auto;
+  }
+
+  #sql-value-dialog[data-mode='multi'] #sql-value-content {
+    grid-row: 4;
+  }
+
+  #sql-value-dialog[data-mode='multi'] #sql-value-sql-panel {
+    grid-row: 5;
+  }
+
+  #sql-value-dialog[data-mode='edit'] .sql-value-dialog-shell {
+    grid-template-rows: 48px minmax(0, 1fr) auto;
+  }
+
   .sql-value-dialog-head,
   .sql-value-dialog-title-group,
   .sql-value-modes {
@@ -5437,6 +5488,120 @@
   .sql-value-html-frame {
     @apply block h-full w-full border-0 bg-white;
     pointer-events: none;
+  }
+
+  .sql-value-edit {
+    @apply min-h-0 min-w-0 p-3;
+  }
+
+  .sql-value-edit-input {
+    @apply h-full w-full resize-none rounded-md border border-zinc-200 bg-white p-3 font-mono text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-1 focus:ring-zinc-300;
+    font-size: calc(var(--sql-editor-font-size) * 0.8888889);
+    line-height: 1.6;
+    tab-size: 2;
+  }
+
+  .sql-value-sql-panel {
+    @apply flex min-h-0 flex-col border-t border-zinc-200 bg-zinc-50;
+  }
+
+  #sql-value-dialog[data-mode='edit'] .sql-value-sql-panel {
+    height: var(--sql-value-sql-height, 160px);
+    min-height: 64px;
+  }
+
+  .sql-value-sql-resizer {
+    @apply relative z-20 block h-1.5 shrink-0 cursor-row-resize border-0 bg-transparent p-0 outline-none;
+    touch-action: none;
+  }
+
+  .sql-value-sql-resizer::before {
+    @apply absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-zinc-300 transition-colors;
+    content: '';
+  }
+
+  .sql-value-sql-resizer:hover::before,
+  .sql-value-sql-resizer:focus-visible::before,
+  #sql-value-dialog[data-resizing='sql'] .sql-value-sql-resizer::before {
+    @apply bg-blue-500;
+  }
+
+  .sql-value-sql-resizer:focus-visible {
+    @apply ring-2 ring-inset ring-blue-200;
+  }
+
+  #sql-value-dialog[data-resizing='sql'],
+  #sql-value-dialog[data-resizing='sql'] * {
+    user-select: none !important;
+  }
+
+  .sql-value-sql-body {
+    @apply flex min-h-0 flex-1 flex-col px-3 pb-3;
+  }
+
+  .sql-value-sql-code-wrap {
+    @apply relative min-h-0 flex-1 overflow-auto rounded-md border border-zinc-200 bg-white px-2 py-2;
+  }
+
+  .sql-value-sql-code {
+    @apply m-0 whitespace-pre-wrap break-words font-mono text-zinc-800;
+    font-size: 13px;
+    line-height: 22px;
+  }
+
+  .sql-value-sql-code .sql-keyword {
+    color: #7c3aed;
+  }
+
+  .sql-value-sql-code .sql-ident {
+    color: #c026d3;
+  }
+
+  .sql-value-sql-code .sql-value {
+    color: #ef4444;
+  }
+
+  .sql-value-sql-copy {
+    @apply absolute right-2 top-2 z-10 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-zinc-200 bg-white/95 text-zinc-500 outline-none transition hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+
+  .sql-value-sql-copy svg {
+    @apply h-4 w-4;
+  }
+
+  .sql-value-sql-copy[data-copied='true'] {
+    @apply bg-emerald-50 text-emerald-700;
+  }
+
+  .sql-value-sql-actions {
+    @apply mt-2 flex items-center gap-3;
+  }
+
+  .sql-value-sql-execute {
+    @apply h-8 shrink-0 cursor-pointer rounded-md border-0 bg-red-600 px-4 text-[13px] font-semibold text-white outline-none transition hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-300 disabled:cursor-wait disabled:opacity-60;
+  }
+
+  .sql-value-sql-status {
+    @apply min-w-0 text-[13px] font-medium text-zinc-500;
+    overflow-wrap: anywhere;
+  }
+
+  .sql-value-sql-status[data-error='true'] {
+    @apply flex items-center gap-1.5 text-red-600;
+  }
+
+  .sql-value-sql-status[data-error='true']::before {
+    @apply inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white;
+    content: '!';
+  }
+
+  .sql-value-sql-notice {
+    @apply flex min-h-[46px] items-center gap-2 px-3 text-[13px] font-medium text-zinc-500;
+  }
+
+  .sql-value-sql-notice-icon {
+    @apply inline-flex h-[17px] w-[17px] shrink-0 items-center justify-center rounded-full border-[1.5px] border-zinc-400 text-[11px] font-bold leading-none text-zinc-500;
   }
 
   .sql-value-code .hljs-comment,

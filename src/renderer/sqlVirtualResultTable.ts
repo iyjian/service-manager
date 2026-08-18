@@ -15,7 +15,11 @@ type SqlTableResult = Extract<SqlDisplayResult, { kind: 'table' }>;
 export interface SqlVirtualResultTableOptions {
   host: HTMLElement;
   result: SqlTableResult;
-  onOpenValue: (column: string, presentation: SqlCellPresentation) => void;
+  onOpenValue: (
+    column: string,
+    presentation: SqlCellPresentation,
+    row: Readonly<Record<string, unknown>>,
+  ) => void;
   onWindowRendered: () => void;
 }
 
@@ -118,7 +122,7 @@ export class SqlVirtualResultTable {
     const row = this.result.rows[rowIndex];
     const column = this.result.columns[columnIndex];
     if (!row || column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(row[column]));
+    this.onOpenValue(column, sqlCellPresentation(row[column]), row);
   };
 
   private readonly handleDblClick = (event: MouseEvent): void => {
@@ -134,7 +138,7 @@ export class SqlVirtualResultTable {
     const columnIndex = Array.from(row.cells).indexOf(cell);
     const column = this.result.columns[columnIndex];
     if (column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(dataRow[column]));
+    this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow);
   };
 
   private selectRow(rowIndex: number | undefined): void {

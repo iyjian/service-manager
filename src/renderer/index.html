@@ -407,6 +407,10 @@
                 <input id="sql-query-search" type="search" placeholder="Search saved queries" aria-label="Search saved queries" spellcheck="false" />
               </label>
               <div class="sql-sidebar-actions">
+                <button id="sql-sidebar-collapse" type="button" class="icon-btn sql-sidebar-collapse" aria-label="Collapse saved queries" title="Collapse saved queries" aria-expanded="true" aria-controls="sql-query-list">
+                  <svg class="sql-sidebar-collapse-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 3.5-4 4.5 4 4.5"></path></svg>
+                  <svg class="sql-sidebar-expand-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6.5 3.5 4 4.5-4 4.5"></path></svg>
+                </button>
                 <button id="sql-refresh-queries" type="button" class="icon-btn" aria-label="Refresh saved queries" title="Refresh saved queries">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5.5A5.5 5.5 0 1 0 13.2 10"></path><path d="M13 2.5v3h-3"></path></svg>
                 </button>
@@ -474,6 +478,28 @@
         </div>
         <div id="sql-value-modes" class="sql-value-modes" role="tablist" aria-label="Cell value view"></div>
         <div id="sql-value-content" class="sql-value-content"></div>
+        <div id="sql-value-edit" class="sql-value-edit hidden">
+          <textarea id="sql-value-edit-input" class="sql-value-edit-input" spellcheck="false" aria-label="Edit cell value"></textarea>
+        </div>
+        <section id="sql-value-sql-panel" class="sql-value-sql-panel hidden" aria-label="Update SQL">
+          <div id="sql-value-sql-resizer" class="sql-value-sql-resizer hidden" role="separator" aria-orientation="horizontal" aria-label="Resize update SQL panel" aria-valuemin="64" aria-valuemax="80" aria-valuenow="160" tabindex="0"></div>
+          <div id="sql-value-sql-body" class="sql-value-sql-body hidden">
+            <div class="sql-value-sql-code-wrap">
+              <button id="sql-value-sql-copy" type="button" class="sql-value-sql-copy" aria-label="Copy SQL" title="Copy SQL" aria-live="polite">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              </button>
+              <pre id="sql-value-sql-code" class="sql-value-sql-code"></pre>
+            </div>
+            <div class="sql-value-sql-actions">
+              <button id="sql-value-sql-execute" type="button" class="sql-value-sql-execute">Execute</button>
+              <span id="sql-value-sql-status" class="sql-value-sql-status" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+          <div id="sql-value-sql-notice" class="sql-value-sql-notice hidden">
+            <span class="sql-value-sql-notice-icon" aria-hidden="true">i</span>
+            <span>Updates are not supported for multi-table queries.</span>
+          </div>
+        </section>
       </section>
     </dialog>
 

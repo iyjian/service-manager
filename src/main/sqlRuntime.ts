@@ -385,6 +385,7 @@ export function buildSqlSchemaColumnsStatement(tableNames: readonly string[]): s
 column_name as columnName,
 column_type as dataType,
 is_nullable as isNullable,
+column_key as columnKey,
 case
   when column_comment regexp '${SQL_ENUM_COMMENT_PATTERN}' then column_comment
   else null
@@ -790,9 +791,11 @@ export class SqlRuntime {
           row.enumDefaultValue,
           MAX_SCHEMA_ENUM_DEFAULT_CHARACTERS,
         );
+        const primaryKey = row.columnKey === 'PRI';
         table.columns.push({
           name: columnName,
           ...(dataType ? { dataType } : {}),
+          ...(primaryKey ? { primaryKey: true } : {}),
           ...(enumComment && nullable !== undefined
             ? {
               enum: {
