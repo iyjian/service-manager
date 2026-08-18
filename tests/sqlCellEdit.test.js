@@ -72,6 +72,21 @@ test('SQL cell SET literal keeps NULL, quotes strings, and falls back for unpars
   assert.equal(cellEdit.buildSqlSetLiteral(5, ''), 'NULL');
 });
 
+test('SQL cell edited value mirrors SET literal type inference for result syncing', async () => {
+  const { cellEdit } = await loadModules();
+
+  assert.equal(cellEdit.editedSqlCellValue(null, ''), null);
+  assert.equal(cellEdit.editedSqlCellValue(null, 'NULL'), null);
+  assert.equal(cellEdit.editedSqlCellValue(null, 'hello'), 'hello');
+  assert.equal(cellEdit.editedSqlCellValue('Dev', 'Prod'), 'Prod');
+  assert.equal(cellEdit.editedSqlCellValue(5, '6'), 6);
+  assert.equal(cellEdit.editedSqlCellValue(5, 'not-a-number'), 'not-a-number');
+  assert.equal(cellEdit.editedSqlCellValue(5, ''), null);
+  assert.equal(cellEdit.editedSqlCellValue(true, 'false'), false);
+  assert.equal(cellEdit.editedSqlCellValue(true, '1'), true);
+  assert.equal(cellEdit.editedSqlCellValue(false, 'null'), null);
+});
+
 test('SQL cell literals escape quotes and composite primary keys join with AND', async () => {
   const { cellEdit } = await loadModules();
 

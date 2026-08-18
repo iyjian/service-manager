@@ -45,6 +45,7 @@ import {
 } from './sqlCompletion.js';
 import {
   buildUpdateStatement,
+  editedSqlCellValue,
   highlightUpdateSql,
   type SqlUpdatePrimaryKey,
 } from './sqlCellEdit.js';
@@ -189,12 +190,12 @@ interface SqlValueMode {
 }
 
 const SQL_JSON_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
-  { id: 'formatted', label: 'Formatted' },
   { id: 'raw', label: 'Raw' },
+  { id: 'formatted', label: 'Formatted' },
 ]);
 const SQL_HTML_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
-  { id: 'preview', label: 'Preview' },
   { id: 'raw', label: 'Raw' },
+  { id: 'preview', label: 'Preview' },
 ]);
 const SQL_TEXT_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
   { id: 'raw', label: 'Raw' },
@@ -360,8 +361,8 @@ export function sqlValueModesForKind(
   const detected = findCodeHighlightLanguage(detectedLanguage);
   return detected && detected.value !== 'plaintext'
     ? Object.freeze([
-      { id: 'highlighted', label: detected.label },
       { id: 'raw', label: 'Raw' },
+      { id: 'highlighted', label: detected.label },
     ])
     : SQL_TEXT_VALUE_MODES;
 }
@@ -657,8 +658,6 @@ class SqlPage {
   private readonly valueFindPrevious = requireElement<HTMLButtonElement>('#sql-value-find-previous');
   private readonly valueFindNext = requireElement<HTMLButtonElement>('#sql-value-find-next');
   private readonly valueFindClose = requireElement<HTMLButtonElement>('#sql-value-find-close');
-  private readonly valueEdit = requireElement<HTMLElement>('#sql-value-edit');
-  private readonly valueEditInput = requireElement<HTMLTextAreaElement>('#sql-value-edit-input');
   private readonly valueSqlPanel = requireElement<HTMLElement>('#sql-value-sql-panel');
   private readonly valueSqlResizer = requireElement<HTMLElement>('#sql-value-sql-resizer');
   private readonly valueSqlBody = requireElement<HTMLElement>('#sql-value-sql-body');
@@ -699,6 +698,7 @@ class SqlPage {
   private readonly tableEnumHover: ReturnType<typeof hoverTooltip>;
   private readonly editor: EditorView;
   private valueEditor?: EditorView;
+  private valueEditEditor?: EditorView;
   private environment: SqlEnvironment = 'production';
   private replacingDocument = false;
   private active = false;
@@ -724,10 +724,13 @@ class SqlPage {
     column: string;
     originalValue: unknown;
     primaryKey: SqlUpdatePrimaryKey[];
+    row: Record<string, unknown>;
   };
   private valueSqlCopyResetTimer?: number;
   private valueSqlPointerId?: number;
   private valueSqlExecuting = false;
+  private valueSqlUpdatedText?: string;
+  private valueEditedText?: string;
   private untitledDraftPersistTimer?: number;
   private untitledDraftPersistWarningShown = false;
   private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
@@ -878,7 +881,6 @@ class SqlPage {
     this.searchInput.addEventListener('input', () => this.renderRecordList());
     this.valueCopyRaw.addEventListener('click', () => void this.copyRawValue());
     this.valueClose.addEventListener('click', () => this.closeValueDialog());
-    this.valueEditInput.addEventListener('input', () => this.refreshUpdateSql());
     this.valueSqlCopy.addEventListener('click', () => void this.copyUpdateSql());
     this.valueSqlExecute.addEventListener('click', () => void this.executeUpdateSql());
     this.bindValueSqlResizer();
@@ -2330,6 +2332,11 @@ class SqlPage {
     this.valueCopyRaw.disabled = false;
     this.resetRawCopyFeedback();
 
+    const detectedLanguage = presentation.kind === 'text'
+      ? detectSqlValueLanguage(presentation.raw)
+      : undefined;
+    this.valueDetectedLanguage = detectedLanguage;
+
     const edit = this.resolveCellEditContext(column, row);
     let focusTarget: HTMLElement = this.valueClose;
     if (edit.kind === 'edit') {
@@ -2338,26 +2345,25 @@ class SqlPage {
         column,
         originalValue: edit.originalValue,
         primaryKey: edit.primaryKey,
+        row: edit.row,
       };
-      this.renderValueEdit(presentation);
-      focusTarget = this.valueEditInput;
+      this.renderValueEdit(presentation, detectedLanguage);
     } else {
-      const detectedLanguage = presentation.kind === 'text'
-        ? detectSqlValueLanguage(presentation.raw)
-        : undefined;
-      this.valueDetectedLanguage = detectedLanguage;
       focusTarget = this.renderValueView(presentation, detectedLanguage);
       this.applyValuePanelForView(edit.kind === 'multi' ? 'multi' : 'view');
     }
 
     this.valueDialog.showModal();
-    window.requestAnimationFrame(() => focusTarget.focus());
+    window.requestAnimationFrame(() => {
+      if (this.valueEditEditor) this.valueEditEditor.focus();
+      else focusTarget.focus();
+    });
   }
 
   private resolveCellEditContext(
     column: string,
     row: Readonly<Record<string, unknown>>,
-  ): { kind: 'edit'; table: string; originalValue: unknown; primaryKey: SqlUpdatePrimaryKey[] }
+  ): { kind: 'edit'; table: string; originalValue: unknown; primaryKey: SqlUpdatePrimaryKey[]; row: Record<string, unknown> }
     | { kind: 'multi' }
     | { kind: 'none' } {
     const statement = this.currentTab()?.executedStatement;
@@ -2378,15 +2384,21 @@ class SqlPage {
       if (value === undefined || value === null) return { kind: 'none' };
       primaryKey.push({ column: pkColumn.name, value });
     }
-    return { kind: 'edit', table: table.name, originalValue: row[column], primaryKey };
+    return { kind: 'edit', table: table.name, originalValue: row[column], primaryKey, row };
   }
 
   private renderValueView(
     presentation: SqlCellPresentation,
     detectedLanguage?: string,
   ): HTMLElement {
-    this.valueEdit.classList.add('hidden');
     this.valueContent.classList.remove('hidden');
+    return this.renderValueTabs(presentation, detectedLanguage) ?? this.valueClose;
+  }
+
+  private renderValueTabs(
+    presentation: SqlCellPresentation,
+    detectedLanguage?: string,
+  ): HTMLElement | undefined {
     const modes = sqlValueModesForKind(presentation.kind, detectedLanguage);
     const buttons = modes.map((mode, index) => {
       const button = document.createElement('button');
@@ -2412,8 +2424,8 @@ class SqlPage {
     this.valueModes.classList.remove('hidden');
     this.valueModes.replaceChildren(...buttons);
     this.valueMode = modes[0]?.id ?? 'raw';
-    this.renderValueMode(presentation, modes[0]?.id ?? 'raw', detectedLanguage);
-    return buttons[0] ?? this.valueClose;
+    this.renderValueMode(presentation, this.valueMode, detectedLanguage);
+    return buttons[0];
   }
 
   private applyValuePanelForView(kind: 'view' | 'multi'): void {
@@ -2424,23 +2436,30 @@ class SqlPage {
     this.valueSqlNotice.classList.toggle('hidden', kind !== 'multi');
   }
 
-  private renderValueEdit(presentation: SqlCellPresentation): void {
+  private renderValueEdit(
+    presentation: SqlCellPresentation,
+    detectedLanguage?: string,
+  ): void {
     this.valueDialog.dataset.mode = 'edit';
-    this.valueKind.textContent = 'Edit';
-    this.valueModes.classList.add('hidden');
-    this.valueContent.classList.add('hidden');
-    this.valueEdit.classList.remove('hidden');
-    this.valueEditInput.value = presentation.raw;
+    this.valueContent.classList.remove('hidden');
     this.valueSqlPanel.classList.remove('hidden');
     this.valueSqlResizer.classList.remove('hidden');
     this.valueSqlBody.classList.remove('hidden');
     this.valueSqlNotice.classList.add('hidden');
     this.valueSqlExecuting = false;
+    this.valueSqlUpdatedText = undefined;
+    this.valueEditedText = this.editableRawSeed(presentation);
     this.valueSqlExecute.disabled = false;
     this.valueSqlStatus.textContent = '';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
     this.resetUpdateSqlCopyFeedback();
+    this.renderValueTabs(presentation, detectedLanguage);
     this.refreshUpdateSql();
+  }
+
+  private currentEditedText(): string {
+    return this.valueEditedText ?? '';
   }
 
   private currentUpdateSql(): string | undefined {
@@ -2450,7 +2469,7 @@ class SqlPage {
       table: context.table,
       column: context.column,
       originalValue: context.originalValue,
-      editedText: this.valueEditInput.value,
+      editedText: this.currentEditedText(),
       primaryKey: context.primaryKey,
     });
   }
@@ -2459,6 +2478,17 @@ class SqlPage {
     if (!this.valueEditContext) return;
     const sql = this.currentUpdateSql();
     if (sql !== undefined) this.valueSqlCode.innerHTML = highlightUpdateSql(sql);
+  }
+
+  private handleValueEditInput(): void {
+    this.refreshUpdateSql();
+    if (this.valueSqlUpdatedText !== undefined && this.currentEditedText() !== this.valueSqlUpdatedText) {
+      this.valueSqlUpdatedText = undefined;
+      this.valueSqlStatus.textContent = '';
+      delete this.valueSqlStatus.dataset.success;
+      this.valueSqlExecute.disabled = false;
+      this.valueSqlExecute.title = '';
+    }
   }
 
   private setUpdateSqlCopyIcon(copied: boolean): void {
@@ -2502,20 +2532,33 @@ class SqlPage {
     const sql = this.currentUpdateSql();
     if (!sql) return;
     const environment = this.environment;
+    const editedText = this.currentEditedText();
     this.valueSqlExecuting = true;
     this.valueSqlExecute.disabled = true;
     this.valueSqlStatus.textContent = 'Executing…';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
     try {
       await window.sqlApi.execute(environment, sql);
-      this.valueSqlStatus.textContent = 'Updated successfully';
+      this.valueSqlStatus.textContent = 'Updated successfully — no further update needed.';
+      this.valueSqlStatus.dataset.success = 'true';
+      this.valueSqlUpdatedText = editedText;
+      this.valueSqlExecute.title = 'The value has already been updated. Edit it to update again.';
+      this.syncEditedCell(editedText);
     } catch (error) {
       this.valueSqlStatus.textContent = toErrorMessage(error);
       this.valueSqlStatus.dataset.error = 'true';
     } finally {
       this.valueSqlExecuting = false;
-      this.valueSqlExecute.disabled = false;
+      if (!this.valueSqlStatus.dataset.success) this.valueSqlExecute.disabled = false;
     }
+  }
+
+  private syncEditedCell(editedText: string): void {
+    const context = this.valueEditContext;
+    if (!context) return;
+    context.row[context.column] = editedSqlCellValue(context.originalValue, editedText);
+    if (this.currentTab()?.result?.kind === 'table') this.renderResult();
   }
 
   private bindValueSqlResizer(): void {
@@ -2563,6 +2606,10 @@ class SqlPage {
     detectedLanguage?: string,
   ): void {
     this.clearValueContent();
+    if (mode === 'raw' && this.valueEditContext) {
+      this.renderEditableRawValue(presentation);
+      return;
+    }
     if (mode === 'preview' && presentation.kind === 'html') {
       this.valueKind.textContent = 'HTML';
       const frame = document.createElement('iframe');
@@ -2630,6 +2677,44 @@ class SqlPage {
         ? 'HTML'
         : sqlHighlightLabel(detectedLanguage);
     this.valueContent.replaceChildren(highlighted.node);
+  }
+
+  private editableRawSeed(presentation: SqlCellPresentation): string {
+    return presentation.kind === 'json' && presentation.formatted !== undefined
+      ? presentation.formatted
+      : presentation.raw;
+  }
+
+  private renderEditableRawValue(presentation: SqlCellPresentation): void {
+    const source = this.valueEditedText ?? this.editableRawSeed(presentation);
+    this.valueKind.textContent = presentation.kind === 'json'
+      ? 'JSON'
+      : presentation.kind === 'html'
+        ? 'HTML'
+        : 'Text';
+    const host = document.createElement('div');
+    host.className = 'sql-value-json-editor';
+    this.valueContent.append(host);
+    this.valueEditEditor = new EditorView({
+      state: EditorState.create({
+        doc: source,
+        extensions: [
+          basicSetup,
+          ...(presentation.kind === 'json' ? [json()] : []),
+          EditorView.contentAttributes.of({
+            'aria-label': 'Edit cell value',
+            spellcheck: 'false',
+          }),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              this.valueEditedText = update.state.doc.toString();
+              this.handleValueEditInput();
+            }
+          }),
+        ],
+      }),
+      parent: host,
+    });
   }
 
   private handleValueDialogSelectAll(event: KeyboardEvent): void {
@@ -2948,9 +3033,13 @@ class SqlPage {
     this.valueFormatted = undefined;
     this.valueEditContext = undefined;
     this.valueSqlExecuting = false;
+    this.valueSqlUpdatedText = undefined;
+    this.valueEditedText = undefined;
     this.valueSqlExecute.disabled = false;
+    this.valueSqlExecute.title = '';
     this.valueSqlStatus.textContent = '';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
     this.resetValueFind();
     if (this.valueCopyResetTimer !== undefined) {
       window.clearTimeout(this.valueCopyResetTimer);
@@ -2967,8 +3056,6 @@ class SqlPage {
     this.valueDialogTitle.textContent = 'Cell value';
     this.valueCopyRaw.disabled = true;
     this.resetRawCopyFeedback();
-    this.valueEdit.classList.add('hidden');
-    this.valueEditInput.value = '';
     this.valueSqlPanel.classList.add('hidden');
     this.valueSqlResizer.classList.add('hidden');
     this.valueSqlBody.classList.add('hidden');
@@ -2980,6 +3067,8 @@ class SqlPage {
   private clearValueContent(): void {
     this.valueEditor?.destroy();
     this.valueEditor = undefined;
+    this.valueEditEditor?.destroy();
+    this.valueEditEditor = undefined;
     const frame = this.valueContent.querySelector<HTMLIFrameElement>('iframe');
     if (frame) frame.srcdoc = '';
     this.valueContent.replaceChildren();

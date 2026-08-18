@@ -285,16 +285,16 @@ test('SQL field detail modes always expose Raw', async () => {
     path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
   ));
 
-  assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['formatted', 'raw']);
-  assert.deepEqual(page.sqlValueModesForKind('html').map((mode) => mode.id), ['preview', 'raw']);
+  assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['raw', 'formatted']);
+  assert.deepEqual(page.sqlValueModesForKind('html').map((mode) => mode.id), ['raw', 'preview']);
   assert.deepEqual(page.sqlValueModesForKind('text').map((mode) => mode.id), ['raw']);
   assert.deepEqual(
     page.sqlValueModesForKind('text', 'markdown').map((mode) => [mode.id, mode.label]),
-    [['highlighted', 'Markdown'], ['raw', 'Raw']],
+    [['raw', 'Raw'], ['highlighted', 'Markdown']],
   );
   assert.deepEqual(
     page.sqlValueModesForKind('text', 'sql').map((mode) => [mode.id, mode.label]),
-    [['highlighted', 'SQL'], ['raw', 'Raw']],
+    [['raw', 'Raw'], ['highlighted', 'SQL']],
   );
   assert.equal(
     page.detectSqlValueLanguage('# Heading\n\nThis is **bold** and [a link](https://example.com).\n\n- one\n- two'),

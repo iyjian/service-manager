@@ -41,6 +41,33 @@ export function buildSqlSetLiteral(originalValue: unknown, editedText: string): 
   return escapeSqlStringLiteral(editedText);
 }
 
+/**
+ * Computes the runtime cell value an update will store, mirroring the type
+ * inference in {@link buildSqlSetLiteral}. The result is used to sync the
+ * edited cell back into the in-memory result after a successful UPDATE.
+ */
+export function editedSqlCellValue(originalValue: unknown, editedText: string): unknown {
+  const trimmed = editedText.trim();
+  if (originalValue === null || originalValue === undefined) {
+    if (trimmed === '' || trimmed.toLocaleUpperCase() === 'NULL') return null;
+    return editedText;
+  }
+  if (typeof originalValue === 'number') {
+    if (trimmed === '') return null;
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) return numeric;
+    return editedText;
+  }
+  if (typeof originalValue === 'boolean') {
+    const lower = trimmed.toLocaleLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0') return false;
+    if (lower === '' || lower === 'null') return null;
+    return editedText;
+  }
+  return editedText;
+}
+
 /** Builds a WHERE primary-key literal directly from the stored value type. */
 export function buildSqlWhereLiteral(value: unknown): string {
   if (value === null || value === undefined) return 'NULL';
