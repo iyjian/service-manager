@@ -343,6 +343,27 @@ export function isLikelyReadOnlySql(statement: string): boolean {
   return false;
 }
 
+function quoteSqlIdentifier(identifier: string): string {
+  return `\`${identifier.replace(/`/g, '``')}\``;
+}
+
+/**
+ * Wraps a plain top-level SELECT in a derived table so a single column can be
+ * ordered server-side without mutating the original statement. Returns undefined
+ * for non-SELECT statements (e.g. WITH/UPDATE), which cannot be wrapped this way.
+ */
+export function buildSortedSelect(
+  statement: string,
+  column: string,
+  direction: 'asc' | 'desc',
+): string | undefined {
+  if (firstSqlKeyword(statement) !== 'SELECT') return undefined;
+  const base = statement.trim().replace(/;\s*$/, '');
+  if (!base) return undefined;
+  const directionKeyword = direction === 'desc' ? 'DESC' : 'ASC';
+  return `SELECT * FROM (\n${base}\n) AS \`__sql_sorted\` ORDER BY ${quoteSqlIdentifier(column)} ${directionKeyword}`;
+}
+
 const SQL_TEMPLATE_PARAM_PATTERN = /\{\{\s*([^{}\s]+)\s*\}\}/g;
 
 export function extractSqlTemplateParamNames(sql: string): string[] {

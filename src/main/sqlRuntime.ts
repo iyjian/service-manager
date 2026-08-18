@@ -569,7 +569,7 @@ export class SqlRuntime {
       const query = new URLSearchParams();
       query.set('skipPaging', 'true');
       query.set('sort[0][key]', 'name');
-      query.set('sort[0][order]', 'desc');
+      query.set('sort[0][order]', 'asc');
       query.set('creatorId', String(session.user.id));
       if (search) query.set('search', search);
       const result = await this.request(environment, '/sqlQuery', { query, token: session.token });

@@ -151,6 +151,25 @@ test('SQL production guard is conservative and template parameters preserve refe
   );
 });
 
+test('SQL sort wrapping orders a derived table and rejects non-SELECT statements', async () => {
+  const { buildSortedSelect } = await loadModule('sqlStatement.js');
+
+  assert.equal(
+    buildSortedSelect('select * from t_user', 'name', 'asc'),
+    'SELECT * FROM (\nselect * from t_user\n) AS `__sql_sorted` ORDER BY `name` ASC',
+  );
+  assert.equal(
+    buildSortedSelect('select id, name from t_user;', 'id', 'desc'),
+    'SELECT * FROM (\nselect id, name from t_user\n) AS `__sql_sorted` ORDER BY `id` DESC',
+  );
+  assert.equal(
+    buildSortedSelect('select 1', 'a`b', 'asc'),
+    'SELECT * FROM (\nselect 1\n) AS `__sql_sorted` ORDER BY `a``b` ASC',
+  );
+  assert.equal(buildSortedSelect('update t_user set name = 1', 'name', 'asc'), undefined);
+  assert.equal(buildSortedSelect('with r as (select 1) select * from r', 'x', 'asc'), undefined);
+});
+
 test('SQL shortcuts match the platform-specific Save and Run behavior', async () => {
   const {
     isSqlRunShortcut,

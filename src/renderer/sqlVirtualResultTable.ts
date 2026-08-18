@@ -21,6 +21,23 @@ export interface SqlVirtualResultTableOptions {
     row: Readonly<Record<string, unknown>>,
   ) => void;
   onWindowRendered: () => void;
+  onSort?: (column: string) => void;
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+  initialColumnWidths?: (number | undefined)[];
+  onColumnWidthsChange?: (widths: (number | undefined)[]) => void;
+}
+
+const SQL_RESULT_MIN_COLUMN_WIDTH = 64;
+const SQL_RESULT_MAX_COLUMN_WIDTH = 720;
+const SQL_RESULT_DEFAULT_COLUMN_WIDTH = 180;
+const SQL_RESULT_MEASURED_COLUMN_CAP = 320;
+
+function clampColumnWidth(value: number): number {
+  return Math.min(
+    SQL_RESULT_MAX_COLUMN_WIDTH,
+    Math.max(SQL_RESULT_MIN_COLUMN_WIDTH, Math.round(value)),
+  );
 }
 
 export class SqlVirtualResultTable {
@@ -28,9 +45,16 @@ export class SqlVirtualResultTable {
   private readonly result: SqlTableResult;
   private readonly onOpenValue: SqlVirtualResultTableOptions['onOpenValue'];
   private readonly onWindowRendered: SqlVirtualResultTableOptions['onWindowRendered'];
+  private readonly onSort: SqlVirtualResultTableOptions['onSort'];
+  private readonly sortColumn: string | undefined;
+  private readonly sortDirection: 'asc' | 'desc' | undefined;
+  private readonly onColumnWidthsChange: SqlVirtualResultTableOptions['onColumnWidthsChange'];
   private readonly wrap: HTMLDivElement;
+  private readonly table: HTMLTableElement;
+  private readonly columnElements: HTMLTableColElement[];
   private readonly body: HTMLTableSectionElement;
   private readonly resizeObserver: ResizeObserver;
+  private columnWidths: number[];
   private rowHeight = SQL_RESULT_ESTIMATED_ROW_HEIGHT;
   private renderedStart = -1;
   private renderedEnd = -1;
@@ -44,44 +68,44 @@ export class SqlVirtualResultTable {
     this.result = options.result;
     this.onOpenValue = options.onOpenValue;
     this.onWindowRendered = options.onWindowRendered;
+    this.onSort = options.onSort;
+    this.sortColumn = options.sortColumn;
+    this.sortDirection = options.sortDirection;
+    this.onColumnWidthsChange = options.onColumnWidthsChange;
     this.wrap = document.createElement('div');
     this.wrap.className = 'sql-result-table-wrap';
 
-    const table = document.createElement('table');
-    table.className = 'sql-result-table';
-    table.setAttribute('aria-rowcount', String(this.result.rows.length + 1));
-    table.setAttribute('aria-colcount', String(this.result.columns.length));
+    this.table = document.createElement('table');
+    this.table.className = 'sql-result-table';
+    this.table.style.tableLayout = 'fixed';
+    this.table.setAttribute('aria-rowcount', String(this.result.rows.length + 1));
+    this.table.setAttribute('aria-colcount', String(this.result.columns.length));
+
+    this.columnElements = [];
+    const columnGroup = document.createElement('colgroup');
+    for (let index = 0; index < this.result.columns.length; index += 1) {
+      const columnElement = document.createElement('col');
+      this.columnElements.push(columnElement);
+      columnGroup.append(columnElement);
+    }
+    this.table.append(columnGroup);
 
     const head = document.createElement('thead');
-    const columnElements: HTMLTableColElement[] = [];
-    if (this.result.rows.length > SQL_RESULT_VIRTUALIZE_AFTER_ROWS) {
-      const columnGroup = document.createElement('colgroup');
-      for (const _column of this.result.columns) {
-        const columnElement = document.createElement('col');
-        columnElements.push(columnElement);
-        columnGroup.append(columnElement);
-      }
-      table.append(columnGroup);
-    }
     const headRow = document.createElement('tr');
     for (const [columnIndex, column] of this.result.columns.entries()) {
-      const cell = document.createElement('th');
-      cell.scope = 'col';
-      cell.setAttribute('aria-colindex', String(columnIndex + 1));
-      const label = document.createElement('span');
-      label.className = 'sql-result-column-name';
-      label.textContent = column;
-      label.title = column;
-      cell.append(label);
-      headRow.append(cell);
+      headRow.append(this.createHeaderCell(column, columnIndex));
     }
     head.append(headRow);
 
     this.body = document.createElement('tbody');
-    table.append(head, this.body);
-    this.wrap.append(table);
+    this.table.append(head, this.body);
+    this.wrap.append(this.table);
     this.host.replaceChildren(this.wrap);
-    if (columnElements.length > 0) this.applyStableColumnWidths(table, columnElements);
+
+    this.columnWidths = this.resolveInitialColumnWidths(options.initialColumnWidths);
+    this.applyAllColumnWidths();
+    this.applyTableWidth();
+
     this.host.addEventListener('scroll', this.handleScroll, { passive: true });
     this.host.addEventListener('click', this.handleClick);
     this.host.addEventListener('dblclick', this.handleDblClick);
@@ -140,6 +164,129 @@ export class SqlVirtualResultTable {
     if (column === undefined) return;
     this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow);
   };
+
+  private createHeaderCell(column: string, columnIndex: number): HTMLTableCellElement {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.setAttribute('aria-colindex', String(columnIndex + 1));
+    if (this.sortColumn === column && this.sortDirection) {
+      cell.setAttribute('aria-sort', this.sortDirection === 'desc' ? 'descending' : 'ascending');
+    }
+
+    const sort = document.createElement('button');
+    sort.type = 'button';
+    sort.className = 'sql-result-column-sort';
+    sort.disabled = this.onSort === undefined;
+    if (this.onSort) {
+      sort.setAttribute('aria-label', `Sort by ${column}`);
+      sort.title = `Sort by ${column}`;
+      sort.addEventListener('click', () => this.onSort?.(column));
+    }
+
+    const label = document.createElement('span');
+    label.className = 'sql-result-column-name';
+    label.textContent = column;
+    label.title = column;
+    sort.append(label);
+
+    if (this.sortColumn === column && this.sortDirection) {
+      const indicator = document.createElement('span');
+      indicator.className = 'sql-result-column-sort-indicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      indicator.textContent = this.sortDirection === 'desc' ? '↓' : '↑';
+      sort.append(indicator);
+    }
+
+    const resizer = document.createElement('span');
+    resizer.className = 'sql-result-column-resizer';
+    resizer.setAttribute('aria-hidden', 'true');
+    resizer.addEventListener('pointerdown', (event) => this.startColumnResize(columnIndex, event));
+
+    cell.append(sort, resizer);
+    return cell;
+  }
+
+  private resolveInitialColumnWidths(
+    initial: readonly (number | undefined)[] | undefined,
+  ): number[] {
+    const measured = this.measureColumnWidths();
+    if (!initial || initial.length !== this.result.columns.length) return measured;
+    return this.result.columns.map((_, index) => {
+      const width = initial[index];
+      return typeof width === 'number' && Number.isFinite(width)
+        ? clampColumnWidth(width)
+        : measured[index] ?? SQL_RESULT_DEFAULT_COLUMN_WIDTH;
+    });
+  }
+
+  private measureColumnWidths(): number[] {
+    const longest = this.result.columns.map(() => '');
+    for (const row of this.result.rows) {
+      for (let index = 0; index < this.result.columns.length; index += 1) {
+        const column = this.result.columns[index] ?? '';
+        const display = formatSqlCell(row[column]);
+        if (display.length > (longest[index]?.length ?? 0)) longest[index] = display;
+      }
+    }
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return this.result.columns.map(() => SQL_RESULT_DEFAULT_COLUMN_WIDTH);
+    const style = getComputedStyle(this.table);
+    context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    return this.result.columns.map((column, index) => {
+      const textWidth = Math.max(
+        context.measureText(column).width,
+        context.measureText(longest[index] ?? '').width,
+      );
+      return clampColumnWidth(Math.ceil(Math.min(SQL_RESULT_MEASURED_COLUMN_CAP, textWidth) + 24));
+    });
+  }
+
+  private applyAllColumnWidths(): void {
+    for (let index = 0; index < this.columnElements.length; index += 1) {
+      this.applyColumnWidth(index);
+    }
+  }
+
+  private applyColumnWidth(index: number): void {
+    const column = this.columnElements[index];
+    if (!column) return;
+    column.style.width = `${this.columnWidths[index] ?? SQL_RESULT_DEFAULT_COLUMN_WIDTH}px`;
+  }
+
+  private applyTableWidth(): void {
+    const total = this.columnWidths.reduce(
+      (sum, width) => sum + (width ?? SQL_RESULT_DEFAULT_COLUMN_WIDTH),
+      0,
+    );
+    this.table.style.width = `${total}px`;
+  }
+
+  private startColumnResize(columnIndex: number, event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    const startX = event.clientX;
+    const startWidth = this.columnWidths[columnIndex] ?? SQL_RESULT_DEFAULT_COLUMN_WIDTH;
+    handle.setPointerCapture(event.pointerId);
+
+    const move = (moveEvent: PointerEvent): void => {
+      const width = clampColumnWidth(startWidth + moveEvent.clientX - startX);
+      this.columnWidths[columnIndex] = width;
+      this.applyColumnWidth(columnIndex);
+      this.applyTableWidth();
+    };
+    const stop = (stopEvent: PointerEvent): void => {
+      handle.releasePointerCapture(stopEvent.pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', stop);
+      handle.removeEventListener('pointercancel', stop);
+      this.onColumnWidthsChange?.(this.columnWidths.slice());
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
+  }
 
   private selectRow(rowIndex: number | undefined): void {
     if (this.selectedRowIndex === rowIndex) return;
@@ -216,35 +363,6 @@ export class SqlVirtualResultTable {
     cell.style.background = 'transparent';
     row.append(cell);
     return row;
-  }
-
-  private applyStableColumnWidths(
-    table: HTMLTableElement,
-    columnElements: readonly HTMLTableColElement[],
-  ): void {
-    const longestValues = this.result.columns.map(() => '');
-    for (const row of this.result.rows) {
-      for (const [columnIndex, column] of this.result.columns.entries()) {
-        const display = formatSqlCell(row[column]);
-        if (display.length > (longestValues[columnIndex]?.length ?? 0)) {
-          longestValues[columnIndex] = display;
-        }
-      }
-    }
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    const style = getComputedStyle(table);
-    context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
-    for (const [columnIndex, columnElement] of columnElements.entries()) {
-      const header = this.result.columns[columnIndex] ?? '';
-      const value = longestValues[columnIndex] ?? '';
-      const textWidth = Math.max(
-        context.measureText(header).width,
-        context.measureText(value).width,
-      );
-      columnElement.style.width = `${Math.ceil(Math.min(320, textWidth) + 24)}px`;
-    }
   }
 
   private createDataRow(

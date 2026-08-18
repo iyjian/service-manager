@@ -5010,6 +5010,14 @@
     display: block;
   }
 
+  .sql-query-tab-context-menu {
+    @apply fixed z-50 min-w-[160px] rounded-lg border border-zinc-200 bg-white py-1 shadow-xl;
+  }
+
+  .sql-query-tab-context-item {
+    @apply flex w-full cursor-pointer items-center border-0 bg-transparent px-3 py-1.5 text-left text-[13px] text-zinc-700 outline-none transition hover:bg-zinc-100 focus:bg-zinc-100 focus:text-zinc-900;
+  }
+
   .sql-session-action {
     @apply h-8 shrink-0 cursor-pointer justify-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-2.5 text-[12px] font-medium text-zinc-700 outline-none transition hover:border-zinc-400 hover:bg-zinc-100 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-40;
   }
@@ -5204,23 +5212,44 @@
   }
 
   .sql-result-table th {
-    @apply sticky top-0 z-10 whitespace-nowrap border-b border-r border-zinc-200 bg-zinc-100 px-3 py-2 font-bold text-zinc-600;
+    @apply sticky top-0 z-10 relative whitespace-nowrap border-b border-r border-zinc-200 bg-zinc-100 px-3 py-2 font-bold text-zinc-600;
   }
 
   .sql-result-table td {
     @apply whitespace-nowrap border-b border-r border-zinc-100 bg-white px-3 py-1.5 align-middle font-medium text-black;
   }
 
+  .sql-result-column-sort {
+    @apply absolute inset-0 flex cursor-pointer items-center gap-1.5 border-0 bg-transparent px-3 py-2 text-left font-bold text-zinc-600 outline-none transition hover:text-blue-700 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-300 disabled:cursor-default disabled:hover:text-zinc-600;
+  }
+
   .sql-result-column-name {
-    @apply block max-w-[320px] truncate;
+    @apply block min-w-0 flex-1 truncate;
+  }
+
+  .sql-result-column-sort-indicator {
+    @apply shrink-0 text-[11px] leading-none text-blue-600;
+  }
+
+  .sql-result-column-resizer {
+    @apply absolute right-0 top-0 z-10 h-full w-2 cursor-col-resize;
+  }
+
+  .sql-result-column-resizer::after {
+    @apply absolute right-[3px] top-0 h-full w-px bg-zinc-300 transition-colors;
+    content: '';
+  }
+
+  .sql-result-column-resizer:hover::after {
+    @apply bg-blue-400;
   }
 
   .sql-result-cell {
-    @apply inline-flex min-w-0 max-w-[360px] items-center gap-1;
+    @apply inline-flex min-w-0 items-center gap-1;
   }
 
   .sql-result-cell-value {
-    @apply block min-w-0 max-w-[320px] flex-1 overflow-hidden text-ellipsis whitespace-nowrap;
+    @apply block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap;
   }
 
   .sql-result-cell-detail {

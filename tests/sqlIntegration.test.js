@@ -91,7 +91,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-query-row-edit/);
   assert.match(styles, /\.sql-result-table/);
   assert.match(styles, /\.sql-result-table-wrap\{[^}]*width:max-content/);
-  assert.match(styles, /\.sql-result-cell-value\{[^}]*max-width:320px[^}]*white-space:nowrap/);
+  assert.match(styles, /\.sql-result-cell-value\{[^}]*min-width:0[^}]*white-space:nowrap/);
   assert.match(styles, /\.sql-result-cell-detail/);
   assert.match(styles, /\.sql-value-dialog/);
   assert.match(styles, /\.sql-value-copy-raw/);

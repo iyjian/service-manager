@@ -50,6 +50,7 @@ import {
   type SqlUpdatePrimaryKey,
 } from './sqlCellEdit.js';
 import {
+  buildSortedSelect,
   extractSqlTemplateParamNames,
   replaceSqlTemplateParams,
   resolveSqlStatement,
@@ -153,6 +154,9 @@ interface SqlQueryTab {
   executing: boolean;
   saving: boolean;
   executionVersion: number;
+  sortColumn?: string;
+  sortDirection?: 'asc' | 'desc';
+  columnWidths?: (number | undefined)[];
 }
 
 interface SqlEnvironmentState {
@@ -743,6 +747,7 @@ class SqlPage {
     tabKey?: string;
   };
   private schemaFlights = new Map<SqlEnvironment, SqlSchemaFlight>();
+  private tabContextMenu?: HTMLElement;
 
   public constructor() {
     try {
@@ -852,6 +857,7 @@ class SqlPage {
     this.destroyResultTable();
     this.resultContent.replaceChildren();
     this.closeValueDialog();
+    this.closeTabContextMenu();
   }
 
   private bindEvents(): void {
@@ -926,6 +932,10 @@ class SqlPage {
       }
     }, true);
     window.addEventListener('beforeunload', () => this.persistUntitledDrafts());
+    window.addEventListener('pointerdown', (event) => this.handleTabContextMenuPointerDown(event), true);
+    window.addEventListener('keydown', (event) => this.handleTabContextMenuKeyDown(event), true);
+    window.addEventListener('blur', () => this.closeTabContextMenu());
+    window.addEventListener('resize', () => this.closeTabContextMenu());
     this.bindSidebarResizer();
     this.bindResultResizer();
   }
@@ -1485,9 +1495,10 @@ class SqlPage {
     const state = this.currentState();
     const selectedId = this.currentTab()?.recordId;
     const search = this.searchInput.value.trim().toLocaleLowerCase();
-    const records = search
+    const records = (search
       ? state.records.filter((record) => record.name.toLocaleLowerCase().includes(search))
-      : state.records;
+      : [...state.records]
+    ).sort((left, right) => left.name.localeCompare(right.name));
     const nodes: HTMLElement[] = records.map((record) => {
       const selected = record.id === selectedId;
       const row = document.createElement('div');
@@ -1658,6 +1669,10 @@ class SqlPage {
       close.addEventListener('focus', () => { item.dataset.closeHovered = 'true'; });
       close.addEventListener('blur', () => { delete item.dataset.closeHovered; });
       close.addEventListener('click', () => void this.closeTab(tab.key));
+      item.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        this.openTabContextMenu(tab.key, event.clientX, event.clientY);
+      });
       item.append(select, close);
       nodes.push(item);
       if (active) activeButton = select;
@@ -1739,6 +1754,105 @@ class SqlPage {
     this.renderResult();
     this.renderBusyState();
     return true;
+  }
+
+  private async closeOtherTabs(key: string): Promise<void> {
+    const state = this.currentState();
+    const target = state.tabs.find((tab) => tab.key === key);
+    if (!target) return;
+    const others = state.tabs.filter((tab) => tab.key !== key);
+    if (others.length === 0) return;
+    if (others.some((tab) => tab.executing || tab.saving)) {
+      toast('Wait for the current query operation to finish.', 'error');
+      return;
+    }
+    const dirtyCount = others.filter((tab) => this.isTabDirty(tab)).length;
+    if (dirtyCount > 0) {
+      let confirmed = false;
+      try {
+        confirmed = await window.serviceApi.confirmAction({
+          title: 'Close Other Queries?',
+          message: `Discard unsaved changes in ${dirtyCount} other tab${dirtyCount === 1 ? '' : 's'}?`,
+          detail: 'The SQL text in the other open tabs has not been saved.',
+          kind: 'warning',
+          confirmLabel: 'Close others',
+        });
+      } catch (error) {
+        toast(toErrorMessage(error), 'error');
+        return;
+      }
+      if (!confirmed) return;
+    }
+    state.activeTabKey = target.key;
+    state.tabs = [target];
+    this.persistUntitledDrafts();
+    this.replaceEditorDocument(target.source);
+    this.renderTabs();
+    this.renderRecordList();
+    this.renderResult();
+    this.renderBusyState();
+    this.editor.focus();
+  }
+
+  private openTabContextMenu(key: string, x: number, y: number): void {
+    this.closeTabContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'sql-query-tab-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Tab actions');
+
+    const closeItem = document.createElement('button');
+    closeItem.type = 'button';
+    closeItem.className = 'sql-query-tab-context-item';
+    closeItem.setAttribute('role', 'menuitem');
+    closeItem.textContent = 'Close';
+    closeItem.addEventListener('click', () => {
+      this.closeTabContextMenu();
+      void this.closeTab(key);
+    });
+
+    const closeOthersItem = document.createElement('button');
+    closeOthersItem.type = 'button';
+    closeOthersItem.className = 'sql-query-tab-context-item';
+    closeOthersItem.setAttribute('role', 'menuitem');
+    closeOthersItem.textContent = 'Close Others';
+    closeOthersItem.addEventListener('click', () => {
+      this.closeTabContextMenu();
+      void this.closeOtherTabs(key);
+    });
+
+    menu.append(closeItem, closeOthersItem);
+    document.body.append(menu);
+    this.tabContextMenu = menu;
+
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(x, window.innerWidth - rect.width - 8);
+    const top = Math.min(y, window.innerHeight - rect.height - 8);
+    menu.style.left = `${Math.max(8, left)}px`;
+    menu.style.top = `${Math.max(8, top)}px`;
+    closeItem.focus();
+  }
+
+  private closeTabContextMenu(): void {
+    if (!this.tabContextMenu) return;
+    this.tabContextMenu.remove();
+    this.tabContextMenu = undefined;
+  }
+
+  private handleTabContextMenuPointerDown(event: PointerEvent): void {
+    if (!this.tabContextMenu) return;
+    const target = event.target;
+    if (target instanceof Node && this.tabContextMenu.contains(target)) return;
+    this.closeTabContextMenu();
+  }
+
+  private handleTabContextMenuKeyDown(event: KeyboardEvent): void {
+    if (!this.tabContextMenu) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeTabContextMenu();
+    }
   }
 
   private replaceEditorDocument(source: string): void {
@@ -1897,7 +2011,7 @@ class SqlPage {
 
   private upsertRecord(state: SqlEnvironmentState, record: SqlQueryRecord): void {
     state.records = [...state.records.filter((item) => item.id !== record.id), record]
-      .sort((left, right) => right.name.localeCompare(left.name));
+      .sort((left, right) => left.name.localeCompare(right.name));
   }
 
   private async runCurrentStatement(): Promise<void> {
@@ -1926,6 +2040,9 @@ class SqlPage {
     tab.executedStatement = undefined;
     tab.executedAt = undefined;
     tab.durationMs = undefined;
+    tab.sortColumn = undefined;
+    tab.sortDirection = undefined;
+    tab.columnWidths = undefined;
     this.renderTabs();
     this.renderBusyState();
     this.renderResult();
@@ -1939,6 +2056,65 @@ class SqlPage {
       tab.executedStatement = executableSql;
       tab.executedAt = response.executedAt;
       tab.durationMs = response.durationMs;
+      if (this.active && environment === this.environment && this.currentTab()?.key === tab.key) {
+        this.renderResult();
+      }
+    } catch (error) {
+      if (version !== tab.executionVersion) return;
+      tab.resultError = toErrorMessage(error);
+      if (this.active && environment === this.environment && this.currentTab()?.key === tab.key) {
+        this.renderResult();
+      }
+      this.handleOperationError(error, false, environment);
+    } finally {
+      tab.executing = false;
+      if (this.active && environment === this.environment) {
+        this.renderTabs();
+        this.renderBusyState();
+        if (this.currentTab()?.key === tab.key) this.renderResult();
+      }
+    }
+  }
+
+  private persistColumnWidths(widths: readonly (number | undefined)[]): void {
+    const tab = this.currentTab();
+    if (!tab) return;
+    tab.columnWidths = widths.slice();
+  }
+
+  private async sortResult(column: string): Promise<void> {
+    const environment = this.environment;
+    const tab = this.currentTab();
+    if (!tab || tab.executing) return;
+    const base = tab.executedStatement;
+    if (!base) return;
+    const direction: 'asc' | 'desc' = tab.sortColumn === column && tab.sortDirection === 'asc'
+      ? 'desc'
+      : 'asc';
+    const sql = buildSortedSelect(base, column, direction);
+    if (!sql) {
+      toast('Sorting is only supported for plain SELECT statements.', 'error');
+      return;
+    }
+    const version = ++tab.executionVersion;
+    tab.executing = true;
+    tab.result = undefined;
+    tab.resultError = undefined;
+    tab.lastResponseText = '';
+    this.renderTabs();
+    this.renderBusyState();
+    this.renderResult();
+    try {
+      const response = await window.sqlApi.execute(environment, sql, {
+        limit: this.normalizeSelectLimitInput(),
+      });
+      if (version !== tab.executionVersion) return;
+      tab.result = normalizeSqlResult(response.value);
+      tab.lastResponseText = jsonText(response.value);
+      tab.executedAt = response.executedAt;
+      tab.durationMs = response.durationMs;
+      tab.sortColumn = column;
+      tab.sortDirection = direction;
       if (this.active && environment === this.environment && this.currentTab()?.key === tab.key) {
         this.renderResult();
       }
@@ -2175,6 +2351,11 @@ class SqlPage {
         result: tab.result,
         onOpenValue: (column, presentation, row) => this.openValueDialog(column, presentation, row),
         onWindowRendered: () => this.refreshCellOverflowButtons(),
+        onSort: tab.executedStatement ? (column) => void this.sortResult(column) : undefined,
+        sortColumn: tab.sortColumn,
+        sortDirection: tab.sortDirection,
+        initialColumnWidths: tab.columnWidths,
+        onColumnWidthsChange: (widths) => this.persistColumnWidths(widths),
       });
       return;
     }
