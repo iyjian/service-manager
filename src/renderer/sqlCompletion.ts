@@ -1,5 +1,6 @@
 import type { SQLNamespace } from '@codemirror/lang-sql';
 import type { SqlDatabaseSchema, SqlSchemaColumn } from '../shared/types';
+import { findSqlStatementBoundaries } from './sqlStatement.js';
 
 export const SQL_COMPLETION_CONTEXT_CHARACTERS = 50_000;
 
@@ -12,6 +13,7 @@ const SQL_DIRECT_TABLE_REFERENCE = new RegExp(
   String.raw`\b(?:from|join|update|into)\s+(${SQL_IDENTIFIER}(?:\s*\.\s*${SQL_IDENTIFIER})?)`,
   'gi',
 );
+const SQL_DEFAULT_TABLE_CLAUSE = /\b(?:where|having|on|order\s+by|group\s+by)\b[\s\S]*$/i;
 
 export interface SqlTableReference {
   tableName: string;
@@ -242,15 +244,17 @@ export function resolveSqlDefaultTable(
   const canonicalNames = new Map(
     schema.tables.map((table) => [table.name.toLocaleLowerCase(), table.name]),
   );
+  // Restrict inference to the statement under the cursor so that preceding
+  // statements (and their FROM/JOIN references) don't leak into the result.
+  const window = sourceBeforeCursor.slice(-SQL_COMPLETION_CONTEXT_CHARACTERS);
+  const statements = findSqlStatementBoundaries(window);
+  const statement = statements[statements.length - 1];
+  if (!statement) return undefined;
+  const masked = maskSqlLiteralsAndComments(window.slice(statement.from, statement.to));
+  if (!SQL_DEFAULT_TABLE_CLAUSE.test(masked)) return undefined;
   const references = new Set<string>();
-  const source = maskSqlLiteralsAndComments(
-    sourceBeforeCursor.slice(-SQL_COMPLETION_CONTEXT_CHARACTERS),
-  );
-  if (!/\b(?:where|having|on|order\s+by|group\s+by)\b[\s\S]*$/i.test(source)) {
-    return undefined;
-  }
   SQL_TABLE_REFERENCE.lastIndex = 0;
-  for (const match of source.matchAll(SQL_TABLE_REFERENCE)) {
+  for (const match of masked.matchAll(SQL_TABLE_REFERENCE)) {
     const identifier = unquoteLastIdentifier(match[1] ?? '');
     const canonical = identifier
       ? canonicalNames.get(identifier.toLocaleLowerCase())

@@ -86,6 +86,23 @@ test('SQL default-table inference is statement-local and ignores literals and co
   assert.equal(resolveSqlDefaultTable('select * from t_user', schema), undefined);
 });
 
+test('SQL default-table inference ignores preceding statements', async () => {
+  const { resolveSqlDefaultTable } = await loadCompletion();
+
+  assert.equal(
+    resolveSqlDefaultTable('select * from t_user; select * from t_role where c', schema),
+    't_role',
+  );
+  assert.equal(
+    resolveSqlDefaultTable('select * from t_user;\nselect * from t_role where c', schema),
+    't_role',
+  );
+  assert.equal(
+    resolveSqlDefaultTable("select * from t_user where userName = 'x'; select * from t_role where c", schema),
+    't_role',
+  );
+});
+
 test('official MySQL schema completion resolves table aliases from the generated namespace', async () => {
   const { EditorState } = require('@codemirror/state');
   const { MySQL, schemaCompletionSource, sql } = require('@codemirror/lang-sql');
