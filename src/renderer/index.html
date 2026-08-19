@@ -1215,6 +1215,23 @@
       </div>
     </dialog>
 
+    <dialog id="changelog-dialog" class="host-dialog changelog-dialog">
+      <div class="dialog-panel changelog-panel">
+        <div class="dialog-head">
+          <div class="changelog-title-group">
+            <h2 class="section-title">What's New</h2>
+            <span id="changelog-version" class="changelog-version"></span>
+          </div>
+          <button id="close-changelog-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
+        </div>
+        <div class="changelog-tabs" role="tablist" aria-label="Language">
+          <button id="changelog-tab-zh" type="button" class="changelog-tab" role="tab" aria-selected="true">中文</button>
+          <button id="changelog-tab-en" type="button" class="changelog-tab" role="tab" aria-selected="false">English</button>
+        </div>
+        <div id="changelog-body" class="changelog-body"></div>
+      </div>
+    </dialog>
+
     <script type="importmap">
       {
         "imports": {}

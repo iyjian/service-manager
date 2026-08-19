@@ -136,6 +136,24 @@ export interface UpdateState {
   rawMessage?: string;
 }
 
+export interface ChangelogSection {
+  title: string;
+  items: string[];
+}
+
+export interface ChangelogEntry {
+  version: string;
+  date?: string;
+  sections: ChangelogSection[];
+}
+
+export interface ChangelogView {
+  currentVersion: string;
+  shouldShow: boolean;
+  en: ChangelogEntry[];
+  zh: ChangelogEntry[];
+}
+
 export interface AppMemoryUsage {
   bytes?: number;
 }
@@ -1276,6 +1294,8 @@ export interface ServiceApi {
   importConfig: () => Promise<ConfigTransferResult | null>;
   getUpdateState: () => Promise<UpdateState>;
   checkForUpdates: () => Promise<UpdateState>;
+  getChangelog: () => Promise<ChangelogView>;
+  markChangelogSeen: () => Promise<void>;
   openExternal: (url: string) => Promise<void>;
   readClipboardText: () => Promise<string>;
   writeClipboardText: (text: string) => Promise<void>;

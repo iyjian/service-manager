@@ -153,6 +153,7 @@ import {
   type TriliumImportProgress,
   type TriliumResolvedImageAsset,
 } from './triliumImport';
+import { buildChangelogView, ChangelogSeenStore } from './changelog';
 
 const IPC_CHANNELS = {
   listHosts: 'host:list',
@@ -182,6 +183,8 @@ const IPC_CHANNELS = {
   getUpdateState: 'updater:get-state',
   checkUpdates: 'updater:check',
   updateState: 'updater:state',
+  changelogGet: 'changelog:get',
+  changelogMarkSeen: 'changelog:mark-seen',
   appMemoryUsage: 'app:memory-usage',
   notesList: 'notes:list',
   notesWorkspace: 'notes:workspace',
@@ -303,6 +306,7 @@ let notesTreeViewStore: NotesTreeViewStore | null = null;
 let notesWorkspaceApplyCoordinator: NotesWorkspaceApplyCoordinator | null = null;
 let uiPreferencesStore: UiPreferencesStore | null = null;
 let llmSettingsStore: LlmSettingsStore | null = null;
+let changelogSeenStore: ChangelogSeenStore | null = null;
 let sqlRuntime: SqlRuntime | null = null;
 let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
@@ -516,6 +520,13 @@ function getUiPreferencesStore(): UiPreferencesStore {
     throw new Error('UI preferences are not initialized.');
   }
   return uiPreferencesStore;
+}
+
+function getChangelogSeenStore(): ChangelogSeenStore {
+  if (!changelogSeenStore) {
+    throw new Error('Changelog store is not initialized.');
+  }
+  return changelogSeenStore;
 }
 
 function getLlmSettingsStore(): LlmSettingsStore {
@@ -3257,6 +3268,14 @@ function registerIpcHandlers(): void {
     return updater.checkForUpdates('manual');
   });
 
+  ipcMain.handle(IPC_CHANNELS.changelogGet, async () => {
+    return buildChangelogView(app.getVersion(), getChangelogSeenStore().getSeenVersion());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.changelogMarkSeen, async () => {
+    await getChangelogSeenStore().markSeen(app.getVersion());
+  });
+
   const getKubernetesRuntime = (): KubernetesRuntime => {
     if (!kubernetesRuntime) {
       throw new Error('Kubernetes runtime is not initialized.');
@@ -3659,6 +3678,9 @@ app.whenReady()
 
     uiPreferencesStore = new UiPreferencesStore(path.join(app.getPath('userData'), 'ui-preferences.json'));
     await uiPreferencesStore.load();
+
+    changelogSeenStore = new ChangelogSeenStore(path.join(app.getPath('userData'), 'changelog-seen.json'));
+    await changelogSeenStore.load();
 
     const credentialProtector = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),

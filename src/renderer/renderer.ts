@@ -19,6 +19,7 @@ import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './notes
 import { registerProxyPage } from './proxyPage.js';
 import { registerSqlPage } from './sqlPage.js';
 import { registerSettingsDialog } from './settingsDialog.js';
+import { maybeShowChangelog } from './changelog.js';
 import { trackStartupS3SyncWork, waitForStartupS3Sync } from './startupS3SyncGate.js';
 import {
   canStartForward,
@@ -2781,6 +2782,7 @@ window.settingsApi.onPersistentDataReloaded((event) => {
     } catch {
       // no-op
     }
+    void maybeShowChangelog();
   } catch (error) {
     reportRendererError('init', error, 'Failed to initialize UI.');
   }

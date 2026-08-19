@@ -728,6 +728,8 @@ class SqlPage {
   private valueSqlCopyResetTimer?: number;
   private valueSqlPointerId?: number;
   private valueSqlExecuting = false;
+  private valueSqlExecuted = false;
+  private valueSqlOriginalText = '';
   private untitledDraftPersistTimer?: number;
   private untitledDraftPersistWarningShown = false;
   private tableEnumHoverTarget?: SqlTableEnumHoverTarget;
@@ -2436,9 +2438,11 @@ class SqlPage {
     this.valueSqlBody.classList.remove('hidden');
     this.valueSqlNotice.classList.add('hidden');
     this.valueSqlExecuting = false;
-    this.valueSqlExecute.disabled = false;
+    this.valueSqlExecuted = false;
+    this.valueSqlOriginalText = presentation.raw;
     this.valueSqlStatus.textContent = '';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
     this.resetUpdateSqlCopyFeedback();
     this.refreshUpdateSql();
   }
@@ -2457,8 +2461,36 @@ class SqlPage {
 
   private refreshUpdateSql(): void {
     if (!this.valueEditContext) return;
+    this.valueSqlExecuted = false;
     const sql = this.currentUpdateSql();
     if (sql !== undefined) this.valueSqlCode.innerHTML = highlightUpdateSql(sql);
+    this.updateSqlExecuteButton();
+  }
+
+  private updateSqlExecuteButton(): void {
+    if (!this.valueEditContext) return;
+    if (this.valueSqlExecuting) {
+      this.valueSqlExecute.disabled = true;
+      this.clearSqlExecuteHint();
+      return;
+    }
+    const dirty = this.valueEditInput.value !== this.valueSqlOriginalText;
+    if (!dirty) {
+      this.valueSqlExecute.disabled = true;
+      this.valueSqlExecute.dataset.hint = 'No changes to execute.';
+      return;
+    }
+    if (this.valueSqlExecuted) {
+      this.valueSqlExecute.disabled = true;
+      this.valueSqlExecute.dataset.hint = 'Changes applied successfully.';
+      return;
+    }
+    this.valueSqlExecute.disabled = false;
+    this.clearSqlExecuteHint();
+  }
+
+  private clearSqlExecuteHint(): void {
+    delete this.valueSqlExecute.dataset.hint;
   }
 
   private setUpdateSqlCopyIcon(copied: boolean): void {
@@ -2498,23 +2530,28 @@ class SqlPage {
   }
 
   private async executeUpdateSql(): Promise<void> {
-    if (!this.valueEditContext || this.valueSqlExecuting) return;
+    if (!this.valueEditContext || this.valueSqlExecuting || this.valueSqlExecute.disabled) return;
     const sql = this.currentUpdateSql();
     if (!sql) return;
     const environment = this.environment;
     this.valueSqlExecuting = true;
-    this.valueSqlExecute.disabled = true;
     this.valueSqlStatus.textContent = 'Executing…';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
+    this.updateSqlExecuteButton();
     try {
       await window.sqlApi.execute(environment, sql);
+      this.valueSqlExecuted = true;
       this.valueSqlStatus.textContent = 'Updated successfully';
+      this.valueSqlStatus.dataset.success = 'true';
+      delete this.valueSqlStatus.dataset.error;
     } catch (error) {
       this.valueSqlStatus.textContent = toErrorMessage(error);
       this.valueSqlStatus.dataset.error = 'true';
+      delete this.valueSqlStatus.dataset.success;
     } finally {
       this.valueSqlExecuting = false;
-      this.valueSqlExecute.disabled = false;
+      this.updateSqlExecuteButton();
     }
   }
 
@@ -2948,9 +2985,13 @@ class SqlPage {
     this.valueFormatted = undefined;
     this.valueEditContext = undefined;
     this.valueSqlExecuting = false;
+    this.valueSqlExecuted = false;
+    this.valueSqlOriginalText = '';
     this.valueSqlExecute.disabled = false;
+    this.clearSqlExecuteHint();
     this.valueSqlStatus.textContent = '';
     delete this.valueSqlStatus.dataset.error;
+    delete this.valueSqlStatus.dataset.success;
     this.resetValueFind();
     if (this.valueCopyResetTimer !== undefined) {
       window.clearTimeout(this.valueCopyResetTimer);

@@ -4314,6 +4314,67 @@
     @apply flex h-[min(80vh,calc(100vh-40px))] flex-col overflow-hidden;
   }
 
+  .changelog-panel {
+    @apply flex h-[min(80vh,calc(100vh-40px))] flex-col overflow-hidden p-0;
+  }
+
+  .changelog-dialog .dialog-head {
+    @apply mb-0 shrink-0 border-b border-zinc-200 px-5 py-3;
+  }
+
+  .changelog-title-group {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .changelog-version {
+    @apply shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[12px] font-medium tabular-nums text-zinc-500;
+  }
+
+  .changelog-tabs {
+    @apply flex h-10 shrink-0 items-stretch gap-1 border-b border-zinc-200 bg-zinc-50 px-3;
+  }
+
+  .changelog-tab {
+    @apply relative shrink-0 border-0 bg-transparent px-2.5 text-[12px] font-medium text-zinc-500 outline-none transition hover:text-zinc-950 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500;
+  }
+
+  .changelog-tab[aria-selected='true'] {
+    @apply text-zinc-950;
+  }
+
+  .changelog-tab[aria-selected='true']::after {
+    content: '';
+    @apply absolute inset-x-2 bottom-[-1px] h-0.5 bg-zinc-950;
+  }
+
+  .changelog-body {
+    @apply min-h-0 flex-1 overflow-y-auto bg-white px-5 py-4;
+  }
+
+  .changelog-entry {
+    @apply mb-6 border-b border-zinc-100 pb-5 last:mb-0 last:border-b-0 last:pb-0;
+  }
+
+  .changelog-entry-heading {
+    @apply mb-2 flex items-baseline gap-2;
+  }
+
+  .changelog-entry-version {
+    @apply m-0 text-[16px] font-semibold tracking-[-0.01em] text-zinc-950;
+  }
+
+  .changelog-entry-date {
+    @apply text-[12px] tabular-nums text-zinc-400;
+  }
+
+  .changelog-section-title {
+    @apply mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-zinc-400;
+  }
+
+  .changelog-section-list {
+    @apply m-0 list-disc space-y-1 pl-5 text-[13px] leading-relaxed text-zinc-700;
+  }
+
   .dialog-head {
     @apply mb-3 flex items-center justify-between gap-3;
   }
@@ -5579,7 +5640,24 @@
   }
 
   .sql-value-sql-execute {
-    @apply h-8 shrink-0 cursor-pointer rounded-md border-0 bg-red-600 px-4 text-[13px] font-semibold text-white outline-none transition hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-300 disabled:cursor-wait disabled:opacity-60;
+    @apply relative h-8 shrink-0 cursor-pointer rounded-md border-0 bg-red-600 px-4 text-[13px] font-semibold text-white outline-none transition hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-300 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .sql-value-sql-execute[data-hint]::after {
+    @apply pointer-events-none absolute left-0 z-30 rounded-md bg-zinc-900 px-2.5 py-1.5 text-[12px] font-medium leading-4 text-white;
+    content: attr(data-hint);
+    bottom: calc(100% + 8px);
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  }
+
+  .sql-value-sql-execute[data-hint]:hover::after,
+  .sql-value-sql-execute[data-hint]:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
   }
 
   .sql-value-sql-status {
@@ -5594,6 +5672,15 @@
   .sql-value-sql-status[data-error='true']::before {
     @apply inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white;
     content: '!';
+  }
+
+  .sql-value-sql-status[data-success='true'] {
+    @apply flex items-center gap-1.5 text-emerald-600;
+  }
+
+  .sql-value-sql-status[data-success='true']::before {
+    @apply inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold leading-none text-white;
+    content: '✓';
   }
 
   .sql-value-sql-notice {
