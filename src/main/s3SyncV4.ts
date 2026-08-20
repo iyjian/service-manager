@@ -10,14 +10,12 @@ import type { Note, NoteLanguage } from '../shared/types';
 import { NOTE_LIMITS } from './notesStore';
 import {
   normalizeS3EndpointBucket,
-  signS3V2Request,
+  signS3Request,
   type S3EndpointBucket,
-  type S3V2SignedRequest,
-  type S3V2SigningInput,
-} from './s3SyncV2';
+  type S3SignedRequest,
+  type S3SigningInput,
+} from './s3Request';
 
-// Keep the historical V3 TypeScript export names until every caller has moved,
-// but make the wire contract deliberately incompatible with all prior layouts.
 const SYNC_VERSION = 4 as const;
 const SCHEMA_VERSION = 4 as const;
 const LAYOUT_VERSION = 4 as const;
@@ -54,7 +52,7 @@ const NOTE_LANGUAGES = new Set<NoteLanguage>([
   'text',
 ]);
 
-export interface S3V3NoteReference {
+export interface S3V4NoteReference {
   id: string;
   objectId: string;
   sha256: string;
@@ -62,38 +60,38 @@ export interface S3V3NoteReference {
   encryptionKeyId: string;
 }
 
-export interface S3V3NoteTombstone {
+export interface S3V4NoteTombstone {
   id: string;
   deletedAt: string;
 }
 
-export interface S3V3NotesTreePayload {
+export interface S3V4NotesTreePayload {
   schemaVersion: 1;
   root: string[];
   order: Record<string, number>;
   parent: Record<string, string | null>;
 }
 
-export interface S3V3NotesTreeReference {
+export interface S3V4NotesTreeReference {
   objectId: string;
   sha256: string;
   contentHash: string;
   encryptionKeyId: string;
 }
 
-export interface S3V3ManifestData {
+export interface S3V4ManifestData {
   schemaVersion: 4;
   hosts: Record<string, unknown>;
   notes: {
     schemaVersion: 4;
-    items: S3V3NoteReference[];
-    tombstones: S3V3NoteTombstone[];
-    tree: S3V3NotesTreeReference;
+    items: S3V4NoteReference[];
+    tombstones: S3V4NoteTombstone[];
+    tree: S3V4NotesTreeReference;
   };
   proxy: Record<string, unknown>;
 }
 
-export interface ServiceManagerSyncManifestV3 {
+export interface ServiceManagerSyncManifestV4 {
   schemaVersion: 4;
   syncVersion: 4;
   layoutVersion: 4;
@@ -103,10 +101,10 @@ export interface ServiceManagerSyncManifestV3 {
   parentRevision?: string;
   clientId: string;
   createdAt: string;
-  data: S3V3ManifestData;
+  data: S3V4ManifestData;
 }
 
-export interface ServiceManagerNoteObjectV3 {
+export interface ServiceManagerNoteObjectV4 {
   schemaVersion: 4;
   syncVersion: 4;
   layoutVersion: 4;
@@ -116,23 +114,23 @@ export interface ServiceManagerNoteObjectV3 {
   note: Note;
 }
 
-export interface ServiceManagerNotesTreeObjectV3 {
+export interface ServiceManagerNotesTreeObjectV4 {
   schemaVersion: 4;
   syncVersion: 4;
   layoutVersion: 4;
   app: 'service-manager';
   objectType: 'notes-tree';
   objectId: string;
-  tree: S3V3NotesTreePayload;
+  tree: S3V4NotesTreePayload;
 }
 
-export type S3V3ObjectType = 'manifest' | 'note' | 'notes-tree';
+export type S3V4ObjectType = 'manifest' | 'note' | 'notes-tree';
 
-export interface EncryptedS3ObjectV3 {
+export interface EncryptedS3ObjectV4 {
   schemaVersion: 4;
   syncVersion: 4;
   layoutVersion: 4;
-  objectType: S3V3ObjectType;
+  objectType: S3V4ObjectType;
   objectId: string;
   encryption: {
     algorithm: 'AES-256-GCM';
@@ -146,7 +144,7 @@ export interface EncryptedS3ObjectV3 {
   ciphertext: string;
 }
 
-export interface S3SyncHeadV3 {
+export interface S3SyncHeadV4 {
   schemaVersion: 4;
   syncVersion: 4;
   layoutVersion: 4;
@@ -159,10 +157,10 @@ export interface S3SyncHeadV3 {
   encryptionKeyId: string;
 }
 
-export type S3V3SigningInput = S3V2SigningInput;
-export type S3V3SignedRequest = S3V2SignedRequest;
+export type S3V4SigningInput = S3SigningInput;
+export type S3V4SignedRequest = S3SignedRequest;
 
-export interface S3V3ObjectStoreOptions extends S3EndpointBucket {
+export interface S3V4ObjectStoreOptions extends S3EndpointBucket {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
@@ -175,7 +173,7 @@ export interface S3V3ObjectStoreOptions extends S3EndpointBucket {
   signal?: AbortSignal;
 }
 
-export interface S3V3ConnectionTestOptions extends S3EndpointBucket {
+export interface S3V4ConnectionTestOptions extends S3EndpointBucket {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
@@ -185,45 +183,45 @@ export interface S3V3ConnectionTestOptions extends S3EndpointBucket {
   signal?: AbortSignal;
 }
 
-export type S3V3HeadReadResult =
+export type S3V4HeadReadResult =
   | { status: 'missing' }
-  | { status: 'found'; head: S3SyncHeadV3; etag: string };
+  | { status: 'found'; head: S3SyncHeadV4; etag: string };
 
-export type S3V3ManifestReadResult =
+export type S3V4ManifestReadResult =
   | { status: 'missing' }
   | {
     status: 'found';
-    manifest: ServiceManagerSyncManifestV3;
-    encrypted: EncryptedS3ObjectV3;
+    manifest: ServiceManagerSyncManifestV4;
+    encrypted: EncryptedS3ObjectV4;
     manifestSha256: string;
     encryptionKeyId: string;
   };
 
-export type S3V3NoteReadResult =
+export type S3V4NoteReadResult =
   | { status: 'missing' }
   | {
     status: 'found';
-    object: ServiceManagerNoteObjectV3;
-    encrypted: EncryptedS3ObjectV3;
-    reference: S3V3NoteReference;
+    object: ServiceManagerNoteObjectV4;
+    encrypted: EncryptedS3ObjectV4;
+    reference: S3V4NoteReference;
     encryptionKeyId: string;
   };
 
-export type S3V3NotesTreeReadResult =
+export type S3V4NotesTreeReadResult =
   | { status: 'missing' }
   | {
     status: 'found';
-    object: ServiceManagerNotesTreeObjectV3;
-    encrypted: EncryptedS3ObjectV3;
-    reference: S3V3NotesTreeReference;
+    object: ServiceManagerNotesTreeObjectV4;
+    encrypted: EncryptedS3ObjectV4;
+    reference: S3V4NotesTreeReference;
     encryptionKeyId: string;
   };
 
-export type S3V3ConditionalWriteResult =
+export type S3V4ConditionalWriteResult =
   | { status: 'written'; etag?: string }
   | { status: 'conflict' };
 
-export type S3V3ManifestWriteResult =
+export type S3V4ManifestWriteResult =
   | {
     status: 'written';
     manifestSha256: string;
@@ -232,19 +230,19 @@ export type S3V3ManifestWriteResult =
   }
   | { status: 'conflict' };
 
-export type S3V3NoteWriteResult =
+export type S3V4NoteWriteResult =
   | {
     status: 'written';
-    reference: S3V3NoteReference;
+    reference: S3V4NoteReference;
     byteLength: number;
     etag?: string;
   }
   | { status: 'conflict' };
 
-export type S3V3NotesTreeWriteResult =
+export type S3V4NotesTreeWriteResult =
   | {
     status: 'written';
-    reference: S3V3NotesTreeReference;
+    reference: S3V4NotesTreeReference;
     byteLength: number;
     etag?: string;
   }
@@ -359,7 +357,7 @@ function parseNote(value: unknown): Note {
   };
 }
 
-function parseNoteReference(value: unknown): S3V3NoteReference {
+function parseNoteReference(value: unknown): S3V4NoteReference {
   if (!isRecord(value)) throw new Error('The S3 Note reference is invalid.');
   return {
     id: stableNoteId(value.id, 'The S3 Note reference ID'),
@@ -370,7 +368,7 @@ function parseNoteReference(value: unknown): S3V3NoteReference {
   };
 }
 
-function parseTombstone(value: unknown): S3V3NoteTombstone {
+function parseTombstone(value: unknown): S3V4NoteTombstone {
   if (!isRecord(value)) throw new Error('The S3 Note tombstone is invalid.');
   return {
     id: stableNoteId(value.id, 'The S3 Note tombstone ID'),
@@ -388,7 +386,7 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function parseS3V3NotesTreePayload(value: unknown): S3V3NotesTreePayload {
+export function parseS3V4NotesTreePayload(value: unknown): S3V4NotesTreePayload {
   if (!isRecord(value) || value.schemaVersion !== NOTES_TREE_SCHEMA_VERSION) {
     throw new Error('The S3 Notes tree is invalid.');
   }
@@ -487,7 +485,7 @@ export function parseS3V3NotesTreePayload(value: unknown): S3V3NotesTreePayload 
   }
 
   const sortedIds = [...order.keys()].sort(compareText);
-  const parsed: S3V3NotesTreePayload = {
+  const parsed: S3V4NotesTreePayload = {
     schemaVersion: NOTES_TREE_SCHEMA_VERSION,
     root: [...roots],
     order: Object.fromEntries(sortedIds.map((noteId) => [noteId, order.get(noteId) as number])),
@@ -497,7 +495,7 @@ export function parseS3V3NotesTreePayload(value: unknown): S3V3NotesTreePayload 
   return parsed;
 }
 
-export function parseS3V3NotesTreeReference(value: unknown): S3V3NotesTreeReference {
+export function parseS3V4NotesTreeReference(value: unknown): S3V4NotesTreeReference {
   if (!isRecord(value)) throw new Error('The S3 Notes tree reference is invalid.');
   return {
     objectId: normalizedIdentifier(value.objectId, 'Notes tree object identity', 128),
@@ -507,7 +505,7 @@ export function parseS3V3NotesTreeReference(value: unknown): S3V3NotesTreeRefere
   };
 }
 
-export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
+export function parseS3V4ManifestData(value: unknown): S3V4ManifestData {
   if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION || !isRecord(value.notes)) {
     throw new Error('The S3 manifest data is invalid.');
   }
@@ -522,7 +520,7 @@ export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
   }
   const items = value.notes.items.map(parseNoteReference);
   const tombstones = value.notes.tombstones.map(parseTombstone);
-  const tree = parseS3V3NotesTreeReference(value.notes.tree);
+  const tree = parseS3V4NotesTreeReference(value.notes.tree);
   const noteIds = new Set<string>();
   const objectIds = new Set<string>();
   for (const item of items) {
@@ -538,7 +536,7 @@ export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
     }
     noteIds.add(tombstone.id);
   }
-  const parsed: S3V3ManifestData = {
+  const parsed: S3V4ManifestData = {
     schemaVersion: SCHEMA_VERSION,
     hosts: cloneJsonRecord(value.hosts, 'The S3 manifest Hosts data'),
     notes: {
@@ -553,8 +551,8 @@ export function parseS3V3ManifestData(value: unknown): S3V3ManifestData {
   return parsed;
 }
 
-export function createServiceManagerSyncManifestV3(
-  data: S3V3ManifestData,
+export function createServiceManagerSyncManifestV4(
+  data: S3V4ManifestData,
   options: {
     appVersion: string;
     revision: string;
@@ -562,8 +560,8 @@ export function createServiceManagerSyncManifestV3(
     clientId: string;
     createdAt?: string;
   },
-): ServiceManagerSyncManifestV3 {
-  return parseServiceManagerSyncManifestV3({
+): ServiceManagerSyncManifestV4 {
+  return parseServiceManagerSyncManifestV4({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -577,7 +575,7 @@ export function createServiceManagerSyncManifestV3(
   });
 }
 
-export function parseServiceManagerSyncManifestV3(value: unknown): ServiceManagerSyncManifestV3 {
+export function parseServiceManagerSyncManifestV4(value: unknown): ServiceManagerSyncManifestV4 {
   if (
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
@@ -595,7 +593,7 @@ export function parseServiceManagerSyncManifestV3(value: unknown): ServiceManage
     ? undefined
     : normalizedIdentifier(value.parentRevision, 'parent manifest revision', 256);
   if (parentRevision === revision) throw new Error('The S3 sync manifest is invalid.');
-  const parsed: ServiceManagerSyncManifestV3 = {
+  const parsed: ServiceManagerSyncManifestV4 = {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -605,17 +603,17 @@ export function parseServiceManagerSyncManifestV3(value: unknown): ServiceManage
     ...(parentRevision ? { parentRevision } : {}),
     clientId: normalizedIdentifier(value.clientId, 'client identity', 128),
     createdAt: isoTimestamp(value.createdAt, 'The S3 manifest timestamp'),
-    data: parseS3V3ManifestData(value.data),
+    data: parseS3V4ManifestData(value.data),
   };
   measureBoundedJsonBytes(parsed, MAX_MANIFEST_BYTES);
   return parsed;
 }
 
-export function createServiceManagerNoteObjectV3(
+export function createServiceManagerNoteObjectV4(
   note: Note,
   objectId: string,
-): ServiceManagerNoteObjectV3 {
-  return parseServiceManagerNoteObjectV3({
+): ServiceManagerNoteObjectV4 {
+  return parseServiceManagerNoteObjectV4({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -626,7 +624,7 @@ export function createServiceManagerNoteObjectV3(
   });
 }
 
-export function parseServiceManagerNoteObjectV3(value: unknown): ServiceManagerNoteObjectV3 {
+export function parseServiceManagerNoteObjectV4(value: unknown): ServiceManagerNoteObjectV4 {
   if (
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
@@ -637,7 +635,7 @@ export function parseServiceManagerNoteObjectV3(value: unknown): ServiceManagerN
   ) {
     throw new Error('The S3 Note object is invalid.');
   }
-  const parsed: ServiceManagerNoteObjectV3 = {
+  const parsed: ServiceManagerNoteObjectV4 = {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -650,11 +648,11 @@ export function parseServiceManagerNoteObjectV3(value: unknown): ServiceManagerN
   return parsed;
 }
 
-export function createServiceManagerNotesTreeObjectV3(
-  tree: S3V3NotesTreePayload,
+export function createServiceManagerNotesTreeObjectV4(
+  tree: S3V4NotesTreePayload,
   objectId: string,
-): ServiceManagerNotesTreeObjectV3 {
-  return parseServiceManagerNotesTreeObjectV3({
+): ServiceManagerNotesTreeObjectV4 {
+  return parseServiceManagerNotesTreeObjectV4({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -665,7 +663,7 @@ export function createServiceManagerNotesTreeObjectV3(
   });
 }
 
-export function parseServiceManagerNotesTreeObjectV3(value: unknown): ServiceManagerNotesTreeObjectV3 {
+export function parseServiceManagerNotesTreeObjectV4(value: unknown): ServiceManagerNotesTreeObjectV4 {
   if (
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
@@ -676,20 +674,20 @@ export function parseServiceManagerNotesTreeObjectV3(value: unknown): ServiceMan
   ) {
     throw new Error('The S3 Notes tree object is invalid.');
   }
-  const parsed: ServiceManagerNotesTreeObjectV3 = {
+  const parsed: ServiceManagerNotesTreeObjectV4 = {
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
     app: 'service-manager',
     objectType: 'notes-tree',
     objectId: normalizedIdentifier(value.objectId, 'Notes tree object identity', 128),
-    tree: parseS3V3NotesTreePayload(value.tree),
+    tree: parseS3V4NotesTreePayload(value.tree),
   };
   measureBoundedJsonBytes(parsed, MAX_NOTES_TREE_BYTES, 'The S3 Notes tree is too large to sync.');
   return parsed;
 }
 
-export function createS3V3ObjectId(
+export function createS3V4ObjectId(
   createBytes: (size: number) => Buffer = randomBytes,
 ): string {
   const bytes = createBytes(24);
@@ -737,43 +735,43 @@ export function getS3SyncEncryptionKeyId(value: unknown): string {
   return sha256Hex(syncEncryptionKeyMaterial(value));
 }
 
-export function hashS3V3Object(value: string | Buffer): string {
+export function hashS3V4Object(value: string | Buffer): string {
   return sha256Hex(value);
 }
 
-export function hashS3V3NoteContent(value: Note | ServiceManagerNoteObjectV3): string {
+export function hashS3V4NoteContent(value: Note | ServiceManagerNoteObjectV4): string {
   const note = isRecord(value) && value.objectType === 'note'
-    ? parseServiceManagerNoteObjectV3(value).note
+    ? parseServiceManagerNoteObjectV4(value).note
     : parseNote(value);
   return sha256Hex(JSON.stringify(note));
 }
 
-export function hashS3V3NotesTreeContent(
-  value: S3V3NotesTreePayload | ServiceManagerNotesTreeObjectV3,
+export function hashS3V4NotesTreeContent(
+  value: S3V4NotesTreePayload | ServiceManagerNotesTreeObjectV4,
 ): string {
   const tree = isRecord(value) && value.objectType === 'notes-tree'
-    ? parseServiceManagerNotesTreeObjectV3(value).tree
-    : parseS3V3NotesTreePayload(value);
+    ? parseServiceManagerNotesTreeObjectV4(value).tree
+    : parseS3V4NotesTreePayload(value);
   return sha256Hex(JSON.stringify(tree));
 }
 
-function encryptionInfo(objectType: S3V3ObjectType): Buffer {
+function encryptionInfo(objectType: S3V4ObjectType): Buffer {
   if (objectType === 'manifest') return MANIFEST_ENCRYPTION_INFO;
   if (objectType === 'note') return NOTE_ENCRYPTION_INFO;
   return NOTES_TREE_ENCRYPTION_INFO;
 }
 
-function objectPlaintextLimit(objectType: S3V3ObjectType): number {
+function objectPlaintextLimit(objectType: S3V4ObjectType): number {
   if (objectType === 'manifest') return MAX_MANIFEST_BYTES;
   if (objectType === 'note') return MAX_NOTE_BYTES;
   return MAX_NOTES_TREE_BYTES;
 }
 
-function objectCiphertextLimit(objectType: S3V3ObjectType): number {
+function objectCiphertextLimit(objectType: S3V4ObjectType): number {
   return objectPlaintextLimit(objectType);
 }
 
-function objectResponseLimit(objectType: S3V3ObjectType): number {
+function objectResponseLimit(objectType: S3V4ObjectType): number {
   if (objectType === 'manifest') return MAX_MANIFEST_OBJECT_BYTES;
   if (objectType === 'note') return MAX_NOTE_OBJECT_BYTES;
   return MAX_NOTES_TREE_OBJECT_BYTES;
@@ -782,7 +780,7 @@ function objectResponseLimit(objectType: S3V3ObjectType): number {
 function deriveObjectKey(
   keyMaterial: Buffer,
   salt: Buffer,
-  objectType: S3V3ObjectType,
+  objectType: S3V4ObjectType,
 ): Buffer {
   return Buffer.from(hkdfSync(
     'sha256',
@@ -828,7 +826,7 @@ function strictBase64(value: unknown, maximumBytes: number, expectedBytes?: numb
   return decoded;
 }
 
-export function parseEncryptedS3ObjectV3(value: unknown): EncryptedS3ObjectV3 {
+export function parseEncryptedS3ObjectV4(value: unknown): EncryptedS3ObjectV4 {
   if (
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
@@ -880,14 +878,14 @@ export function parseEncryptedS3ObjectV3(value: unknown): EncryptedS3ObjectV3 {
   };
 }
 
-function encryptS3ObjectV3(
-  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
+function encryptS3ObjectV4(
+  value: ServiceManagerSyncManifestV4 | ServiceManagerNoteObjectV4 | ServiceManagerNotesTreeObjectV4,
   syncEncryptionKey: string,
   createBytes: (size: number) => Buffer,
-): EncryptedS3ObjectV3 {
+): EncryptedS3ObjectV4 {
   const normalizedKey = normalizeS3SyncEncryptionKey(syncEncryptionKey);
-  const parsed = parsePlainS3ObjectV3(value);
-  return encryptParsedS3ObjectV3(
+  const parsed = parsePlainS3ObjectV4(value);
+  return encryptParsedS3ObjectV4(
     parsed,
     syncEncryptionKeyMaterial(normalizedKey),
     createBytes,
@@ -895,25 +893,25 @@ function encryptS3ObjectV3(
   );
 }
 
-type PlainS3ObjectV3 =
-  | ServiceManagerSyncManifestV3
-  | ServiceManagerNoteObjectV3
-  | ServiceManagerNotesTreeObjectV3;
+type PlainS3ObjectV4 =
+  | ServiceManagerSyncManifestV4
+  | ServiceManagerNoteObjectV4
+  | ServiceManagerNotesTreeObjectV4;
 
-function parsePlainS3ObjectV3(value: PlainS3ObjectV3): PlainS3ObjectV3 {
-  const objectType: S3V3ObjectType = 'objectType' in value
+function parsePlainS3ObjectV4(value: PlainS3ObjectV4): PlainS3ObjectV4 {
+  const objectType: S3V4ObjectType = 'objectType' in value
     ? value.objectType
     : 'manifest';
   return objectType === 'manifest'
-    ? parseServiceManagerSyncManifestV3(value)
+    ? parseServiceManagerSyncManifestV4(value)
     : objectType === 'note'
-      ? parseServiceManagerNoteObjectV3(value)
-      : parseServiceManagerNotesTreeObjectV3(value);
+      ? parseServiceManagerNoteObjectV4(value)
+      : parseServiceManagerNotesTreeObjectV4(value);
 }
 
-function serializePlainS3ObjectV3(
-  value: PlainS3ObjectV3,
-  objectType: S3V3ObjectType,
+function serializePlainS3ObjectV4(
+  value: PlainS3ObjectV4,
+  objectType: S3V4ObjectType,
 ): Buffer {
   const plaintext = Buffer.from(JSON.stringify(value), 'utf8');
   if (plaintext.byteLength > objectPlaintextLimit(objectType)) {
@@ -922,20 +920,20 @@ function serializePlainS3ObjectV3(
   return plaintext;
 }
 
-function encryptParsedS3ObjectV3(
-  value: ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3,
+function encryptParsedS3ObjectV4(
+  value: ServiceManagerSyncManifestV4 | ServiceManagerNoteObjectV4 | ServiceManagerNotesTreeObjectV4,
   keyMaterial: Buffer,
   createBytes: (size: number) => Buffer,
   keyId: string,
   serializedPlaintext?: Buffer,
-): EncryptedS3ObjectV3 {
-  const objectType: S3V3ObjectType = 'objectType' in value
+): EncryptedS3ObjectV4 {
+  const objectType: S3V4ObjectType = 'objectType' in value
     ? value.objectType
     : 'manifest';
   const objectId = objectType === 'manifest'
-    ? (value as ServiceManagerSyncManifestV3).revision
-    : (value as ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3).objectId;
-  const plaintext = serializedPlaintext ?? serializePlainS3ObjectV3(value, objectType);
+    ? (value as ServiceManagerSyncManifestV4).revision
+    : (value as ServiceManagerNoteObjectV4 | ServiceManagerNotesTreeObjectV4).objectId;
+  const plaintext = serializedPlaintext ?? serializePlainS3ObjectV4(value, objectType);
   const salt = createBytes(16);
   const iv = createBytes(12);
   if (!Buffer.isBuffer(salt) || salt.byteLength !== 16 || !Buffer.isBuffer(iv) || iv.byteLength !== 12) {
@@ -963,29 +961,29 @@ function encryptParsedS3ObjectV3(
   };
 }
 
-function decryptS3ObjectV3(
+function decryptS3ObjectV4(
   value: unknown,
   encryptionKey: string,
-  expectedType: S3V3ObjectType,
-): ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3 {
+  expectedType: S3V4ObjectType,
+): ServiceManagerSyncManifestV4 | ServiceManagerNoteObjectV4 | ServiceManagerNotesTreeObjectV4 {
   try {
     if (!encryptionKey) throw new Error('missing key');
-    const envelope = parseEncryptedS3ObjectV3(value);
+    const envelope = parseEncryptedS3ObjectV4(value);
     const keyMaterial = syncEncryptionKeyMaterial(encryptionKey);
     if (envelope.encryption.keyId !== sha256Hex(keyMaterial)) {
       throw new Error('key identity mismatch');
     }
-    return decryptParsedS3ObjectV3(envelope, keyMaterial, expectedType);
+    return decryptParsedS3ObjectV4(envelope, keyMaterial, expectedType);
   } catch {
     throw new Error(`The encrypted S3 ${expectedType} could not be decrypted.`);
   }
 }
 
-function decryptParsedS3ObjectV3(
-  envelope: EncryptedS3ObjectV3,
+function decryptParsedS3ObjectV4(
+  envelope: EncryptedS3ObjectV4,
   keyMaterial: Buffer,
-  expectedType: S3V3ObjectType,
-): ServiceManagerSyncManifestV3 | ServiceManagerNoteObjectV3 | ServiceManagerNotesTreeObjectV3 {
+  expectedType: S3V4ObjectType,
+): ServiceManagerSyncManifestV4 | ServiceManagerNoteObjectV4 | ServiceManagerNotesTreeObjectV4 {
   try {
     if (envelope.objectType !== expectedType) throw new Error('object type mismatch');
     const maximumBytes = objectCiphertextLimit(expectedType);
@@ -1004,16 +1002,16 @@ function decryptParsedS3ObjectV3(
     if (plaintext.byteLength > objectPlaintextLimit(expectedType)) throw new Error('oversized plaintext');
     const raw = JSON.parse(plaintext.toString('utf8')) as unknown;
     if (expectedType === 'manifest') {
-      const manifest = parseServiceManagerSyncManifestV3(raw);
+      const manifest = parseServiceManagerSyncManifestV4(raw);
       if (manifest.revision !== envelope.objectId) throw new Error('object identity mismatch');
       return manifest;
     }
     if (expectedType === 'note') {
-      const noteObject = parseServiceManagerNoteObjectV3(raw);
+      const noteObject = parseServiceManagerNoteObjectV4(raw);
       if (noteObject.objectId !== envelope.objectId) throw new Error('object identity mismatch');
       return noteObject;
     }
-    const treeObject = parseServiceManagerNotesTreeObjectV3(raw);
+    const treeObject = parseServiceManagerNotesTreeObjectV4(raw);
     if (treeObject.objectId !== envelope.objectId) throw new Error('object identity mismatch');
     return treeObject;
   } catch {
@@ -1021,61 +1019,61 @@ function decryptParsedS3ObjectV3(
   }
 }
 
-export function encryptS3ManifestV3(
-  value: ServiceManagerSyncManifestV3,
+export function encryptS3ManifestV4(
+  value: ServiceManagerSyncManifestV4,
   syncEncryptionKey: string,
   createBytes: (size: number) => Buffer = randomBytes,
-): EncryptedS3ObjectV3 {
-  return encryptS3ObjectV3(value, syncEncryptionKey, createBytes);
+): EncryptedS3ObjectV4 {
+  return encryptS3ObjectV4(value, syncEncryptionKey, createBytes);
 }
 
-export function decryptS3ManifestV3(
+export function decryptS3ManifestV4(
   value: unknown,
   encryptionKey: string,
-): ServiceManagerSyncManifestV3 {
-  return decryptS3ObjectV3(value, encryptionKey, 'manifest') as ServiceManagerSyncManifestV3;
+): ServiceManagerSyncManifestV4 {
+  return decryptS3ObjectV4(value, encryptionKey, 'manifest') as ServiceManagerSyncManifestV4;
 }
 
-export function encryptS3NoteV3(
-  value: ServiceManagerNoteObjectV3,
+export function encryptS3NoteV4(
+  value: ServiceManagerNoteObjectV4,
   syncEncryptionKey: string,
   createBytes: (size: number) => Buffer = randomBytes,
-): EncryptedS3ObjectV3 {
-  return encryptS3ObjectV3(value, syncEncryptionKey, createBytes);
+): EncryptedS3ObjectV4 {
+  return encryptS3ObjectV4(value, syncEncryptionKey, createBytes);
 }
 
-export function decryptS3NoteV3(
+export function decryptS3NoteV4(
   value: unknown,
   encryptionKey: string,
-): ServiceManagerNoteObjectV3 {
-  return decryptS3ObjectV3(value, encryptionKey, 'note') as ServiceManagerNoteObjectV3;
+): ServiceManagerNoteObjectV4 {
+  return decryptS3ObjectV4(value, encryptionKey, 'note') as ServiceManagerNoteObjectV4;
 }
 
-export function encryptS3NotesTreeV3(
-  value: ServiceManagerNotesTreeObjectV3,
+export function encryptS3NotesTreeV4(
+  value: ServiceManagerNotesTreeObjectV4,
   syncEncryptionKey: string,
   createBytes: (size: number) => Buffer = randomBytes,
-): EncryptedS3ObjectV3 {
-  return encryptS3ObjectV3(value, syncEncryptionKey, createBytes);
+): EncryptedS3ObjectV4 {
+  return encryptS3ObjectV4(value, syncEncryptionKey, createBytes);
 }
 
-export function decryptS3NotesTreeV3(
+export function decryptS3NotesTreeV4(
   value: unknown,
   encryptionKey: string,
-): ServiceManagerNotesTreeObjectV3 {
-  return decryptS3ObjectV3(value, encryptionKey, 'notes-tree') as ServiceManagerNotesTreeObjectV3;
+): ServiceManagerNotesTreeObjectV4 {
+  return decryptS3ObjectV4(value, encryptionKey, 'notes-tree') as ServiceManagerNotesTreeObjectV4;
 }
 
-export function serializeEncryptedS3ObjectV3(value: EncryptedS3ObjectV3): string {
-  return JSON.stringify(parseEncryptedS3ObjectV3(value));
+export function serializeEncryptedS3ObjectV4(value: EncryptedS3ObjectV4): string {
+  return JSON.stringify(parseEncryptedS3ObjectV4(value));
 }
 
-export function buildS3V3HeadObjectUrl(endpoint: unknown, bucket: unknown): string {
+export function buildS3V4HeadObjectUrl(endpoint: unknown, bucket: unknown): string {
   const normalized = normalizeS3EndpointBucket(endpoint, bucket);
   return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/head.json`;
 }
 
-export function buildS3V3ManifestObjectUrl(
+export function buildS3V4ManifestObjectUrl(
   endpoint: unknown,
   bucket: unknown,
   revision: unknown,
@@ -1085,7 +1083,7 @@ export function buildS3V3ManifestObjectUrl(
   return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/manifests/${id}.json`;
 }
 
-export function buildS3V3NoteObjectUrl(
+export function buildS3V4NoteObjectUrl(
   endpoint: unknown,
   bucket: unknown,
   objectId: unknown,
@@ -1095,7 +1093,7 @@ export function buildS3V3NoteObjectUrl(
   return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/notes/${id}.json`;
 }
 
-export function buildS3V3NotesTreeObjectUrl(
+export function buildS3V4NotesTreeObjectUrl(
   endpoint: unknown,
   bucket: unknown,
   objectId: unknown,
@@ -1105,13 +1103,13 @@ export function buildS3V3NotesTreeObjectUrl(
   return `${normalized.endpoint}/${normalized.bucket}/${LAYOUT_PREFIX}/notes-trees/${id}.json`;
 }
 
-export function createS3SyncHeadV3(
-  manifest: ServiceManagerSyncManifestV3,
+export function createS3SyncHeadV4(
+  manifest: ServiceManagerSyncManifestV4,
   manifestSha256: string,
   encryptionKeyId: string,
-): S3SyncHeadV3 {
-  const parsed = parseServiceManagerSyncManifestV3(manifest);
-  return parseS3SyncHeadV3({
+): S3SyncHeadV4 {
+  const parsed = parseServiceManagerSyncManifestV4(manifest);
+  return parseS3SyncHeadV4({
     schemaVersion: SCHEMA_VERSION,
     syncVersion: SYNC_VERSION,
     layoutVersion: LAYOUT_VERSION,
@@ -1125,7 +1123,7 @@ export function createS3SyncHeadV3(
   });
 }
 
-export function parseS3SyncHeadV3(value: unknown): S3SyncHeadV3 {
+export function parseS3SyncHeadV4(value: unknown): S3SyncHeadV4 {
   if (
     !isRecord(value)
     || value.schemaVersion !== SCHEMA_VERSION
@@ -1155,13 +1153,13 @@ export function parseS3SyncHeadV3(value: unknown): S3SyncHeadV3 {
   };
 }
 
-export function assertS3SyncHeadMatchesManifestV3(
-  headValue: S3SyncHeadV3,
-  manifestValue: ServiceManagerSyncManifestV3,
+export function assertS3SyncHeadMatchesManifestV4(
+  headValue: S3SyncHeadV4,
+  manifestValue: ServiceManagerSyncManifestV4,
   manifestSha256: string,
 ): void {
-  const head = parseS3SyncHeadV3(headValue);
-  const manifest = parseServiceManagerSyncManifestV3(manifestValue);
+  const head = parseS3SyncHeadV4(headValue);
+  const manifest = parseServiceManagerSyncManifestV4(manifestValue);
   if (
     manifestSha256 !== head.manifestSha256
     || manifest.revision !== head.revision
@@ -1173,8 +1171,8 @@ export function assertS3SyncHeadMatchesManifestV3(
   }
 }
 
-export function signS3V3Request(input: S3V3SigningInput): S3V3SignedRequest {
-  return signS3V2Request(input);
+export function signS3V4Request(input: S3V4SigningInput): S3V4SignedRequest {
+  return signS3Request(input);
 }
 
 function normalizedEtag(value: unknown): string {
@@ -1241,15 +1239,15 @@ async function readBoundedBody(
  * head yet; a missing bucket remains an error. Existing head content is
  * deliberately neither parsed nor decrypted.
  */
-export async function testS3V3Connection(options: S3V3ConnectionTestOptions): Promise<void> {
+export async function testS3V4Connection(options: S3V4ConnectionTestOptions): Promise<void> {
   const target = normalizeS3EndpointBucket(options.endpoint, options.bucket);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) {
     throw new Error('The S3 request timeout is invalid.');
   }
-  const signed = signS3V3Request({
+  const signed = signS3V4Request({
     method: 'GET',
-    objectUrl: buildS3V3HeadObjectUrl(target.endpoint, target.bucket),
+    objectUrl: buildS3V4HeadObjectUrl(target.endpoint, target.bucket),
     region: options.region,
     accessKeyId: options.accessKeyId,
     secretAccessKey: options.secretAccessKey,
@@ -1315,7 +1313,7 @@ function parseJsonBody(body: Buffer, label: string): unknown {
   }
 }
 
-export class S3V3ObjectStore {
+export class S3V4ObjectStore {
   private readonly endpoint: string;
   private readonly bucket: string;
   private readonly fetchImpl: typeof fetch;
@@ -1328,7 +1326,7 @@ export class S3V3ObjectStore {
   private readonly previousSyncEncryptionKeyId?: string;
   private readonly activeControllers = new Set<AbortController>();
 
-  public constructor(private readonly options: S3V3ObjectStoreOptions) {
+  public constructor(private readonly options: S3V4ObjectStoreOptions) {
     const target = normalizeS3EndpointBucket(options.endpoint, options.bucket);
     this.endpoint = target.endpoint;
     this.bucket = target.bucket;
@@ -1353,36 +1351,36 @@ export class S3V3ObjectStore {
     }
   }
 
-  public async getHead(): Promise<S3V3HeadReadResult> {
-    const result = await this.request('GET', buildS3V3HeadObjectUrl(this.endpoint, this.bucket), undefined, {}, MAX_HEAD_OBJECT_BYTES);
+  public async getHead(): Promise<S3V4HeadReadResult> {
+    const result = await this.request('GET', buildS3V4HeadObjectUrl(this.endpoint, this.bucket), undefined, {}, MAX_HEAD_OBJECT_BYTES);
     if (result.status === 404) return { status: 'missing' };
     this.requireSuccess(result);
     return {
       status: 'found',
-      head: parseS3SyncHeadV3(parseJsonBody(result.body, 'v4 head')),
+      head: parseS3SyncHeadV4(parseJsonBody(result.body, 'v4 head')),
       etag: responseEtag(result.headers, true) as string,
     };
   }
 
-  public async getManifest(revision: string, expectedSha256?: string): Promise<S3V3ManifestReadResult> {
+  public async getManifest(revision: string, expectedSha256?: string): Promise<S3V4ManifestReadResult> {
     const id = normalizedIdentifier(revision, 'manifest revision', 256);
     const expected = expectedSha256 === undefined
       ? undefined
       : digest(expectedSha256, 'The expected S3 manifest digest');
     const result = await this.request(
       'GET',
-      buildS3V3ManifestObjectUrl(this.endpoint, this.bucket, id),
+      buildS3V4ManifestObjectUrl(this.endpoint, this.bucket, id),
       undefined,
       {},
       objectResponseLimit('manifest'),
     );
     if (result.status === 404) return { status: 'missing' };
     this.requireSuccess(result);
-    const manifestSha256 = hashS3V3Object(result.body);
+    const manifestSha256 = hashS3V4Object(result.body);
     if (expected !== undefined && manifestSha256 !== expected) {
       throw new Error('The S3 sync manifest digest does not match the shared head.');
     }
-    const encrypted = parseEncryptedS3ObjectV3(parseJsonBody(result.body, 'manifest'));
+    const encrypted = parseEncryptedS3ObjectV4(parseJsonBody(result.body, 'manifest'));
     if (encrypted.objectType !== 'manifest' || encrypted.objectId !== id) {
       throw new Error('The S3 sync manifest is invalid.');
     }
@@ -1396,10 +1394,10 @@ export class S3V3ObjectStore {
     };
   }
 
-  public async putManifest(manifestValue: ServiceManagerSyncManifestV3): Promise<S3V3ManifestWriteResult> {
-    const manifest = parseServiceManagerSyncManifestV3(manifestValue);
-    const plaintext = serializePlainS3ObjectV3(manifest, 'manifest');
-    const encrypted = encryptParsedS3ObjectV3(
+  public async putManifest(manifestValue: ServiceManagerSyncManifestV4): Promise<S3V4ManifestWriteResult> {
+    const manifest = parseServiceManagerSyncManifestV4(manifestValue);
+    const plaintext = serializePlainS3ObjectV4(manifest, 'manifest');
+    const encrypted = encryptParsedS3ObjectV4(
       manifest,
       this.syncEncryptionKeyMaterial,
       this.createRandomBytes,
@@ -1410,11 +1408,11 @@ export class S3V3ObjectStore {
     // plaintext, so avoid reparsing the complete base64 ciphertext solely to
     // serialize it for the owned PUT request.
     const body = JSON.stringify(encrypted);
-    const manifestSha256 = hashS3V3Object(body);
+    const manifestSha256 = hashS3V4Object(body);
     const byteLength = Buffer.byteLength(body, 'utf8');
     const result = await this.request(
       'PUT',
-      buildS3V3ManifestObjectUrl(this.endpoint, this.bucket, manifest.revision),
+      buildS3V4ManifestObjectUrl(this.endpoint, this.bucket, manifest.revision),
       body,
       { ifNoneMatch: '*' },
     );
@@ -1429,21 +1427,21 @@ export class S3V3ObjectStore {
     };
   }
 
-  public async getNote(referenceValue: S3V3NoteReference): Promise<S3V3NoteReadResult> {
+  public async getNote(referenceValue: S3V4NoteReference): Promise<S3V4NoteReadResult> {
     const reference = parseNoteReference(referenceValue);
     const result = await this.request(
       'GET',
-      buildS3V3NoteObjectUrl(this.endpoint, this.bucket, reference.objectId),
+      buildS3V4NoteObjectUrl(this.endpoint, this.bucket, reference.objectId),
       undefined,
       {},
       objectResponseLimit('note'),
     );
     if (result.status === 404) return { status: 'missing' };
     this.requireSuccess(result);
-    if (hashS3V3Object(result.body) !== reference.sha256) {
+    if (hashS3V4Object(result.body) !== reference.sha256) {
       throw new Error('The S3 Note object digest does not match its manifest reference.');
     }
-    const encrypted = parseEncryptedS3ObjectV3(parseJsonBody(result.body, 'Note object'));
+    const encrypted = parseEncryptedS3ObjectV4(parseJsonBody(result.body, 'Note object'));
     if (encrypted.objectType !== 'note' || encrypted.objectId !== reference.objectId) {
       throw new Error('The S3 Note object is invalid.');
     }
@@ -1451,7 +1449,7 @@ export class S3V3ObjectStore {
       throw new Error('The S3 Note object encryption identity does not match its manifest reference.');
     }
     const object = this.decryptNote(encrypted);
-    if (object.note.id !== reference.id || hashS3V3NoteContent(object) !== reference.contentHash) {
+    if (object.note.id !== reference.id || hashS3V4NoteContent(object) !== reference.contentHash) {
       throw new Error('The S3 Note object does not match its manifest reference.');
     }
     return {
@@ -1463,11 +1461,11 @@ export class S3V3ObjectStore {
     };
   }
 
-  public async putNote(objectValue: ServiceManagerNoteObjectV3): Promise<S3V3NoteWriteResult> {
-    const object = parseServiceManagerNoteObjectV3(objectValue);
-    const plaintext = serializePlainS3ObjectV3(object, 'note');
+  public async putNote(objectValue: ServiceManagerNoteObjectV4): Promise<S3V4NoteWriteResult> {
+    const object = parseServiceManagerNoteObjectV4(objectValue);
+    const plaintext = serializePlainS3ObjectV4(object, 'note');
     const contentHash = sha256Hex(JSON.stringify(object.note));
-    const encrypted = encryptParsedS3ObjectV3(
+    const encrypted = encryptParsedS3ObjectV4(
       object,
       this.syncEncryptionKeyMaterial,
       this.createRandomBytes,
@@ -1475,16 +1473,16 @@ export class S3V3ObjectStore {
       plaintext,
     );
     const body = JSON.stringify(encrypted);
-    const reference: S3V3NoteReference = {
+    const reference: S3V4NoteReference = {
       id: object.note.id,
       objectId: object.objectId,
-      sha256: hashS3V3Object(body),
+      sha256: hashS3V4Object(body),
       contentHash,
       encryptionKeyId: this.syncEncryptionKeyId,
     };
     const result = await this.request(
       'PUT',
-      buildS3V3NoteObjectUrl(this.endpoint, this.bucket, object.objectId),
+      buildS3V4NoteObjectUrl(this.endpoint, this.bucket, object.objectId),
       body,
       { ifNoneMatch: '*' },
     );
@@ -1499,21 +1497,21 @@ export class S3V3ObjectStore {
     };
   }
 
-  public async getNotesTree(referenceValue: S3V3NotesTreeReference): Promise<S3V3NotesTreeReadResult> {
-    const reference = parseS3V3NotesTreeReference(referenceValue);
+  public async getNotesTree(referenceValue: S3V4NotesTreeReference): Promise<S3V4NotesTreeReadResult> {
+    const reference = parseS3V4NotesTreeReference(referenceValue);
     const result = await this.request(
       'GET',
-      buildS3V3NotesTreeObjectUrl(this.endpoint, this.bucket, reference.objectId),
+      buildS3V4NotesTreeObjectUrl(this.endpoint, this.bucket, reference.objectId),
       undefined,
       {},
       objectResponseLimit('notes-tree'),
     );
     if (result.status === 404) return { status: 'missing' };
     this.requireSuccess(result);
-    if (hashS3V3Object(result.body) !== reference.sha256) {
+    if (hashS3V4Object(result.body) !== reference.sha256) {
       throw new Error('The S3 Notes tree object digest does not match its manifest reference.');
     }
-    const encrypted = parseEncryptedS3ObjectV3(parseJsonBody(result.body, 'Notes tree object'));
+    const encrypted = parseEncryptedS3ObjectV4(parseJsonBody(result.body, 'Notes tree object'));
     if (encrypted.objectType !== 'notes-tree' || encrypted.objectId !== reference.objectId) {
       throw new Error('The S3 Notes tree object is invalid.');
     }
@@ -1521,7 +1519,7 @@ export class S3V3ObjectStore {
       throw new Error('The S3 Notes tree encryption identity does not match its manifest reference.');
     }
     const object = this.decryptNotesTree(encrypted);
-    if (hashS3V3NotesTreeContent(object) !== reference.contentHash) {
+    if (hashS3V4NotesTreeContent(object) !== reference.contentHash) {
       throw new Error('The S3 Notes tree object does not match its manifest reference.');
     }
     return {
@@ -1534,12 +1532,12 @@ export class S3V3ObjectStore {
   }
 
   public async putNotesTree(
-    objectValue: ServiceManagerNotesTreeObjectV3,
-  ): Promise<S3V3NotesTreeWriteResult> {
-    const object = parseServiceManagerNotesTreeObjectV3(objectValue);
-    const plaintext = serializePlainS3ObjectV3(object, 'notes-tree');
+    objectValue: ServiceManagerNotesTreeObjectV4,
+  ): Promise<S3V4NotesTreeWriteResult> {
+    const object = parseServiceManagerNotesTreeObjectV4(objectValue);
+    const plaintext = serializePlainS3ObjectV4(object, 'notes-tree');
     const contentHash = sha256Hex(JSON.stringify(object.tree));
-    const encrypted = encryptParsedS3ObjectV3(
+    const encrypted = encryptParsedS3ObjectV4(
       object,
       this.syncEncryptionKeyMaterial,
       this.createRandomBytes,
@@ -1547,15 +1545,15 @@ export class S3V3ObjectStore {
       plaintext,
     );
     const body = JSON.stringify(encrypted);
-    const reference: S3V3NotesTreeReference = {
+    const reference: S3V4NotesTreeReference = {
       objectId: object.objectId,
-      sha256: hashS3V3Object(body),
+      sha256: hashS3V4Object(body),
       contentHash,
       encryptionKeyId: this.syncEncryptionKeyId,
     };
     const result = await this.request(
       'PUT',
-      buildS3V3NotesTreeObjectUrl(this.endpoint, this.bucket, object.objectId),
+      buildS3V4NotesTreeObjectUrl(this.endpoint, this.bucket, object.objectId),
       body,
       { ifNoneMatch: '*' },
     );
@@ -1570,8 +1568,8 @@ export class S3V3ObjectStore {
     };
   }
 
-  public async putHead(headValue: S3SyncHeadV3, expectedEtag?: string): Promise<S3V3ConditionalWriteResult> {
-    const head = parseS3SyncHeadV3(headValue);
+  public async putHead(headValue: S3SyncHeadV4, expectedEtag?: string): Promise<S3V4ConditionalWriteResult> {
+    const head = parseS3SyncHeadV4(headValue);
     if (head.encryptionKeyId !== this.syncEncryptionKeyId) {
       throw new Error('The S3 sync head must use the active Sync Encryption Key.');
     }
@@ -1581,7 +1579,7 @@ export class S3V3ObjectStore {
       : { ifMatch: normalizedEtag(expectedEtag) };
     const result = await this.request(
       'PUT',
-      buildS3V3HeadObjectUrl(this.endpoint, this.bucket),
+      buildS3V4HeadObjectUrl(this.endpoint, this.bucket),
       body,
       conditions,
     );
@@ -1595,31 +1593,31 @@ export class S3V3ObjectStore {
     for (const controller of this.activeControllers) controller.abort();
   }
 
-  private decryptManifest(encrypted: EncryptedS3ObjectV3): ServiceManagerSyncManifestV3 {
-    return this.decryptWithAvailableKeys(encrypted, 'manifest') as ServiceManagerSyncManifestV3;
+  private decryptManifest(encrypted: EncryptedS3ObjectV4): ServiceManagerSyncManifestV4 {
+    return this.decryptWithAvailableKeys(encrypted, 'manifest') as ServiceManagerSyncManifestV4;
   }
 
-  private decryptNote(encrypted: EncryptedS3ObjectV3): ServiceManagerNoteObjectV3 {
-    return this.decryptWithAvailableKeys(encrypted, 'note') as ServiceManagerNoteObjectV3;
+  private decryptNote(encrypted: EncryptedS3ObjectV4): ServiceManagerNoteObjectV4 {
+    return this.decryptWithAvailableKeys(encrypted, 'note') as ServiceManagerNoteObjectV4;
   }
 
-  private decryptNotesTree(encrypted: EncryptedS3ObjectV3): ServiceManagerNotesTreeObjectV3 {
-    return this.decryptWithAvailableKeys(encrypted, 'notes-tree') as ServiceManagerNotesTreeObjectV3;
+  private decryptNotesTree(encrypted: EncryptedS3ObjectV4): ServiceManagerNotesTreeObjectV4 {
+    return this.decryptWithAvailableKeys(encrypted, 'notes-tree') as ServiceManagerNotesTreeObjectV4;
   }
 
   private decryptWithAvailableKeys(
-    encrypted: EncryptedS3ObjectV3,
-    expectedType: S3V3ObjectType,
-  ): PlainS3ObjectV3 {
+    encrypted: EncryptedS3ObjectV4,
+    expectedType: S3V4ObjectType,
+  ): PlainS3ObjectV4 {
     const keyId = encrypted.encryption.keyId;
     if (keyId === this.syncEncryptionKeyId) {
-      return decryptParsedS3ObjectV3(encrypted, this.syncEncryptionKeyMaterial, expectedType);
+      return decryptParsedS3ObjectV4(encrypted, this.syncEncryptionKeyMaterial, expectedType);
     }
     if (
       this.previousSyncEncryptionKeyMaterial
       && keyId === this.previousSyncEncryptionKeyId
     ) {
-      return decryptParsedS3ObjectV3(encrypted, this.previousSyncEncryptionKeyMaterial, expectedType);
+      return decryptParsedS3ObjectV4(encrypted, this.previousSyncEncryptionKeyMaterial, expectedType);
     }
     throw new Error('The Sync Encryption Key does not match the S3 data.');
   }
@@ -1635,7 +1633,7 @@ export class S3V3ObjectStore {
     conditions: { ifMatch?: string; ifNoneMatch?: '*' },
     successBodyLimit?: number,
   ): Promise<HttpResult> {
-    const signed = signS3V3Request({
+    const signed = signS3V4Request({
       method,
       objectUrl,
       region: this.options.region.trim(),

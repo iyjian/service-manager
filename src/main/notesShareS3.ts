@@ -20,10 +20,10 @@ import { renderMarkdownToSafeHtml } from '../shared/notesMarkdown';
 import {
   buildS3BucketUrl,
   normalizeS3EndpointBucket,
-  presignS3V2Get,
-  signS3V2Request,
+  presignS3Get,
+  signS3Request,
   type S3EndpointBucket,
-} from './s3SyncV2';
+} from './s3Request';
 import { highlightSafeNoteCodeBlocks } from './noteCodeHighlight';
 
 const SHARE_PREFIX = 'service-manager/v4/shares';
@@ -415,7 +415,7 @@ export class NotesShareS3Store {
   }
 
   private presign(key: string, now: Date, expiresInSeconds: number): string {
-    return presignS3V2Get({
+    return presignS3Get({
       objectUrl: objectUrl(this.endpoint, this.bucket, key),
       region: this.options.region,
       accessKeyId: this.options.accessKeyId,
@@ -475,7 +475,7 @@ export class NotesShareS3Store {
     query: Readonly<Record<string, string>> | undefined,
     maximumResponseBytes: number,
   ): Promise<{ status: number; body: Buffer }> {
-    const signed = signS3V2Request({
+    const signed = signS3Request({
       method,
       objectUrl: url,
       region: this.options.region,

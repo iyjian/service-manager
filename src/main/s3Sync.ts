@@ -1,8 +1,6 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
-  createHmac,
   hkdfSync,
   randomBytes,
   randomUUID,
@@ -32,39 +30,37 @@ import type {
   StartupS3SyncState,
 } from '../shared/types';
 import {
-  createServiceManagerSyncRevisionV2,
-  encryptS3RevisionV2,
+  canonicalizeS3Path,
   normalizeS3Bucket,
   normalizeS3Endpoint,
-  splitLegacyS3BucketUrl,
-  serializeEncryptedS3RevisionV2,
-} from './s3SyncV2';
+  splitS3BucketUrl,
+} from './s3Request';
 import {
-  S3V3ObjectStore,
-  assertS3SyncHeadMatchesManifestV3,
-  createS3SyncHeadV3,
+  S3V4ObjectStore,
+  assertS3SyncHeadMatchesManifestV4,
+  createS3SyncHeadV4,
   createS3SyncEncryptionKey,
-  createServiceManagerNoteObjectV3,
-  createServiceManagerNotesTreeObjectV3,
-  createServiceManagerSyncManifestV3,
-  createS3V3ObjectId,
-  hashS3V3NoteContent,
-  hashS3V3NotesTreeContent,
+  createServiceManagerNoteObjectV4,
+  createServiceManagerNotesTreeObjectV4,
+  createServiceManagerSyncManifestV4,
+  createS3V4ObjectId,
+  hashS3V4NoteContent,
+  hashS3V4NotesTreeContent,
   getS3SyncEncryptionKeyId,
   normalizeS3SyncEncryptionKey,
-  parseS3V3ManifestData,
-  parseS3V3NotesTreePayload,
-  testS3V3Connection,
-  type S3V3ManifestData,
-  type S3V3NoteReference,
-  type S3V3NotesTreePayload,
-  type S3V3NotesTreeReference,
-  type ServiceManagerSyncManifestV3,
-} from './s3SyncV3';
+  parseS3V4ManifestData,
+  parseS3V4NotesTreePayload,
+  testS3V4Connection,
+  type S3V4ManifestData,
+  type S3V4NoteReference,
+  type S3V4NotesTreePayload,
+  type S3V4NotesTreeReference,
+  type ServiceManagerSyncManifestV4,
+} from './s3SyncV4';
 import {
-  mergeS3SharedAppDataV2,
-  parseS3SharedAppDataV2,
-  type S3SharedAppDataV2,
+  mergeS3SharedAppData,
+  parseS3SharedAppData,
+  type S3SharedAppData,
   type S3NoteTombstone,
 } from './s3DataMerge';
 import { NOTES_IMAGE_LIMITS, NotesImageS3Store } from './notesImageS3';
@@ -79,9 +75,6 @@ import {
 import { NotesShareS3Store } from './notesShareS3';
 
 const SETTINGS_SCHEMA_VERSION = 6;
-const SNAPSHOT_SCHEMA_VERSION = 1;
-const SYNC_VERSION = 1 as const;
-const OBJECT_LAYOUT_VERSION = 1 as const;
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const AUTO_SYNC_DEBOUNCE_MS = 2_000;
@@ -93,8 +86,9 @@ const MAX_REGION_LENGTH = 128;
 const MAX_ACCESS_KEY_LENGTH = 512;
 const MAX_SECRET_KEY_LENGTH = 4_096;
 const MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
-const ENCRYPTION_INFO = Buffer.from('service-manager-s3-sync-v1', 'utf8');
-const ENCRYPTION_AAD = Buffer.from('service-manager-s3-snapshot-v1', 'utf8');
+const LOCAL_RECOVERY_SCHEMA_VERSION = 1 as const;
+const LOCAL_RECOVERY_ENCRYPTION_INFO = Buffer.from('service-manager-s3-local-recovery', 'utf8');
+const LOCAL_RECOVERY_AAD_PREFIX = 'service-manager-s3-local-recovery\0';
 
 export interface S3CredentialProtector {
   isEncryptionAvailable(): boolean;
@@ -105,8 +99,8 @@ export interface S3CredentialProtector {
 
 export type S3SnapshotProvider = () => Promise<unknown>;
 export type S3SnapshotApplier = (
-  data: S3SharedAppDataV2,
-  expectedLocal?: S3SharedAppDataV2,
+  data: S3SharedAppData,
+  expectedLocal?: S3SharedAppData,
 ) => Promise<boolean | void>;
 
 export type S3LocalChange =
@@ -175,22 +169,26 @@ interface PersistedS3SyncSettings {
   pendingSince?: string;
 }
 
-export interface ServiceManagerSnapshotV1 {
+export interface S3LocalRecoverySnapshot {
   schemaVersion: 1;
-  syncVersion: 1;
   app: 'service-manager';
+  objectType: 'local-conflict-recovery';
   appVersion: string;
-  revision: string;
+  recoveryId: string;
+  clientId: string;
   createdAt: string;
-  data: Record<string, unknown>;
+  data: S3SharedAppData;
 }
 
-export interface EncryptedS3SnapshotV1 {
+export interface EncryptedS3LocalRecovery {
   schemaVersion: 1;
-  syncVersion: 1;
+  app: 'service-manager';
+  objectType: 'local-conflict-recovery';
+  recoveryId: string;
   encryption: {
     algorithm: 'AES-256-GCM';
     kdf: 'HKDF-SHA256';
+    keySource: 'sync-key';
     salt: string;
     iv: string;
     authTag: string;
@@ -198,30 +196,8 @@ export interface EncryptedS3SnapshotV1 {
   ciphertext: string;
 }
 
-export interface S3SigningInput {
-  endpoint: string;
-  region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  payload: string | Buffer;
-  now: Date;
-}
-
-export interface S3SignedRequest {
-  url: string;
-  headers: Record<string, string>;
-  canonicalRequest: string;
-  stringToSign: string;
-  signature: string;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '[::1]' || normalized === '::1';
 }
 
 function isValidIsoTimestamp(value: unknown): value is string {
@@ -230,7 +206,7 @@ function isValidIsoTimestamp(value: unknown): value is string {
     && Number.isFinite(Date.parse(value));
 }
 
-function normalizedEndpoint(value: unknown): string {
+function normalizedBucketUrl(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length === 0 || value.length > MAX_ENDPOINT_LENGTH) {
     throw new Error('A full S3 bucket URL is required.');
   }
@@ -244,9 +220,6 @@ function normalizedEndpoint(value: unknown): string {
 
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error('The S3 bucket URL must use HTTPS.');
-  }
-  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
-    throw new Error('The S3 bucket URL must use HTTPS unless it targets localhost.');
   }
   if (url.username || url.password || url.search || url.hash) {
     throw new Error('The S3 bucket URL cannot contain credentials, a query, or a fragment.');
@@ -264,19 +237,20 @@ function normalizedEndpoint(value: unknown): string {
   return url.toString();
 }
 
-function migrateLegacyObjectUrl(value: unknown): string {
-  const endpoint = normalizedEndpoint(value);
-  const url = new URL(endpoint);
-  const originalPath = url.pathname;
-  if (/\/service-manager\/snapshot\.json$/i.test(url.pathname)) {
-    url.pathname = url.pathname.replace(/\/service-manager\/snapshot\.json$/i, '');
-  } else if (/\/[^/]+\.json$/i.test(url.pathname)) {
-    url.pathname = url.pathname.replace(/\/[^/]+\.json$/i, '');
+function bucketUrlFromStoredS3Url(value: unknown): string {
+  const bucketUrl = normalizedBucketUrl(value);
+  const url = new URL(bucketUrl);
+  let segments: string[];
+  try {
+    segments = url.pathname.split('/').filter(Boolean).map((segment) => decodeURIComponent(segment));
+  } catch {
+    throw new Error('The S3 bucket URL contains an invalid path encoding.');
   }
-  if (url.pathname && url.pathname !== '/' && url.pathname !== originalPath) {
-    return normalizedEndpoint(url.toString());
+  if (segments.length > 1 && /\.json$/i.test(segments[segments.length - 1])) {
+    url.pathname = `/${encodeURIComponent(segments[0])}`;
+    return normalizedBucketUrl(url.toString());
   }
-  return endpoint;
+  return bucketUrl;
 }
 
 function normalizedClientId(value: unknown): string {
@@ -291,13 +265,6 @@ function normalizedRevision(value: unknown): string {
     throw new Error('The S3 snapshot revision is invalid.');
   }
   return value;
-}
-
-export function buildS3SnapshotObjectUrl(bucketUrl: string, clientId: string, revision: string): string {
-  const base = normalizedEndpoint(bucketUrl).replace(/\/+$/, '');
-  const client = normalizedClientId(clientId);
-  const snapshotRevision = normalizedRevision(revision);
-  return `${base}/service-manager/v${OBJECT_LAYOUT_VERSION}/clients/${client}/${snapshotRevision}.json`;
 }
 
 function normalizedRegion(value: unknown): string {
@@ -367,36 +334,6 @@ export function validateS3ConnectionTestDraft(value: unknown): S3ConnectionTestD
     region: normalizedRegion(value.region),
     accessKeyId,
     secretAccessKey,
-  };
-}
-
-export function createServiceManagerSnapshot(
-  data: Record<string, unknown>,
-  appVersion: string,
-  revision: string = randomUUID(),
-  createdAt: string = new Date().toISOString(),
-): ServiceManagerSnapshotV1 {
-  if (!isRecord(data)) {
-    throw new Error('Snapshot data is invalid.');
-  }
-  if (typeof appVersion !== 'string' || appVersion.length === 0 || appVersion.length > 128) {
-    throw new Error('The application version is invalid.');
-  }
-  if (typeof revision !== 'string' || revision.length === 0 || revision.length > 256) {
-    throw new Error('The snapshot revision is invalid.');
-  }
-  if (!isValidIsoTimestamp(createdAt)) {
-    throw new Error('The snapshot timestamp is invalid.');
-  }
-
-  return {
-    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-    syncVersion: SYNC_VERSION,
-    app: 'service-manager',
-    appVersion,
-    revision,
-    createdAt,
-    data,
   };
 }
 
@@ -499,63 +436,144 @@ export function measureBoundedJsonBytes(value: unknown, maximumBytes = MAX_SNAPS
   return bytes;
 }
 
-function deriveSnapshotKey(secretAccessKey: string, salt: Buffer): Buffer {
-  return Buffer.from(hkdfSync('sha256', Buffer.from(secretAccessKey, 'utf8'), salt, ENCRYPTION_INFO, 32));
+function deriveLocalRecoveryKey(syncEncryptionKey: string, salt: Buffer): Buffer {
+  return Buffer.from(hkdfSync(
+    'sha256',
+    Buffer.from(normalizeS3SyncEncryptionKey(syncEncryptionKey), 'utf8'),
+    salt,
+    LOCAL_RECOVERY_ENCRYPTION_INFO,
+    32,
+  ));
 }
 
-function parseEncryptedSnapshot(value: unknown): EncryptedS3SnapshotV1 {
-  if (!isRecord(value) || value.schemaVersion !== 1 || value.syncVersion !== 1 || !isRecord(value.encryption)) {
-    throw new Error('Encrypted S3 snapshot is invalid.');
+function strictRecoveryBase64(value: unknown, expectedBytes?: number): Buffer {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_SNAPSHOT_BYTES * 2) {
+    throw new Error('invalid base64');
   }
-  const encryption = value.encryption;
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error('invalid base64');
+  }
+  const decoded = Buffer.from(value, 'base64');
+  if (decoded.toString('base64') !== value || (expectedBytes !== undefined && decoded.byteLength !== expectedBytes)) {
+    throw new Error('invalid base64');
+  }
+  return decoded;
+}
+
+function parseS3LocalRecoverySnapshot(value: unknown): S3LocalRecoverySnapshot {
   if (
-    encryption.algorithm !== 'AES-256-GCM'
-    || encryption.kdf !== 'HKDF-SHA256'
-    || typeof encryption.salt !== 'string'
-    || typeof encryption.iv !== 'string'
-    || typeof encryption.authTag !== 'string'
+    !isRecord(value)
+    || value.schemaVersion !== LOCAL_RECOVERY_SCHEMA_VERSION
+    || value.app !== 'service-manager'
+    || value.objectType !== 'local-conflict-recovery'
+    || typeof value.appVersion !== 'string'
+    || value.appVersion.length === 0
+    || value.appVersion.length > 128
+    || !isValidIsoTimestamp(value.createdAt)
+  ) {
+    throw new Error('The local S3 conflict recovery is invalid.');
+  }
+  return {
+    schemaVersion: LOCAL_RECOVERY_SCHEMA_VERSION,
+    app: 'service-manager',
+    objectType: 'local-conflict-recovery',
+    appVersion: value.appVersion,
+    recoveryId: normalizedRevision(value.recoveryId),
+    clientId: normalizedClientId(value.clientId),
+    createdAt: value.createdAt,
+    data: parseS3SharedAppData(value.data),
+  };
+}
+
+export function createS3LocalRecoverySnapshot(
+  data: S3SharedAppData,
+  options: {
+    appVersion: string;
+    recoveryId: string;
+    clientId: string;
+    createdAt?: string;
+  },
+): S3LocalRecoverySnapshot {
+  return parseS3LocalRecoverySnapshot({
+    schemaVersion: LOCAL_RECOVERY_SCHEMA_VERSION,
+    app: 'service-manager',
+    objectType: 'local-conflict-recovery',
+    appVersion: options.appVersion,
+    recoveryId: options.recoveryId,
+    clientId: options.clientId,
+    createdAt: options.createdAt ?? new Date().toISOString(),
+    data,
+  });
+}
+
+function parseEncryptedS3LocalRecovery(value: unknown): EncryptedS3LocalRecovery {
+  if (
+    !isRecord(value)
+    || value.schemaVersion !== LOCAL_RECOVERY_SCHEMA_VERSION
+    || value.app !== 'service-manager'
+    || value.objectType !== 'local-conflict-recovery'
+    || !isRecord(value.encryption)
+    || value.encryption.algorithm !== 'AES-256-GCM'
+    || value.encryption.kdf !== 'HKDF-SHA256'
+    || value.encryption.keySource !== 'sync-key'
     || typeof value.ciphertext !== 'string'
   ) {
-    throw new Error('Encrypted S3 snapshot is invalid.');
+    throw new Error('The encrypted local S3 conflict recovery is invalid.');
   }
-  return value as unknown as EncryptedS3SnapshotV1;
+  try {
+    strictRecoveryBase64(value.encryption.salt, 16);
+    strictRecoveryBase64(value.encryption.iv, 12);
+    strictRecoveryBase64(value.encryption.authTag, 16);
+    const ciphertext = strictRecoveryBase64(value.ciphertext);
+    if (ciphertext.byteLength === 0 || ciphertext.byteLength > MAX_SNAPSHOT_BYTES) throw new Error('invalid ciphertext');
+  } catch {
+    throw new Error('The encrypted local S3 conflict recovery is invalid.');
+  }
+  return {
+    schemaVersion: LOCAL_RECOVERY_SCHEMA_VERSION,
+    app: 'service-manager',
+    objectType: 'local-conflict-recovery',
+    recoveryId: normalizedRevision(value.recoveryId),
+    encryption: {
+      algorithm: 'AES-256-GCM',
+      kdf: 'HKDF-SHA256',
+      keySource: 'sync-key',
+      salt: value.encryption.salt as string,
+      iv: value.encryption.iv as string,
+      authTag: value.encryption.authTag as string,
+    },
+    ciphertext: value.ciphertext as string,
+  };
 }
 
-export function encryptS3Snapshot(
-  snapshot: ServiceManagerSnapshotV1,
-  secretAccessKey: string,
+export function encryptS3LocalRecovery(
+  snapshot: S3LocalRecoverySnapshot,
+  syncEncryptionKey: string,
   createBytes: (size: number) => Buffer = randomBytes,
-): EncryptedS3SnapshotV1 {
-  if (typeof secretAccessKey !== 'string' || secretAccessKey.length === 0) {
-    throw new Error('The S3 secret access key is unavailable.');
-  }
-
-  measureBoundedJsonBytes(snapshot);
-  let plaintext: Buffer;
-  try {
-    plaintext = Buffer.from(JSON.stringify(snapshot), 'utf8');
-  } catch {
-    throw new Error('Snapshot data could not be serialized.');
-  }
+): EncryptedS3LocalRecovery {
+  const parsed = parseS3LocalRecoverySnapshot(snapshot);
+  measureBoundedJsonBytes(parsed);
+  const plaintext = Buffer.from(JSON.stringify(parsed), 'utf8');
   if (plaintext.byteLength > MAX_SNAPSHOT_BYTES) {
     throw new Error('The application data snapshot is too large to sync.');
   }
-
   const salt = createBytes(16);
   const iv = createBytes(12);
   if (!Buffer.isBuffer(salt) || salt.byteLength !== 16 || !Buffer.isBuffer(iv) || iv.byteLength !== 12) {
     throw new Error('Secure snapshot randomness is unavailable.');
   }
-  const cipher = createCipheriv('aes-256-gcm', deriveSnapshotKey(secretAccessKey, salt), iv);
-  cipher.setAAD(ENCRYPTION_AAD);
+  const cipher = createCipheriv('aes-256-gcm', deriveLocalRecoveryKey(syncEncryptionKey, salt), iv);
+  cipher.setAAD(Buffer.from(`${LOCAL_RECOVERY_AAD_PREFIX}${parsed.recoveryId}`, 'utf8'));
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-
   return {
-    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-    syncVersion: SYNC_VERSION,
+    schemaVersion: LOCAL_RECOVERY_SCHEMA_VERSION,
+    app: 'service-manager',
+    objectType: 'local-conflict-recovery',
+    recoveryId: parsed.recoveryId,
     encryption: {
       algorithm: 'AES-256-GCM',
       kdf: 'HKDF-SHA256',
+      keySource: 'sync-key',
       salt: salt.toString('base64'),
       iv: iv.toString('base64'),
       authTag: cipher.getAuthTag().toString('base64'),
@@ -564,113 +582,28 @@ export function encryptS3Snapshot(
   };
 }
 
-export function decryptS3Snapshot(value: unknown, secretAccessKey: string): ServiceManagerSnapshotV1 {
+export function decryptS3LocalRecovery(value: unknown, syncEncryptionKey: string): S3LocalRecoverySnapshot {
   try {
-    const envelope = parseEncryptedSnapshot(value);
-    const salt = Buffer.from(envelope.encryption.salt, 'base64');
-    const iv = Buffer.from(envelope.encryption.iv, 'base64');
-    const authTag = Buffer.from(envelope.encryption.authTag, 'base64');
-    const ciphertext = Buffer.from(envelope.ciphertext, 'base64');
-    if (salt.byteLength !== 16 || iv.byteLength !== 12 || authTag.byteLength !== 16) {
-      throw new Error('invalid encryption parameters');
-    }
-    const decipher = createDecipheriv('aes-256-gcm', deriveSnapshotKey(secretAccessKey, salt), iv);
-    decipher.setAAD(ENCRYPTION_AAD);
+    const envelope = parseEncryptedS3LocalRecovery(value);
+    const salt = strictRecoveryBase64(envelope.encryption.salt, 16);
+    const iv = strictRecoveryBase64(envelope.encryption.iv, 12);
+    const authTag = strictRecoveryBase64(envelope.encryption.authTag, 16);
+    const ciphertext = strictRecoveryBase64(envelope.ciphertext);
+    const decipher = createDecipheriv('aes-256-gcm', deriveLocalRecoveryKey(syncEncryptionKey, salt), iv);
+    decipher.setAAD(Buffer.from(`${LOCAL_RECOVERY_AAD_PREFIX}${envelope.recoveryId}`, 'utf8'));
     decipher.setAuthTag(authTag);
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    const snapshot: unknown = JSON.parse(plaintext.toString('utf8'));
-    if (!isRecord(snapshot) || snapshot.schemaVersion !== 1 || snapshot.syncVersion !== 1 || snapshot.app !== 'service-manager') {
-      throw new Error('invalid snapshot');
-    }
-    return snapshot as unknown as ServiceManagerSnapshotV1;
+    if (plaintext.byteLength > MAX_SNAPSHOT_BYTES) throw new Error('oversized plaintext');
+    const recovery = parseS3LocalRecoverySnapshot(JSON.parse(plaintext.toString('utf8')));
+    if (recovery.recoveryId !== envelope.recoveryId) throw new Error('recovery identity mismatch');
+    return recovery;
   } catch {
-    throw new Error('Encrypted S3 snapshot could not be decrypted.');
+    throw new Error('The encrypted local S3 conflict recovery could not be decrypted.');
   }
 }
 
-function sha256Hex(value: string | Buffer): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function hmac(key: Buffer | string, value: string): Buffer {
-  return createHmac('sha256', key).update(value, 'utf8').digest();
-}
-
-function awsUriEncode(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
-    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
-  );
-}
-
-export function canonicalizeS3Path(pathname: string): string {
-  const canonical = pathname
-    .split('/')
-    .map((segment) => awsUriEncode(decodeURIComponent(segment)))
-    .join('/');
-  return canonical.startsWith('/') ? canonical : `/${canonical}`;
-}
-
-function amzTimestamp(value: Date): { amzDate: string; dateStamp: string } {
-  if (!Number.isFinite(value.getTime())) {
-    throw new Error('The S3 signing timestamp is invalid.');
-  }
-  const amzDate = value.toISOString().replace(/[:-]|\.\d{3}/g, '');
-  return { amzDate, dateStamp: amzDate.slice(0, 8) };
-}
-
-export function signS3PutRequest(input: S3SigningInput): S3SignedRequest {
-  const endpoint = normalizedEndpoint(input.endpoint);
-  const region = normalizedRegion(input.region);
-  if (!input.accessKeyId || !input.secretAccessKey) {
-    throw new Error('S3 credentials are unavailable.');
-  }
-  const url = new URL(endpoint);
-  const canonicalUri = canonicalizeS3Path(url.pathname);
-  const requestUrl = `${url.protocol}//${url.host}${canonicalUri}`;
-  const payloadHash = sha256Hex(input.payload);
-  const { amzDate, dateStamp } = amzTimestamp(input.now);
-  const canonicalHeaders = [
-    'content-type:application/json',
-    `host:${url.host.toLowerCase()}`,
-    `x-amz-content-sha256:${payloadHash}`,
-    `x-amz-date:${amzDate}`,
-    '',
-  ].join('\n');
-  const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
-  const canonicalRequest = [
-    'PUT',
-    canonicalUri,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join('\n');
-  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    amzDate,
-    credentialScope,
-    sha256Hex(canonicalRequest),
-  ].join('\n');
-  const dateKey = hmac(`AWS4${input.secretAccessKey}`, dateStamp);
-  const regionKey = hmac(dateKey, region);
-  const serviceKey = hmac(regionKey, 's3');
-  const signingKey = hmac(serviceKey, 'aws4_request');
-  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
-  const authorization = `AWS4-HMAC-SHA256 Credential=${input.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-  return {
-    url: requestUrl,
-    canonicalRequest,
-    stringToSign,
-    signature,
-    headers: {
-      'content-type': 'application/json',
-      'x-amz-content-sha256': payloadHash,
-      'x-amz-date': amzDate,
-      authorization,
-    },
-  };
+export function serializeEncryptedS3LocalRecovery(value: EncryptedS3LocalRecovery): string {
+  return JSON.stringify(parseEncryptedS3LocalRecovery(value));
 }
 
 function defaultSettings(clientId: string): PersistedS3SyncSettings {
@@ -736,17 +669,19 @@ function parsePersistedSettings(
       && value.schemaVersion !== 6)) {
     throw new Error('S3 sync settings are invalid.');
   }
-  const legacyV1 = value.schemaVersion === 1;
-  const legacyV2 = value.schemaVersion === 2;
+  const schemaUsesObjectUrl = value.schemaVersion === 1;
+  const schemaUsesBucketUrl = value.schemaVersion === 2;
   const currentCloudLayout = value.schemaVersion === SETTINGS_SCHEMA_VERSION;
   const hasIndependentSyncKey = value.schemaVersion === 5 || currentCloudLayout;
-  if (legacyV1 && value.syncVersion !== 1) throw new Error('S3 sync settings are invalid.');
+  if (schemaUsesObjectUrl && value.syncVersion !== 1) throw new Error('S3 sync settings are invalid.');
 
   let endpoint: string;
   let bucket: string;
-  if (legacyV1 || legacyV2) {
-    const bucketUrl = legacyV1 ? migrateLegacyObjectUrl(value.endpoint) : normalizedEndpoint(value.bucketUrl);
-    ({ endpoint, bucket } = splitLegacyS3BucketUrl(bucketUrl));
+  if (schemaUsesObjectUrl || schemaUsesBucketUrl) {
+    const bucketUrl = schemaUsesObjectUrl
+      ? bucketUrlFromStoredS3Url(value.endpoint)
+      : normalizedBucketUrl(value.bucketUrl);
+    ({ endpoint, bucket } = splitS3BucketUrl(bucketUrl));
   } else {
     endpoint = normalizeS3Endpoint(value.endpoint);
     bucket = normalizeS3Bucket(value.bucket);
@@ -768,7 +703,7 @@ function parsePersistedSettings(
     endpoint,
     bucket,
     region: normalizedRegion(value.region),
-    clientId: legacyV1 ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
+    clientId: schemaUsesObjectUrl ? normalizedClientId(createClientId()) : normalizedClientId(value.clientId),
     ...(encryptedAccessKeyId ? { encryptedAccessKeyId, encryptedSecretAccessKey } : {}),
     ...(hasIndependentSyncKey && encryptedSyncEncryptionKey ? { encryptedSyncEncryptionKey } : {}),
     ...(currentCloudLayout && encryptedPreviousSyncEncryptionKey ? { encryptedPreviousSyncEncryptionKey } : {}),
@@ -807,7 +742,7 @@ function noteContentKey(id: string, contentHash: string): string {
   return `${id}\u0000${contentHash}`;
 }
 
-function noteReferenceKey(reference: S3V3NoteReference): string {
+function noteReferenceKey(reference: S3V4NoteReference): string {
   return [
     reference.id,
     reference.objectId,
@@ -817,7 +752,7 @@ function noteReferenceKey(reference: S3V3NoteReference): string {
   ].join('\u0000');
 }
 
-function notesTreeReferenceKey(reference: S3V3NotesTreeReference): string {
+function notesTreeReferenceKey(reference: S3V4NotesTreeReference): string {
   return [
     reference.objectId,
     reference.sha256,
@@ -826,14 +761,14 @@ function notesTreeReferenceKey(reference: S3V3NotesTreeReference): string {
   ].join('\u0000');
 }
 
-function notesTreePayloadFromSnapshot(tree: NotesTreeSnapshot): S3V3NotesTreePayload {
+function notesTreePayloadFromSnapshot(tree: NotesTreeSnapshot): S3V4NotesTreePayload {
   const nodes = [...tree.nodes];
   const root = nodes
     .filter((node) => node.parentId === null)
     .sort((left, right) => left.order - right.order || (left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0))
     .map((node) => node.noteId);
   const sorted = nodes.sort((left, right) => left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0);
-  return parseS3V3NotesTreePayload({
+  return parseS3V4NotesTreePayload({
     schemaVersion: 1,
     root,
     order: Object.fromEntries(sorted.map((node) => [node.noteId, node.order])),
@@ -841,8 +776,8 @@ function notesTreePayloadFromSnapshot(tree: NotesTreeSnapshot): S3V3NotesTreePay
   });
 }
 
-function notesTreeSnapshotFromPayload(tree: S3V3NotesTreePayload): NotesTreeSnapshot {
-  const parsed = parseS3V3NotesTreePayload(tree);
+function notesTreeSnapshotFromPayload(tree: S3V4NotesTreePayload): NotesTreeSnapshot {
+  const parsed = parseS3V4NotesTreePayload(tree);
   return {
     schemaVersion: 1,
     nodes: Object.keys(parsed.order).map((noteId) => ({
@@ -894,11 +829,11 @@ async function mapWithConcurrency<T, R>(
 }
 
 function sharedDataFromManifest(
-  data: S3V3ManifestData,
+  data: S3V4ManifestData,
   notes: Note[],
   notesTree: NotesTreeSnapshot,
-): S3SharedAppDataV2 {
-  const parsed = parseS3SharedAppDataV2({
+): S3SharedAppData {
+  const parsed = parseS3SharedAppData({
     schemaVersion: 2,
     hosts: data.hosts,
     notes: {
@@ -914,11 +849,11 @@ function sharedDataFromManifest(
 }
 
 function manifestDataFromShared(
-  data: S3SharedAppDataV2,
-  noteReferences: S3V3NoteReference[],
-  notesTreeReference: S3V3NotesTreeReference,
-): S3V3ManifestData {
-  return parseS3V3ManifestData({
+  data: S3SharedAppData,
+  noteReferences: S3V4NoteReference[],
+  notesTreeReference: S3V4NotesTreeReference,
+): S3V4ManifestData {
+  return parseS3V4ManifestData({
     schemaVersion: 4,
     hosts: data.hosts,
     notes: {
@@ -931,8 +866,8 @@ function manifestDataFromShared(
   });
 }
 
-function canonicalizeSharedNotes(data: S3SharedAppDataV2): S3SharedAppDataV2 {
-  return parseS3SharedAppDataV2({
+function canonicalizeSharedNotes(data: S3SharedAppData): S3SharedAppData {
+  return parseS3SharedAppData({
     ...data,
     notes: {
       ...data.notes,
@@ -973,7 +908,7 @@ export class S3SyncRuntime {
   private readonly pendingNoteUpserts = new Map<string, number>();
   private readonly pendingNoteDeletes = new Map<string, number>();
   private pendingNotesTreeGeneration?: number;
-  private baselineManifest?: ServiceManagerSyncManifestV3;
+  private baselineManifest?: ServiceManagerSyncManifestV4;
   private baselineHeadEtag?: string;
   private baselineEncryptionKeyId?: string;
   private startupSyncComplete = false;
@@ -990,7 +925,7 @@ export class S3SyncRuntime {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
     this.createRevision = options.createRevision ?? randomUUID;
-    this.createObjectId = options.createObjectId ?? (() => createS3V3ObjectId());
+    this.createObjectId = options.createObjectId ?? (() => createS3V4ObjectId());
     this.createClientId = options.createClientId ?? randomUUID;
     this.createRandomBytes = options.createRandomBytes ?? randomBytes;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -1235,7 +1170,7 @@ export class S3SyncRuntime {
     if (this.shuttingDown) throw new Error('S3 connection test was cancelled.');
     const draft = validateS3ConnectionTestDraft(value);
     const controller = new AbortController();
-    const test = testS3V3Connection({
+    const test = testS3V4Connection({
       ...draft,
       fetchImpl: this.fetchImpl,
       now: this.now,
@@ -1747,7 +1682,7 @@ export class S3SyncRuntime {
   }
 
   private updateIncrementalBaseline(
-    manifest: ServiceManagerSyncManifestV3,
+    manifest: ServiceManagerSyncManifestV4,
     headEtag: string | undefined,
     encryptionKeyId: string,
   ): void {
@@ -1948,19 +1883,19 @@ export class S3SyncRuntime {
     }
   }
 
-  private async collectLocalData(): Promise<S3SharedAppDataV2> {
+  private async collectLocalData(): Promise<S3SharedAppData> {
     let data: unknown;
     try {
       data = await this.options.snapshotProvider();
     } catch {
       throw new Error('Unable to prepare the S3 snapshot.');
     }
-    return canonicalizeSharedNotes(parseS3SharedAppDataV2(data));
+    return canonicalizeSharedNotes(parseS3SharedAppData(data));
   }
 
   private async applyData(
-    data: S3SharedAppDataV2,
-    expectedLocal?: S3SharedAppDataV2,
+    data: S3SharedAppData,
+    expectedLocal?: S3SharedAppData,
   ): Promise<boolean> {
     if (!this.options.snapshotApplier) throw new Error('Cloud data cannot be applied by this application version.');
     const applied = await this.options.snapshotApplier(data, expectedLocal);
@@ -1974,9 +1909,9 @@ export class S3SyncRuntime {
   }
 
   private async applyDataIfLocalUnchanged(
-    expectedLocal: S3SharedAppDataV2,
+    expectedLocal: S3SharedAppData,
     expectedGeneration: number,
-    data: S3SharedAppDataV2,
+    data: S3SharedAppData,
   ): Promise<boolean> {
     const currentLocal = await this.collectLocalData();
     if (this.dirtyGeneration !== expectedGeneration || !isDeepStrictEqual(currentLocal, expectedLocal)) {
@@ -2008,18 +1943,18 @@ export class S3SyncRuntime {
 
   private async persistLocalRecovery(
     settings: PersistedS3SyncSettings,
-    data: S3SharedAppDataV2,
+    data: S3SharedAppData,
     syncEncryptionKey: string,
   ): Promise<void> {
     const recoveryId = randomUUID();
-    const revision = createServiceManagerSyncRevisionV2({ ...data }, {
+    const recovery = createS3LocalRecoverySnapshot(data, {
       appVersion: this.options.appVersion,
-      revision: recoveryId,
+      recoveryId,
       clientId: settings.clientId,
       createdAt: this.now().toISOString(),
     });
-    const body = serializeEncryptedS3RevisionV2(
-      encryptS3RevisionV2(revision, syncEncryptionKey, this.createRandomBytes),
+    const body = serializeEncryptedS3LocalRecovery(
+      encryptS3LocalRecovery(recovery, syncEncryptionKey, this.createRandomBytes),
     );
     const filename = `${String(this.now().getTime()).padStart(16, '0')}-${recoveryId}.json`;
     const target = path.join(this.recoveryDirectory, filename);
@@ -2043,15 +1978,15 @@ export class S3SyncRuntime {
   }
 
   private async materializeManifest(
-    objectStore: S3V3ObjectStore,
-    manifest: ServiceManagerSyncManifestV3,
+    objectStore: S3V4ObjectStore,
+    manifest: ServiceManagerSyncManifestV4,
     manifestEncryptionKeyId: string,
     knownNotes: Map<string, Note>,
     objectCache: Map<string, Note>,
     knownTrees: Map<string, NotesTreeSnapshot>,
     treeObjectCache: Map<string, NotesTreeSnapshot>,
     onItemProcessed?: () => void,
-  ): Promise<S3SharedAppDataV2> {
+  ): Promise<S3SharedAppData> {
     if (manifest.data.notes.items.some((reference) =>
       reference.encryptionKeyId !== manifestEncryptionKeyId
     )) {
@@ -2134,36 +2069,36 @@ export class S3SyncRuntime {
   }
 
   private async publishRevision(
-    objectStore: S3V3ObjectStore,
+    objectStore: S3V4ObjectStore,
     settings: PersistedS3SyncSettings,
-    data: S3SharedAppDataV2,
+    data: S3SharedAppData,
     parentRevision: string | undefined,
     expectedHeadEtag: string | undefined,
-    reusableReferences: readonly S3V3NoteReference[],
-    reusableTreeReferences: readonly S3V3NotesTreeReference[],
+    reusableReferences: readonly S3V4NoteReference[],
+    reusableTreeReferences: readonly S3V4NotesTreeReference[],
     reportProgress: S3SyncProgressReporter,
   ): Promise<
     | {
       status: 'conflict';
-      noteReferences: S3V3NoteReference[];
-      notesTreeReference: S3V3NotesTreeReference;
+      noteReferences: S3V4NoteReference[];
+      notesTreeReference: S3V4NotesTreeReference;
     }
     | {
       status: 'written';
-      manifest: ServiceManagerSyncManifestV3;
+      manifest: ServiceManagerSyncManifestV4;
       byteLength: number;
       etag?: string;
     }
   > {
     measureBoundedJsonBytes(data);
     const currentEncryptionKeyId = getS3SyncEncryptionKeyId(this.syncEncryptionKey(settings) as string);
-    const reusable = new Map<string, S3V3NoteReference>();
+    const reusable = new Map<string, S3V4NoteReference>();
     for (const reference of reusableReferences) {
       if (reference.encryptionKeyId === currentEncryptionKeyId) {
         reusable.set(noteContentKey(reference.id, reference.contentHash), { ...reference });
       }
     }
-    const reusableTrees = new Map<string, S3V3NotesTreeReference>();
+    const reusableTrees = new Map<string, S3V4NotesTreeReference>();
     for (const reference of reusableTreeReferences) {
       if (reference.encryptionKeyId === currentEncryptionKeyId) {
         reusableTrees.set(reference.contentHash, { ...reference });
@@ -2173,39 +2108,39 @@ export class S3SyncRuntime {
     const revision = normalizedRevision(this.createRevision());
     const createdAt = this.now().toISOString();
     const plannedNotes: Array<
-      | { note: Note; contentHash: string; reference: S3V3NoteReference }
+      | { note: Note; contentHash: string; reference: S3V4NoteReference }
       | {
         note: Note;
         contentHash: string;
-        object: ReturnType<typeof createServiceManagerNoteObjectV3>;
+        object: ReturnType<typeof createServiceManagerNoteObjectV4>;
       }
     > = data.notes.notes.map((note) => {
-      const contentHash = hashS3V3NoteContent(note);
+      const contentHash = hashS3V4NoteContent(note);
       const existing = reusable.get(noteContentKey(note.id, contentHash));
       if (existing) return { note, contentHash, reference: { ...existing } };
       return {
         note,
         contentHash,
-        object: createServiceManagerNoteObjectV3(note, this.createObjectId()),
+        object: createServiceManagerNoteObjectV4(note, this.createObjectId()),
       };
     });
     const notesTreePayload = notesTreePayloadFromSnapshot(data.notes.tree);
-    const notesTreeContentHash = hashS3V3NotesTreeContent(notesTreePayload);
+    const notesTreeContentHash = hashS3V4NotesTreeContent(notesTreePayload);
     const existingTreeReference = reusableTrees.get(notesTreeContentHash);
     const plannedNotesTree:
-      | { kind: 'reference'; reference: S3V3NotesTreeReference }
-      | { kind: 'object'; object: ReturnType<typeof createServiceManagerNotesTreeObjectV3> }
+      | { kind: 'reference'; reference: S3V4NotesTreeReference }
+      | { kind: 'object'; object: ReturnType<typeof createServiceManagerNotesTreeObjectV4> }
       = existingTreeReference
         ? { kind: 'reference', reference: { ...existingTreeReference } }
         : {
           kind: 'object',
-          object: createServiceManagerNotesTreeObjectV3(notesTreePayload, this.createObjectId()),
+          object: createServiceManagerNotesTreeObjectV4(notesTreePayload, this.createObjectId()),
         };
 
     // Validate every local Note, generated identity, revision, and the complete
     // manifest shape before the first immutable object is uploaded. The digest
     // placeholder has the same fixed width as the encrypted object digest.
-    const placeholderReferences = plannedNotes.map((planned): S3V3NoteReference => (
+    const placeholderReferences = plannedNotes.map((planned): S3V4NoteReference => (
       'reference' in planned
         ? { ...planned.reference }
         : {
@@ -2216,7 +2151,7 @@ export class S3SyncRuntime {
           encryptionKeyId: currentEncryptionKeyId,
         }
     ));
-    const placeholderTreeReference: S3V3NotesTreeReference = plannedNotesTree.kind === 'reference'
+    const placeholderTreeReference: S3V4NotesTreeReference = plannedNotesTree.kind === 'reference'
       ? { ...plannedNotesTree.reference }
       : {
         objectId: plannedNotesTree.object.objectId,
@@ -2224,7 +2159,7 @@ export class S3SyncRuntime {
         contentHash: notesTreeContentHash,
         encryptionKeyId: currentEncryptionKeyId,
       };
-    createServiceManagerSyncManifestV3(
+    createServiceManagerSyncManifestV4(
       manifestDataFromShared(data, placeholderReferences, placeholderTreeReference),
       {
         appVersion: this.options.appVersion,
@@ -2256,7 +2191,7 @@ export class S3SyncRuntime {
         for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
           const object = attempt === 0
             ? planned.object
-            : createServiceManagerNoteObjectV3(planned.note, this.createObjectId());
+            : createServiceManagerNoteObjectV4(planned.note, this.createObjectId());
           const written = await objectStore.putNote(object);
           if (written.status === 'conflict') continue;
           byteLength += written.byteLength;
@@ -2267,15 +2202,15 @@ export class S3SyncRuntime {
       },
     );
 
-    let notesTreeReference: S3V3NotesTreeReference;
+    let notesTreeReference: S3V4NotesTreeReference;
     if (plannedNotesTree.kind === 'reference') {
       notesTreeReference = { ...plannedNotesTree.reference };
     } else {
-      let writtenReference: S3V3NotesTreeReference | undefined;
+      let writtenReference: S3V4NotesTreeReference | undefined;
       for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
         const object = attempt === 0
           ? plannedNotesTree.object
-          : createServiceManagerNotesTreeObjectV3(notesTreePayload, this.createObjectId());
+          : createServiceManagerNotesTreeObjectV4(notesTreePayload, this.createObjectId());
         const writtenTree = await objectStore.putNotesTree(object);
         if (writtenTree.status === 'conflict') continue;
         byteLength += writtenTree.byteLength;
@@ -2287,7 +2222,7 @@ export class S3SyncRuntime {
       reportCompletedWrite();
     }
 
-    const manifest = createServiceManagerSyncManifestV3(
+    const manifest = createServiceManagerSyncManifestV4(
       manifestDataFromShared(data, noteReferences, notesTreeReference),
       {
         appVersion: this.options.appVersion,
@@ -2303,7 +2238,7 @@ export class S3SyncRuntime {
     }
     byteLength += written.byteLength;
     reportCompletedWrite();
-    const head = createS3SyncHeadV3(
+    const head = createS3SyncHeadV4(
       manifest,
       written.manifestSha256,
       currentEncryptionKeyId,
@@ -2356,7 +2291,7 @@ export class S3SyncRuntime {
     const notes: Note[] = [];
     for (const candidate of snapshot.notes) {
       const note = cloneNoteValue(candidate);
-      hashS3V3NoteContent(note);
+      hashS3V4NoteContent(note);
       if (!requestedUpserts.has(note.id) || changedIds.has(note.id)) {
         throw new Error('The changed Notes snapshot is invalid.');
       }
@@ -2379,7 +2314,7 @@ export class S3SyncRuntime {
     }
 
     const { accessKeyId, secretAccessKey } = this.credentials(settings);
-    const objectStore = new S3V3ObjectStore({
+    const objectStore = new S3V4ObjectStore({
       endpoint: settings.endpoint,
       bucket: settings.bucket,
       region: settings.region,
@@ -2413,16 +2348,16 @@ export class S3SyncRuntime {
       throw new Error('A unique S3 object identity could not be created. Try again.');
     };
     const plannedNotes: Array<
-      | { kind: 'reference'; note: Note; reference: S3V3NoteReference }
+      | { kind: 'reference'; note: Note; reference: S3V4NoteReference }
       | {
         kind: 'object';
         note: Note;
         contentHash: string;
-        object: ReturnType<typeof createServiceManagerNoteObjectV3>;
+        object: ReturnType<typeof createServiceManagerNoteObjectV4>;
       }
     > = [];
     for (const note of notes) {
-      const contentHash = hashS3V3NoteContent(note);
+      const contentHash = hashS3V4NoteContent(note);
       const existing = references.get(note.id);
       if (existing?.contentHash === contentHash
         && existing.encryptionKeyId === currentEncryptionKeyId) {
@@ -2432,7 +2367,7 @@ export class S3SyncRuntime {
           kind: 'object',
           note,
           contentHash,
-          object: createServiceManagerNoteObjectV3(note, nextObjectId()),
+          object: createServiceManagerNoteObjectV4(note, nextObjectId()),
         });
       }
       nextTombstones.delete(note.id);
@@ -2443,23 +2378,23 @@ export class S3SyncRuntime {
     }
 
     let plannedTree:
-      | { kind: 'reference'; reference: S3V3NotesTreeReference }
+      | { kind: 'reference'; reference: S3V4NotesTreeReference }
       | {
         kind: 'object';
-        payload: S3V3NotesTreePayload;
+        payload: S3V4NotesTreePayload;
         contentHash: string;
-        object: ReturnType<typeof createServiceManagerNotesTreeObjectV3>;
+        object: ReturnType<typeof createServiceManagerNotesTreeObjectV4>;
       } = { kind: 'reference', reference: { ...baseline.data.notes.tree } };
     if (snapshot.notesTree) {
       const payload = notesTreePayloadFromSnapshot(snapshot.notesTree);
-      const contentHash = hashS3V3NotesTreeContent(payload);
+      const contentHash = hashS3V4NotesTreeContent(payload);
       if (contentHash !== baseline.data.notes.tree.contentHash
         || baseline.data.notes.tree.encryptionKeyId !== currentEncryptionKeyId) {
         plannedTree = {
           kind: 'object',
           payload,
           contentHash,
-          object: createServiceManagerNotesTreeObjectV3(payload, nextObjectId()),
+          object: createServiceManagerNotesTreeObjectV4(payload, nextObjectId()),
         };
       }
     }
@@ -2475,7 +2410,7 @@ export class S3SyncRuntime {
           encryptionKeyId: currentEncryptionKeyId,
         });
     }
-    const placeholderTreeReference: S3V3NotesTreeReference = plannedTree.kind === 'reference'
+    const placeholderTreeReference: S3V4NotesTreeReference = plannedTree.kind === 'reference'
       ? { ...plannedTree.reference }
       : {
         objectId: plannedTree.object.objectId,
@@ -2483,7 +2418,7 @@ export class S3SyncRuntime {
         contentHash: plannedTree.contentHash,
         encryptionKeyId: currentEncryptionKeyId,
       };
-    const placeholderData = parseS3V3ManifestData({
+    const placeholderData = parseS3V4ManifestData({
       schemaVersion: 4,
       hosts: baseline.data.hosts,
       notes: {
@@ -2526,7 +2461,7 @@ export class S3SyncRuntime {
         for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
           const object = attempt === 0
             ? planned.object
-            : createServiceManagerNoteObjectV3(planned.note, nextObjectId());
+            : createServiceManagerNoteObjectV4(planned.note, nextObjectId());
           const written = await objectStore.putNote(object);
           if (written.status === 'conflict') continue;
           byteLength += written.byteLength;
@@ -2545,7 +2480,7 @@ export class S3SyncRuntime {
       for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
         const object = attempt === 0
           ? plannedTree.object
-          : createServiceManagerNotesTreeObjectV3(plannedTree.payload, nextObjectId());
+          : createServiceManagerNotesTreeObjectV4(plannedTree.payload, nextObjectId());
         const written = await objectStore.putNotesTree(object);
         if (written.status === 'conflict') continue;
         byteLength += written.byteLength;
@@ -2557,8 +2492,8 @@ export class S3SyncRuntime {
     }
 
     const revision = normalizedRevision(this.createRevision());
-    const manifest = createServiceManagerSyncManifestV3(
-      parseS3V3ManifestData({
+    const manifest = createServiceManagerSyncManifestV4(
+      parseS3V4ManifestData({
         schemaVersion: 4,
         hosts: baseline.data.hosts,
         notes: {
@@ -2581,7 +2516,7 @@ export class S3SyncRuntime {
     if (writtenManifest.status === 'conflict') return { status: 'conflict' };
     byteLength += writtenManifest.byteLength;
     reportCompletedWrite();
-    const head = createS3SyncHeadV3(
+    const head = createS3SyncHeadV4(
       manifest,
       writtenManifest.manifestSha256,
       currentEncryptionKeyId,
@@ -2616,7 +2551,7 @@ export class S3SyncRuntime {
       'The previous Sync Encryption Key',
     );
     if (previousSyncEncryptionKey) normalizeS3SyncEncryptionKey(previousSyncEncryptionKey);
-    const objectStore = new S3V3ObjectStore({
+    const objectStore = new S3V4ObjectStore({
       endpoint: settings.endpoint,
       bucket: settings.bucket,
       region: settings.region,
@@ -2630,10 +2565,10 @@ export class S3SyncRuntime {
       timeoutMs: this.timeoutMs,
       signal,
     });
-    let recoveredLocal: S3SharedAppDataV2 | undefined;
-    const retainedUploadReferences = new Map<string, S3V3NoteReference>();
-    const retainedUploadTreeReferences = new Map<string, S3V3NotesTreeReference>();
-    const retainUploadedReferences = (references: readonly S3V3NoteReference[]): void => {
+    let recoveredLocal: S3SharedAppData | undefined;
+    const retainedUploadReferences = new Map<string, S3V4NoteReference>();
+    const retainedUploadTreeReferences = new Map<string, S3V4NotesTreeReference>();
+    const retainUploadedReferences = (references: readonly S3V4NoteReference[]): void => {
       for (const reference of references) {
         retainedUploadReferences.set(
           noteContentKey(reference.id, reference.contentHash),
@@ -2641,7 +2576,7 @@ export class S3SyncRuntime {
         );
       }
     };
-    const retainUploadedTreeReference = (reference: S3V3NotesTreeReference): void => {
+    const retainUploadedTreeReference = (reference: S3V4NotesTreeReference): void => {
       retainedUploadTreeReferences.set(reference.contentHash, { ...reference });
     };
 
@@ -2692,7 +2627,7 @@ export class S3SyncRuntime {
       if (remoteResult.status === 'missing') {
         throw new Error('The S3 sync head points to a missing manifest.');
       }
-      assertS3SyncHeadMatchesManifestV3(
+      assertS3SyncHeadMatchesManifestV4(
         headResult.head,
         remoteResult.manifest,
         remoteResult.manifestSha256,
@@ -2703,7 +2638,7 @@ export class S3SyncRuntime {
       const requiresEncryptionMigration = remoteResult.encryptionKeyId
         !== getS3SyncEncryptionKeyId(syncEncryptionKey);
 
-      let baseManifest: ServiceManagerSyncManifestV3 | undefined;
+      let baseManifest: ServiceManagerSyncManifestV4 | undefined;
       let baseReferencesUseCurrentEncryption = true;
       let baseEncryptionKeyId: string | undefined;
       if (settings.lastRevision === headResult.head.revision) {
@@ -2726,12 +2661,12 @@ export class S3SyncRuntime {
       const localGeneration = this.dirtyGeneration;
       const knownNotes = new Map<string, Note>();
       for (const note of local.notes.notes) {
-        knownNotes.set(noteContentKey(note.id, hashS3V3NoteContent(note)), cloneNoteValue(note));
+        knownNotes.set(noteContentKey(note.id, hashS3V4NoteContent(note)), cloneNoteValue(note));
       }
       const objectCache = new Map<string, Note>();
       const knownTrees = new Map<string, NotesTreeSnapshot>();
       const localTreePayload = notesTreePayloadFromSnapshot(local.notes.tree);
-      knownTrees.set(hashS3V3NotesTreeContent(localTreePayload), cloneNotesTreeValue(local.notes.tree));
+      knownTrees.set(hashS3V4NotesTreeContent(localTreePayload), cloneNotesTreeValue(local.notes.tree));
       const treeObjectCache = new Map<string, NotesTreeSnapshot>();
       const cloudItemTotal = remoteResult.manifest.data.notes.items.length + 1
         + (baseManifest ? baseManifest.data.notes.items.length + 1 : 0);
@@ -2765,7 +2700,7 @@ export class S3SyncRuntime {
         : undefined;
 
       reportProgress('merging');
-      const merged = mergeS3SharedAppDataV2({ base, local, cloud, now: this.now().toISOString() });
+      const merged = mergeS3SharedAppData({ base, local, cloud, now: this.now().toISOString() });
       const mergedData = canonicalizeSharedNotes(merged.data);
       measureBoundedJsonBytes(mergedData);
       if (merged.discardedLocalSections.length > 0

@@ -86,7 +86,7 @@ export interface S3SharedProxySettings {
   proxyCount?: number;
 }
 
-export interface S3SharedAppDataV2 {
+export interface S3SharedAppData {
   schemaVersion: typeof S3_SHARED_DATA_SCHEMA_VERSION;
   hosts: {
     schemaVersion: 1;
@@ -122,7 +122,7 @@ export interface S3NoteConflict {
 }
 
 export interface S3SharedDataMergeResult {
-  data: S3SharedAppDataV2;
+  data: S3SharedAppData;
   conflictCount: number;
   noteConflicts: S3NoteConflict[];
   discardedLocalSections: Array<'hosts' | 'proxy'>;
@@ -284,7 +284,7 @@ function parseSharedHost(value: unknown, index: number): S3SharedHostConfig {
   return parsed;
 }
 
-function parseHosts(value: unknown): S3SharedAppDataV2['hosts'] {
+function parseHosts(value: unknown): S3SharedAppData['hosts'] {
   if (!isRecord(value) || value.schemaVersion !== 1) throw new Error('Shared Hosts data is invalid.');
   const ids = new Set<string>();
   const forwardIds = new Set<string>();
@@ -490,7 +490,7 @@ export function normalizeS3NotesTreeSnapshot(
   };
 }
 
-function parseNotes(value: unknown): S3SharedAppDataV2['notes'] {
+function parseNotes(value: unknown): S3SharedAppData['notes'] {
   if (!isRecord(value) || value.schemaVersion !== S3_SHARED_NOTES_SCHEMA_VERSION) {
     throw new Error('Shared Notes data is invalid.');
   }
@@ -534,7 +534,7 @@ function parseProxyRule(value: unknown, index: number): ProxyCustomRule {
   return normalized;
 }
 
-function parseProxy(value: unknown): S3SharedAppDataV2['proxy'] {
+function parseProxy(value: unknown): S3SharedAppData['proxy'] {
   if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.settings)) {
     throw new Error('Shared Proxy data is invalid.');
   }
@@ -572,10 +572,10 @@ function parseProxy(value: unknown): S3SharedAppDataV2['proxy'] {
 }
 
 /**
- * Validates untrusted decrypted v2 data and returns a detached field-allowlisted
+ * Validates untrusted decrypted shared data and returns a detached field-allowlisted
  * object suitable for merge or staged local application.
  */
-export function parseS3SharedAppDataV2(value: unknown): S3SharedAppDataV2 {
+export function parseS3SharedAppData(value: unknown): S3SharedAppData {
   if (!isRecord(value) || value.schemaVersion !== S3_SHARED_DATA_SCHEMA_VERSION) {
     throw new Error('Shared application data is invalid.');
   }
@@ -588,8 +588,8 @@ export function parseS3SharedAppDataV2(value: unknown): S3SharedAppDataV2 {
 }
 
 /** Builds the cloud-shareable projection and strips every device-local field. */
-export function createS3SharedAppDataV2(source: S3SharedDataSource): S3SharedAppDataV2 {
-  return parseS3SharedAppDataV2({
+export function createS3SharedAppData(source: S3SharedDataSource): S3SharedAppData {
+  return parseS3SharedAppData({
     schemaVersion: S3_SHARED_DATA_SCHEMA_VERSION,
     hosts: {
       schemaVersion: 1,
@@ -900,16 +900,16 @@ export function mergeS3NotesTreeSnapshots(options: {
  * Three-way merge for a CAS retry. Cloud wins true conflicts; independent Note
  * IDs merge, and a divergent local Note becomes a visible conflict copy.
  */
-export function mergeS3SharedAppDataV2(options: {
-  base?: S3SharedAppDataV2;
-  local: S3SharedAppDataV2;
-  cloud: S3SharedAppDataV2;
+export function mergeS3SharedAppData(options: {
+  base?: S3SharedAppData;
+  local: S3SharedAppData;
+  cloud: S3SharedAppData;
   now?: string;
   createId?: () => string;
 }): S3SharedDataMergeResult {
-  const base = options.base ? parseS3SharedAppDataV2(options.base) : undefined;
-  const local = parseS3SharedAppDataV2(options.local);
-  const cloud = parseS3SharedAppDataV2(options.cloud);
+  const base = options.base ? parseS3SharedAppData(options.base) : undefined;
+  const local = parseS3SharedAppData(options.local);
+  const cloud = parseS3SharedAppData(options.cloud);
   const now = isoTimestamp(options.now ?? new Date().toISOString(), 'Merge timestamp');
   const createId = options.createId;
   const discardedLocalSections: Array<'hosts' | 'proxy'> = [];
@@ -1033,7 +1033,7 @@ export function mergeS3SharedAppDataV2(options: {
     conflicts: noteConflicts,
     newConflicts: newNoteConflicts,
   });
-  const data = parseS3SharedAppDataV2({
+  const data = parseS3SharedAppData({
     schemaVersion: S3_SHARED_DATA_SCHEMA_VERSION,
     hosts: sectionChoice('hosts', base?.hosts, local.hosts, cloud.hosts, discardedLocalSections),
     notes: {
@@ -1064,7 +1064,7 @@ export function stageS3SharedAppDataForLocalApply(
     proxy: { settings: ProxySettings; subscriptionYaml?: string };
   },
 ): S3LocalApplyStage {
-  const cloud = parseS3SharedAppDataV2(untrustedCloudData);
+  const cloud = parseS3SharedAppData(untrustedCloudData);
   const localHosts = new Map(local.hosts.map((host) => [host.id, host]));
   const hosts: HostConfig[] = cloud.hosts.items.map((sharedHost) => {
     const localHost = localHosts.get(sharedHost.id);

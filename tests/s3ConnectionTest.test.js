@@ -9,9 +9,9 @@ const {
   validateS3ConnectionTestDraft,
 } = require('../dist/main/s3Sync');
 const {
-  buildS3V3HeadObjectUrl,
-  testS3V3Connection,
-} = require('../dist/main/s3SyncV3');
+  buildS3V4HeadObjectUrl,
+  testS3V4Connection,
+} = require('../dist/main/s3SyncV4');
 
 const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'service-manager';
@@ -92,12 +92,12 @@ test('S3 connection draft validation ignores Sync Encryption Key and requires dr
 
 test('S3 connection probe signs exactly one canonical v4 head GET and accepts 200', async () => {
   let request;
-  await testS3V3Connection(probeOptions(async (url, options) => {
+  await testS3V4Connection(probeOptions(async (url, options) => {
     request = { url, options };
     return new Response('head content is not parsed', { status: 200 });
   }));
 
-  assert.equal(request.url, buildS3V3HeadObjectUrl(ENDPOINT, BUCKET));
+  assert.equal(request.url, buildS3V4HeadObjectUrl(ENDPOINT, BUCKET));
   assert.equal(request.options.method, 'GET');
   assert.equal(request.options.redirect, 'manual');
   assert.match(request.options.headers.authorization, /^AWS4-HMAC-SHA256 /);
@@ -105,18 +105,18 @@ test('S3 connection probe signs exactly one canonical v4 head GET and accepts 20
 });
 
 test('S3 connection probe accepts a missing head but rejects a missing bucket', async () => {
-  await testS3V3Connection(probeOptions(async () => new Response(
+  await testS3V4Connection(probeOptions(async () => new Response(
     '<Error><Code>NoSuchKey</Code></Error>',
     { status: 404 },
   )));
 
   await assert.rejects(
-    testS3V3Connection(probeOptions(async () => new Response(null, { status: 404 }))),
+    testS3V4Connection(probeOptions(async () => new Response(null, { status: 404 }))),
     { message: 'S3 connection test failed (404).' },
   );
 
   await assert.rejects(
-    testS3V3Connection(probeOptions(async () => new Response(
+    testS3V4Connection(probeOptions(async () => new Response(
       '<Error><Code>NoSuchBucket</Code><Message>private details</Message></Error>',
       { status: 404 },
     ))),
@@ -130,24 +130,24 @@ test('S3 connection probe accepts a missing head but rejects a missing bucket', 
 
 test('S3 connection probe reports bounded authentication, server, network, and timeout errors', async () => {
   await assert.rejects(
-    testS3V3Connection(probeOptions(async () => new Response(
+    testS3V4Connection(probeOptions(async () => new Response(
       '<Error><Code>AccessDenied</Code><Message>do not expose me</Message></Error>',
       { status: 403 },
     ))),
     { message: 'S3 connection test failed (403 AccessDenied).' },
   );
   await assert.rejects(
-    testS3V3Connection(probeOptions(async () => new Response('server details', { status: 503 }))),
+    testS3V4Connection(probeOptions(async () => new Response('server details', { status: 503 }))),
     { message: 'S3 connection test failed (503).' },
   );
   await assert.rejects(
-    testS3V3Connection(probeOptions(async () => {
+    testS3V4Connection(probeOptions(async () => {
       throw new Error(`${ENDPOINT} ${ACCESS_KEY} ${SECRET_KEY}`);
     })),
     { message: 'S3 connection test request failed.' },
   );
   await assert.rejects(
-    testS3V3Connection(probeOptions((_url, options) => new Promise((_resolve, reject) => {
+    testS3V4Connection(probeOptions((_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
     }), { timeoutMs: 5 })),
     { message: 'S3 connection test timed out.' },

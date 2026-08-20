@@ -2,34 +2,34 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
-  S3V3ObjectStore,
-  assertS3SyncHeadMatchesManifestV3,
-  buildS3V3HeadObjectUrl,
-  buildS3V3ManifestObjectUrl,
-  buildS3V3NoteObjectUrl,
-  buildS3V3NotesTreeObjectUrl,
-  createS3SyncHeadV3,
+  S3V4ObjectStore,
+  assertS3SyncHeadMatchesManifestV4,
+  buildS3V4HeadObjectUrl,
+  buildS3V4ManifestObjectUrl,
+  buildS3V4NoteObjectUrl,
+  buildS3V4NotesTreeObjectUrl,
+  createS3SyncHeadV4,
   createS3SyncEncryptionKey,
-  createS3V3ObjectId,
-  createServiceManagerNoteObjectV3,
-  createServiceManagerNotesTreeObjectV3,
-  createServiceManagerSyncManifestV3,
-  decryptS3ManifestV3,
-  decryptS3NoteV3,
-  decryptS3NotesTreeV3,
-  encryptS3ManifestV3,
-  encryptS3NoteV3,
-  encryptS3NotesTreeV3,
-  hashS3V3NoteContent,
-  hashS3V3NotesTreeContent,
-  hashS3V3Object,
+  createS3V4ObjectId,
+  createServiceManagerNoteObjectV4,
+  createServiceManagerNotesTreeObjectV4,
+  createServiceManagerSyncManifestV4,
+  decryptS3ManifestV4,
+  decryptS3NoteV4,
+  decryptS3NotesTreeV4,
+  encryptS3ManifestV4,
+  encryptS3NoteV4,
+  encryptS3NotesTreeV4,
+  hashS3V4NoteContent,
+  hashS3V4NotesTreeContent,
+  hashS3V4Object,
   getS3SyncEncryptionKeyId,
   normalizeS3SyncEncryptionKey,
-  parseS3V3ManifestData,
-  parseS3V3NotesTreePayload,
-  serializeEncryptedS3ObjectV3,
-  signS3V3Request,
-} = require('../dist/main/s3SyncV3');
+  parseS3V4ManifestData,
+  parseS3V4NotesTreePayload,
+  serializeEncryptedS3ObjectV4,
+  signS3V4Request,
+} = require('../dist/main/s3SyncV4');
 const { NOTE_LIMITS } = require('../dist/main/notesStore');
 
 const ENDPOINT = 'https://s3.example.test';
@@ -78,7 +78,7 @@ function manifestData(items = [], tombstones = [], tree = EMPTY_TREE_REFERENCE) 
 }
 
 function manifest(data, overrides = {}) {
-  return createServiceManagerSyncManifestV3(data, {
+  return createServiceManagerSyncManifestV4(data, {
     appVersion: '0.3.19',
     revision: 'manifest-revision-2',
     parentRevision: 'manifest-revision-1',
@@ -91,34 +91,34 @@ function manifest(data, overrides = {}) {
 const deterministicBytes = (size) => Buffer.alloc(size, size);
 
 test('S3 v4 uses an isolated head and opaque immutable object paths', () => {
-  const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 0xfb));
+  const objectId = createS3V4ObjectId((size) => Buffer.alloc(size, 0xfb));
   assert.match(objectId, /^[A-Za-z0-9_-]{32}$/);
   assert.doesNotMatch(objectId, /[+/=]/);
   assert.equal(
-    buildS3V3HeadObjectUrl(ENDPOINT, BUCKET),
+    buildS3V4HeadObjectUrl(ENDPOINT, BUCKET),
     `${ENDPOINT}/${BUCKET}/service-manager/v4/head.json`,
   );
   assert.equal(
-    buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, 'manifest-revision-2'),
+    buildS3V4ManifestObjectUrl(ENDPOINT, BUCKET, 'manifest-revision-2'),
     `${ENDPOINT}/${BUCKET}/service-manager/v4/manifests/manifest-revision-2.json`,
   );
   assert.equal(
-    buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, objectId),
+    buildS3V4NoteObjectUrl(ENDPOINT, BUCKET, objectId),
     `${ENDPOINT}/${BUCKET}/service-manager/v4/notes/${objectId}.json`,
   );
   assert.equal(
-    buildS3V3NotesTreeObjectUrl(ENDPOINT, BUCKET, objectId),
+    buildS3V4NotesTreeObjectUrl(ENDPOINT, BUCKET, objectId),
     `${ENDPOINT}/${BUCKET}/service-manager/v4/notes-trees/${objectId}.json`,
   );
-  assert.doesNotMatch(buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, objectId), /note-private-stable-id/);
-  assert.throws(() => buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, '../note'), /identity is invalid/);
-  assert.throws(() => buildS3V3NotesTreeObjectUrl(ENDPOINT, BUCKET, '../tree'), /identity is invalid/);
-  assert.throws(() => buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, '../revision'), /revision is invalid/);
+  assert.doesNotMatch(buildS3V4NoteObjectUrl(ENDPOINT, BUCKET, objectId), /note-private-stable-id/);
+  assert.throws(() => buildS3V4NoteObjectUrl(ENDPOINT, BUCKET, '../note'), /identity is invalid/);
+  assert.throws(() => buildS3V4NotesTreeObjectUrl(ENDPOINT, BUCKET, '../tree'), /identity is invalid/);
+  assert.throws(() => buildS3V4ManifestObjectUrl(ENDPOINT, BUCKET, '../revision'), /revision is invalid/);
   for (const url of [
-    buildS3V3HeadObjectUrl(ENDPOINT, BUCKET),
-    buildS3V3ManifestObjectUrl(ENDPOINT, BUCKET, 'manifest-revision-2'),
-    buildS3V3NoteObjectUrl(ENDPOINT, BUCKET, objectId),
-    buildS3V3NotesTreeObjectUrl(ENDPOINT, BUCKET, objectId),
+    buildS3V4HeadObjectUrl(ENDPOINT, BUCKET),
+    buildS3V4ManifestObjectUrl(ENDPOINT, BUCKET, 'manifest-revision-2'),
+    buildS3V4NoteObjectUrl(ENDPOINT, BUCKET, objectId),
+    buildS3V4NotesTreeObjectUrl(ENDPOINT, BUCKET, objectId),
   ]) {
     assert.doesNotMatch(url, /service-manager\/v[1-3]\//);
   }
@@ -143,17 +143,17 @@ test('Sync Encryption Keys accept user passphrases while generated keys retain s
 });
 
 test('S3 v4 encrypts and decrypts with a user-defined Sync Encryption Key', () => {
-  const object = createServiceManagerNoteObjectV3(note(), createS3V3ObjectId(deterministicBytes));
+  const object = createServiceManagerNoteObjectV4(note(), createS3V4ObjectId(deterministicBytes));
   const passphrase = 'shared key 2026!';
-  const encrypted = encryptS3NoteV3(object, passphrase, deterministicBytes);
+  const encrypted = encryptS3NoteV4(object, passphrase, deterministicBytes);
   assert.equal(encrypted.encryption.keyId, getS3SyncEncryptionKeyId(passphrase));
-  assert.deepEqual(decryptS3NoteV3(encrypted, passphrase), object);
-  assert.throws(() => decryptS3NoteV3(encrypted, 'different key 2026!'), /could not be decrypted/);
+  assert.deepEqual(decryptS3NoteV4(encrypted, passphrase), object);
+  assert.throws(() => decryptS3NoteV4(encrypted, 'different key 2026!'), /could not be decrypted/);
 });
 
 test('S3 v4 Note objects canonicalize rich text and reject unsafe rich text payloads', () => {
-  const objectId = createS3V3ObjectId(deterministicBytes);
-  const object = createServiceManagerNoteObjectV3(note({
+  const objectId = createS3V4ObjectId(deterministicBytes);
+  const object = createServiceManagerNoteObjectV4(note({
     language: 'richtext',
     content: JSON.stringify({
       content: [{ type: 'paragraph', content: [{ text: 'Shared', type: 'text' }] }],
@@ -165,7 +165,7 @@ test('S3 v4 Note objects canonicalize rich text and reject unsafe rich text payl
     '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Shared"}]}]}',
   );
   assert.throws(
-    () => createServiceManagerNoteObjectV3(note({
+    () => createServiceManagerNoteObjectV4(note({
       language: 'richtext',
       content: JSON.stringify({ type: 'doc', content: [{ type: 'html', text: '<img src=x>' }] }),
     }), objectId),
@@ -174,28 +174,28 @@ test('S3 v4 Note objects canonicalize rich text and reject unsafe rich text payl
 });
 
 test('S3 v4 encrypts each Note independently and binds its type and opaque object identity', () => {
-  const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 7));
-  const object = createServiceManagerNoteObjectV3(note(), objectId);
-  const encrypted = encryptS3NoteV3(object, SYNC_KEY, deterministicBytes);
-  const serialized = serializeEncryptedS3ObjectV3(encrypted);
+  const objectId = createS3V4ObjectId((size) => Buffer.alloc(size, 7));
+  const object = createServiceManagerNoteObjectV4(note(), objectId);
+  const encrypted = encryptS3NoteV4(object, SYNC_KEY, deterministicBytes);
+  const serialized = serializeEncryptedS3ObjectV4(encrypted);
 
-  assert.deepEqual(decryptS3NoteV3(encrypted, SYNC_KEY), object);
+  assert.deepEqual(decryptS3NoteV4(encrypted, SYNC_KEY), object);
   assert.equal(encrypted.encryption.keySource, 'sync-key-v1');
   assert.equal(encrypted.encryption.keyId, getS3SyncEncryptionKeyId(SYNC_KEY));
-  const { keySource: _keySource, keyId: _keyId, ...oldEncryption } = encrypted.encryption;
+  const { keySource: _keySource, keyId: _keyId, ...encryptionWithoutKeyIdentity } = encrypted.encryption;
   assert.throws(
-    () => decryptS3NoteV3({ ...encrypted, encryption: oldEncryption }, SYNC_KEY),
+    () => decryptS3NoteV4({ ...encrypted, encryption: encryptionWithoutKeyIdentity }, SYNC_KEY),
     /could not be decrypted/,
   );
-  assert.equal(hashS3V3NoteContent(object), hashS3V3NoteContent(note()));
-  assert.equal(hashS3V3NoteContent(object).length, 64);
+  assert.equal(hashS3V4NoteContent(object), hashS3V4NoteContent(note()));
+  assert.equal(hashS3V4NoteContent(object).length, 64);
   assert.doesNotMatch(serialized, /Deploy production|highly-sensitive-command|note-private-stable-id/);
   assert.throws(
-    () => decryptS3NoteV3({ ...encrypted, objectId: createS3V3ObjectId((size) => Buffer.alloc(size, 8)) }, SECRET_KEY),
+    () => decryptS3NoteV4({ ...encrypted, objectId: createS3V4ObjectId((size) => Buffer.alloc(size, 8)) }, SECRET_KEY),
     /could not be decrypted/,
   );
-  assert.throws(() => decryptS3NoteV3(encrypted, 'different-secret'), /could not be decrypted/);
-  assert.throws(() => decryptS3ManifestV3(encrypted, SYNC_KEY), /manifest could not be decrypted/);
+  assert.throws(() => decryptS3NoteV4(encrypted, 'different-secret'), /could not be decrypted/);
+  assert.throws(() => decryptS3ManifestV4(encrypted, SYNC_KEY), /manifest could not be decrypted/);
 });
 
 test('S3 v4 validates a bounded Notes tree with exact root, order, and parent key sets', () => {
@@ -213,17 +213,17 @@ test('S3 v4 validates a bounded Notes tree with exact root, order, and parent ke
       'second-root': null,
     },
   };
-  assert.deepEqual(parseS3V3NotesTreePayload(value), value);
+  assert.deepEqual(parseS3V4NotesTreePayload(value), value);
   assert.throws(
-    () => parseS3V3NotesTreePayload({ ...value, root: ['second-root', 'root-note'] }),
+    () => parseS3V4NotesTreePayload({ ...value, root: ['second-root', 'root-note'] }),
     /roots are invalid/,
   );
   assert.throws(
-    () => parseS3V3NotesTreePayload({ ...value, parent: { ...value.parent, 'child-note': 'missing' } }),
+    () => parseS3V4NotesTreePayload({ ...value, parent: { ...value.parent, 'child-note': 'missing' } }),
     /parent is invalid/,
   );
   assert.throws(
-    () => parseS3V3NotesTreePayload({
+    () => parseS3V4NotesTreePayload({
       schemaVersion: 1,
       root: [],
       order: { a: 1024, b: 1024 },
@@ -232,7 +232,7 @@ test('S3 v4 validates a bounded Notes tree with exact root, order, and parent ke
     /cycle/,
   );
   assert.throws(
-    () => parseS3V3NotesTreePayload({
+    () => parseS3V4NotesTreePayload({
       ...value,
       order: { ...value.order, 'second-root': 1024 },
     }),
@@ -240,7 +240,7 @@ test('S3 v4 validates a bounded Notes tree with exact root, order, and parent ke
   );
   const deepIds = Array.from({ length: 34 }, (_, index) => `depth-${index}`);
   assert.throws(
-    () => parseS3V3NotesTreePayload({
+    () => parseS3V4NotesTreePayload({
       schemaVersion: 1,
       root: [deepIds[0]],
       order: Object.fromEntries(deepIds.map((id) => [id, 1024])),
@@ -252,22 +252,22 @@ test('S3 v4 validates a bounded Notes tree with exact root, order, and parent ke
 
 test('S3 v4 encrypts the Notes tree independently and binds its content digest', () => {
   const tree = treePayload(['root-note', 'second-root']);
-  const object = createServiceManagerNotesTreeObjectV3(
+  const object = createServiceManagerNotesTreeObjectV4(
     tree,
-    createS3V3ObjectId((size) => Buffer.alloc(size, 0x2a)),
+    createS3V4ObjectId((size) => Buffer.alloc(size, 0x2a)),
   );
-  const encrypted = encryptS3NotesTreeV3(object, SYNC_KEY, deterministicBytes);
-  const serialized = serializeEncryptedS3ObjectV3(encrypted);
+  const encrypted = encryptS3NotesTreeV4(object, SYNC_KEY, deterministicBytes);
+  const serialized = serializeEncryptedS3ObjectV4(encrypted);
 
-  assert.deepEqual(decryptS3NotesTreeV3(encrypted, SYNC_KEY), object);
-  assert.equal(hashS3V3NotesTreeContent(object), hashS3V3NotesTreeContent(tree));
+  assert.deepEqual(decryptS3NotesTreeV4(encrypted, SYNC_KEY), object);
+  assert.equal(hashS3V4NotesTreeContent(object), hashS3V4NotesTreeContent(tree));
   assert.equal(encrypted.schemaVersion, 4);
   assert.equal(encrypted.syncVersion, 4);
   assert.equal(encrypted.layoutVersion, 4);
   assert.doesNotMatch(serialized, /root-note|second-root/);
-  assert.throws(() => decryptS3NoteV3(encrypted, SYNC_KEY), /note could not be decrypted/);
+  assert.throws(() => decryptS3NoteV4(encrypted, SYNC_KEY), /note could not be decrypted/);
   assert.throws(
-    () => decryptS3NotesTreeV3({ ...encrypted, layoutVersion: 3 }, SYNC_KEY),
+    () => decryptS3NotesTreeV4({ ...encrypted, layoutVersion: 3 }, SYNC_KEY),
     /could not be decrypted/,
   );
 });
@@ -286,7 +286,7 @@ test('S3 v4 round-trips a maximum-length Note when JSON escaping expands every c
       headers: { 'content-length': String(Buffer.byteLength(body, 'utf8')) },
     });
   };
-  const store = new S3V3ObjectStore({
+  const store = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -298,76 +298,76 @@ test('S3 v4 round-trips a maximum-length Note when JSON escaping expands every c
     createRandomBytes: deterministicBytes,
   });
   // NUL is one valid Note character but is serialized as six JSON bytes.
-  // This covers the legitimate worst case that exceeded the old 5/8 MiB
-  // plaintext/encrypted-object limits.
+  // This covers the legitimate worst case where JSON escaping expands each
+  // stored character and pushes the encrypted object above a small-object bound.
   const content = '\0'.repeat(NOTE_LIMITS.contentCharacters);
-  const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 11));
-  const object = createServiceManagerNoteObjectV3(note({ content }), objectId);
+  const objectId = createS3V4ObjectId((size) => Buffer.alloc(size, 11));
+  const object = createServiceManagerNoteObjectV4(note({ content }), objectId);
 
   const written = await store.putNote(object);
   assert.equal(written.status, 'written');
-  assert.ok(written.byteLength > 8 * 1024 * 1024, 'escaped encrypted body should exceed the old wire limit');
+  assert.ok(written.byteLength > 8 * 1024 * 1024, 'escaped encrypted body should exceed the lower bound');
   const loaded = await store.getNote(written.reference);
   assert.equal(loaded.status, 'found');
   assert.equal(loaded.object.note.content.length, NOTE_LIMITS.contentCharacters);
-  assert.equal(hashS3V3NoteContent(loaded.object), hashS3V3NoteContent(object));
+  assert.equal(hashS3V4NoteContent(loaded.object), hashS3V4NoteContent(object));
 });
 
 test('S3 v4 manifest contains only Note and tree references and is bound to its head digest', () => {
-  const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 9));
-  const noteObject = createServiceManagerNoteObjectV3(note(), objectId);
-  const encryptedNote = encryptS3NoteV3(noteObject, SYNC_KEY, deterministicBytes);
-  const noteBody = serializeEncryptedS3ObjectV3(encryptedNote);
+  const objectId = createS3V4ObjectId((size) => Buffer.alloc(size, 9));
+  const noteObject = createServiceManagerNoteObjectV4(note(), objectId);
+  const encryptedNote = encryptS3NoteV4(noteObject, SYNC_KEY, deterministicBytes);
+  const noteBody = serializeEncryptedS3ObjectV4(encryptedNote);
   const reference = {
     id: noteObject.note.id,
     objectId,
-    sha256: hashS3V3Object(noteBody),
-    contentHash: hashS3V3NoteContent(noteObject),
+    sha256: hashS3V4Object(noteBody),
+    contentHash: hashS3V4NoteContent(noteObject),
     encryptionKeyId: getS3SyncEncryptionKeyId(SYNC_KEY),
   };
   const value = manifest(manifestData([reference], [{ id: 'deleted-note', deletedAt: NOW.toISOString() }]));
-  const encrypted = encryptS3ManifestV3(value, SYNC_KEY, deterministicBytes);
-  const serialized = serializeEncryptedS3ObjectV3(encrypted);
-  const sha256 = hashS3V3Object(serialized);
-  const head = createS3SyncHeadV3(value, sha256, getS3SyncEncryptionKeyId(SYNC_KEY));
+  const encrypted = encryptS3ManifestV4(value, SYNC_KEY, deterministicBytes);
+  const serialized = serializeEncryptedS3ObjectV4(encrypted);
+  const sha256 = hashS3V4Object(serialized);
+  const head = createS3SyncHeadV4(value, sha256, getS3SyncEncryptionKeyId(SYNC_KEY));
 
-  assert.deepEqual(decryptS3ManifestV3(encrypted, SYNC_KEY), value);
+  assert.deepEqual(decryptS3ManifestV4(encrypted, SYNC_KEY), value);
   assert.equal(value.schemaVersion, 4);
   assert.equal(value.syncVersion, 4);
   assert.equal(value.layoutVersion, 4);
   assert.equal(value.data.notes.tree.objectId, EMPTY_TREE_REFERENCE.objectId);
   assert.equal('root' in value.data.notes.tree, false);
   assert.doesNotMatch(serialized, /Deploy production|highly-sensitive-command|deleted-note/);
-  assert.doesNotThrow(() => assertS3SyncHeadMatchesManifestV3(head, value, sha256));
+  assert.doesNotThrow(() => assertS3SyncHeadMatchesManifestV4(head, value, sha256));
   assert.throws(
-    () => assertS3SyncHeadMatchesManifestV3({ ...head, encryptionKeyId: undefined }, value, sha256),
+    () => assertS3SyncHeadMatchesManifestV4({ ...head, encryptionKeyId: undefined }, value, sha256),
     /Key identity is invalid/,
   );
   assert.throws(
-    () => assertS3SyncHeadMatchesManifestV3({ ...head, manifestSha256: '0'.repeat(64) }, value, sha256),
+    () => assertS3SyncHeadMatchesManifestV4({ ...head, manifestSha256: '0'.repeat(64) }, value, sha256),
     /does not match the shared head/,
   );
   assert.throws(
-    () => parseS3V3ManifestData(manifestData([reference], [{ id: reference.id, deletedAt: NOW.toISOString() }])),
+    () => parseS3V4ManifestData(manifestData([reference], [{ id: reference.id, deletedAt: NOW.toISOString() }])),
     /active and deleted copy/,
   );
   assert.throws(
-    () => parseS3V3ManifestData(manifestData([reference, { ...reference }])),
+    () => parseS3V4ManifestData(manifestData([reference, { ...reference }])),
     /duplicate identities/,
   );
-  const { encryptionKeyId: _referenceKeyId, ...oldReference } = reference;
+  const { encryptionKeyId: _referenceKeyId, ...referenceWithoutKeyIdentity } = reference;
   assert.throws(
-    () => parseS3V3ManifestData(manifestData([oldReference])),
+    () => parseS3V4ManifestData(manifestData([referenceWithoutKeyIdentity])),
     /Key identity is invalid/,
   );
   const withoutTree = manifestData();
   delete withoutTree.notes.tree;
-  assert.throws(() => parseS3V3ManifestData(withoutTree), /tree reference is invalid/);
+  assert.throws(() => parseS3V4ManifestData(withoutTree), /tree reference is invalid/);
   assert.throws(
-    () => createServiceManagerSyncManifestV3({ ...manifestData(), schemaVersion: 3 }, {
+    () => createServiceManagerSyncManifestV4({ ...manifestData(), schemaVersion: 3 }, {
       appVersion: '0.3.19',
-      revision: 'old-wire',
-      clientId: 'old-client',
+      revision: 'invalid-wire',
+      clientId: 'invalid-client',
       createdAt: NOW.toISOString(),
     }),
     /manifest data is invalid/,
@@ -375,9 +375,9 @@ test('S3 v4 manifest contains only Note and tree references and is bound to its 
 });
 
 test('S3 v4 SigV4 signs only v4 object paths and conditional writes', () => {
-  const signed = signS3V3Request({
+  const signed = signS3V4Request({
     method: 'PUT',
-    objectUrl: buildS3V3HeadObjectUrl(ENDPOINT, BUCKET),
+    objectUrl: buildS3V4HeadObjectUrl(ENDPOINT, BUCKET),
     region: 'us-east-1',
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_KEY,
@@ -422,7 +422,7 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
     objects.set(url, options.body);
     return new Response('', { status: 200, headers: { etag: '"immutable-etag"' } });
   };
-  const store = new S3V3ObjectStore({
+  const store = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -435,13 +435,13 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   });
 
   assert.deepEqual(await store.getHead(), { status: 'missing' });
-  const objectId = createS3V3ObjectId((size) => Buffer.alloc(size, 10));
-  const noteObject = createServiceManagerNoteObjectV3(note(), objectId);
+  const objectId = createS3V4ObjectId((size) => Buffer.alloc(size, 10));
+  const noteObject = createServiceManagerNoteObjectV4(note(), objectId);
   const noteWrite = await store.putNote(noteObject);
   assert.equal(noteWrite.status, 'written');
   assert.equal(
     calls.at(-1).options.body,
-    serializeEncryptedS3ObjectV3(encryptS3NoteV3(noteObject, SYNC_KEY, deterministicBytes)),
+    serializeEncryptedS3ObjectV4(encryptS3NoteV4(noteObject, SYNC_KEY, deterministicBytes)),
     'the optimized owned PUT path must preserve the exact Note wire envelope',
   );
   assert.deepEqual(
@@ -451,15 +451,15 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   assert.equal(calls.at(-1).options.headers['if-none-match'], '*');
   assert.equal((await store.putNote(noteObject)).status, 'conflict');
 
-  const treeObject = createServiceManagerNotesTreeObjectV3(
+  const treeObject = createServiceManagerNotesTreeObjectV4(
     treePayload([noteObject.note.id]),
-    createS3V3ObjectId((size) => Buffer.alloc(size, 12)),
+    createS3V4ObjectId((size) => Buffer.alloc(size, 12)),
   );
   const treeWrite = await store.putNotesTree(treeObject);
   assert.equal(treeWrite.status, 'written');
   assert.equal(
     calls.at(-1).options.body,
-    serializeEncryptedS3ObjectV3(encryptS3NotesTreeV3(treeObject, SYNC_KEY, deterministicBytes)),
+    serializeEncryptedS3ObjectV4(encryptS3NotesTreeV4(treeObject, SYNC_KEY, deterministicBytes)),
     'the optimized owned PUT path must preserve the exact tree wire envelope',
   );
   assert.deepEqual(
@@ -474,13 +474,13 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
   assert.equal(manifestWrite.status, 'written');
   assert.equal(
     calls.at(-1).options.body,
-    serializeEncryptedS3ObjectV3(encryptS3ManifestV3(manifestValue, SYNC_KEY, deterministicBytes)),
+    serializeEncryptedS3ObjectV4(encryptS3ManifestV4(manifestValue, SYNC_KEY, deterministicBytes)),
     'the optimized owned PUT path must preserve the exact manifest wire envelope',
   );
   assert.equal(calls.at(-1).options.headers['if-none-match'], '*');
   assert.equal((await store.putManifest(manifestValue)).status, 'conflict');
 
-  const head = createS3SyncHeadV3(
+  const head = createS3SyncHeadV4(
     manifestValue,
     manifestWrite.manifestSha256,
     getS3SyncEncryptionKeyId(SYNC_KEY),
@@ -524,8 +524,8 @@ test('S3 v4 object store writes immutable Notes, tree, and manifests then CAS-pu
 
 test('S3 v4 object store validates manifest digests and bounds response bodies', async () => {
   const value = manifest(manifestData());
-  const body = serializeEncryptedS3ObjectV3(encryptS3ManifestV3(value, SYNC_KEY, deterministicBytes));
-  const digestStore = new S3V3ObjectStore({
+  const body = serializeEncryptedS3ObjectV4(encryptS3ManifestV4(value, SYNC_KEY, deterministicBytes));
+  const digestStore = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -539,7 +539,7 @@ test('S3 v4 object store validates manifest digests and bounds response bodies',
     /digest does not match the shared head/,
   );
 
-  const boundedStore = new S3V3ObjectStore({
+  const boundedStore = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -558,7 +558,7 @@ test('S3 v4 object store cancels owned requests and enforces its timeout', async
   let requestStarted;
   const started = new Promise((resolve) => { requestStarted = resolve; });
   const owner = new AbortController();
-  const store = new S3V3ObjectStore({
+  const store = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',
@@ -578,7 +578,7 @@ test('S3 v4 object store cancels owned requests and enforces its timeout', async
   owner.abort();
   await assert.rejects(pending, /^Error: S3 sync was cancelled\.$/);
 
-  const timed = new S3V3ObjectStore({
+  const timed = new S3V4ObjectStore({
     endpoint: ENDPOINT,
     bucket: BUCKET,
     region: 'us-east-1',

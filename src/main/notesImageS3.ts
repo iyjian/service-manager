@@ -14,9 +14,9 @@ import {
 } from '../shared/noteRichText';
 import {
   normalizeS3EndpointBucket,
+  signS3Request,
   type S3EndpointBucket,
-} from './s3SyncV2';
-import { signS3V3Request } from './s3SyncV3';
+} from './s3Request';
 
 const NOTES_IMAGE_SCHEMA_VERSION = 1 as const;
 const NOTES_IMAGE_OBJECT_TYPE = 'notes-image' as const;
@@ -527,7 +527,7 @@ export class NotesImageS3Store {
     body: string | undefined,
     signal: AbortSignal,
   ): Promise<{ status: number; body: Buffer }> {
-    const signed = signS3V3Request({
+    const signed = signS3Request({
       method,
       objectUrl,
       region: this.options.region,

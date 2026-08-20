@@ -142,9 +142,9 @@ import {
   type UserDataInstanceLock,
 } from './userDataInstanceLock';
 import {
-  createS3SharedAppDataV2,
+  createS3SharedAppData,
   stageS3SharedAppDataForLocalApply,
-  type S3SharedAppDataV2,
+  type S3SharedAppData,
 } from './s3DataMerge';
 import {
   mergeTriliumImport,
@@ -2030,7 +2030,7 @@ async function hostsForS3Snapshot(hosts: HostConfig[]): Promise<HostConfig[]> {
   }));
 }
 
-async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
+async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppData> {
   assertNotesWorkspaceSafe();
   const activeNotesStore = getNotesStore();
   await activeNotesStore.flush();
@@ -2038,7 +2038,7 @@ async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
     getProxyRuntime().exportPersistentSnapshot(),
     hostsForS3Snapshot(getStore().listHosts()),
   ]);
-  return createS3SharedAppDataV2({
+  return createS3SharedAppData({
     hosts: snapshotHosts,
     notes: activeNotesStore.exportSnapshot(),
     notesTree: getNotesTreeStore().snapshot(),
@@ -2047,7 +2047,7 @@ async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppDataV2> {
   });
 }
 
-async function collectS3SharedAppData(): Promise<S3SharedAppDataV2> {
+async function collectS3SharedAppData(): Promise<S3SharedAppData> {
   await flushRendererNotes();
   return runS3SharedDataMutation(collectS3SharedAppDataUnlocked);
 }
@@ -2116,8 +2116,8 @@ async function stopAndClearHostRuntime(hosts: HostConfig[]): Promise<void> {
 }
 
 async function applyS3SharedAppData(
-  data: S3SharedAppDataV2,
-  expectedLocal?: S3SharedAppDataV2,
+  data: S3SharedAppData,
+  expectedLocal?: S3SharedAppData,
 ): Promise<boolean> {
   // Freeze before flushing so a keystroke cannot land between the final
   // expected-local check and the whole-workspace replacement.
