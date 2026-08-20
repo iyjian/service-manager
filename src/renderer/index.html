@@ -575,6 +575,15 @@
                 </svg>
                 <span id="note-copy-label">Copy</span>
               </button>
+              <button id="note-share-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="4" cy="8" r="1.75"></circle>
+                  <circle cx="12" cy="3.75" r="1.75"></circle>
+                  <circle cx="12" cy="12.25" r="1.75"></circle>
+                  <path d="m5.55 7.1 4.9-2.55M5.55 8.9l4.9 2.55"></path>
+                </svg>
+                <span>Share</span>
+              </button>
               <div class="notes-download-wrap">
                 <button id="note-download-btn" type="button" class="btn btn-secondary btn-sm notes-action-btn" aria-haspopup="menu" aria-expanded="false">
                   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.25v7.25"></path><path d="m5.25 7 2.75 2.75L10.75 7"></path><path d="M3 12.75h10"></path></svg>
@@ -713,6 +722,40 @@
             referrerpolicy="no-referrer"
           ></iframe>
           <pre id="note-attachment-preview-text" class="note-attachment-preview-text hidden" tabindex="0" role="document"></pre>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog
+      id="note-share-dialog"
+      class="host-dialog note-share-dialog"
+      aria-labelledby="note-share-title"
+    >
+      <section class="dialog-panel note-share-panel">
+        <header class="dialog-head">
+          <h2 id="note-share-title" class="section-title">Share Note</h2>
+          <button id="note-share-close" type="button" class="icon-btn" aria-label="Close share dialog" autofocus>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"></path></svg>
+          </button>
+        </header>
+        <div class="note-share-body">
+          <div class="note-share-current-row">
+            <label class="note-share-expiry-field">
+              <span>Link expires</span>
+              <select id="note-share-duration" class="input note-share-duration">
+                <option value="24">24 hours</option>
+                <option value="72">3 days</option>
+                <option value="168">7 days</option>
+              </select>
+            </label>
+            <span id="note-share-url" class="note-share-url" aria-label="Current share link"></span>
+            <button id="note-share-copy" type="button" class="btn btn-primary btn-sm">Copy Link</button>
+          </div>
+          <p id="note-share-status" class="note-share-status hidden" role="status" aria-live="polite"></p>
+          <section class="note-share-history-section" aria-labelledby="note-share-history-title">
+            <h3 id="note-share-history-title">Share history</h3>
+            <div id="note-share-history" class="note-share-history" aria-live="polite"></div>
+          </section>
         </div>
       </section>
     </dialog>

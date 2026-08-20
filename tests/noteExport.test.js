@@ -2,9 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  buildNoteShareDocument,
   buildNotePrintDocument,
   formatByteSize,
   richTextToMarkdown,
+  richTextToShareHtml,
   richTextToSafeHtml,
 } = require('../dist/shared/noteExport');
 
@@ -146,6 +148,22 @@ test('Rich Text PDF HTML escapes text and emits only validated absolute links an
   assert.doesNotMatch(html, /<img|objectId|assetKey|ciphertextSha256/);
 });
 
+test('Rich Text share HTML renders only signed media URLs for copied assets', () => {
+  const image = imageReference();
+  const attachment = attachmentReference();
+  const html = richTextToShareHtml(richTextFixture(), {
+    imageUrl: () => 'https://s3.example.com/bucket/service-manager/v4/shares/note/share/assets/images/001.png?X-Amz-Expires=86400',
+    attachmentUrl: () => 'https://s3.example.com/bucket/service-manager/v4/shares/note/share/assets/attachments/001?X-Amz-Expires=86400',
+  });
+
+  assert.match(html, /<img src="https:\/\/s3\.example\.com\/bucket\/service-manager\/v4\/shares\/note\/share\/assets\/images\/001\.png\?X-Amz-Expires=86400"/);
+  assert.match(html, /<a class="attachment" href="https:\/\/s3\.example\.com\/bucket\/service-manager\/v4\/shares\/note\/share\/assets\/attachments\/001\?X-Amz-Expires=86400" download>/);
+  assert.doesNotMatch(html, new RegExp(image.objectId));
+  assert.doesNotMatch(html, new RegExp(image.assetKey));
+  assert.doesNotMatch(html, new RegExp(attachment.objectId));
+  assert.doesNotMatch(html, new RegExp(attachment.assetKey));
+});
+
 test('Print documents isolate content with CSP, print CSS, and escaped titles', () => {
   const document = buildNotePrintDocument('</title><script>alert(1)</script>', '<p>Safe body</p>');
   assert.match(document, /Content-Security-Policy/);
@@ -153,6 +171,19 @@ test('Print documents isolate content with CSP, print CSS, and escaped titles', 
   assert.match(document, /@page\{size:A4/);
   assert.match(document, /&lt;\/title&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(document, /<script>alert/);
+});
+
+test('Share documents are static browser pages with media-only CSP allowances', () => {
+  const document = buildNoteShareDocument('</title><script>alert(1)</script>', '<p>Shared body</p>');
+  assert.match(document, /Content-Security-Policy/);
+  assert.match(document, /default-src 'none'/);
+  assert.match(document, /img-src https: http:/);
+  assert.match(document, /font-src 'none'/);
+  assert.match(document, /\.hljs-keyword/);
+  assert.match(document, /\.hljs-built_in/);
+  assert.doesNotMatch(document, /<link\b|rel="stylesheet"/);
+  assert.doesNotMatch(document, /script-src|<script>alert/);
+  assert.match(document, /&lt;\/title&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
 });
 
 test('Export byte sizes stay compact and stable', () => {

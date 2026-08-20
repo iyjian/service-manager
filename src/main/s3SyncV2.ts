@@ -64,12 +64,16 @@ export interface S3SyncHeadV2 {
 }
 
 export interface S3V2SigningInput {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'DELETE';
   objectUrl: string;
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
   payload?: string | Buffer;
+  /** Defaults to JSON for the existing sync objects. */
+  contentType?: string;
+  /** Query values are signed as part of the canonical request. */
+  query?: Readonly<Record<string, string>>;
   ifMatch?: string;
   ifNoneMatch?: '*';
   now: Date;
@@ -81,6 +85,15 @@ export interface S3V2SignedRequest {
   canonicalRequest: string;
   stringToSign: string;
   signature: string;
+}
+
+export interface S3V2PresignedGetInput {
+  objectUrl: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  expiresInSeconds: number;
+  now: Date;
 }
 
 export interface S3V2ObjectStoreOptions extends S3EndpointBucket {
@@ -531,6 +544,29 @@ function normalizedEtag(value: unknown): string {
   return value;
 }
 
+function canonicalQueryString(query: Readonly<Record<string, string>> | undefined): string {
+  if (!query) return '';
+  const values = Object.entries(query).map(([key, value]) => {
+    if (typeof value !== 'string') throw new Error('The S3 request query is invalid.');
+    return [awsUriEncode(key), awsUriEncode(value)] as const;
+  });
+  values.sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey === rightKey
+    ? leftValue.localeCompare(rightValue)
+    : leftKey.localeCompare(rightKey));
+  return values.map(([key, value]) => `${key}=${value}`).join('&');
+}
+
+function signingKey(secretAccessKey: string, dateStamp: string, region: string): Buffer {
+  const dateKey = hmac(`AWS4${secretAccessKey}`, dateStamp);
+  const regionKey = hmac(dateKey, region);
+  const serviceKey = hmac(regionKey, 's3');
+  return hmac(serviceKey, 'aws4_request');
+}
+
+function signedRequestUrl(url: URL, canonicalUri: string, canonicalQuery: string): string {
+  return `${url.protocol}//${url.host}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ''}`;
+}
+
 export function signS3V2Request(input: S3V2SigningInput): S3V2SignedRequest {
   const url = parseEndpoint(input.objectUrl, false);
   if (url.pathname === '/' || url.pathname === '') throw new Error('The S3 object URL is invalid.');
@@ -540,15 +576,16 @@ export function signS3V2Request(input: S3V2SigningInput): S3V2SignedRequest {
     throw new Error('Conflicting S3 request conditions are invalid.');
   }
   const payload = input.payload ?? '';
-  if (input.method === 'GET' && Buffer.byteLength(payload) !== 0) {
-    throw new Error('An S3 GET request cannot contain a payload.');
+  if ((input.method === 'GET' || input.method === 'DELETE') && Buffer.byteLength(payload) !== 0) {
+    throw new Error(`An S3 ${input.method} request cannot contain a payload.`);
   }
   const canonicalUri = canonicalizeS3V2Path(url.pathname);
-  const requestUrl = `${url.protocol}//${url.host}${canonicalUri}`;
+  const canonicalQuery = canonicalQueryString(input.query);
+  const requestUrl = signedRequestUrl(url, canonicalUri, canonicalQuery);
   const payloadHash = sha256Hex(payload);
   const { amzDate, dateStamp } = amzTimestamp(input.now);
   const requestHeaders: Record<string, string> = {
-    ...(input.method === 'PUT' ? { 'content-type': 'application/json' } : {}),
+    ...(input.method === 'PUT' ? { 'content-type': input.contentType ?? 'application/json' } : {}),
     host: url.host.toLowerCase(),
     ...(input.ifMatch !== undefined ? { 'if-match': normalizedEtag(input.ifMatch) } : {}),
     ...(input.ifNoneMatch !== undefined ? { 'if-none-match': '*' } : {}),
@@ -561,7 +598,7 @@ export function signS3V2Request(input: S3V2SigningInput): S3V2SignedRequest {
   const canonicalRequest = [
     input.method,
     canonicalUri,
-    '',
+    canonicalQuery,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -573,11 +610,7 @@ export function signS3V2Request(input: S3V2SigningInput): S3V2SignedRequest {
     credentialScope,
     sha256Hex(canonicalRequest),
   ].join('\n');
-  const dateKey = hmac(`AWS4${input.secretAccessKey}`, dateStamp);
-  const regionKey = hmac(dateKey, region);
-  const serviceKey = hmac(regionKey, 's3');
-  const signingKey = hmac(serviceKey, 'aws4_request');
-  const signature = createHmac('sha256', signingKey).update(stringToSign, 'utf8').digest('hex');
+  const signature = createHmac('sha256', signingKey(input.secretAccessKey, dateStamp, region)).update(stringToSign, 'utf8').digest('hex');
   const authorization = `AWS4-HMAC-SHA256 Credential=${input.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
   const fetchHeaders = { ...requestHeaders };
   delete fetchHeaders.host;
@@ -588,6 +621,49 @@ export function signS3V2Request(input: S3V2SigningInput): S3V2SignedRequest {
     signature,
     headers: { ...fetchHeaders, authorization },
   };
+}
+
+/**
+ * Creates a browser-safe SigV4 GET URL. The credential secret is never
+ * embedded; callers must constrain the expiry to the S3 maximum of seven days.
+ */
+export function presignS3V2Get(input: S3V2PresignedGetInput): string {
+  const url = parseEndpoint(input.objectUrl, false);
+  if (url.pathname === '/' || url.pathname === '') throw new Error('The S3 object URL is invalid.');
+  const region = normalizedRegion(input.region);
+  if (!input.accessKeyId || !input.secretAccessKey) throw new Error('S3 credentials are unavailable.');
+  if (!Number.isInteger(input.expiresInSeconds) || input.expiresInSeconds < 1 || input.expiresInSeconds > 604_800) {
+    throw new Error('The S3 presigned URL expiry is invalid.');
+  }
+  const canonicalUri = canonicalizeS3V2Path(url.pathname);
+  const { amzDate, dateStamp } = amzTimestamp(input.now);
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const query = {
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': `${input.accessKeyId}/${credentialScope}`,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(input.expiresInSeconds),
+    'X-Amz-SignedHeaders': 'host',
+  };
+  const canonicalQuery = canonicalQueryString(query);
+  const canonicalHeaders = `host:${url.host.toLowerCase()}\n`;
+  const canonicalRequest = [
+    'GET',
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    'host',
+    'UNSIGNED-PAYLOAD',
+  ].join('\n');
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest),
+  ].join('\n');
+  const signature = createHmac('sha256', signingKey(input.secretAccessKey, dateStamp, region))
+    .update(stringToSign, 'utf8').digest('hex');
+  return signedRequestUrl(url, canonicalUri, `${canonicalQuery}&X-Amz-Signature=${signature}`);
 }
 
 function safeHttpError(status: number, body: Buffer): Error {

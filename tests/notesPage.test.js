@@ -640,6 +640,44 @@ test('Notes page connects Markdown tooling, attachment actions, and PDF or Markd
   assert.match(updateDownloadState, /aria-busy/);
 });
 
+test('Notes share action sits between Copy and Download and owns link history workflow', async () => {
+  const [source, html, styles] = await Promise.all([
+    readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'renderer', 'index.html'), 'utf8'),
+    readFile(path.join(distRenderer, 'tailwind.css'), 'utf8'),
+  ]);
+
+  const copyIndex = html.indexOf('id="note-copy-btn"');
+  const shareIndex = html.indexOf('id="note-share-btn"');
+  const downloadIndex = html.indexOf('id="note-download-btn"');
+  assert.ok(copyIndex >= 0 && shareIndex > copyIndex && downloadIndex > shareIndex);
+  assert.match(html, /id="note-share-dialog"/);
+  assert.match(html, /id="note-share-duration"[\s\S]*?<option value="24">24 hours<\/option>[\s\S]*?<option value="72">3 days<\/option>[\s\S]*?<option value="168">7 days<\/option>/);
+  assert.match(html, /<span id="note-share-url" class="note-share-url" aria-label="Current share link"><\/span>/);
+  assert.doesNotMatch(html, /<input[^>]+id="note-share-url"/);
+  assert.match(html, /id="note-share-copy"[\s\S]*>Copy Link<\/button>/);
+  assert.match(html, /id="note-share-history"/);
+
+  assert.match(source, /private readonly shareButton = requireElement<HTMLButtonElement>\('#note-share-btn'\)/);
+  assert.match(source, /this\.shareButton\.addEventListener\('click', \(\) => void this\.openShareDialog\(\)\)/);
+  assert.match(source, /this\.captureEditorContent\(note\.id\)[\s\S]*?await this\.flushNote\(note\.id\)[\s\S]*?window\.notesApi\.createShare\(\{/);
+  assert.match(source, /expiresInHours: this\.shareSelectedDuration/);
+  assert.match(source, /window\.notesApi\.resignShare\(\{/);
+  assert.match(source, /window\.notesApi\.deleteShare\(noteId, deleteShareId\)/);
+  assert.match(source, /window\.serviceApi\.writeClipboardText\(url\)/);
+  assert.match(source, /this\.shareHistoryList\.replaceChildren\(this\.renderShareHistoryFragment\(\)\)/);
+  assert.match(source, /document\.createElement\('article'\)/);
+  assert.match(source, /dataset\.noteShareCopy = share\.shareId/);
+  assert.match(source, /dataset\.noteShareMenu = share\.shareId/);
+  assert.match(source, /dataset\.noteShareDelete = share\.shareId/);
+  assert.doesNotMatch(source, /note-share-history[\s\S]*?innerHTML\s*=/);
+
+  assert.match(styles, /\.note-share-panel\{/);
+  assert.match(styles, /\.note-share-history\{/);
+  assert.match(styles, /\.note-share-current-row\{/);
+  assert.match(styles, /\.note-share-history-menu\{/);
+});
+
 test('Notes page keeps user content in form values and reconfigurable CodeMirror state created through DOM APIs', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 

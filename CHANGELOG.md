@@ -2,6 +2,15 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.69] - 2026-08-20
+
+### Added
+- Notes can now create expiring S3 share links. Shared Notes are published as single static HTML snapshots, with 24-hour, 3-day, or 7-day signed links, signed Rich Text media, link history, copy actions, and S3 share deletion.
+
+### Changed
+- The Notes share dialog is now narrower and more compact, with one-line current-link and history rows.
+- Shared Note code blocks now use the same bounded syntax highlighting and inline styling as Note PDF/Rich Text output.
+
 ## [0.3.68] - 2026-08-19
 
 ### Added

@@ -6,6 +6,8 @@ import type {
   NoteDraftRecoveryInput,
   NoteImageReference,
   NoteLanguage,
+  NoteShareDurationHours,
+  NoteShareView,
   NoteSummary,
   NotesTreeNode,
   NotesWorkspaceDelta,
@@ -138,6 +140,30 @@ export const NOTE_LANGUAGE_OPTIONS: readonly NoteLanguageOption[] = Object.freez
   { value: 'yaml', label: 'YAML', keywords: ['yaml', 'yml'] },
   { value: 'text', label: 'Plain Text', keywords: ['plain', 'text', 'txt'] },
 ]);
+
+export const NOTE_SHARE_DURATION_OPTIONS: ReadonlyArray<{ value: NoteShareDurationHours; label: string }> = Object.freeze([
+  { value: 24, label: '24 hours' },
+  { value: 72, label: '3 days' },
+  { value: 168, label: '7 days' },
+]);
+
+export function parseNoteShareDuration(value: string): NoteShareDurationHours {
+  const hours = Number(value);
+  if (hours === 24 || hours === 72 || hours === 168) return hours;
+  return 24;
+}
+
+export function formatNoteShareExpiry(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'Unknown expiry';
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 export function filterNoteLanguageOptions(query: string): readonly NoteLanguageOption[] {
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -729,6 +755,14 @@ class NotesPage {
   private readonly attachmentPreviewCloseButton = requireElement<HTMLButtonElement>('#note-attachment-preview-close');
   private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
   private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
+  private readonly shareButton = requireElement<HTMLButtonElement>('#note-share-btn');
+  private readonly shareDialog = requireElement<HTMLDialogElement>('#note-share-dialog');
+  private readonly shareCloseButton = requireElement<HTMLButtonElement>('#note-share-close');
+  private readonly shareDurationSelect = requireElement<HTMLSelectElement>('#note-share-duration');
+  private readonly shareUrlText = requireElement<HTMLElement>('#note-share-url');
+  private readonly shareCopyButton = requireElement<HTMLButtonElement>('#note-share-copy');
+  private readonly shareStatus = requireElement<HTMLElement>('#note-share-status');
+  private readonly shareHistoryList = requireElement<HTMLElement>('#note-share-history');
   private readonly downloadButton = requireElement<HTMLButtonElement>('#note-download-btn');
   private readonly downloadMenu = requireElement<HTMLElement>('#note-download-menu');
   private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
@@ -776,6 +810,14 @@ class NotesPage {
   private switchingLanguage = false;
   private languageFilter = '';
   private noteExportInFlight = false;
+  private noteShareInFlight = false;
+  private shareSelectedDuration: NoteShareDurationHours = 24;
+  private shareNoteId: string | undefined;
+  private currentShare: NoteShareView | undefined;
+  private shareHistory: NoteShareView[] = [];
+  private shareRequestGeneration = 0;
+  private shareCopyResetTimer: number | undefined;
+  private shareOpener: HTMLButtonElement | undefined;
   private attachmentPreviewRequest = 0;
   private attachmentPreviewObjectUrl: string | undefined;
   private attachmentPreviewOpener: HTMLButtonElement | undefined;
@@ -859,6 +901,16 @@ class NotesPage {
       });
     });
     this.copyButton.addEventListener('click', () => void this.copySelectedNote());
+    this.shareButton.addEventListener('click', () => void this.openShareDialog());
+    this.shareCloseButton.addEventListener('click', () => this.shareDialog.close());
+    this.shareDialog.addEventListener('close', () => this.handleShareDialogClosed());
+    this.shareDialog.addEventListener('click', (event) => {
+      if (event.target === this.shareDialog) this.shareDialog.close();
+    });
+    this.shareDurationSelect.addEventListener('change', () => void this.handleShareDurationChange());
+    this.shareCopyButton.addEventListener('click', () => void this.copyCurrentShareLink());
+    this.shareHistoryList.addEventListener('click', (event) => void this.handleShareHistoryClick(event));
+    this.shareHistoryList.addEventListener('keydown', (event) => this.handleShareHistoryKeyDown(event));
     this.downloadButton.addEventListener('click', (event) => this.toggleDownloadMenu(event));
     this.downloadMenu.addEventListener('click', (event) => void this.handleDownloadMenuClick(event));
     this.downloadMenu.addEventListener('keydown', (event) => this.handlePopupMenuKeyDown(
@@ -918,6 +970,7 @@ class NotesPage {
     this.closeLanguageMenu();
     this.closeDownloadMenu();
     this.closeMarkdownOutline();
+    if (this.shareDialog.open) this.shareDialog.close();
     if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
     this.resetInNoteFind(false);
     this.list.replaceChildren();
@@ -3438,6 +3491,351 @@ class NotesPage {
     }
   }
 
+  private showShareDialog(opener: HTMLButtonElement): void {
+    this.shareOpener = opener;
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    this.closeShareHistoryMenus();
+    if (!this.shareDialog.open) this.shareDialog.showModal();
+  }
+
+  private async openShareDialog(): Promise<void> {
+    const note = this.selectedNote();
+    if (!note || this.noteShareInFlight) return;
+    const generation = ++this.shareRequestGeneration;
+    this.shareSelectedDuration = 24;
+    this.shareDurationSelect.value = '24';
+    this.shareNoteId = note.id;
+    this.currentShare = undefined;
+    this.shareHistory = [];
+    this.noteShareInFlight = true;
+    this.showShareDialog(this.shareButton);
+    this.setShareStatus('Creating share link...', 'default');
+    this.renderShareDialog();
+    this.updateShareButtonState();
+    try {
+      this.captureEditorContent(note.id);
+      await this.flushNote(note.id);
+      const current = this.notesById.get(note.id);
+      if (!current || this.deletedIds.has(note.id)) throw new Error('Note not found.');
+      const created = await window.notesApi.createShare({
+        noteId: current.id,
+        expiresInHours: this.shareSelectedDuration,
+      });
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== current.id) return;
+      this.currentShare = created;
+      await this.reloadShareHistory(current.id, created.shareId);
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== current.id) return;
+      this.setShareStatus('Share link created.', 'success');
+      this.renderShareDialog();
+      this.shareCopyButton.focus();
+    } catch (error) {
+      if (generation === this.shareRequestGeneration) {
+        this.setShareStatus(`Unable to share Note: ${toErrorMessage(error)}`, 'error');
+        this.renderShareDialog();
+      }
+    } finally {
+      this.noteShareInFlight = false;
+      this.updateShareButtonState();
+      if (generation === this.shareRequestGeneration) this.renderShareDialog();
+    }
+  }
+
+  private async reloadShareHistory(noteId: string, preferredShareId?: string): Promise<void> {
+    const history = await window.notesApi.listShares(noteId);
+    this.shareHistory = history;
+    const preferred = preferredShareId
+      ? history.find((share) => share.shareId === preferredShareId)
+      : undefined;
+    this.currentShare = preferred
+      ?? (this.currentShare ? history.find((share) => share.shareId === this.currentShare?.shareId) : undefined)
+      ?? history[0];
+  }
+
+  private async handleShareDurationChange(): Promise<void> {
+    this.shareSelectedDuration = parseNoteShareDuration(this.shareDurationSelect.value);
+    const noteId = this.shareNoteId;
+    const share = this.currentShare;
+    if (!noteId || !share || this.noteShareInFlight) {
+      this.renderShareDialog();
+      return;
+    }
+    const generation = ++this.shareRequestGeneration;
+    this.noteShareInFlight = true;
+    this.setShareStatus('Re-signing share link...', 'default');
+    this.renderShareDialog();
+    this.updateShareButtonState();
+    try {
+      const updated = await window.notesApi.resignShare({
+        noteId,
+        shareId: share.shareId,
+        expiresInHours: this.shareSelectedDuration,
+      });
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+      this.currentShare = updated;
+      await this.reloadShareHistory(noteId, updated.shareId);
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+      this.setShareStatus('Share link re-signed.', 'success');
+      this.renderShareDialog();
+      this.shareCopyButton.focus();
+    } catch (error) {
+      if (generation === this.shareRequestGeneration) {
+        this.setShareStatus(`Unable to re-sign share link: ${toErrorMessage(error)}`, 'error');
+        this.renderShareDialog();
+      }
+    } finally {
+      this.noteShareInFlight = false;
+      this.updateShareButtonState();
+      if (generation === this.shareRequestGeneration) this.renderShareDialog();
+    }
+  }
+
+  private async copyCurrentShareLink(): Promise<void> {
+    const url = this.currentShare?.url;
+    if (!url || this.noteShareInFlight) return;
+    await this.copyShareLink(url, this.shareCopyButton);
+  }
+
+  private async copyShareLink(url: string, button?: HTMLButtonElement): Promise<void> {
+    try {
+      await window.serviceApi.writeClipboardText(url);
+      const target = button ?? this.shareCopyButton;
+      target.textContent = 'Copied';
+      target.dataset.copied = 'true';
+      if (target === this.shareCopyButton) {
+        if (this.shareCopyResetTimer !== undefined) window.clearTimeout(this.shareCopyResetTimer);
+        this.shareCopyResetTimer = window.setTimeout(() => {
+          this.shareCopyResetTimer = undefined;
+          this.shareCopyButton.textContent = 'Copy Link';
+          delete this.shareCopyButton.dataset.copied;
+        }, 1_200);
+      } else {
+        window.setTimeout(() => {
+          if (!target.isConnected) return;
+          target.textContent = 'Copy Link';
+          delete target.dataset.copied;
+        }, 1_200);
+      }
+    } catch (error) {
+      this.setShareStatus(`Unable to copy share link: ${toErrorMessage(error)}`, 'error');
+      this.renderShareDialog();
+    }
+  }
+
+  private closeShareHistoryMenus(except?: HTMLElement): void {
+    for (const menu of Array.from(this.shareHistoryList.querySelectorAll<HTMLElement>('[data-note-share-menu-popup]'))) {
+      if (except && menu === except) continue;
+      menu.classList.add('hidden');
+    }
+    for (const button of Array.from(this.shareHistoryList.querySelectorAll<HTMLButtonElement>('[data-note-share-menu]'))) {
+      const popup = button.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLElement>('[data-note-share-menu-popup]');
+      button.setAttribute('aria-expanded', String(Boolean(popup && !popup.classList.contains('hidden'))));
+    }
+  }
+
+  private handleShareHistoryKeyDown(event: KeyboardEvent): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const menu = source.closest<HTMLElement>('[data-note-share-menu-popup]');
+    if (!menu) return;
+    const trigger = menu.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLButtonElement>('[data-note-share-menu]');
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeShareHistoryMenus();
+      trigger?.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'));
+    if (items.length === 0) return;
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowUp'
+          ? current <= 0 ? items.length - 1 : current - 1
+          : current < 0 || current >= items.length - 1 ? 0 : current + 1;
+    event.preventDefault();
+    event.stopPropagation();
+    items[next]?.focus();
+  }
+
+  private async handleShareHistoryClick(event: Event): Promise<void> {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const copy = source.closest<HTMLButtonElement>('[data-note-share-copy]');
+    if (copy?.dataset.noteShareCopy) {
+      event.stopPropagation();
+      const share = this.shareHistory.find((candidate) => candidate.shareId === copy.dataset.noteShareCopy);
+      if (share?.url && !this.noteShareInFlight) await this.copyShareLink(share.url, copy);
+      return;
+    }
+    const menuButton = source.closest<HTMLButtonElement>('[data-note-share-menu]');
+    if (menuButton?.dataset.noteShareMenu) {
+      event.stopPropagation();
+      if (this.noteShareInFlight) return;
+      const popup = menuButton.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLElement>('[data-note-share-menu-popup]');
+      if (!popup) return;
+      const opening = popup.classList.contains('hidden');
+      this.closeShareHistoryMenus(popup);
+      popup.classList.toggle('hidden', !opening);
+      menuButton.setAttribute('aria-expanded', String(opening));
+      if (opening) popup.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus();
+      return;
+    }
+    const remove = source.closest<HTMLElement>('[data-note-share-delete]');
+    const noteId = this.shareNoteId;
+    const deleteShareId = remove?.dataset.noteShareDelete;
+    if (deleteShareId) {
+      if (!noteId || this.noteShareInFlight) return;
+      event.stopPropagation();
+      this.closeShareHistoryMenus();
+      const share = this.shareHistory.find((candidate) => candidate.shareId === deleteShareId);
+      const confirmed = await window.serviceApi.confirmAction({
+        title: 'Delete Share Link?',
+        message: `Delete the share link for "${share?.title || 'Untitled'}"?`,
+        detail: 'The static page and copied media files will be removed from S3.',
+        kind: 'warning',
+        confirmLabel: 'Delete',
+      });
+      if (!confirmed) return;
+      const generation = ++this.shareRequestGeneration;
+      this.noteShareInFlight = true;
+      this.setShareStatus('Deleting share link...', 'default');
+      this.renderShareDialog();
+      this.updateShareButtonState();
+      try {
+        await window.notesApi.deleteShare(noteId, deleteShareId);
+        if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+        await this.reloadShareHistory(noteId);
+        if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+        this.setShareStatus('Share link deleted.', 'success');
+        this.renderShareDialog();
+      } catch (error) {
+        if (generation === this.shareRequestGeneration) {
+          this.setShareStatus(`Unable to delete share link: ${toErrorMessage(error)}`, 'error');
+          this.renderShareDialog();
+        }
+      } finally {
+        this.noteShareInFlight = false;
+        this.updateShareButtonState();
+        if (generation === this.shareRequestGeneration) this.renderShareDialog();
+      }
+      return;
+    }
+    const select = source.closest<HTMLElement>('[data-note-share-select]');
+    if (select?.dataset.noteShareSelect && !this.noteShareInFlight) this.selectShareHistoryItem(select.dataset.noteShareSelect);
+  }
+
+  private selectShareHistoryItem(shareId: string): void {
+    const share = this.shareHistory.find((candidate) => candidate.shareId === shareId);
+    if (!share) return;
+    this.currentShare = share;
+    this.setShareStatus(share.url ? 'Share link selected.' : 'This share has expired. Change the expiry to re-sign it.', 'default');
+    this.renderShareDialog();
+  }
+
+  private handleShareDialogClosed(): void {
+    this.shareRequestGeneration += 1;
+    if (this.shareCopyResetTimer !== undefined) {
+      window.clearTimeout(this.shareCopyResetTimer);
+      this.shareCopyResetTimer = undefined;
+    }
+    this.shareCopyButton.textContent = 'Copy Link';
+    delete this.shareCopyButton.dataset.copied;
+    this.closeShareHistoryMenus();
+    const opener = this.shareOpener;
+    this.shareOpener = undefined;
+    if (opener?.isConnected && !opener.disabled) opener.focus();
+  }
+
+  private setShareStatus(text: string, state: 'default' | 'success' | 'error'): void {
+    this.shareStatus.textContent = text;
+    this.shareStatus.dataset.state = state;
+    this.shareStatus.classList.toggle('hidden', !text);
+  }
+
+  private renderShareDialog(): void {
+    this.shareDurationSelect.value = String(this.shareSelectedDuration);
+    this.shareDurationSelect.disabled = this.noteShareInFlight || !this.currentShare;
+    const url = this.currentShare?.url ?? '';
+    this.shareUrlText.textContent = url || (this.noteShareInFlight
+      ? 'Preparing share link...'
+      : this.currentShare ? 'Change expiry to re-sign this share.' : 'No share link selected.');
+    this.shareUrlText.title = url;
+    this.shareCopyButton.disabled = this.noteShareInFlight || !url;
+    this.shareHistoryList.replaceChildren(this.renderShareHistoryFragment());
+  }
+
+  private renderShareHistoryFragment(): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    if (this.shareHistory.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'note-share-history-empty';
+      empty.textContent = this.noteShareInFlight ? 'Loading share history...' : 'No shared links yet.';
+      fragment.appendChild(empty);
+      return fragment;
+    }
+    for (const share of this.shareHistory) {
+      const item = document.createElement('article');
+      item.className = 'note-share-history-item';
+      item.dataset.noteShareSelect = share.shareId;
+      item.dataset.current = String(share.shareId === this.currentShare?.shareId);
+      item.dataset.status = share.status;
+
+      const link = document.createElement('span');
+      link.className = 'note-share-history-link';
+      link.textContent = share.url ?? 'Expired link';
+      link.title = share.url ?? '';
+
+      const expiry = document.createElement('span');
+      expiry.className = 'note-share-history-expiry';
+      expiry.textContent = share.status === 'active'
+        ? `Expires ${formatNoteShareExpiry(share.expiresAt)}`
+        : `Expired ${formatNoteShareExpiry(share.expiresAt)}`;
+
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn btn-secondary btn-sm note-share-history-copy';
+      copy.dataset.noteShareCopy = share.shareId;
+      copy.disabled = this.noteShareInFlight || !share.url;
+      copy.textContent = 'Copy Link';
+
+      const menuWrap = document.createElement('div');
+      menuWrap.className = 'note-share-history-menu-wrap';
+      const menuButton = document.createElement('button');
+      menuButton.type = 'button';
+      menuButton.className = 'note-share-history-menu-button';
+      menuButton.dataset.noteShareMenu = share.shareId;
+      menuButton.disabled = this.noteShareInFlight;
+      menuButton.setAttribute('aria-haspopup', 'menu');
+      menuButton.setAttribute('aria-expanded', 'false');
+      menuButton.setAttribute('aria-label', 'Share link actions');
+      menuButton.textContent = '…';
+      const menu = document.createElement('div');
+      menu.className = 'note-share-history-menu hidden';
+      menu.dataset.noteShareMenuPopup = share.shareId;
+      menu.setAttribute('role', 'menu');
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.setAttribute('role', 'menuitem');
+      remove.dataset.noteShareDelete = share.shareId;
+      remove.disabled = this.noteShareInFlight;
+      remove.textContent = 'Delete';
+      menu.append(remove);
+      menuWrap.append(menuButton, menu);
+
+      item.append(link, expiry, copy, menuWrap);
+      fragment.appendChild(item);
+    }
+    return fragment;
+  }
+
   private toggleDownloadMenu(event: Event): void {
     event.preventDefault();
     event.stopPropagation();
@@ -3498,6 +3896,7 @@ class NotesPage {
     if (!this.markdownOutlineMenu.contains(source) && !this.markdownOutlineButton.contains(source)) {
       this.closeMarkdownOutline();
     }
+    if (!this.shareHistoryList.contains(source)) this.closeShareHistoryMenus();
   };
 
   private async handleDownloadMenuClick(event: Event): Promise<void> {
@@ -3846,6 +4245,7 @@ class NotesPage {
     this.markdownPreview.classList.toggle('hidden', !markdown || !this.markdownPreviewEnabled);
     this.codeLayout.dataset.preview = String(markdown && this.markdownPreviewEnabled);
     this.updateDownloadButtonState();
+    this.updateShareButtonState();
     if (!markdown) this.closeMarkdownOutline();
     this.contentHost.dataset.mode = richText ? 'richtext' : 'code';
     this.contentHost.dataset.language = language;
@@ -3858,6 +4258,11 @@ class NotesPage {
     const exportable = note?.language === 'richtext' || note?.language === 'markdown';
     this.downloadButton.disabled = this.noteExportInFlight || !exportable;
     this.downloadButton.setAttribute('aria-busy', String(this.noteExportInFlight));
+  }
+
+  private updateShareButtonState(): void {
+    this.shareButton.disabled = this.noteShareInFlight || !this.selectedNote();
+    this.shareButton.setAttribute('aria-busy', String(this.noteShareInFlight));
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {

@@ -26,6 +26,9 @@ import type {
   NoteExportInput,
   NotePlacementInput,
   NoteMoveInput,
+  NoteShareCreateInput,
+  NoteShareDurationHours,
+  NoteShareResignInput,
   NoteSummary,
   NoteTreeExpansionRequest,
   NotesWorkspaceSnapshot,
@@ -204,6 +207,10 @@ const IPC_CHANNELS = {
   notesAttachmentDownload: 'notes:attachment:download',
   notesExport: 'notes:export',
   notesExportOpenLast: 'notes:export:open-last',
+  notesSharesList: 'notes:shares:list',
+  notesSharesCreate: 'notes:shares:create',
+  notesSharesResign: 'notes:shares:resign',
+  notesSharesDelete: 'notes:shares:delete',
   notesFlushRequest: 'notes:flush-request',
   notesFlushResult: 'notes:flush-result',
   notesPersistentApplyRelease: 'notes:persistent-apply-release',
@@ -406,6 +413,51 @@ function validateNoteExportInput(value: unknown): NoteExportInput {
   }
   if (value.language === 'richtext') parseRichTextContent(value.content);
   return value as unknown as NoteExportInput;
+}
+
+function validateNoteShareDuration(value: unknown): NoteShareDurationHours {
+  if (value !== 24 && value !== 72 && value !== 168) {
+    throw new Error('The Note share expiry must be 24 hours, 3 days, or 7 days.');
+  }
+  return value;
+}
+
+function validateNoteShareId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(value)) {
+    throw new Error('The Note share ID is invalid.');
+  }
+  return value;
+}
+
+function validateNoteShareCreateInput(value: unknown): NoteShareCreateInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['noteId', 'expiresInHours'].includes(key))) {
+    throw new Error('The Note share request is invalid.');
+  }
+  return {
+    noteId: validateNoteId(value.noteId),
+    expiresInHours: validateNoteShareDuration(value.expiresInHours),
+  };
+}
+
+function validateNoteShareResignInput(value: unknown): NoteShareResignInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['noteId', 'shareId', 'expiresInHours'].includes(key))) {
+    throw new Error('The Note share request is invalid.');
+  }
+  return {
+    noteId: validateNoteId(value.noteId),
+    shareId: validateNoteShareId(value.shareId),
+    expiresInHours: validateNoteShareDuration(value.expiresInHours),
+  };
+}
+
+function validateNoteShareDeleteInput(value: unknown): { noteId: string; shareId: string } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['noteId', 'shareId'].includes(key))) {
+    throw new Error('The Note share request is invalid.');
+  }
+  return {
+    noteId: validateNoteId(value.noteId),
+    shareId: validateNoteShareId(value.shareId),
+  };
 }
 
 function assertNotePdfComplexity(documentHtml: string): void {
@@ -2470,6 +2522,31 @@ function registerIpcHandlers(): void {
     const openError = await shell.openPath(filePath);
     if (openError) throw new Error('Unable to open the exported Note file.');
     return { status: 'opened' as const };
+  });
+  ipcMain.handle(IPC_CHANNELS.notesSharesList, async (_event, noteIdValue: unknown) => {
+    const noteId = validateNoteId(noteIdValue);
+    assertNotesWorkspaceSafe();
+    if (!getNotesStore().get(noteId)) throw new Error('Note not found.');
+    return getS3SyncRuntime().listNoteShares(noteId);
+  });
+  ipcMain.handle(IPC_CHANNELS.notesSharesCreate, async (_event, inputValue: unknown) => {
+    const input = validateNoteShareCreateInput(inputValue);
+    assertNotesWorkspaceSafe();
+    const note = getNotesStore().get(input.noteId);
+    if (!note) throw new Error('Note not found.');
+    return getS3SyncRuntime().createNoteShare(note, input.expiresInHours);
+  });
+  ipcMain.handle(IPC_CHANNELS.notesSharesResign, async (_event, inputValue: unknown) => {
+    const input = validateNoteShareResignInput(inputValue);
+    assertNotesWorkspaceSafe();
+    if (!getNotesStore().get(input.noteId)) throw new Error('Note not found.');
+    return getS3SyncRuntime().resignNoteShare(input.noteId, input.shareId, input.expiresInHours);
+  });
+  ipcMain.handle(IPC_CHANNELS.notesSharesDelete, async (_event, inputValue: unknown) => {
+    const input = validateNoteShareDeleteInput(inputValue);
+    assertNotesWorkspaceSafe();
+    if (!getNotesStore().get(input.noteId)) throw new Error('Note not found.');
+    await getS3SyncRuntime().deleteNoteShare(input.noteId, input.shareId);
   });
   ipcMain.on(IPC_CHANNELS.notesFlushResult, (event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.ok !== 'boolean') return;

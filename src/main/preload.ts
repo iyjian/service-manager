@@ -154,6 +154,10 @@ const notesApi: NotesApi = {
   downloadAttachment: (reference) => ipcRenderer.invoke('notes:attachment:download', reference),
   exportNote: (input) => ipcRenderer.invoke('notes:export', input),
   openLastExport: () => ipcRenderer.invoke('notes:export:open-last'),
+  listShares: (noteId) => ipcRenderer.invoke('notes:shares:list', noteId),
+  createShare: (input) => ipcRenderer.invoke('notes:shares:create', input),
+  resignShare: (input) => ipcRenderer.invoke('notes:shares:resign', input),
+  deleteShare: (noteId, shareId) => ipcRenderer.invoke('notes:shares:delete', { noteId, shareId }),
   onFlushRequested: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) return;

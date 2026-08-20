@@ -869,6 +869,27 @@ export type NoteExportOpenResult =
   | { status: 'opened' }
   | { status: 'unavailable' };
 
+export type NoteShareDurationHours = 24 | 72 | 168;
+
+export interface NoteShareView {
+  shareId: string;
+  title: string;
+  createdAt: string;
+  expiresAt: string;
+  status: 'active' | 'expired';
+  /** Present only while the last signed URL remains valid. */
+  url?: string;
+}
+
+export interface NoteShareCreateInput {
+  noteId: string;
+  expiresInHours: NoteShareDurationHours;
+}
+
+export interface NoteShareResignInput extends NoteShareCreateInput {
+  shareId: string;
+}
+
 export interface NotesFlushRequest {
   /** Keeps the Notes page inert until the matching apply reload or release. */
   persistentApplyId?: string;
@@ -893,6 +914,10 @@ export interface NotesApi {
   downloadAttachment: (reference: NoteAttachmentReference) => Promise<NoteAttachmentDownloadResult>;
   exportNote: (input: NoteExportInput) => Promise<NoteExportResult>;
   openLastExport: () => Promise<NoteExportOpenResult>;
+  listShares: (noteId: string) => Promise<NoteShareView[]>;
+  createShare: (input: NoteShareCreateInput) => Promise<NoteShareView>;
+  resignShare: (input: NoteShareResignInput) => Promise<NoteShareView>;
+  deleteShare: (noteId: string, shareId: string) => Promise<void>;
   onFlushRequested: (listener: (request: NotesFlushRequest) => void | Promise<void>) => () => void;
   onPersistentApplyReleased: (listener: (persistentApplyId: string) => void) => () => void;
 }

@@ -19,6 +19,8 @@ import type {
   NoteImageReference,
   NoteImageUploadInput,
   NoteImageUploadResult,
+  NoteShareDurationHours,
+  NoteShareView,
   NotesTreeSnapshot,
   S3ConnectionTestDraft,
   S3CredentialValues,
@@ -74,6 +76,7 @@ import {
   NOTES_ATTACHMENT_LIMITS,
   NotesAttachmentS3Store,
 } from './notesAttachmentS3';
+import { NotesShareS3Store } from './notesShareS3';
 
 const SETTINGS_SCHEMA_VERSION = 6;
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -953,6 +956,7 @@ export class S3SyncRuntime {
   private loading?: Promise<PersistedS3SyncSettings>;
   private operationQueue: Promise<void> = Promise.resolve();
   private settingsMutationQueue: Promise<void> = Promise.resolve();
+  private shareOperationQueue: Promise<void> = Promise.resolve();
   private syncPromise?: Promise<S3SyncResult>;
   private activeAbortController?: AbortController;
   private readonly activeConnectionTests = new Map<AbortController, Promise<void>>();
@@ -1250,6 +1254,61 @@ export class S3SyncRuntime {
     return this.requestSync(true, true);
   }
 
+  public listNoteShares(noteId: string): Promise<NoteShareView[]> {
+    return this.enqueueShareOperation(async () => {
+      if (this.shuttingDown) throw new Error('Note sharing is shutting down.');
+      const settings = await this.ensureSettings();
+      const store = this.createNotesShareStore(settings);
+      if (!store) return [];
+      return store.list(noteId);
+    });
+  }
+
+  public createNoteShare(note: Note, expiresInHours: NoteShareDurationHours): Promise<NoteShareView> {
+    return this.enqueueShareOperation(async () => {
+      if (this.shuttingDown) throw new Error('Note sharing is shutting down.');
+      const settings = await this.ensureSettings();
+      const store = this.createNotesShareStore(settings);
+      if (!store) throw new Error('Configure S3 before sharing a Note.');
+      return store.create(note, expiresInHours, {
+        loadImage: async (reference) => {
+          const loaded = await this.loadNoteImage(reference);
+          if (loaded.status !== 'loaded') throw new Error('A shared Note image is unavailable.');
+          return Buffer.from(loaded.bytes);
+        },
+        loadAttachment: async (reference) => {
+          const loaded = await this.loadNoteAttachment(reference);
+          if (loaded.status !== 'loaded') throw new Error('A shared Note attachment is unavailable.');
+          return loaded.bytes;
+        },
+      });
+    });
+  }
+
+  public resignNoteShare(
+    noteId: string,
+    shareId: string,
+    expiresInHours: NoteShareDurationHours,
+  ): Promise<NoteShareView> {
+    return this.enqueueShareOperation(async () => {
+      if (this.shuttingDown) throw new Error('Note sharing is shutting down.');
+      const settings = await this.ensureSettings();
+      const store = this.createNotesShareStore(settings);
+      if (!store) throw new Error('Configure S3 before sharing a Note.');
+      return store.resign(noteId, shareId, expiresInHours);
+    });
+  }
+
+  public deleteNoteShare(noteId: string, shareId: string): Promise<void> {
+    return this.enqueueShareOperation(async () => {
+      if (this.shuttingDown) throw new Error('Note sharing is shutting down.');
+      const settings = await this.ensureSettings();
+      const store = this.createNotesShareStore(settings);
+      if (!store) throw new Error('Configure S3 before managing Note shares.');
+      await store.delete(noteId, shareId);
+    });
+  }
+
   public async uploadNoteImage(value: unknown, signal?: AbortSignal): Promise<NoteImageUploadResult> {
     if (this.shuttingDown || signal?.aborted) throw new Error('Notes image upload was cancelled.');
     const input = this.validateNoteImageUploadInput(value);
@@ -1377,6 +1436,7 @@ export class S3SyncRuntime {
     }
     await this.operationQueue;
     await this.settingsMutationQueue;
+    await this.shareOperationQueue;
     await Promise.allSettled(this.activeConnectionTests.values());
     await Promise.allSettled(this.activeNotesAttachmentLoads.values());
     await Promise.allSettled(imageShutdowns);
@@ -1530,6 +1590,37 @@ export class S3SyncRuntime {
       createRandomBytes: this.createRandomBytes,
       timeoutMs: this.timeoutMs,
     });
+  }
+
+  private createNotesShareStore(settings: PersistedS3SyncSettings): NotesShareS3Store | undefined {
+    if (
+      !settings.endpoint
+      || !settings.bucket
+      || !settings.encryptedAccessKeyId
+      || !settings.encryptedSecretAccessKey
+    ) {
+      return undefined;
+    }
+    const credentials = this.credentials(settings);
+    return new NotesShareS3Store({
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
+      region: settings.region,
+      ...credentials,
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      createRandomBytes: this.createRandomBytes,
+      timeoutMs: this.timeoutMs,
+    });
+  }
+
+  private enqueueShareOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = this.shareOperationQueue.then(operation, operation);
+    this.shareOperationQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
   }
 
   private updateState(next: S3SyncState): void {
