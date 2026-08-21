@@ -792,11 +792,15 @@ class SqlPage {
               this.scheduleTableEnumHoverClose();
               return false;
             },
+          }),
+          // Escape is bound to simplifySelection in CodeMirror's default keymap, so a
+          // domEventHandlers keydown would be consumed before it can close the tooltip.
+          // An observer runs unconditionally and, without consuming the key, closes the
+          // tooltip while simplifySelection still clears the double-click selection.
+          EditorView.domEventObservers({
             keydown: (event) => {
-              if (event.key !== 'Escape' || !this.tableEnumHoverTarget) return false;
-              event.preventDefault();
+              if (event.key !== 'Escape' || !this.tableEnumHoverTarget) return;
               this.closeTableEnumHover();
-              return true;
             },
           }),
           EditorView.lineWrapping,
@@ -854,6 +858,13 @@ class SqlPage {
   }
 
   private bindEvents(): void {
+    // Close the enum tooltip on any click outside its own DOM so a plain click
+    // away (not just a pointer move) dismisses it, matching pointer-exit/Escape.
+    document.addEventListener('pointerdown', (event) => {
+      if (!this.active || !this.tableEnumHoverTarget) return;
+      if (event.target instanceof Element && event.target.closest('.sql-table-enum-tooltip')) return;
+      this.closeTableEnumHover();
+    });
     this.productionTab.addEventListener('click', () => void this.switchEnvironment('production'));
     this.developmentTab.addEventListener('click', () => void this.switchEnvironment('development'));
     this.decreaseFontSizeButton.addEventListener('click', () => this.adjustEditorFontSize(-1));

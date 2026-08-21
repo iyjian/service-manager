@@ -781,14 +781,19 @@ export class SqlRuntime {
         const table = tableName ? tables.get(tableName) : undefined;
         if (!table || !columnName || table.columns.some((column) => column.name === columnName)) continue;
         const dataType = normalizeSchemaText(row.dataType, MAX_SCHEMA_DATA_TYPE_CHARACTERS);
-        const enumComment = normalizeSchemaText(row.enumComment, MAX_SCHEMA_ENUM_COMMENT_CHARACTERS);
+        // Enum comments are free text and may carry accidental leading/trailing
+        // whitespace; trim instead of rejecting so those fields still surface.
+        const enumComment = normalizeSchemaText(
+          typeof row.enumComment === 'string' ? row.enumComment.trim() : row.enumComment,
+          MAX_SCHEMA_ENUM_COMMENT_CHARACTERS,
+        );
         const nullable = row.isNullable === 'YES'
           ? true
           : row.isNullable === 'NO'
             ? false
             : undefined;
         const enumDefaultValue = normalizeSchemaText(
-          row.enumDefaultValue,
+          typeof row.enumDefaultValue === 'string' ? row.enumDefaultValue.trim() : row.enumDefaultValue,
           MAX_SCHEMA_ENUM_DEFAULT_CHARACTERS,
         );
         const primaryKey = row.columnKey === 'PRI';

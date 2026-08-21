@@ -2,7 +2,18 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
-## [0.3.69] - 2026-08-20
+## [0.3.72] - 2026-08-21
+
+### Fixed
+- SQL enum-field table tooltips now surface enum columns whose comment has stray leading or trailing whitespace (for example `t_teaching_module.type`).
+- Pressing Escape or clicking outside now dismisses the SQL enum-field tooltip, and double-clicking the table name reopens it.
+
+## [0.3.71] - 2026-08-20
+
+### Changed
+- Reworked S3 synchronization into a finalized v4 object layout with a shared SigV4 request layer and per-note versioned storage; the retired v1/v2/v3 prefixes are no longer used.
+
+## [0.3.70] - 2026-08-20
 
 ### Added
 - Notes can now create expiring S3 share links. Shared Notes are published as single static HTML snapshots, with 24-hour, 3-day, or 7-day signed links, signed Rich Text media, link history, copy actions, and S3 share deletion.
@@ -11,14 +22,18 @@ All notable changes to Service Manager are documented in this file. The newest r
 - The Notes share dialog is now narrower and more compact, with one-line current-link and history rows.
 - Shared Note code blocks now use the same bounded syntax highlighting and inline styling as Note PDF/Rich Text output.
 
-## [0.3.68] - 2026-08-19
+## [0.3.69] - 2026-08-19
 
 ### Added
-- Inline cell editing in SQL query results: double-click a result cell to edit its value and run a generated UPDATE statement.
 - A "What's New" dialog that shows the full changelog on first launch after an update, with Chinese/English tabs.
 
 ### Changed
 - The SQL cell editor's Execute button now greys out when there are no changes or after a successful update (with a hover hint), and shows inline success/error status.
+
+## [0.3.68] - 2026-08-18
+
+### Added
+- Inline cell editing in SQL query results: double-click a result cell to edit its value and run a generated UPDATE statement.
 
 ## [0.3.67] - 2026-08-18
 

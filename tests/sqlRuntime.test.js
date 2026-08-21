@@ -369,6 +369,48 @@ test('SQL schema marks primary-key columns from information_schema column_key', 
   assert.equal(table.columns.find((column) => column.name === 'name').primaryKey, undefined);
 });
 
+test('SQL schema trims surrounding whitespace from enum comments instead of dropping them', async () => {
+  const credentialsStore = credentialStore({ production: { userName: 'owner', passwd: 'a'.repeat(32) } });
+  const runtime = new SqlRuntime({
+    credentialsStore,
+    fetchImpl: async (url, init) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('/auth/users/login')) return response({ token: 'enum-token' });
+      if (pathname.endsWith('/user/detail')) return response({ id: 7, name: 'Owner', userName: 'owner' });
+      if (pathname.endsWith('/system/profile')) {
+        const { statement } = JSON.parse(init.body);
+        if (/from information_schema\.tables/i.test(statement)) {
+          return response([{ tableName: 't_teaching_module' }]);
+        }
+        return response([
+          {
+            tableName: 't_teaching_module',
+            columnName: 'type',
+            dataType: 'int',
+            isNullable: 'NO',
+            // Real-world comment with an accidental trailing space (0x20).
+            enumComment: '资源类型-1 - 知识点 2 - 技能点 3 - 案例 10000 - 隐藏知识点 ',
+            enumDefaultValue: ' 1 ',
+          },
+        ]);
+      }
+      throw new Error(`Unexpected request ${pathname}`);
+    },
+  });
+
+  await runtime.getAuthState('production');
+  const schema = await runtime.getSchema('production');
+
+  const table = schema.tables.find((candidate) => candidate.name === 't_teaching_module');
+  assert.ok(table);
+  const column = table.columns.find((candidate) => candidate.name === 'type');
+  assert.deepEqual(column.enum, {
+    comment: '资源类型-1 - 知识点 2 - 技能点 3 - 案例 10000 - 隐藏知识点',
+    nullable: false,
+    defaultValue: '1',
+  });
+});
+
 test('SQL schema cache is environment-session scoped and cleared by explicit sign out', async () => {
   const credentialsStore = credentialStore();
   let schemaTableRequests = 0;
