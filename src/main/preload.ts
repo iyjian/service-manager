@@ -52,6 +52,11 @@ import type {
 
 const closeShortcutListeners = new Set<() => boolean | Promise<boolean>>();
 
+function toIpcErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  return message.slice(0, 1000);
+}
+
 ipcRenderer.on('app:close-shortcut-request', (_event: Electron.IpcRendererEvent, value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const { requestId } = value as { requestId?: unknown };
@@ -177,7 +182,11 @@ const notesApi: NotesApi = {
         .then(() => listener(request))
         .then(
           () => ipcRenderer.send('notes:flush-result', { requestId, ok: true }),
-          () => ipcRenderer.send('notes:flush-result', { requestId, ok: false }),
+          (error) => ipcRenderer.send('notes:flush-result', {
+            requestId,
+            ok: false,
+            error: toIpcErrorMessage(error),
+          }),
         );
     };
     ipcRenderer.on('notes:flush-request', handler);

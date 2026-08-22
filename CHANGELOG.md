@@ -2,6 +2,15 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.73] - 2026-08-22
+
+### Fixed
+- Large encrypted S3 conflict-recovery snapshots now validate correctly, so Notes conflicts with many or large notes can still be restored.
+- Notes in-page search no longer tries to focus or highlight unmounted editors during page changes or shutdown.
+
+### Changed
+- Notes save and shutdown failures now include bounded renderer error details in the main-process failure message, improving diagnostics without exposing sensitive content.
+
 ## [0.3.72] - 2026-08-21
 
 ### Fixed

@@ -450,7 +450,7 @@ function strictRecoveryBase64(value: unknown, expectedBytes?: number): Buffer {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_SNAPSHOT_BYTES * 2) {
     throw new Error('invalid base64');
   }
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+  if (!isStrictRecoveryBase64(value)) {
     throw new Error('invalid base64');
   }
   const decoded = Buffer.from(value, 'base64');
@@ -458,6 +458,63 @@ function strictRecoveryBase64(value: unknown, expectedBytes?: number): Buffer {
     throw new Error('invalid base64');
   }
   return decoded;
+}
+
+function isStrictRecoveryBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  const firstPaddingIndex = value.indexOf('=');
+  const dataLength = firstPaddingIndex === -1 ? value.length : firstPaddingIndex;
+  if (firstPaddingIndex !== -1) {
+    const paddingLength = value.length - firstPaddingIndex;
+    if (!((paddingLength === 1 && dataLength % 4 === 3) || (paddingLength === 2 && dataLength % 4 === 2))) {
+      return false;
+    }
+    for (let index = firstPaddingIndex; index < value.length; index += 1) {
+      if (value.charCodeAt(index) !== 61) return false;
+    }
+  }
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      !(code >= 65 && code <= 90)
+      && !(code >= 97 && code <= 122)
+      && !(code >= 48 && code <= 57)
+      && code !== 43
+      && code !== 47
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function describeRecoveryBase64Field(value: unknown, expectedBytes?: number): Record<string, unknown> {
+  if (typeof value !== 'string') {
+    return { type: Array.isArray(value) ? 'array' : typeof value, expectedBytes };
+  }
+  const paddingBytes = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const estimatedDecodedBytes = value.length % 4 === 0 ? Math.max(0, (value.length / 4 * 3) - paddingBytes) : undefined;
+  const shouldScan = value.length <= 4096;
+  const base64Pattern = shouldScan
+    ? isStrictRecoveryBase64(value)
+    : undefined;
+  let decodedBytes: number | undefined;
+  let canonicalBase64: boolean | undefined;
+  if (base64Pattern === true) {
+    const decoded = Buffer.from(value, 'base64');
+    decodedBytes = decoded.byteLength;
+    canonicalBase64 = decoded.toString('base64') === value;
+  }
+  return {
+    type: 'string',
+    chars: value.length,
+    expectedBytes,
+    estimatedDecodedBytes,
+    scanned: shouldScan,
+    decodedBytes,
+    base64Pattern,
+    canonicalBase64,
+  };
 }
 
 function parseS3LocalRecoverySnapshot(value: unknown): S3LocalRecoverySnapshot {
@@ -526,7 +583,15 @@ function parseEncryptedS3LocalRecovery(value: unknown): EncryptedS3LocalRecovery
     strictRecoveryBase64(value.encryption.authTag, 16);
     const ciphertext = strictRecoveryBase64(value.ciphertext);
     if (ciphertext.byteLength === 0 || ciphertext.byteLength > MAX_SNAPSHOT_BYTES) throw new Error('invalid ciphertext');
-  } catch {
+  } catch (error) {
+    console.warn('[s3:local-recovery] Invalid encrypted local S3 conflict recovery envelope.', {
+      reason: error instanceof Error ? error.message : String(error),
+      salt: describeRecoveryBase64Field(value.encryption.salt, 16),
+      iv: describeRecoveryBase64Field(value.encryption.iv, 12),
+      authTag: describeRecoveryBase64Field(value.encryption.authTag, 16),
+      ciphertext: describeRecoveryBase64Field(value.ciphertext),
+      maxCiphertextBytes: MAX_SNAPSHOT_BYTES,
+    });
     throw new Error('The encrypted local S3 conflict recovery is invalid.');
   }
   return {

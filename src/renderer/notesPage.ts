@@ -1125,6 +1125,7 @@ class NotesPage {
     this.applyInNoteFindDecorations();
     this.updateInNoteFindControls();
     if (!restoreEditorFocus) return;
+    if (!this.editorsMounted) return;
     if (this.selectedNote()?.language === 'richtext') this.richTextEditor.focus();
     else this.codeEditor.focus();
   }
@@ -1145,7 +1146,7 @@ class NotesPage {
   private refreshInNoteFind(preserveActivePosition: boolean, reveal: boolean): void {
     if (!this.findOpen) return;
     const note = this.selectedNote();
-    if (!note) {
+    if (!note || !this.editorsMounted) {
       this.editor.inert = false;
       this.resetInNoteFind(false);
       return;
@@ -1181,6 +1182,12 @@ class NotesPage {
   }
 
   private applyInNoteFindDecorations(): void {
+    if (!this.editorsMounted) {
+      const api = notesHighlightApi();
+      api?.registry.delete(NOTES_CODE_FIND_HIGHLIGHT);
+      api?.registry.delete(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT);
+      return;
+    }
     const note = this.selectedNote();
     const matches = this.findOpen ? this.findMatches : [];
     const activeIndex = this.findOpen ? this.findActiveIndex : -1;
@@ -1227,7 +1234,7 @@ class NotesPage {
 
   private revealInNoteFindMatch(): void {
     const match = this.findMatches[this.findActiveIndex];
-    if (!match) return;
+    if (!match || !this.editorsMounted) return;
     if (this.selectedNote()?.language === 'richtext') {
       this.richTextEditor.revealFindMatch();
       return;

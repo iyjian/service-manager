@@ -6,8 +6,11 @@ const test = require('node:test');
 
 const {
   S3SyncRuntime,
+  createS3LocalRecoverySnapshot,
   decryptS3LocalRecovery,
+  encryptS3LocalRecovery,
   measureBoundedJsonBytes,
+  serializeEncryptedS3LocalRecovery,
   validateS3SyncSettingsDraft,
 } = require('../dist/main/s3Sync');
 const { createS3SharedAppData } = require('../dist/main/s3DataMerge');
@@ -2136,6 +2139,25 @@ test('a true Hosts conflict keeps cloud canonical and saves an encrypted local r
   assert.equal(recovery.objectType, 'local-conflict-recovery');
   assert.equal(recovery.data.hosts.items[0].name, 'Local Host');
   assert.doesNotMatch(JSON.stringify(envelope), /Local Host|host-password/);
+});
+
+test('encrypted local recovery serialization accepts large ciphertext', () => {
+  const largeContent = 'x'.repeat(950_000);
+  const largeNotes = Array.from({ length: 14 }, (_, index) => note(`large-note-${index}`, largeContent));
+  const recovery = createS3LocalRecoverySnapshot(sharedData(largeNotes), {
+    appVersion: '0.3.72',
+    recoveryId: 'large-recovery',
+    clientId: 'large-client',
+    createdAt: T2,
+  });
+  const envelope = encryptS3LocalRecovery(recovery, SYNC_KEY, (size) => Buffer.alloc(size, size));
+  assert.ok(envelope.ciphertext.length > 16 * 1024 * 1024, 'test must cover a multi-megabyte base64 ciphertext');
+
+  const serialized = serializeEncryptedS3LocalRecovery(envelope);
+  const decrypted = decryptS3LocalRecovery(JSON.parse(serialized), SYNC_KEY);
+  assert.equal(decrypted.recoveryId, 'large-recovery');
+  assert.equal(decrypted.data.notes.notes.length, largeNotes.length);
+  assert.equal(decrypted.data.notes.notes[13].content.length, largeContent.length);
 });
 
 test('S3SyncRuntime keeps one in-flight reconcile for concurrent manual requests', async (t) => {

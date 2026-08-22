@@ -2557,7 +2557,10 @@ function registerIpcHandlers(): void {
     if (payload.ok) {
       pending.resolve();
     } else {
-      pending.reject(new Error('The renderer could not save the latest Notes changes.'));
+      const detail = typeof payload.error === 'string' && payload.error.trim()
+        ? `: ${payload.error.trim().slice(0, 1000)}`
+        : '';
+      pending.reject(new Error(`The renderer could not save the latest Notes changes${detail}`));
     }
   });
   ipcMain.handle(IPC_CHANNELS.uiPreferencesGet, async () => getUiPreferencesStore().get());
