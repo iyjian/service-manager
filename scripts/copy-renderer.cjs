@@ -2,14 +2,16 @@ const {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } = require('node:fs');
 const { createHash } = require('node:crypto');
 const { createRequire } = require('node:module');
-const { dirname, join, relative, resolve, sep } = require('node:path');
+const { dirname, extname, join, relative, resolve, sep } = require('node:path');
 
 const root = join(__dirname, '..');
 const outDir = join(root, 'dist', 'renderer');
@@ -52,6 +54,7 @@ const legacyModeSpecifiers = Object.freeze([
   '@codemirror/legacy-modes/mode/shell',
   '@codemirror/legacy-modes/mode/sql',
 ]);
+const dtSqlParserSpecifier = './vendor/dt-sql-parser/parser/mysql/index.js';
 
 function readPackage(packageRoot) {
   return JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
@@ -363,6 +366,100 @@ function copyBrowserModule(entry, outputPath, packageRoot, copiedModules) {
   }
 }
 
+function browserRelativeSpecifier(fromFile, toFile) {
+  let specifier = relative(dirname(fromFile), toFile).split(sep).join('/');
+  if (!specifier.startsWith('.')) specifier = `./${specifier}`;
+  return specifier;
+}
+
+function resolveDtSqlRelativeModule(sourcePath, specifier) {
+  const dependency = resolve(dirname(sourcePath), specifier);
+  if (existsSync(dependency) && statSync(dependency).isFile()) return dependency;
+  const jsDependency = `${dependency}.js`;
+  if (existsSync(jsDependency)) return jsDependency;
+  const indexDependency = join(dependency, 'index.js');
+  if (existsSync(indexDependency)) return indexDependency;
+  return undefined;
+}
+
+function rewriteDtSqlParserImports(source, sourcePath, outputPath, dependencyOutputs) {
+  const modulePattern = /(\b(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?['"])([^'"]+)(['"])/g;
+  return source.replace(modulePattern, (match, prefix, specifier, suffix) => {
+    const dependencyOutput = dependencyOutputs.get(specifier);
+    if (dependencyOutput) {
+      return `${prefix}${browserRelativeSpecifier(outputPath, dependencyOutput)}${suffix}`;
+    }
+    if (!specifier.startsWith('.')) return match;
+    const resolvedDependency = resolveDtSqlRelativeModule(sourcePath, specifier);
+    if (!resolvedDependency) {
+      throw new Error(`Missing dt-sql-parser relative module ${specifier} from ${sourcePath}`);
+    }
+    const rewritten = browserRelativeSpecifier(
+      outputPath,
+      join(dirname(outputPath), relative(dirname(sourcePath), resolvedDependency)),
+    );
+    return `${prefix}${extname(rewritten) ? rewritten : `${rewritten}.js`}${suffix}`;
+  });
+}
+
+function copyDtSqlParserDistModule(sourcePath, outputPath, distRoot, dependencyOutputs) {
+  const relativeSource = relative(distRoot, sourcePath);
+  if (relativeSource.startsWith('..') || relativeSource === '') {
+    throw new Error(`dt-sql-parser copy escaped package dist root: ${sourcePath}`);
+  }
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const source = readFileSync(sourcePath, 'utf8');
+  writeFileSync(outputPath, rewriteDtSqlParserImports(source, sourcePath, outputPath, dependencyOutputs));
+}
+
+function copyDtSqlParserDistTree(sourceDir, outputDir, distRoot, dependencyOutputs) {
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = join(sourceDir, entry.name);
+    const outputPath = join(outputDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDtSqlParserDistTree(sourcePath, outputPath, distRoot, dependencyOutputs);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    mkdirSync(dirname(outputPath), { recursive: true });
+    if (entry.name.endsWith('.js')) {
+      copyDtSqlParserDistModule(sourcePath, outputPath, distRoot, dependencyOutputs);
+    } else {
+      copyFileSync(sourcePath, outputPath);
+    }
+  }
+}
+
+function copyDtSqlParserVendor() {
+  const dtRoot = resolvePackageRoot('dt-sql-parser', root);
+  const antlr4ngRoot = resolvePackageRoot('antlr4ng', dtRoot);
+  const antlr4c3Root = resolvePackageRoot('antlr4-c3', dtRoot);
+  const dependencyOutputs = new Map([
+    ['antlr4ng', join(vendorDir, 'antlr4ng.js')],
+    ['antlr4-c3', join(vendorDir, 'antlr4-c3.js')],
+  ]);
+
+  mkdirSync(vendorDir, { recursive: true });
+  copyFileSync(join(antlr4ngRoot, 'dist', 'index.mjs'), dependencyOutputs.get('antlr4ng'));
+
+  const antlr4c3Entry = join(antlr4c3Root, 'lib', 'index.mjs');
+  const antlr4c3Output = dependencyOutputs.get('antlr4-c3');
+  const antlr4c3Source = readFileSync(antlr4c3Entry, 'utf8').replace(
+    /(\b(?:import|export)\s+(?:[^'";]*?\sfrom\s+)?['"])antlr4ng(['"])/g,
+    `$1${browserRelativeSpecifier(antlr4c3Output, dependencyOutputs.get('antlr4ng'))}$2`,
+  );
+  writeFileSync(antlr4c3Output, antlr4c3Source);
+
+  const distRoot = join(dtRoot, 'dist');
+  copyDtSqlParserDistTree(
+    distRoot,
+    join(vendorDir, 'dt-sql-parser'),
+    distRoot,
+    dependencyOutputs,
+  );
+  return dtSqlParserSpecifier;
+}
+
 function copyBrowserVendor() {
   const legacyPackageName = '@codemirror/legacy-modes';
   const legacyRoots = legacyModeSpecifiers.map((specifier) =>
@@ -442,6 +539,7 @@ function copyBrowserVendor() {
     copyFileSync(exportedWildcardEsmEntry(legacyRoot, './mode/*', modeName), join(vendorDir, outputName));
     imports.set(specifier, `./vendor/${outputName}`);
   }
+  copyDtSqlParserVendor();
   return imports;
 }
 

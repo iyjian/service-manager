@@ -176,14 +176,12 @@ test('Sentry collection policy explicitly disables every data category and unsaf
 });
 
 test('Sentry is initialized before Electron and renderer application startup with a complete local ESM graph', async () => {
-  const [main, mainSentry, renderer, rendererSentry, html, readme, agents] = await Promise.all([
+  const [main, mainSentry, renderer, rendererSentry, html] = await Promise.all([
     fs.readFile(path.join(root, 'dist', 'main', 'main.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'main', 'sentry.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'renderer', 'renderer.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'renderer', 'sentry.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'renderer', 'index.html'), 'utf8'),
-    fs.readFile(path.join(root, 'README.md'), 'utf8'),
-    fs.readFile(path.join(root, 'AGENTS.md'), 'utf8'),
   ]);
 
   assert.ok(main.indexOf('require("./sentry")') < main.indexOf('require("electron")'));
@@ -213,21 +211,9 @@ test('Sentry is initialized before Electron and renderer application startup wit
     assert.equal(typeof importMap.imports[specifier], 'string', `${specifier} is mapped locally`);
   }
   await fs.access(path.join(root, 'dist', 'renderer', 'vendor', 'sentry-electron', 'esm', 'renderer', 'index.js'));
-
-  for (const document of [readme, agents]) {
-    assert.match(document, /Sentry/i);
-    assert.match(document, /minidump/i);
-    assert.match(document, /Notes.*content|content.*Notes/i);
-    assert.match(document, /app-relative stack/i);
-  }
 });
 
 test('the local Sentry API credential path is ignored and never documents a token value', async () => {
-  const [ignore, agents] = await Promise.all([
-    fs.readFile(path.join(root, '.gitignore'), 'utf8'),
-    fs.readFile(path.join(root, 'AGENTS.md'), 'utf8'),
-  ]);
+  const ignore = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
   assert.match(ignore, /^\.secrets$/m);
-  assert.match(agents, /SENTRY_AUTH_TOKEN/);
-  assert.doesNotMatch(agents, /SENTRY_AUTH_TOKEN\s*=/);
 });

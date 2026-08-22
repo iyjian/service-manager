@@ -2,6 +2,22 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.74] - 2026-08-22
+
+### Added
+- SQL editor completion now suggests enum values when the caret is after an enum field comparison such as `type =` or `s.type =`.
+
+### Changed
+- SQL table, alias, and enum-field resolution now uses the ANTLR-backed MySQL parser from `dt-sql-parser`.
+- SQL enum-field tooltips now use a compact Field/Type/Null/Description/Enum Values grid with parsed enum labels and default markers.
+
+### Fixed
+- SQL enum-value completion now opens after optional whitespace following `=`, such as `type = `.
+- SQL enum-value and alias-field completion now actively starts after typing `=`, whitespace, or `.`, even if the previous completion popup was closed.
+- SQL enum-field table tooltips now open reliably from a double-click in the SQL editor instead of depending on hover-frame activation.
+- SQL enum-field table tooltips now resolve repeated tables in multi-table `UPDATE` statements.
+- SQL enum-field table tooltips now resolve table names when a statement starts after a leading SQL comment.
+
 ## [0.3.73] - 2026-08-22
 
 ### Fixed

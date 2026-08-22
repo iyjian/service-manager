@@ -9,20 +9,19 @@ import type {
   SqlSchemaEnumMetadata,
   SqlSchemaTable,
 } from '../shared/types';
-import { acceptCompletion } from '@codemirror/autocomplete';
+import { acceptCompletion, startCompletion } from '@codemirror/autocomplete';
 import { basicSetup, EditorView } from 'codemirror';
 import { json } from '@codemirror/lang-json';
 import { indentUnit } from '@codemirror/language';
 import { MySQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
 import { EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import {
-  activateHover,
-  closeHoverTooltip,
   Decoration,
-  hoverTooltip,
   keymap,
+  showTooltip,
   type DecorationSet,
   type Tooltip,
+  type ViewUpdate,
 } from '@codemirror/view';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from './codeHighlight.js';
@@ -36,10 +35,12 @@ import {
 import {
   buildSqlCompletionNamespace,
   defaultTableColumnCompletions,
+  parseSqlEnumComment,
   resolveSqlDefaultTable,
+  resolveSqlEnumValueCompletion,
+  resolveSqlQualifiedColumnCompletion,
   resolveSqlSelectTables,
-  resolveSqlTableReferenceAt,
-  sqlEnumCommentParts,
+  resolveSqlTableReferenceNear,
   SQL_COMPLETION_CONTEXT_CHARACTERS,
   type SqlTableReference,
 } from './sqlCompletion.js';
@@ -103,6 +104,7 @@ const SQL_MAX_SELECT_LIMIT = 10_000;
 const SQL_VALUE_PREVIEW_CHARACTERS = 1_000_000;
 const SQL_ENUM_TOOLTIP_MAX_ROWS = 100;
 const SQL_ENUM_TOOLTIP_CLOSE_DELAY_MS = 180;
+const SQL_ENUM_DEBUG_STORAGE_KEY = 'sql:debug-enum';
 const SQL_UNTITLED_DRAFT_PERSIST_DELAY_MS = 250;
 const SQL_INDENT = '  ';
 const SQL_VALUE_DETECT_LANGUAGES: ReadonlySet<string> = new Set(['markdown']);
@@ -124,6 +126,8 @@ const SQL_VALUE_MARKDOWN_PATTERNS: readonly RegExp[] = Object.freeze([
 const sqlValueLowlight = createLowlight(common);
 
 const SQL_VALUE_FIND_DECORATION = StateEffect.define<DecorationSet>();
+const SQL_TABLE_ENUM_TOOLTIP_EFFECT = StateEffect.define<Tooltip | null>();
+
 const sqlValueFindDecorationField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(decorations, transaction) {
@@ -134,6 +138,18 @@ const sqlValueFindDecorationField = StateField.define<DecorationSet>({
     return next;
   },
   provide: (field) => EditorView.decorations.from(field),
+});
+
+const sqlTableEnumTooltipField = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(tooltip, transaction) {
+    let next = transaction.docChanged ? null : tooltip;
+    for (const effect of transaction.effects) {
+      if (effect.is(SQL_TABLE_ENUM_TOOLTIP_EFFECT)) next = effect.value;
+    }
+    return next;
+  },
+  provide: (field) => showTooltip.from(field),
 });
 
 interface SqlQueryTab {
@@ -267,12 +283,44 @@ function writeStoredValue(key: string, value: string): void {
   }
 }
 
+function isSqlEnumDebugEnabled(): boolean {
+  try {
+    return localStorage.getItem(SQL_ENUM_DEBUG_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function debugSqlEnum(message: string, details?: Record<string, unknown>): void {
+  if (!isSqlEnumDebugEnabled()) return;
+  console.log('[sql:enum]', message, JSON.stringify(details ?? {}));
+}
+
 function readStoredValue(key: string): string | null {
   try {
     return localStorage.getItem(key);
   } catch {
     return null;
   }
+}
+
+function insertedTextForUpdate(update: ViewUpdate): string {
+  let inserted = '';
+  update.changes.iterChanges((_fromA, _toA, _fromB, _toB, text) => {
+    inserted += text.toString();
+  });
+  return inserted;
+}
+
+function shouldProbeSqlContextualCompletion(inserted: string): boolean {
+  return inserted.length <= 4 && /[.=\s\u00a0]$/.test(inserted);
+}
+
+function sqlDebugInsertedSummary(inserted: string): { insertedLength: number; trigger: string } {
+  return {
+    insertedLength: inserted.length,
+    trigger: inserted.slice(-1),
+  };
 }
 
 export function clampSqlSidebarWidth(value: number): number {
@@ -677,7 +725,49 @@ class SqlPage {
   };
   private readonly contextualSchemaCompletion: ReturnType<typeof schemaCompletionSource> = async (context) => {
     const state = this.currentState();
-    if (!state.schema || !state.schemaCompletion) return null;
+    if (!state.schema) {
+      debugSqlEnum('completion source skipped: schema not loaded', {
+        environment: this.environment,
+        auth: state.auth?.status,
+        schemaLoading: state.schemaLoading,
+        explicit: context.explicit,
+        position: context.pos,
+      });
+      return null;
+    }
+    const source = context.state.doc.toString();
+    const enumValueCompletion = resolveSqlEnumValueCompletion(source, context.pos, state.schema);
+    if (enumValueCompletion) {
+      debugSqlEnum('completion source returned enum values', {
+        environment: this.environment,
+        explicit: context.explicit,
+        position: context.pos,
+        table: enumValueCompletion.tableName,
+        column: enumValueCompletion.columnName,
+        options: enumValueCompletion.options.length,
+      });
+      return {
+        from: enumValueCompletion.from,
+        options: enumValueCompletion.options,
+        validFor: /^[0-9]*$/,
+      };
+    }
+    const qualifiedColumnCompletion = resolveSqlQualifiedColumnCompletion(source, context.pos, state.schema);
+    if (qualifiedColumnCompletion) {
+      debugSqlEnum('completion source returned qualified columns', {
+        environment: this.environment,
+        explicit: context.explicit,
+        position: context.pos,
+        table: qualifiedColumnCompletion.tableName,
+        options: qualifiedColumnCompletion.options.length,
+      });
+      return {
+        from: qualifiedColumnCompletion.from,
+        options: qualifiedColumnCompletion.options,
+        validFor: /^[\w$]*$/,
+      };
+    }
+    if (!state.schemaCompletion) return null;
     const base = await state.schemaCompletion(context);
     if (!base) return null;
     const sourceBeforeCursor = context.state.sliceDoc(
@@ -696,7 +786,6 @@ class SqlPage {
       ],
     };
   };
-  private readonly tableEnumHover: ReturnType<typeof hoverTooltip>;
   private readonly editor: EditorView;
   private valueEditor?: EditorView;
   private environment: SqlEnvironment = 'production';
@@ -738,6 +827,7 @@ class SqlPage {
     view: EditorView;
     source: string;
     position: number;
+    selectedRange?: { from: number; to: number };
     environment: SqlEnvironment;
     tabKey?: string;
   };
@@ -751,13 +841,6 @@ class SqlPage {
       // Default to Production if local storage is unavailable.
     }
     this.restoreUntitledDrafts();
-    this.tableEnumHover = hoverTooltip(
-      (view, position) => this.tableEnumTooltipAt(view, position),
-      // Native double-click selection can be committed after the dblclick handler.
-      // Keep the explicitly opened tooltip through that selection transaction;
-      // document edits and the owned pointer/Escape handlers still close it.
-      { hideOnChange: false },
-    );
     this.editor = new EditorView({
       state: EditorState.create({
         doc: '',
@@ -778,12 +861,8 @@ class SqlPage {
           EditorView.clipboardInputFilter.of((text) => normalizeSqlEditorSource(text)),
           MySQL.language.data.of({ autocomplete: this.contextualSchemaCompletion }),
           sqlCurrentStatementHighlight,
-          this.tableEnumHover,
+          sqlTableEnumTooltipField,
           EditorView.domEventHandlers({
-            dblclick: (event, view) => {
-              this.handleTableEnumDoubleClick(event, view);
-              return false;
-            },
             pointermove: (event, view) => {
               this.handleTableEnumPointerMove(event, view);
               return false;
@@ -798,6 +877,9 @@ class SqlPage {
           // An observer runs unconditionally and, without consuming the key, closes the
           // tooltip while simplifySelection still clears the double-click selection.
           EditorView.domEventObservers({
+            mousedown: (event, view) => {
+              this.handleTableEnumMouseDown(event, view);
+            },
             keydown: (event) => {
               if (event.key !== 'Escape' || !this.tableEnumHoverTarget) return;
               this.closeTableEnumHover();
@@ -821,6 +903,7 @@ class SqlPage {
             tab.source = normalizeSqlEditorSource(update.state.doc.toString());
             if (tab.recordId === undefined) this.scheduleUntitledDraftPersistence();
             if (wasDirty !== this.isTabDirty(tab)) this.renderTabs();
+            this.maybeStartSqlContextualCompletion(update);
           }),
         ],
       }),
@@ -840,6 +923,52 @@ class SqlPage {
     this.applyEditorFontFamily(normalizeSqlEditorFontFamily(readStoredValue(EDITOR_FONT_FAMILY_KEY)));
     this.bindEvents();
     this.renderEnvironmentChrome();
+  }
+
+  private maybeStartSqlContextualCompletion(update: ViewUpdate): void {
+    const inserted = insertedTextForUpdate(update);
+    if (!shouldProbeSqlContextualCompletion(inserted)) return;
+    const state = this.currentState();
+    const selection = update.state.selection.main;
+    if (!selection.empty) return;
+    if (!state.schema) {
+      debugSqlEnum('completion trigger skipped: schema not loaded', {
+        environment: this.environment,
+        auth: state.auth?.status,
+        schemaLoading: state.schemaLoading,
+        ...sqlDebugInsertedSummary(inserted),
+        position: selection.head,
+      });
+      return;
+    }
+
+    const source = update.state.doc.toString();
+    const enumValueCompletion = resolveSqlEnumValueCompletion(source, selection.head, state.schema);
+    const qualifiedColumnCompletion = enumValueCompletion
+      ? undefined
+      : resolveSqlQualifiedColumnCompletion(source, selection.head, state.schema);
+    if (!enumValueCompletion && !qualifiedColumnCompletion) {
+      debugSqlEnum('completion trigger checked: no contextual completion', {
+        environment: this.environment,
+        ...sqlDebugInsertedSummary(inserted),
+        position: selection.head,
+      });
+      return;
+    }
+
+    debugSqlEnum('completion trigger starting autocomplete', {
+      environment: this.environment,
+      ...sqlDebugInsertedSummary(inserted),
+      position: selection.head,
+      kind: enumValueCompletion ? 'enum-value' : 'qualified-column',
+      table: enumValueCompletion?.tableName ?? qualifiedColumnCompletion?.tableName,
+      column: enumValueCompletion?.columnName,
+      options: enumValueCompletion?.options.length ?? qualifiedColumnCompletion?.options.length,
+    });
+    window.queueMicrotask(() => {
+      if (!this.active || this.editor.state.doc.toString() !== source) return;
+      startCompletion(this.editor);
+    });
   }
 
   public show(): void {
@@ -968,39 +1097,109 @@ class SqlPage {
     return columns.length > 0 ? { table, columns } : undefined;
   }
 
-  private handleTableEnumDoubleClick(event: MouseEvent, view: EditorView): void {
+  private handleTableEnumMouseDown(event: MouseEvent, view: EditorView): void {
+    debugSqlEnum('table mousedown observed', {
+      detail: event.detail,
+      button: event.button,
+      active: this.active,
+      environment: this.environment,
+      auth: this.currentState().auth?.status,
+      targetElement: event.target instanceof Element ? event.target.tagName : undefined,
+      targetClass: event.target instanceof Element ? String(event.target.className) : undefined,
+    });
+    if (event.detail < 2) return;
     if (event.button !== 0 || !this.active || this.currentState().auth?.status !== 'signed-in') {
+      debugSqlEnum('table double-click skipped: inactive or unauthenticated', {
+        button: event.button,
+        active: this.active,
+        auth: this.currentState().auth?.status,
+      });
       this.closeTableEnumHover();
       return;
     }
     const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (position === null) {
+      debugSqlEnum('table double-click skipped: no editor position', {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
       this.closeTableEnumHover();
       return;
     }
-    if (!this.currentState().schema) {
-      // The schema is not loaded yet: trigger a deduplicated reload and retry
-      // the tooltip once it arrives instead of failing silently.
-      this.closeTableEnumHover();
-      this.retryTableEnumAfterSchemaLoad(view, position);
-      return;
-    }
-    this.tryOpenTableEnumTooltip(view, position);
+    debugSqlEnum('table double-click captured', {
+      position,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    const source = view.state.doc.toString();
+    const environment = this.environment;
+    const tabKey = this.currentState().activeTabKey;
+    window.setTimeout(() => {
+      if (
+        !this.active
+        || view !== this.editor
+        || source !== view.state.doc.toString()
+        || environment !== this.environment
+        || tabKey !== this.currentState().activeTabKey
+      ) return;
+      const selection = view.state.selection.main;
+      const selectedRange = selection.empty ? undefined : { from: selection.from, to: selection.to };
+      debugSqlEnum('table double-click selection settled', {
+        position,
+        selectedRange,
+        schemaLoaded: Boolean(this.currentState().schema),
+      });
+      if (!this.currentState().schema) {
+        // The schema is not loaded yet: trigger a deduplicated reload and retry
+        // the tooltip once it arrives instead of failing silently.
+        this.closeTableEnumHover();
+        this.retryTableEnumAfterSchemaLoad(view, position, selectedRange);
+        return;
+      }
+      this.tryOpenTableEnumTooltip(
+        view,
+        position,
+        selectedRange,
+      );
+    });
   }
 
-  private tryOpenTableEnumTooltip(view: EditorView, position: number): void {
+  private tryOpenTableEnumTooltip(
+    view: EditorView,
+    position: number,
+    selectedRange?: { from: number; to: number },
+  ): void {
     const schema = this.currentState().schema;
     if (!schema || !this.active || this.currentState().auth?.status !== 'signed-in') {
+      debugSqlEnum('table tooltip skipped: unavailable state', {
+        active: this.active,
+        auth: this.currentState().auth?.status,
+        schemaLoaded: Boolean(schema),
+      });
       this.closeTableEnumHover();
       return;
     }
-    const reference = resolveSqlTableReferenceAt(view.state.doc.toString(), position, schema);
+    const reference = resolveSqlTableReferenceNear(
+      view.state.doc.toString(),
+      position,
+      schema,
+      selectedRange,
+    );
     if (!reference) {
+      debugSqlEnum('table tooltip skipped: no table reference', {
+        position,
+        selectedRange,
+        tableCount: schema.tables.length,
+      });
       this.closeTableEnumHover();
       return;
     }
     const table = schema.tables.find((candidate) => candidate.name === reference.tableName);
     if (!table?.columns.some((column) => column.enum)) {
+      debugSqlEnum('table tooltip skipped: table has no enum columns', {
+        table: reference.tableName,
+        columnCount: table?.columns.length ?? 0,
+      });
       this.closeTableEnumHover();
       return;
     }
@@ -1011,21 +1210,34 @@ class SqlPage {
       tabKey: this.currentState().activeTabKey,
     };
     this.tableEnumHoverTarget = target;
-    window.requestAnimationFrame(() => {
-      if (this.tableEnumHoverTarget !== target || !this.active) return;
-      activateHover(view, target.from, 1, {
-        tooltip: this.tableEnumHover,
-        until: (transaction) => transaction.docChanged,
+    const tooltip = this.tableEnumTooltipForTarget(target);
+    if (!tooltip) {
+      debugSqlEnum('table tooltip skipped: tooltip target no longer valid', {
+        table: target.tableName,
       });
+      this.tableEnumHoverTarget = undefined;
+      return;
+    }
+    debugSqlEnum('table tooltip opened', {
+      table: target.tableName,
+      from: target.from,
+      to: target.to,
+      enumColumns: table.columns.filter((column) => column.enum).length,
     });
+    view.dispatch({ effects: SQL_TABLE_ENUM_TOOLTIP_EFFECT.of(tooltip) });
   }
 
-  private retryTableEnumAfterSchemaLoad(view: EditorView, position: number): void {
+  private retryTableEnumAfterSchemaLoad(
+    view: EditorView,
+    position: number,
+    selectedRange?: { from: number; to: number },
+  ): void {
     const environment = this.environment;
     const pending = {
       view,
       source: view.state.doc.toString(),
       position,
+      ...(selectedRange ? { selectedRange } : {}),
       environment,
       tabKey: this.currentState().activeTabKey,
     };
@@ -1042,7 +1254,7 @@ class SqlPage {
         return;
       }
       this.tableEnumPendingPosition = undefined;
-      this.tryOpenTableEnumTooltip(view, pending.position);
+      this.tryOpenTableEnumTooltip(view, pending.position, pending.selectedRange);
     });
   }
 
@@ -1064,14 +1276,7 @@ class SqlPage {
     this.scheduleTableEnumHoverClose();
   }
 
-  private tableEnumTooltipAt(view: EditorView, position: number): Tooltip | null {
-    const target = this.tableEnumHoverTarget;
-    if (
-      view !== this.editor
-      || !target
-      || position < target.from
-      || position > target.to
-    ) return null;
+  private tableEnumTooltipForTarget(target: SqlTableEnumHoverTarget): Tooltip | null {
     const details = this.enumTableDetails(target);
     if (!details) return null;
     return {
@@ -1107,61 +1312,54 @@ class SqlPage {
     root.className = 'sql-table-enum-tooltip';
     root.setAttribute('aria-label', `${schemaTable.name} enum field details`);
 
-    const heading = document.createElement('div');
-    heading.className = 'sql-table-enum-tooltip-heading';
-    const title = document.createElement('strong');
-    title.textContent = schemaTable.name;
-    const count = document.createElement('span');
-    count.textContent = `${columns.length} enum field${columns.length === 1 ? '' : 's'}`;
-    heading.append(title, count);
-
     const scroll = document.createElement('div');
     scroll.className = 'sql-table-enum-tooltip-scroll';
-    const table = document.createElement('table');
-    const head = document.createElement('thead');
-    const headingRow = document.createElement('tr');
-    for (const label of ['Field', 'Type', 'Nullable', 'Comment']) {
-      const cell = document.createElement('th');
-      cell.scope = 'col';
+    const head = document.createElement('div');
+    head.className = 'sql-table-enum-tooltip-grid sql-table-enum-tooltip-head';
+    for (const label of ['Field', 'Type', 'Null', 'Description', 'Enum Values']) {
+      const cell = document.createElement('div');
       cell.textContent = label;
-      headingRow.append(cell);
+      head.append(cell);
     }
-    head.append(headingRow);
+    scroll.append(head);
 
-    const body = document.createElement('tbody');
     for (const column of columns.slice(0, SQL_ENUM_TOOLTIP_MAX_ROWS)) {
-      const row = document.createElement('tr');
-      const field = document.createElement('td');
+      const details = parseSqlEnumComment(column.enum.comment, column.enum.defaultValue);
+      const row = document.createElement('div');
+      row.className = 'sql-table-enum-tooltip-grid sql-table-enum-tooltip-row';
+      const field = document.createElement('div');
       field.className = 'sql-table-enum-tooltip-identifier';
       field.textContent = column.name;
-      const dataType = document.createElement('td');
+      const dataType = document.createElement('div');
       dataType.className = 'sql-table-enum-tooltip-type';
       dataType.textContent = column.dataType ?? '—';
-      const nullable = document.createElement('td');
-      nullable.className = 'sql-table-enum-tooltip-nullable';
+      const nullable = document.createElement('div');
+      nullable.className = `sql-table-enum-tooltip-nullable${column.enum.nullable ? '' : ' no'}`;
       nullable.textContent = column.enum.nullable ? 'Yes' : 'No';
-      const comment = document.createElement('td');
-      comment.className = 'sql-table-enum-tooltip-comment';
-      for (const part of sqlEnumCommentParts(column.enum.comment, column.enum.defaultValue)) {
-        if (!part.isDefault) {
-          comment.append(document.createTextNode(part.text));
-          continue;
-        }
-        const value = document.createElement('span');
-        value.className = 'sql-table-enum-tooltip-default-value';
-        value.textContent = part.text;
-        const badge = document.createElement('span');
-        badge.className = 'sql-table-enum-tooltip-default-badge';
-        badge.textContent = '(default)';
-        badge.title = 'Database default value';
-        comment.append(value, badge);
+      const description = document.createElement('div');
+      description.className = 'sql-table-enum-tooltip-description';
+      description.textContent = details.description || '—';
+      const values = document.createElement('div');
+      values.className = 'sql-table-enum-tooltip-values';
+      for (const part of details.values) {
+        const item = document.createElement('span');
+        item.className = `sql-table-enum-tooltip-value${part.isDefault ? ' default' : ''}`;
+        if (part.isDefault) item.title = 'Database default value';
+        const value = document.createElement('b');
+        value.textContent = part.value;
+        item.append(value, document.createTextNode(` ${part.description}`));
+        values.append(item);
       }
-      row.append(field, dataType, nullable, comment);
-      body.append(row);
+      if (details.values.length === 0) {
+        const fallback = document.createElement('span');
+        fallback.className = 'sql-table-enum-tooltip-value';
+        fallback.textContent = column.enum.comment;
+        values.append(fallback);
+      }
+      row.append(field, dataType, nullable, description, values);
+      scroll.append(row);
     }
-    table.append(head, body);
-    scroll.append(table);
-    root.append(heading, scroll);
+    root.append(scroll);
 
     if (columns.length > SQL_ENUM_TOOLTIP_MAX_ROWS) {
       const bounded = document.createElement('p');
@@ -1190,7 +1388,7 @@ class SqlPage {
     this.cancelTableEnumHoverClose();
     if (!this.tableEnumHoverTarget) return;
     this.tableEnumHoverTarget = undefined;
-    this.editor.dispatch({ effects: closeHoverTooltip(this.tableEnumHover) });
+    this.editor.dispatch({ effects: SQL_TABLE_ENUM_TOOLTIP_EFFECT.of(null) });
   }
 
   private currentState(): SqlEnvironmentState {
@@ -1480,7 +1678,21 @@ class SqlPage {
         dialect: MySQL,
         schema: buildSqlCompletionNamespace(schema),
       });
+      debugSqlEnum('schema loaded', {
+        environment,
+        tables: schema.tables.length,
+        enumColumns: schema.tables.reduce(
+          (count, table) => count + table.columns.filter((column) => column.enum).length,
+          0,
+        ),
+        testPaperEnumColumns: schema.tables
+          .find((table) => table.name === 't_test_paper')
+          ?.columns
+          .filter((column) => column.enum)
+          .map((column) => column.name),
+      });
     } catch {
+      debugSqlEnum('schema load failed', { environment, userInitiated });
       if (loadVersion === state.loadVersion) {
         console.warn('[renderer:sql-schema] SQL schema completion is temporarily unavailable.');
         if (this.active && environment === this.environment) {

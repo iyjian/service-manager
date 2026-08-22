@@ -5266,48 +5266,39 @@
     @apply ml-auto pl-4 text-zinc-400;
   }
 
-  .sql-editor .cm-tooltip-hover:has(> .sql-table-enum-tooltip) {
-    @apply overflow-visible border-0 bg-transparent shadow-none;
-  }
-
+  .cm-tooltip.sql-table-enum-tooltip,
   .sql-table-enum-tooltip {
-    @apply overflow-hidden rounded-lg border border-zinc-200 bg-white font-sans text-zinc-700 shadow-xl;
-    width: min(720px, calc(100vw - 48px));
-  }
-
-  .sql-table-enum-tooltip-heading {
-    @apply flex items-center justify-between gap-4 border-b border-zinc-200 bg-zinc-50 px-3 py-2;
-  }
-
-  .sql-table-enum-tooltip-heading strong {
-    @apply min-w-0 truncate font-mono text-[12.5px] font-semibold text-zinc-950;
-  }
-
-  .sql-table-enum-tooltip-heading span {
-    @apply shrink-0 text-[11px] text-zinc-500;
+    @apply overflow-hidden rounded-md border border-zinc-200 bg-white font-sans text-[12px] text-zinc-700 shadow-lg;
+    width: min(960px, calc(100vw - 48px));
   }
 
   .sql-table-enum-tooltip-scroll {
-    @apply max-h-[320px] overflow-auto;
+    @apply max-h-[320px] overflow-auto bg-white;
   }
 
-  .sql-table-enum-tooltip table {
-    @apply w-full border-separate border-spacing-0 text-left text-[12px] leading-5;
+  .sql-table-enum-tooltip-grid {
+    @apply grid items-center;
+    grid-template-columns: minmax(120px, 150px) 78px 64px minmax(110px, 130px) minmax(260px, 1fr);
   }
 
-  .sql-table-enum-tooltip th {
-    @apply sticky top-0 z-10 whitespace-nowrap border-b border-zinc-200 bg-white px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-zinc-500;
+  .sql-table-enum-tooltip-head {
+    @apply sticky top-0 z-10 h-[26px] border-b border-zinc-100 bg-zinc-50 text-[10px] font-semibold uppercase tracking-[0.06em] text-zinc-400;
   }
 
-  .sql-table-enum-tooltip td {
-    @apply border-b border-zinc-100 px-3 py-2 align-top;
+  .sql-table-enum-tooltip-head > div,
+  .sql-table-enum-tooltip-row > div {
+    @apply px-2.5;
   }
 
-  .sql-table-enum-tooltip tbody tr:last-child td {
+  .sql-table-enum-tooltip-row {
+    @apply min-h-[34px] border-b border-zinc-100 py-1.5;
+  }
+
+  .sql-table-enum-tooltip-row:last-child {
     @apply border-b-0;
   }
 
-  .sql-table-enum-tooltip tbody tr:hover td {
+  .sql-table-enum-tooltip-row:hover {
     @apply bg-zinc-50;
   }
 
@@ -5321,17 +5312,35 @@
     @apply text-zinc-500;
   }
 
-  .sql-table-enum-tooltip-comment {
-    @apply min-w-[280px] whitespace-normal text-zinc-700;
+  .sql-table-enum-tooltip-nullable.no {
+    @apply font-medium text-violet-600;
+  }
+
+  .sql-table-enum-tooltip-description {
+    @apply text-zinc-700;
     overflow-wrap: anywhere;
   }
 
-  .sql-table-enum-tooltip-default-value {
-    @apply font-mono font-semibold text-blue-700;
+  .sql-table-enum-tooltip-values {
+    @apply flex flex-wrap gap-x-3 gap-y-1;
   }
 
-  .sql-table-enum-tooltip-default-badge {
-    @apply ml-1 whitespace-nowrap rounded bg-blue-50 px-1 py-0.5 font-mono text-[10px] font-semibold text-blue-700;
+  .sql-table-enum-tooltip-value {
+    @apply whitespace-nowrap text-zinc-500;
+  }
+
+  .sql-table-enum-tooltip-value b {
+    @apply font-mono font-medium text-zinc-900;
+  }
+
+  .sql-table-enum-tooltip-value.default,
+  .sql-table-enum-tooltip-value.default b {
+    @apply text-blue-700;
+  }
+
+  .sql-table-enum-tooltip-value.default::after {
+    content: ' *';
+    font-weight: 700;
   }
 
   .sql-table-enum-tooltip-bounded {
