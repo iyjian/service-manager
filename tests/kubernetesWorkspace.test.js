@@ -228,7 +228,7 @@ async function withWorkspaceDom(
 }
 
 test('active drawer Env clears page-local values before drawer and page lifecycle transitions', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const method = (name, after) => {
     const start = page.indexOf(`    ${name}(`);
     const end = page.indexOf(`    ${after}(`, start);
@@ -255,7 +255,7 @@ test('active drawer Env clears page-local values before drawer and page lifecycl
 });
 
 test('same target and type reuses one tab while different types and Pods stay distinct', async () => {
-  const { kubernetesWorkspaceTabKey, createKubernetesWorkspaceState } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const { kubernetesWorkspaceTabKey, createKubernetesWorkspaceState } = await import('../dist/renderer/components/kubernetesWorkspace.js');
   const target = { namespace: 'apps', podName: 'api', container: 'web' };
   const state = createKubernetesWorkspaceState();
   const first = state.open('logs', target);
@@ -271,7 +271,7 @@ test('same target and type reuses one tab while different types and Pods stay di
 });
 
 test('workspace rejects stale log revisions and old terminal final events after close and reopen', async () => {
-  const { createKubernetesWorkspaceState } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const { createKubernetesWorkspaceState } = await import('../dist/renderer/components/kubernetesWorkspace.js');
   const target = { namespace: 'apps', podName: 'api', container: 'web' };
   const state = createKubernetesWorkspaceState();
   const first = state.open('shell', target).tab;
@@ -301,7 +301,7 @@ test('workspace rejects stale log revisions and old terminal final events after 
 });
 
 test('workspace state applies live append batches through its bounded mutable log buffer', async () => {
-  const { createKubernetesWorkspaceState } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const { createKubernetesWorkspaceState } = await import('../dist/renderer/components/kubernetesWorkspace.js');
   const target = { namespace: 'apps', podName: 'api', container: 'web' };
   const state = createKubernetesWorkspaceState();
   const tab = state.open('logs', target).tab;
@@ -331,7 +331,7 @@ test('workspace state applies live append batches through its bounded mutable lo
 });
 
 test('workspace disposal closes each live log and terminal session once through the direct seam', async () => {
-  const { disposeKubernetesWorkspaceSessions } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const { disposeKubernetesWorkspaceSessions } = await import('../dist/renderer/components/kubernetesWorkspace.js');
   const calls = [];
   await disposeKubernetesWorkspaceSessions([
     { type: 'logs', log: { sessionId: 'log-1', namespace: 'apps', podName: 'api', container: 'a', lines: [], following: true, hasOlder: false, revision: 1 } },
@@ -347,7 +347,7 @@ test('workspace disposal closes each live log and terminal session once through 
 
 test('workspace keeps reusable Logs and Shell tabs independent from the drawer and closes only the selected remote session', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -419,7 +419,7 @@ test('workspace keeps reusable Logs and Shell tabs independent from the drawer a
 
 test('workspace closes a remote session returned after its local tab closed and cannot attach it to a reopened same-key tab', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -468,7 +468,7 @@ test('workspace closes a remote session returned after its local tab closed and 
 
 test('workspace tombstones terminal finals before a pending Shell open binds and routes output only to the active exact terminal', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -503,7 +503,7 @@ test('workspace tombstones terminal finals before a pending Shell open binds and
 
 test('workspace reports a Shell open error after finalizing and closing only that Shell tab', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -537,7 +537,7 @@ test('workspace reports a Shell open error after finalizing and closing only tha
 
 test('workspace replays terminal output emitted before its Shell open result binds', async () => {
   await withWorkspaceDom(async ({ Terminal }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -574,7 +574,7 @@ test('workspace replays terminal output emitted before its Shell open result bin
 
 test('workspace forwards Chinese and ArrowLeft xterm data exactly only while the Shell is open', async () => {
   await withWorkspaceDom(async ({ Terminal }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -620,7 +620,7 @@ test('workspace forwards Chinese and ArrowLeft xterm data exactly only while the
 
 test('workspace retains one shared resize listener plus the active Shell listener without duplicate refits', async () => {
   await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const resizeHandle = new FakeElement('div');
     const tabList = new FakeElement('div');
@@ -681,7 +681,7 @@ test('workspace retains one shared resize listener plus the active Shell listene
 
 test('workspace retains exact Shell xterms across tab changes and disposes only the closed terminal', async () => {
   await withWorkspaceDom(async ({ Terminal }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -760,7 +760,7 @@ test('workspace retains exact Shell xterms across tab changes and disposes only 
 });
 
 test('workspace height clamps between a compact minimum and eighty percent of its page', async () => {
-  const { clampKubernetesWorkspaceHeight } = await import('../dist/renderer/kubernetesWorkspace.js');
+  const { clampKubernetesWorkspaceHeight } = await import('../dist/renderer/components/kubernetesWorkspace.js');
 
   assert.equal(clampKubernetesWorkspaceHeight(20, 800), 120);
   assert.equal(clampKubernetesWorkspaceHeight(500, 800), 500);
@@ -774,7 +774,7 @@ test('Since text, quick ranges, and five-minute adjustment helpers enforce sourc
     kubernetesLogPresetStartTime,
     kubernetesLogStartTimeInputValue,
     kubernetesLogStartTimeIso,
-  } = await import('../dist/renderer/kubernetesWorkspace.js');
+  } = await import('../dist/renderer/components/kubernetesWorkspace.js');
   const now = new Date(2026, 7, 10, 12, 0, 0).getTime();
   const availableSince = new Date(2026, 7, 10, 11, 40, 0).toISOString();
 
@@ -813,7 +813,7 @@ test('Since text, quick ranges, and five-minute adjustment helpers enforce sourc
 
 test('a newly created Shell uses half the page height without changing the Logs default or an explicit height', async () => {
   await withWorkspaceDom(async ({ flushAnimationFrames }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const page = new FakeElement('div');
     page.clientHeight = 800;
     const root = new FakeElement('section');
@@ -872,7 +872,7 @@ test('a newly created Shell uses half the page height without changing the Logs 
 
 test('workspace resize handle clamps pointer, keyboard, and window resize height, refits Shell, and cleans up listeners', async () => {
   await withWorkspaceDom(async ({ Terminal, listenerCount, dispatchWindowEvent, flushAnimationFrames }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const page = new FakeElement('div');
     page.clientHeight = 800;
     const root = new FakeElement('section');
@@ -946,7 +946,7 @@ test('workspace resize handle clamps pointer, keyboard, and window resize height
 
 test('workspace panes omit duplicate target titles while tab accessible names remain complete', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const resizeHandle = new FakeElement('div');
     const tabList = new FakeElement('div');
@@ -991,7 +991,7 @@ test('workspace panes omit duplicate target titles while tab accessible names re
 
 test('inline Since text applies a second-precision snapshot and Resume clears it', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1080,7 +1080,7 @@ test('inline Since text applies a second-precision snapshot and Resume clears it
 
 test('inline Since toolbar exposes Last 5m, 10m, 30m and working five-minute adjustments', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1162,7 +1162,7 @@ test('inline Since toolbar exposes Last 5m, 10m, 30m and working five-minute adj
 
 test('inline Since minus five minutes starts a snapshot directly from live logs', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1207,7 +1207,7 @@ test('inline Since minus five minutes starts a snapshot directly from live logs'
 
 test('Deployment log tabs expose a default-on scope switch before search and retain it in Pod-only mode', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1276,7 +1276,7 @@ test('Deployment log tabs expose a default-on scope switch before search and ret
 
 test('workspace keeps a newer stopped rollback authoritative after a scope-switch rejection', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1342,7 +1342,7 @@ test('workspace keeps a newer stopped rollback authoritative after a scope-switc
 
 test('pausing logs restores the exact attached viewport after optimistic and confirmed pane rebuilds', async () => {
   await withWorkspaceDom(async ({ flushAnimationFrames }) => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1394,7 +1394,7 @@ test('pausing logs restores the exact attached viewport after optimistic and con
 
 test('log follow remains interactive so Resume can supersede in-flight Pause cleanup', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1450,7 +1450,7 @@ test('log follow remains interactive so Resume can supersede in-flight Pause cle
 
 test('incremental log appends retain the toolbar, search field, pre, and unaffected line DOM', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1521,7 +1521,7 @@ test('incremental log appends retain the toolbar, search field, pre, and unaffec
 
 test('log append fencing rejects stale and wrong-source batches and recovers revision gaps', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');
@@ -1604,7 +1604,7 @@ test('log append fencing rejects stale and wrong-source batches and recovers rev
 
 test('pre-bind log batches replay in order and a queued revision gap recovers from a full state', async () => {
   await withWorkspaceDom(async () => {
-    const { createKubernetesWorkspace } = await import('../dist/renderer/kubernetesWorkspace.js');
+    const { createKubernetesWorkspace } = await import('../dist/renderer/components/kubernetesWorkspace.js');
     const root = new FakeElement('section');
     const tabList = new FakeElement('div');
     const pane = new FakeElement('div');

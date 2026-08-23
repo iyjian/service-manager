@@ -764,12 +764,13 @@
     content: '`';
   }
   .notes-markdown-preview pre {
-    @apply my-3 overflow-x-auto rounded-md bg-gray-800 text-gray-200;
+    @apply my-3 overflow-x-auto overflow-y-auto rounded-md bg-gray-800 text-gray-200;
     padding: 1em 1.5em;
     font-family: var(--font-family-notes-code-block);
     font-size: 0.8888889em;
     font-weight: 400;
     line-height: 1.75;
+    max-height: 24rem;
   }
   .notes-markdown-preview pre code {
     @apply bg-transparent p-0 text-inherit;
@@ -1258,13 +1259,14 @@
   }
 
   .notes-richtext-content .ProseMirror pre {
-    @apply overflow-x-auto rounded-md bg-gray-800 text-gray-200;
+    @apply overflow-x-auto overflow-y-auto rounded-md bg-gray-800 text-gray-200;
     margin: 2em 0;
     padding: 1em 1.5em;
     font-family: var(--font-family-notes-code-block);
     font-size: 0.8888889em;
     font-weight: 400;
     line-height: 1.75;
+    max-height: 24rem;
   }
 
   .notes-richtext-content .ProseMirror pre code {

@@ -3,7 +3,7 @@ const { EventEmitter } = require('node:events');
 const net = require('node:net');
 const test = require('node:test');
 
-const { PortForwardManager } = require('../dist/main/portForwardManager.js');
+const { PortForwardManager } = require('../dist/main/ssh/portForwardManager.js');
 
 function listen(server, port = 0) {
   return new Promise((resolve, reject) => {

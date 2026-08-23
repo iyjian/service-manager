@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 async function loadCompletion() {
   return import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlCompletion.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'components', 'sqlCompletion.js'),
   ).href);
 }
 

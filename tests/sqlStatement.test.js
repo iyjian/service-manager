@@ -8,7 +8,7 @@ async function loadModule(name) {
 }
 
 test('SQL statement scanner ignores semicolons inside strings, identifiers, and comments', async () => {
-  const { findSqlStatementBoundaries } = await loadModule('sqlStatement.js');
+  const { findSqlStatementBoundaries } = await loadModule('models/sqlStatement.js');
   const splitSqlStatements = (src) => findSqlStatementBoundaries(src).map(({ from, to }) => ({ from, to, sql: src.slice(from, to) }));
   const source = [
     "select ';' as value;",
@@ -35,7 +35,7 @@ test('SQL execution resolves a selection first and otherwise the cursor statemen
     resolveSqlStatementBoundary,
     resolveSqlStatement,
     resolveSqlStatementFromBoundaries,
-  } = await loadModule('sqlStatement.js');
+  } = await loadModule('models/sqlStatement.js');
   const source = 'select 1;\n\nselect 2;\nselect 3;';
   const boundaries = findSqlStatementBoundaries(source);
   let caretReadCount = 0;
@@ -74,7 +74,7 @@ test('SQL template parameters preserve reference behavior', async () => {
   const {
     extractSqlTemplateParamNames,
     replaceSqlTemplateParams,
-  } = await loadModule('sqlStatement.js');
+  } = await loadModule('models/sqlStatement.js');
 
   assert.deepEqual(extractSqlTemplateParamNames('select {{ id }}, {{name}}, {{id}}'), ['id', 'name']);
   assert.equal(
@@ -91,7 +91,7 @@ test('SQL shortcuts match the platform-specific Save and Run behavior', async ()
     normalizeSqlSelectLimit,
     sqlSaveShortcutLabel,
     sqlShortcutLabel,
-  } = await loadModule('sqlPage.js');
+  } = await loadModule('pages/sqlPage.js');
   const event = (overrides) => ({
     key: 'Enter', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
   });

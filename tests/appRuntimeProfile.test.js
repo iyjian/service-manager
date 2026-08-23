@@ -7,7 +7,7 @@ const test = require('node:test');
 const {
   DEVELOPMENT_USER_DATA_DIRECTORY_NAME,
   configureRuntimeDataProfile,
-} = require('../dist/main/appRuntimeProfile');
+} = require('../dist/main/core/appRuntimeProfile');
 
 test('packaged runtime leaves Electron data paths untouched', () => {
   const calls = [];
@@ -55,11 +55,11 @@ test('development runtime owns a private userData and sessionData root', async (
 
 test('Electron entry selects its runtime profile before loading main', async () => {
   const packageManifest = require('../package.json');
-  const bootstrap = await readFile(path.join(__dirname, '../dist/main/bootstrap.js'), 'utf8');
+  const bootstrap = await readFile(path.join(__dirname, '../dist/main/core/bootstrap.js'), 'utf8');
   const profileSelection = bootstrap.lastIndexOf('configureRuntimeDataProfile');
   const mainLoad = bootstrap.indexOf("require('./main')");
 
-  assert.equal(packageManifest.main, 'dist/main/bootstrap.js');
+  assert.equal(packageManifest.main, 'dist/main/core/bootstrap.js');
   assert.ok(profileSelection >= 0);
   assert.ok(mainLoad > profileSelection);
 });

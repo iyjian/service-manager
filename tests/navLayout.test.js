@@ -8,9 +8,9 @@ const mainDir = path.join(__dirname, '..', 'dist', 'main');
 
 test('home layout renders the nav rail with per-page shells', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
-  const main = await readFile(path.join(mainDir, 'main.js'), 'utf8');
-  const preload = await readFile(path.join(mainDir, 'preload.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
+  const main = await readFile(path.join(mainDir, 'core', 'main.js'), 'utf8');
+  const preload = await readFile(path.join(mainDir, 'core', 'preload.js'), 'utf8');
 
   assert.match(html, /<nav id="nav-rail" class="nav-rail"/);
   assert.match(html, /<main class="app-shell" data-page="hosts">/);
@@ -47,21 +47,21 @@ test('home layout renders the nav rail with per-page shells', async () => {
 });
 
 test('nav module registers pages and persists the active page', async () => {
-  const nav = await readFile(path.join(rendererDir, 'nav.js'), 'utf8');
+  const nav = await readFile(path.join(rendererDir, 'pages', 'nav.js'), 'utf8');
   assert.match(nav, /registerPage/);
   assert.match(nav, /activatePage/);
   assert.match(nav, /localStorage\.setItem\(ACTIVE_PAGE_STORAGE_KEY, pageId\)/);
 
   const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
-  assert.match(renderer, /from ['"]\.\/nav\.js['"]/);
-  assert.match(renderer, /from ['"]\.\/proxyPage\.js['"]/);
-  assert.match(renderer, /from ['"]\.\/kubernetesPage\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/pages\/nav\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/pages\/proxyPage\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/pages\/kubernetesPage\.js['"]/);
   assert.match(renderer, /initNav\('hosts'\)/);
 });
 
 test('Save & Fetch is the sole subscription action and only clears its URL after a successful fetch', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
 
   assert.match(html, /id="proxy-save-sub-btn"/);
   assert.doesNotMatch(html, /id="proxy-update-sub-btn"/);
@@ -75,7 +75,7 @@ test('Save & Fetch is the sole subscription action and only clears its URL after
 });
 
 test('Save & Fetch clears stale delay labels and refreshes the running strategy groups', async () => {
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
   const fetchIndex = proxyPage.indexOf('saveAndFetchSubscription(subUrlInput.value)');
   const saveFetchHandler = proxyPage.slice(fetchIndex, fetchIndex + 1_000);
 
@@ -88,7 +88,7 @@ test('Save & Fetch clears stale delay labels and refreshes the running strategy 
 
 test('proxy controls keep user-facing text in English apart from the approved Custom Rules heading', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
 
   assert.doesNotMatch(html, /全局|直连/);
   assert.doesNotMatch(proxyPage, /授权|撤销|内核/);
@@ -96,7 +96,7 @@ test('proxy controls keep user-facing text in English apart from the approved Cu
 
 test('proxy page provides Custom Rules controls in its shared content container', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
   const styles = await readFile(path.join(rendererDir, 'tailwind.css'), 'utf8');
 
   assert.match(html, /class="proxy-page-container"/);
@@ -139,8 +139,8 @@ test('proxy page provides Custom Rules controls in its shared content container'
 });
 
 test('proxy lists patch stable nodes and release hidden-page DOM', async () => {
-  const proxyPage = await readFile(path.join(rendererDir, 'proxyPage.js'), 'utf8');
-  const proxyGroupView = await readFile(path.join(rendererDir, 'proxyGroupView.js'), 'utf8');
+  const proxyPage = await readFile(path.join(rendererDir, 'pages', 'proxyPage.js'), 'utf8');
+  const proxyGroupView = await readFile(path.join(rendererDir, 'models', 'proxyGroupView.js'), 'utf8');
 
   assert.match(proxyPage, /haveSameProxyGroupStructure\(renderedGroups, data\)/);
   assert.match(proxyPage, /patchRenderedGroups\(data\)/);
@@ -175,8 +175,8 @@ test('compiled tailwind styles cover the nav rail and proxy page', async () => {
 test('Host header shows live total app memory instead of host runtime totals', async () => {
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
   const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
-  const preload = await readFile(path.join(mainDir, 'preload.js'), 'utf8');
-  const main = await readFile(path.join(mainDir, 'main.js'), 'utf8');
+  const preload = await readFile(path.join(mainDir, 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(mainDir, 'core', 'main.js'), 'utf8');
 
   assert.match(html, /id="page-stats"/);
   assert.match(renderer, /Memory \$\{formatGigabytes\(bytes\)\} GB/);

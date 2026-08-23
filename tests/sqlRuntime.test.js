@@ -11,7 +11,7 @@ const {
   applySqlSelectLimit,
   buildSqlSchemaColumnsStatement,
   hashSqlPassword,
-} = require('../dist/main/sqlRuntime');
+} = require('../dist/main/sql/sqlRuntime');
 
 function response(data, options = {}) {
   return new Response(JSON.stringify({ err: options.err ?? 0, errMsg: options.errMsg, data }), {

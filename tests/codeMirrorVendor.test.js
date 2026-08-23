@@ -158,7 +158,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
     }
   }
 
-  const notesPage = await readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8');
+  const notesPage = await readFile(path.join(rendererRoot, 'pages', 'notesPage.js'), 'utf8');
   for (const specifier of bareModuleSpecifiers(notesPage)) {
     assert.equal(
       typeof imports[specifier],
@@ -166,7 +166,7 @@ test('renderer browser vendor graph has exact import-map coverage for CodeMirror
       `compiled Notes page imports ${specifier}, which is absent from the generated import map`
     );
   }
-  const richTextEditor = await readFile(path.join(rendererRoot, 'notesRichTextEditor.js'), 'utf8');
+  const richTextEditor = await readFile(path.join(rendererRoot, 'components', 'notesRichTextEditor.js'), 'utf8');
   for (const specifier of bareModuleSpecifiers(richTextEditor)) {
     assert.equal(
       typeof imports[specifier],

@@ -7,11 +7,11 @@ const test = require('node:test');
 const {
   S3SyncRuntime,
   validateS3ConnectionTestDraft,
-} = require('../dist/main/s3Sync');
+} = require('../dist/main/s3/s3Sync');
 const {
   buildS3V4HeadObjectUrl,
   testS3V4Connection,
-} = require('../dist/main/s3SyncV4');
+} = require('../dist/main/s3/s3SyncV4');
 
 const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'service-manager';
@@ -61,8 +61,8 @@ function runtimeOptions(userDataPath, fetchImpl, overrides = {}) {
 
 test('Settings preload and main IPC expose the draft-only S3 connection Test', async () => {
   const [preload, main] = await Promise.all([
-    readFile(path.join(__dirname, '../dist/main/preload.js'), 'utf8'),
-    readFile(path.join(__dirname, '../dist/main/main.js'), 'utf8'),
+    readFile(path.join(__dirname, '../dist/main/core/preload.js'), 'utf8'),
+    readFile(path.join(__dirname, '../dist/main/core/main.js'), 'utf8'),
   ]);
   assert.match(
     preload,

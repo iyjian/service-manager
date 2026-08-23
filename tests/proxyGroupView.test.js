@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 async function loadProxyGroupView() {
   return import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'proxyGroupView.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'models', 'proxyGroupView.js'),
   ).href);
 }
 

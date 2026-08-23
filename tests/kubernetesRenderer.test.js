@@ -9,8 +9,8 @@ const distRenderer = path.join(__dirname, '..', 'dist', 'renderer');
 test('Kubernetes environment bridge exposes only the active Pod resolver and validates its IPC target', async () => {
   const root = path.join(__dirname, '..');
   const [preload, main, client, runtime] = await Promise.all([
-    readFile(path.join(root, 'dist', 'main', 'preload.js'), 'utf8'),
-    readFile(path.join(root, 'dist', 'main', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'core', 'preload.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'core', 'main.js'), 'utf8'),
     readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesClient.js'), 'utf8'),
     readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesRuntime.js'), 'utf8'),
   ]);
@@ -35,7 +35,7 @@ test('Kubernetes environment bridge exposes only the active Pod resolver and val
 
 test('Kubernetes page provides a read-only resource browser shell', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const kubernetesStart = html.indexOf('<main class="app-shell hidden" data-page="kubernetes">');
   const kubernetesEnd = html.indexOf('</main>', kubernetesStart);
   assert.notEqual(kubernetesStart, -1);
@@ -100,7 +100,7 @@ test('Kubernetes page provides a read-only resource browser shell', async () => 
 });
 
 test('Kubernetes Namespace multi-selection is sorted and falls back to All Namespaces', async () => {
-  const { updateNamespaceSelection } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { updateNamespaceSelection } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
 
   assert.deepEqual(updateNamespaceSelection(['monitoring'], 'apps', true), {
     mode: 'selected',
@@ -117,7 +117,7 @@ test('Kubernetes Namespace multi-selection is sorted and falls back to All Names
 });
 
 test('Kubernetes Namespace menu closes only for an outside pointer target', async () => {
-  const { shouldCloseNamespaceMenu } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { shouldCloseNamespaceMenu } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const inside = {};
   const outside = {};
   const control = { contains: (target) => target === inside };
@@ -128,7 +128,7 @@ test('Kubernetes Namespace menu closes only for an outside pointer target', asyn
 });
 
 test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves sorted unique values', async () => {
-  const { filterKubernetesNamespaces } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { filterKubernetesNamespaces } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
 
   assert.deepEqual(filterKubernetesNamespaces(
     ['monitoring', 'ai-dev', 'kube-system', 'ai-dev'],
@@ -151,7 +151,7 @@ test('Kubernetes Custom Resource selector filters GVK locally and list columns f
     hasCurrentKubernetesCustomResourceDefinitions,
     isPermissionError,
     rebindKubernetesCustomResourceDefinition,
-  } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const application = {
     group: 'argoproj.io', version: 'v1alpha1', kind: 'Application', plural: 'applications', scope: 'namespaced',
     printerColumns: [
@@ -211,7 +211,7 @@ test('Kubernetes Custom Resource selector filters GVK locally and list columns f
 });
 
 test('Kubernetes Context activation waits for the matching delayed connection exactly until it is usable', async () => {
-  const { decideKubernetesContextActivation } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { decideKubernetesContextActivation } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const intent = { id: 7, context: 'tunneled', pageGeneration: 3 };
   const decision = (selectedContext, connection, visible = true, pageGeneration = 3) => (
     decideKubernetesContextActivation(intent, { selectedContext, connection }, visible, pageGeneration)
@@ -228,7 +228,7 @@ test('Kubernetes Context activation waits for the matching delayed connection ex
 });
 
 test('Kubernetes renderer never sends a resource LIST while a Context is reconnecting', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const currentQueryStart = page.indexOf('    currentQuery() {');
   const selectContextStart = page.indexOf('    async selectContext(context) {', currentQueryStart);
   const reloadStart = page.indexOf('    async reloadKubeconfig() {', selectContextStart);
@@ -253,7 +253,7 @@ test('Kubernetes renderer never sends a resource LIST while a Context is reconne
 });
 
 test('Kubernetes renderer rediscovers Custom Resource metadata after direct or delayed reload', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const stateStart = page.indexOf('    onStateChanged(state) {');
   const stateEnd = page.indexOf('    armContextActivation(context) {', stateStart);
   const discoveryStart = page.indexOf('    loadCustomResourceDefinitions() {');
@@ -297,7 +297,7 @@ test('Kubernetes renderer rediscovers Custom Resource metadata after direct or d
 });
 
 test('Kubernetes virtual table calculates a bounded render window for ten thousand items', async () => {
-  const { calculateVirtualWindow } = await import(path.join(distRenderer, 'kubernetesVirtualTable.js'));
+  const { calculateVirtualWindow } = await import(path.join(distRenderer, 'components', 'kubernetesVirtualTable.js'));
   const window = calculateVirtualWindow({
     itemCount: 10_000,
     rowHeight: 36,
@@ -313,9 +313,9 @@ test('Kubernetes virtual table calculates a bounded render window for ten thousa
 });
 
 test('Kubernetes renderer keeps dynamic resource names text-safe and debounces loaded-only filtering', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const table = await readFile(path.join(distRenderer, 'kubernetesVirtualTable.js'), 'utf8');
-  const renderer = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
+  const table = await readFile(path.join(distRenderer, 'components', 'kubernetesVirtualTable.js'), 'utf8');
+  const renderer = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
 
   assert.match(page, /SEARCH_DEBOUNCE_MS = 200/);
   assert.match(page, /nameFilter:/);
@@ -345,8 +345,8 @@ test('Kubernetes renderer keeps dynamic resource names text-safe and debounces l
 
 test('Kubernetes table sorting is controlled by accessible header icons', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
-  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
 
   assert.deepEqual(page.nextKubernetesSort({ column: 'name', direction: 'asc' }, 'name'), {
@@ -390,8 +390,8 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
 });
 
 test('Kubernetes Pod list emphasizes stable Deployment names and fades only generated suffixes', async () => {
-  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
-  const pageSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'kubernetesPage.ts'), 'utf8');
+  const page = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'pages', 'kubernetesPage.ts'), 'utf8');
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const fullPodName = 'ai-aigc-lms-ui-6d7f4fbcc-p6rj';
 
@@ -430,7 +430,7 @@ test('Kubernetes Pod list emphasizes stable Deployment names and fades only gene
 });
 
 test('Kubernetes query transitions synchronously clear stale virtual rows and fence delayed menu focus', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const method = (name, after) => {
     const start = [page.indexOf(`    ${name}(`), page.indexOf(`    async ${name}(`)].find((index) => index >= 0) ?? -1;
     const end = [page.indexOf(`    ${after}(`, start), page.indexOf(`    async ${after}(`, start)]
@@ -450,7 +450,7 @@ test('Kubernetes query transitions synchronously clear stale virtual rows and fe
     assert.match(method(name, after), /this\.clearResourceTable\(\);/, `${name} must clear stale rows`);
   }
   const clear = method('clearResourceTable', 'waitForPriorDeactivation');
-  const virtualTable = await readFile(path.join(distRenderer, 'kubernetesVirtualTable.js'), 'utf8');
+  const virtualTable = await readFile(path.join(distRenderer, 'components', 'kubernetesVirtualTable.js'), 'utf8');
   assert.match(clear, /this\.requestGeneration \+= 1/);
   assert.match(clear, /this\.table\?\.setWindow\(\{ start: 0, end: 0, total: 0, items: \[\] \}\)/);
   assert.match(clear, /this\.tableViewport\.scrollTop = 0/);
@@ -463,8 +463,8 @@ test('Kubernetes query transitions synchronously clear stale virtual rows and fe
 
 test('Custom Resources opens a searchable custom selector without a redundant resource tab', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const source = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const source = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
+  const page = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const optionsStart = source.indexOf('    renderCustomResourceOptions() {');
   const optionsEnd = source.indexOf('    selectCategory(category) {', optionsStart);
   const options = source.slice(optionsStart, optionsEnd);
@@ -512,7 +512,7 @@ test('Kubernetes virtual table renders a bounded main-process window for ten tho
     cancelAnimationFrame() {},
   };
   try {
-    const { createKubernetesVirtualTable } = await import(path.join(distRenderer, 'kubernetesVirtualTable.js'));
+    const { createKubernetesVirtualTable } = await import(path.join(distRenderer, 'components', 'kubernetesVirtualTable.js'));
     let rendered = 0;
     const table = createKubernetesVirtualTable({
       container,
@@ -548,8 +548,8 @@ test('Kubernetes virtual table renders a bounded main-process window for ten tho
 });
 
 test('Kubernetes page gates scroll loading but drains all pages for an active name filter', async () => {
-  const { shouldAutomaticallyLoadMore } = await import(path.join(distRenderer, 'kubernetesPage.js'));
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const { shouldAutomaticallyLoadMore } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
 
   assert.equal(shouldAutomaticallyLoadMore({ ...{
     context: 'development', kind: 'pods', namespaceScope: { mode: 'selected', namespaces: ['apps'] },
@@ -564,7 +564,7 @@ test('Kubernetes page gates scroll loading but drains all pages for an active na
 
 test('Kubernetes resource details use a read-only overlay drawer and clear active Secret data on close', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const kubernetesStart = html.indexOf('<main class="app-shell hidden" data-page="kubernetes">');
   const kubernetesEnd = html.indexOf('</main>', kubernetesStart);
   assert.notEqual(kubernetesStart, -1);
@@ -599,7 +599,7 @@ test('Kubernetes resource details use a read-only overlay drawer and clear activ
 
 test('Kubernetes detail YAML uses the copied browser serializer and text-safe highlighted rendering', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const copyRenderer = await readFile(path.join(__dirname, '..', 'scripts', 'copy-renderer.cjs'), 'utf8');
   const browserYaml = await readFile(path.join(distRenderer, 'js-yaml.umd.min.js'), 'utf8');
   const previousYaml = globalThis.jsyaml;
@@ -609,7 +609,7 @@ test('Kubernetes detail YAML uses the copied browser serializer and text-safe hi
   globalThis.jsyaml = browserContext.jsyaml;
 
   try {
-    const { serializeKubernetesDetailYaml } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+    const { serializeKubernetesDetailYaml } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
     const detail = {
       apiVersion: 'v1',
       kind: 'ConfigMap',
@@ -651,7 +651,7 @@ function deferred() {
 }
 
 test('Kubernetes related-resource loading does not render a closed detail after a deferred request resolves', async () => {
-  const { runRelatedResourceRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { runRelatedResourceRequest } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const request = deferred();
   let current = true;
   const updates = [];
@@ -674,7 +674,7 @@ test('Kubernetes related-resource loading does not render a closed detail after 
 });
 
 test('Kubernetes related-resource loading does not render or report an old detail after linked-Pod navigation', async () => {
-  const { runRelatedResourceRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { runRelatedResourceRequest } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const request = deferred();
   let current = true;
   const updates = [];
@@ -697,7 +697,7 @@ test('Kubernetes related-resource loading does not render or report an old detai
 });
 
 test('Kubernetes drawer request identity ignores stale detail completions after replacement or close', async () => {
-  const module = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const module = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const { isCurrentKubernetesDrawerRequest } = module;
   assert.equal(typeof isCurrentKubernetesDrawerRequest, 'function');
   const active = { visible: true, pageGeneration: 8, drawerGeneration: 12, uid: 'service-a' };
@@ -709,7 +709,7 @@ test('Kubernetes drawer request identity ignores stale detail completions after 
     visible: false, pageGeneration: 8, drawerGeneration: 12, uid: 'service-a',
   }), false);
 
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const closeStart = page.indexOf('    closeDetail() {');
   const closeEnd = page.indexOf('    displayDetail() {', closeStart);
   const close = page.slice(closeStart, closeEnd);
@@ -725,7 +725,7 @@ test('Kubernetes related Pod navigation accepts a Pod fetch under a current work
   const {
     isCurrentKubernetesDrawerListRequest,
     runKubernetesDrawerDetailRequest,
-  } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
 
   for (const kind of ['deployments', 'statefulsets']) {
     const originListQuery = {
@@ -816,7 +816,7 @@ test('Kubernetes related Pod navigation accepts a Pod fetch under a current work
 
 test('Kubernetes Task 5 keeps port forwards while moving Logs and Shell into the persistent workspace', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
 
   assert.match(html, /id="kubernetes-detail-port-forward"/);
   assert.match(html, /id="kubernetes-port-forward-dialog"/);
@@ -841,7 +841,7 @@ test('Kubernetes Task 5 keeps port forwards while moving Logs and Shell into the
 });
 
 test('Kubernetes drawer rendering keeps YAML opt-in and Events guarded to the active request', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const renderDetail = page.slice(
     page.indexOf('    renderDetail() {'),
     page.indexOf('    renderOverview(detail, active) {'),
@@ -873,7 +873,7 @@ test('Kubernetes drawer rendering keeps YAML opt-in and Events guarded to the ac
 });
 
 test('Kubernetes drawer Events render dynamic values through textContent', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const events = page.slice(
     page.indexOf('    renderDrawerEvents(active) {'),
     page.indexOf('    renderDrawerPortForward(active) {'),
@@ -890,7 +890,7 @@ test('Kubernetes drawer Events render dynamic values through textContent', async
 test('Kubernetes layout uses a full-width list with a bounded overlay drawer and independent workspace', async () => {
   const root = path.join(__dirname, '..');
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const styles = await readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8');
 
   assert.match(html, /id="kubernetes-list-page" class="kubernetes-list-page"/);
@@ -1037,7 +1037,7 @@ test('Kubernetes workspace owns a bounded Shell pane while port forwards stay in
 test('Kubernetes workspace tabs and Pod container actions use semantic typed palettes', async () => {
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const builtStyles = await readFile(path.join(distRenderer, 'tailwind.css'), 'utf8');
-  const workspaceSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'kubernetesWorkspace.ts'), 'utf8');
+  const workspaceSource = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'components', 'kubernetesWorkspace.ts'), 'utf8');
   const logsTabRule = styles.match(/\.kubernetes-workspace-tab-logs\s*\{([^}]*)\}/);
   const shellTabRule = styles.match(/\.kubernetes-workspace-tab-shell\s*\{([^}]*)\}/);
   const selectedLogsTabRule = styles.match(/\.kubernetes-workspace-tab-logs:has\(\.kubernetes-workspace-tab-select\[aria-selected='true'\]\)\s*\{([^}]*)\}/);
@@ -1236,7 +1236,7 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
   global.document = { createElement: () => new FakeElement() };
 
   try {
-    const { createKubernetesTerminalDrawer, createKubernetesTerminalPane } = await import(path.join(distRenderer, 'kubernetesTerminal.js'));
+    const { createKubernetesTerminalDrawer, createKubernetesTerminalPane } = await import(path.join(distRenderer, 'components', 'kubernetesTerminal.js'));
     const root = new FakeElement();
     const drawer = createKubernetesTerminalDrawer({
       root,
@@ -1413,8 +1413,8 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
 */
 
 test('Kubernetes workspace terminal pane finalizes exact IDs and never owns a floating drawer', async () => {
-  const terminal = await readFile(path.join(distRenderer, 'kubernetesTerminal.js'), 'utf8');
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const terminal = await readFile(path.join(distRenderer, 'components', 'kubernetesTerminal.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
 
   assert.match(terminal, /createKubernetesTerminalPane/);
   assert.match(terminal, /finalizedIds\.add\(state\.id\)/);
@@ -1428,7 +1428,7 @@ test('Kubernetes workspace terminal pane finalizes exact IDs and never owns a fl
 });
 
 test('Kubernetes Task 5 page delegates terminal runtime callbacks to the workspace', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
 
   assert.match(page, /onTerminalChanged\(\(state\) => this\.workspace\?\.onTerminalChanged\(state\)\)/);
   assert.match(page, /onTerminalOutput\(\(output\) => this\.workspace\?\.onTerminalOutput\(output\)\)/);
@@ -1438,8 +1438,8 @@ test('Kubernetes Task 5 page delegates terminal runtime callbacks to the workspa
 
 test('Kubernetes shell has label-free compact controls, no Cluster category, and one eight-column table', async () => {
   const html = await readFile(path.join(distRenderer, 'index.html'), 'utf8');
-  const pageSource = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
-  const page = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const pageSource = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
+  const page = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const controlStart = html.indexOf('class="kubernetes-control-row"');
   const controlEnd = html.indexOf('class="kubernetes-secondary-row"', controlStart);
   const controls = html.slice(controlStart, controlEnd);
@@ -1459,7 +1459,7 @@ test('Kubernetes shell has label-free compact controls, no Cluster category, and
 });
 
 test('Kubernetes drawer request identity fences stale replacement completions', async () => {
-  const { isCurrentKubernetesDrawerRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { isCurrentKubernetesDrawerRequest } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const current = { visible: true, pageGeneration: 2, drawerGeneration: 4, uid: 'pod-a' };
 
   assert.equal(isCurrentKubernetesDrawerRequest(current, current), true);
@@ -1475,7 +1475,7 @@ test('Kubernetes drawer request identity fences stale replacement completions', 
 });
 
 test('Kubernetes drawer Env completion applies only to its current drawer generation and exact target', async () => {
-  const { isCurrentKubernetesEnvironmentRequest } = await import(path.join(distRenderer, 'kubernetesPage.js'));
+  const { isCurrentKubernetesEnvironmentRequest } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const target = { namespace: 'apps', podName: 'api', container: 'api' };
   const current = { visible: true, drawerGeneration: 7, target };
 
@@ -1494,7 +1494,7 @@ test('Kubernetes drawer Env completion applies only to its current drawer genera
 });
 
 test('Kubernetes active drawer Env remains lazy, local, and text-safe', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const styles = await readFile(path.join(__dirname, '..', 'src', 'renderer', 'tailwind.css'), 'utf8');
   const environmentStart = page.indexOf('    renderContainerEnvironment(');
   const environmentEnd = page.indexOf('    createDrawerSection(', environmentStart);
@@ -1554,7 +1554,7 @@ test('Kubernetes active drawer Env remains lazy, local, and text-safe', async ()
 });
 
 test('Kubernetes list updates render behind an active drawer and drawer values remain text-safe', async () => {
-  const page = await readFile(path.join(distRenderer, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
   const listStart = page.indexOf('    onListChanged(snapshot) {');
   const listEnd = page.indexOf('    renderState() {', listStart);
   const onListChanged = page.slice(listStart, listEnd);

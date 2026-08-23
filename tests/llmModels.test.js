@@ -7,7 +7,7 @@ const {
   buildLlmModelsUrl,
   fetchLlmModels,
   parseLlmModelsResponse,
-} = require('../dist/main/llmModels');
+} = require('../dist/main/llm/llmModels');
 
 const ENDPOINT = 'https://llm.example.test/v1';
 const TOKEN = 'private-bearer-token';

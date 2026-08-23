@@ -8,6 +8,7 @@ const modelPath = pathToFileURL(path.join(
   '..',
   'dist',
   'renderer',
+  'models',
   'kubernetesBuiltinResourceModel.js',
 )).href;
 

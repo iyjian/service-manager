@@ -14,7 +14,7 @@ function sqlHarnessHtml(sqlSource) {
   return `
 <script type="module">
   import { registerSqlPage } from './sqlPage.js';
-  import { initNav } from './nav.js';
+  import { initNav } from './pages/nav.js';
 
   const schema = {
     environment: 'production',

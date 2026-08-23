@@ -45,7 +45,7 @@ import { checkTunSupport, grantTunPermission, revokeTunPermission } from './tunP
 import {
   sanitizeProxySettingsForSnapshot,
   type PersistentProxySnapshot,
-} from '../appDataSnapshot';
+} from '../core/appDataSnapshot';
 
 const MAX_LOG_LINES = 2000;
 const CONTROLLER_STARTUP_TIMEOUT_MS = 12000;

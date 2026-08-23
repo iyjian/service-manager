@@ -9,7 +9,7 @@ const {
   decryptNotesAttachmentObject,
   parseEncryptedNotesAttachmentObject,
   parseNotesAttachmentReference,
-} = require('../dist/main/notesAttachmentS3');
+} = require('../dist/main/notes/notesAttachmentS3');
 
 function deterministicRandom() {
   const fill = new Map([[24, 0x11], [32, 0x22], [12, 0x33]]);

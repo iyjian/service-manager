@@ -7,7 +7,7 @@ const {
   codeHighlightSearchText,
   findCodeHighlightLanguage,
 } = require('../dist/shared/codeHighlight');
-const { highlightSafeNoteCodeBlocks } = require('../dist/main/noteCodeHighlight');
+const { highlightSafeNoteCodeBlocks } = require('../dist/main/notes/noteCodeHighlight');
 const { richTextToMarkdown, richTextToSafeHtml } = require('../dist/shared/noteExport');
 
 const COMMON_LANGUAGE_VALUES = [

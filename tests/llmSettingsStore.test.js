@@ -9,7 +9,7 @@ const {
   LlmSettingsStore,
   normalizeLlmEndpoint,
   normalizeLlmSettingsDraft,
-} = require('../dist/main/llmSettingsStore');
+} = require('../dist/main/llm/llmSettingsStore');
 
 function protector(overrides = {}) {
   return {

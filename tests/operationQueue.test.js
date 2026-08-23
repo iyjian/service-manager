@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { KeyedOperationQueue } = require('../dist/main/operationQueue');
+const { KeyedOperationQueue } = require('../dist/main/core/operationQueue');
 
 function deferred() {
   let resolve;

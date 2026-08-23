@@ -87,7 +87,7 @@ test('validSavedProxySelections skips candidates and groups removed by a subscri
 
 test('Proxy toggle routes starting state to Stop', () => {
   const root = path.join(__dirname, '..');
-  const source = fs.readFileSync(path.join(root, 'src/renderer/proxyPage.ts'), 'utf8');
+  const source = fs.readFileSync(path.join(root, 'src/renderer/pages/proxyPage.ts'), 'utf8');
 
   assert.match(
     source,

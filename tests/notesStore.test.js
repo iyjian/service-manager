@@ -11,7 +11,7 @@ const {
   NotesStore,
   classifyNoteDraftRecovery,
   rankNoteIdsForSearch,
-} = require('../dist/main/notesStore');
+} = require('../dist/main/notes/notesStore');
 const { EMPTY_RICH_TEXT_CONTENT, normalizeRichTextContent } = require('../dist/shared/noteRichText');
 
 function noteFileName(id) {

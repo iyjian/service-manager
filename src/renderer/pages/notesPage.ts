@@ -1,0 +1,4158 @@
+import type {
+  Note,
+  NoteAttachmentReference,
+  NoteDeletePreview,
+  NoteDraft,
+  NoteDraftRecoveryInput,
+  NoteImageReference,
+  NoteLanguage,
+  NoteShareDurationHours,
+  NoteShareView,
+  NoteSummary,
+  NotesTreeNode,
+  NotesWorkspaceDelta,
+  NotesWorkspaceSnapshot,
+} from '../../shared/types';
+import { basicSetup, EditorView } from 'codemirror';
+import { javascript, javascriptLanguage, typescriptLanguage } from '@codemirror/lang-javascript';
+import { json, jsonLanguage } from '@codemirror/lang-json';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { yaml, yamlLanguage } from '@codemirror/lang-yaml';
+import {
+  defaultHighlightStyle,
+  HighlightStyle,
+  StreamLanguage,
+  syntaxHighlighting,
+  type Language,
+  type TagStyle,
+} from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { standardSQL } from '@codemirror/legacy-modes/mode/sql';
+import { Compartment, EditorState, type Extension } from '@codemirror/state';
+import {
+  EMPTY_RICH_TEXT_CONTENT,
+  extractRichTextPlainText,
+  normalizeNoteAttachmentFileName,
+  normalizeRichTextContent,
+  noteAttachmentPreviewKind,
+  parseRichTextContent,
+} from '../noteRichText.js';
+import { registerPage } from './nav.js';
+import {
+  findNotesTextMatches,
+  initialNotesFindIndex,
+  moveNotesFindIndex,
+  type NotesFindMatch,
+} from '../models/notesFind.js';
+import { NotesRichTextEditor } from '../components/notesRichTextEditor.js';
+import {
+  applyMarkdownFormat,
+  extractMarkdownOutline,
+  getMarkdownStats,
+  renderMarkdownToSafeHtml,
+  type MarkdownFormatCommand,
+} from '../notesMarkdown.js';
+import { toast } from '../components/toast.js';
+import { createIcon } from '../components/icon.js';
+
+export { normalizeNoteAttachmentFileName };
+
+const NOTE_SAVE_DEBOUNCE_MS = 250;
+const NOTE_SEARCH_DEBOUNCE_MS = 120;
+const NOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const NOTE_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
+const MAX_CONCURRENT_NOTE_ASSET_UPLOADS = 2;
+const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
+const MIN_NOTES_SIDEBAR_WIDTH = 240;
+const MAX_NOTES_SIDEBAR_WIDTH = 520;
+const NOTES_SIDEBAR_KEYBOARD_STEP = 8;
+const NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS = 180;
+
+const NOTES_CODE_FIND_HIGHLIGHT = 'notes-code-find-match';
+const NOTES_CODE_FIND_ACTIVE_HIGHLIGHT = 'notes-code-find-match-active';
+
+interface NotesHighlightRegistry {
+  delete(name: string): boolean;
+  set(name: string, highlight: unknown): unknown;
+}
+
+interface NotesHighlightValue {
+  priority: number;
+}
+
+function notesHighlightApi(): {
+  registry: NotesHighlightRegistry;
+  create: (...ranges: Range[]) => NotesHighlightValue;
+} | undefined {
+  const registry = (window.CSS as unknown as { highlights?: NotesHighlightRegistry }).highlights;
+  const HighlightConstructor = (window as typeof window & {
+    Highlight?: new (...ranges: Range[]) => NotesHighlightValue;
+  }).Highlight;
+  if (!registry || !HighlightConstructor) return undefined;
+  return {
+    registry,
+    create: (...ranges) => new HighlightConstructor(...ranges),
+  };
+}
+
+export function clampNotesSidebarWidth(value: number): number {
+  const rounded = Number.isFinite(value) ? Math.round(value) : DEFAULT_NOTES_SIDEBAR_WIDTH;
+  return Math.min(MAX_NOTES_SIDEBAR_WIDTH, Math.max(MIN_NOTES_SIDEBAR_WIDTH, rounded));
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
+}
+
+const bashLanguage = StreamLanguage.define(shell);
+const sqlLanguage = StreamLanguage.define(standardSQL);
+
+const markdownFenceLanguages: Readonly<Record<string, Language>> = {
+  bash: bashLanguage,
+  javascript: javascriptLanguage,
+  js: javascriptLanguage,
+  json: jsonLanguage,
+  node: javascriptLanguage,
+  sh: bashLanguage,
+  shell: bashLanguage,
+  shellscript: bashLanguage,
+  sql: sqlLanguage,
+  ts: typescriptLanguage,
+  typescript: typescriptLanguage,
+  yaml: yamlLanguage,
+  yml: yamlLanguage,
+};
+
+export interface NoteLanguageOption {
+  value: NoteLanguage;
+  label: string;
+  keywords: readonly string[];
+}
+
+export const NOTE_LANGUAGE_OPTIONS: readonly NoteLanguageOption[] = Object.freeze([
+  { value: 'richtext', label: 'Rich Text', keywords: ['rich', 'formatted', 'wysiwyg', 'document'] },
+  { value: 'markdown', label: 'Markdown', keywords: ['markdown', 'md'] },
+  { value: 'bash', label: 'Bash', keywords: ['bash', 'shell', 'sh'] },
+  { value: 'javascript', label: 'JavaScript', keywords: ['javascript', 'js'] },
+  { value: 'typescript', label: 'TypeScript', keywords: ['typescript', 'ts'] },
+  { value: 'sql', label: 'SQL', keywords: ['sql', 'database', 'query'] },
+  { value: 'json', label: 'JSON', keywords: ['json', 'data'] },
+  { value: 'yaml', label: 'YAML', keywords: ['yaml', 'yml'] },
+  { value: 'text', label: 'Plain Text', keywords: ['plain', 'text', 'txt'] },
+]);
+
+export function parseNoteShareDuration(value: string): NoteShareDurationHours {
+  const hours = Number(value);
+  if (hours === 24 || hours === 72 || hours === 168) return hours;
+  return 24;
+}
+
+export function formatNoteShareExpiry(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'Unknown expiry';
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+export function filterNoteLanguageOptions(query: string): readonly NoteLanguageOption[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return NOTE_LANGUAGE_OPTIONS;
+  return NOTE_LANGUAGE_OPTIONS.filter((option) => {
+    const searchable = `${option.label} ${option.value} ${option.keywords.join(' ')}`.toLocaleLowerCase();
+    return terms.every((term) => searchable.includes(term));
+  });
+}
+
+export interface NoteLanguageSwitchFence {
+  noteId: string;
+  sourceLanguage: NoteLanguage;
+  editVersion: number;
+  selectionVersion: number;
+  workspaceGeneration: number;
+}
+
+export function isNoteLanguageSwitchFenceCurrent(
+  expected: NoteLanguageSwitchFence,
+  current: NoteLanguageSwitchFence,
+): boolean {
+  return expected.noteId === current.noteId
+    && expected.sourceLanguage === current.sourceLanguage
+    && expected.editVersion === current.editVersion
+    && expected.selectionVersion === current.selectionVersion
+    && expected.workspaceGeneration === current.workspaceGeneration;
+}
+
+export function noteLanguageRovingTabStop(
+  options: readonly NoteLanguageOption[],
+  selectedLanguage: NoteLanguage | undefined,
+): NoteLanguage | undefined {
+  return options.find((option) => option.value === selectedLanguage)?.value ?? options[0]?.value;
+}
+
+function isNoteLanguage(value: string | undefined): value is NoteLanguage {
+  return NOTE_LANGUAGE_OPTIONS.some((option) => option.value === value);
+}
+
+function noteLanguageLabel(language: NoteLanguage): string {
+  return NOTE_LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? 'Plain Text';
+}
+
+const noteLanguageExtensions: Readonly<Record<NoteLanguage, Extension>> = {
+  markdown: markdown({
+    base: markdownLanguage,
+    codeLanguages: (info) => markdownFenceLanguages[info.trim().split(/\s+/, 1)[0]?.toLocaleLowerCase() ?? ''] ?? null,
+  }),
+  richtext: [],
+  bash: bashLanguage,
+  javascript: javascript(),
+  typescript: javascript({ typescript: true }),
+  sql: sqlLanguage,
+  json: json(),
+  yaml: yaml(),
+  text: [],
+};
+
+const darkSyntaxColors: Readonly<Record<string, string>> = {
+  '#404740': '#94a3b8',
+  '#708': '#c084fc',
+  '#219': '#93c5fd',
+  '#164': '#86efac',
+  '#a11': '#fca5a5',
+  '#e40': '#fb923c',
+  '#00f': '#60a5fa',
+  '#30a': '#a78bfa',
+  '#085': '#5eead4',
+  '#167': '#67e8f9',
+  '#256': '#f0abfc',
+  '#00c': '#38bdf8',
+  '#940': '#a1a1aa',
+  '#f00': '#f87171',
+};
+
+const darkHighlightStyle = HighlightStyle.define(
+  defaultHighlightStyle.specs.map((spec): TagStyle => {
+    const mappedColor = typeof spec.color === 'string' ? darkSyntaxColors[spec.color] : undefined;
+    return mappedColor ? { ...spec, color: mappedColor } : { ...spec };
+  }),
+  { themeType: 'dark' },
+);
+
+const darkEditorTheme = EditorView.theme({
+  '&': {
+    backgroundColor: '#09090b',
+    color: '#f4f4f5',
+  },
+}, { dark: true });
+
+const lightHighlightStyle = HighlightStyle.define(defaultHighlightStyle.specs, { themeType: 'light' });
+const lightEditorTheme = EditorView.theme({
+  '&': {
+    backgroundColor: '#ffffff',
+    color: '#18181b',
+  },
+}, { dark: false });
+
+function editorThemeExtensions(theme: 'light' | 'dark'): Extension[] {
+  return theme === 'dark'
+    ? [darkEditorTheme, syntaxHighlighting(darkHighlightStyle)]
+    : [lightEditorTheme, syntaxHighlighting(lightHighlightStyle)];
+}
+
+/** Returns parser-backed CodeMirror support for the selected Notes language. */
+export function noteLanguageExtension(language: NoteLanguage): Extension {
+  return noteLanguageExtensions[language];
+}
+
+const NOTES_NAV_ICON = `
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4 2.5h6l2 2v9H4z"></path>
+    <path d="M10 2.5v2h2"></path>
+    <path d="M6 7h4M6 9.5h4M6 12h2.5"></path>
+  </svg>
+`;
+
+
+/** Converts plain note text into safe, canonical Tiptap JSON. */
+export function plainTextToRichTextContent(value: string): string {
+  if (!value) return EMPTY_RICH_TEXT_CONTENT;
+  const inlineContent: Array<{ type: 'text'; text: string } | { type: 'hardBreak' }> = [];
+  const lines = value.split('\n');
+  lines.forEach((line, index) => {
+    if (line) inlineContent.push({ type: 'text', text: line });
+    if (index < lines.length - 1) inlineContent.push({ type: 'hardBreak' });
+  });
+  return normalizeRichTextContent({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      ...(inlineContent.length > 0 ? { content: inlineContent } : {}),
+    }],
+  });
+}
+
+function appendImageToRichTextContent(content: string, reference: NoteImageReference): string {
+  const document = parseRichTextContent(content);
+  return normalizeRichTextContent({
+    ...document,
+    content: [...(document.content ?? []), { type: 's3Image', attrs: reference }],
+  });
+}
+
+function appendAttachmentToRichTextContent(content: string, reference: NoteAttachmentReference): string {
+  const document = parseRichTextContent(content);
+  return normalizeRichTextContent({
+    ...document,
+    content: [...(document.content ?? []), { type: 's3Attachment', attrs: reference }],
+  });
+}
+
+export function noteSaveIndicatorState(
+  dirty: boolean,
+  failed: boolean,
+): 'saving' | 'error' | undefined {
+  if (failed) return 'error';
+  return dirty ? 'saving' : undefined;
+}
+
+export type NoteTreeDropPosition = 'before' | 'inside' | 'after';
+
+export interface NoteTreeRow {
+  note: Note;
+  node: NotesTreeNode;
+  depth: number;
+}
+
+export interface NoteTreePlacement {
+  parentId: string | null;
+  beforeNoteId?: string;
+}
+
+function compareTreeNodes(left: NotesTreeNode, right: NotesTreeNode): number {
+  return left.order - right.order
+    || (left.noteId < right.noteId ? -1 : left.noteId > right.noteId ? 1 : 0);
+}
+
+/** Builds stable sibling groups without changing the workspace snapshot. */
+export function noteTreeChildren(nodes: readonly NotesTreeNode[]): Map<string | null, NotesTreeNode[]> {
+  const groups = new Map<string | null, NotesTreeNode[]>();
+  for (const node of nodes) {
+    const children = groups.get(node.parentId) ?? [];
+    children.push(node);
+    groups.set(node.parentId, children);
+  }
+  for (const children of groups.values()) children.sort(compareTreeNodes);
+  return groups;
+}
+
+function visibleNoteTreeRowsFromIndexes(
+  notesById: ReadonlyMap<string, Note>,
+  children: ReadonlyMap<string | null, readonly NotesTreeNode[]>,
+  expandedNoteIds: ReadonlySet<string>,
+): NoteTreeRow[] {
+  const visited = new Set<string>();
+  const rows: NoteTreeRow[] = [];
+  const append = (parentId: string | null, depth: number): void => {
+    for (const node of children.get(parentId) ?? []) {
+      if (visited.has(node.noteId)) continue;
+      visited.add(node.noteId);
+      const note = notesById.get(node.noteId);
+      if (!note) continue;
+      rows.push({ note, node, depth });
+      if (expandedNoteIds.has(node.noteId)) append(node.noteId, depth + 1);
+    }
+  };
+  append(null, 0);
+  return rows;
+}
+
+function noteTreeBreadcrumbFromIndexes(
+  noteId: string,
+  notesById: ReadonlyMap<string, Note>,
+  nodesById: ReadonlyMap<string, NotesTreeNode>,
+): string {
+  const names: string[] = [];
+  const visited = new Set<string>([noteId]);
+  let parentId = nodesById.get(noteId)?.parentId ?? null;
+  while (parentId !== null && names.length < 32 && !visited.has(parentId)) {
+    visited.add(parentId);
+    names.unshift(notesById.get(parentId)?.name || 'Untitled');
+    parentId = nodesById.get(parentId)?.parentId ?? null;
+  }
+  return names.join(' / ');
+}
+
+function noteTreeAncestorIdsFromIndexes(
+  noteId: string,
+  nodesById: ReadonlyMap<string, NotesTreeNode>,
+): string[] {
+  const ancestorIds: string[] = [];
+  const visited = new Set<string>([noteId]);
+  let parentId = nodesById.get(noteId)?.parentId ?? null;
+  while (parentId !== null && ancestorIds.length < 32 && !visited.has(parentId)) {
+    visited.add(parentId);
+    ancestorIds.unshift(parentId);
+    parentId = nodesById.get(parentId)?.parentId ?? null;
+  }
+  return ancestorIds;
+}
+
+/** Compares confirmed subtree membership without treating a harmless reorder as a change. */
+export function sameNoteIdSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const ids = new Set(left);
+  return ids.size === left.length && right.every((id) => ids.has(id));
+}
+
+/** Rejects self/descendant parents before a drag operation reaches IPC. */
+export function isValidNoteTreeParent(
+  nodes: readonly NotesTreeNode[],
+  movingNoteId: string,
+  parentId: string | null,
+): boolean {
+  const nodesById = new Map(nodes.map((node) => [node.noteId, node]));
+  if (!nodesById.has(movingNoteId)) return false;
+  if (parentId === null) return true;
+  if (!nodesById.has(parentId)) return false;
+  const visited = new Set<string>();
+  let currentId: string | null = parentId;
+  while (currentId !== null && !visited.has(currentId)) {
+    if (currentId === movingNoteId) return false;
+    visited.add(currentId);
+    currentId = nodesById.get(currentId)?.parentId ?? null;
+  }
+  return true;
+}
+
+/** Resolves Notion-style before/inside/after placement or rejects an invalid descendant drop. */
+export function resolveNoteTreeDropPlacement(
+  nodes: readonly NotesTreeNode[],
+  movingNoteId: string,
+  targetNoteId: string,
+  position: NoteTreeDropPosition,
+): NoteTreePlacement | undefined {
+  if (movingNoteId === targetNoteId) return undefined;
+  const target = nodes.find((node) => node.noteId === targetNoteId);
+  if (!target || !nodes.some((node) => node.noteId === movingNoteId)) return undefined;
+
+  let placement: NoteTreePlacement;
+  if (position === 'inside') {
+    placement = { parentId: target.noteId };
+  } else if (position === 'before') {
+    placement = { parentId: target.parentId, beforeNoteId: target.noteId };
+  } else {
+    const siblings = (noteTreeChildren(nodes).get(target.parentId) ?? [])
+      .filter((node) => node.noteId !== movingNoteId);
+    const index = siblings.findIndex((node) => node.noteId === target.noteId);
+    if (index < 0) return undefined;
+    const next = siblings[index + 1];
+    placement = { parentId: target.parentId, ...(next ? { beforeNoteId: next.noteId } : {}) };
+  }
+  return isValidNoteTreeParent(nodes, movingNoteId, placement.parentId) ? placement : undefined;
+}
+
+function requireElement<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) throw new Error(`Missing required element: ${selector}`);
+  return element;
+}
+
+function toErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+}
+
+function cloneNote(note: Note): Note {
+  return { ...note, tags: [...note.tags] };
+}
+
+function rendererNote(summary: NoteSummary): Note {
+  return { ...summary, tags: [...summary.tags], content: '' };
+}
+
+export function reconcileOpenNoteIds(
+  openNoteIds: readonly string[],
+  activeNoteIds: ReadonlySet<string>,
+  selectedId?: string,
+): string[] {
+  const seen = new Set<string>();
+  const result = openNoteIds.filter((id) => {
+    if (!activeNoteIds.has(id) || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  if (selectedId && activeNoteIds.has(selectedId) && !seen.has(selectedId)) result.push(selectedId);
+  return result;
+}
+
+export function noteTabFallbackAfterRemoval(
+  openNoteIds: readonly string[],
+  selectedId: string | undefined,
+  removedNoteIds: ReadonlySet<string>,
+): string | undefined {
+  if (!selectedId || !removedNoteIds.has(selectedId)) return selectedId;
+  const selectedIndex = openNoteIds.indexOf(selectedId);
+  if (selectedIndex < 0) return undefined;
+  for (let index = selectedIndex + 1; index < openNoteIds.length; index += 1) {
+    const candidate = openNoteIds[index];
+    if (candidate && !removedNoteIds.has(candidate)) return candidate;
+  }
+  for (let index = selectedIndex - 1; index >= 0; index -= 1) {
+    const candidate = openNoteIds[index];
+    if (candidate && !removedNoteIds.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+class NotesPage {
+  private readonly pageRoot = requireElement<HTMLElement>('.notes-page');
+  private readonly sidebarResizeHandle = requireElement<HTMLElement>('#notes-sidebar-resizer');
+  private readonly newButton = requireElement<HTMLButtonElement>('#notes-new-root-btn');
+  private readonly searchInput = requireElement<HTMLInputElement>('#notes-search');
+  private readonly list = requireElement<HTMLElement>('#notes-list');
+  private readonly emptyState = requireElement<HTMLElement>('#notes-empty');
+  private readonly editor = requireElement<HTMLElement>('#notes-editor');
+  private readonly tabList = requireElement<HTMLElement>('#notes-tabs');
+  private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
+  private readonly languageControl = requireElement<HTMLElement>('#note-language-control');
+  private readonly languageToggle = requireElement<HTMLButtonElement>('#note-language-toggle');
+  private readonly languageValue = requireElement<HTMLElement>('#note-language-value');
+  private readonly languageMenu = requireElement<HTMLElement>('#note-language-menu');
+  private readonly languageSearch = requireElement<HTMLInputElement>('#note-language-search');
+  private readonly languageOptions = requireElement<HTMLElement>('#note-language-options');
+  private readonly contentHost = requireElement<HTMLElement>('#note-content');
+  private readonly findBar = requireElement<HTMLElement>('#note-find-bar');
+  private readonly findInput = requireElement<HTMLInputElement>('#note-find-input');
+  private readonly findCounter = requireElement<HTMLElement>('#note-find-counter');
+  private readonly findPreviousButton = requireElement<HTMLButtonElement>('#note-find-previous');
+  private readonly findNextButton = requireElement<HTMLButtonElement>('#note-find-next');
+  private readonly findCloseButton = requireElement<HTMLButtonElement>('#note-find-close');
+  private readonly codeEditorShell = requireElement<HTMLElement>('#note-code-editor');
+  private readonly codeLayout = requireElement<HTMLElement>('#note-code-layout');
+  private readonly codeContentHost = requireElement<HTMLElement>('#note-code-content');
+  private readonly markdownToolbar = requireElement<HTMLElement>('#note-markdown-toolbar');
+  private readonly markdownPreview = requireElement<HTMLElement>('#note-markdown-preview');
+  private readonly markdownStatus = requireElement<HTMLElement>('#note-markdown-status');
+  private readonly markdownOutlineButton = requireElement<HTMLButtonElement>('#note-markdown-outline-btn');
+  private readonly markdownOutlineMenu = requireElement<HTMLElement>('#note-markdown-outline-menu');
+  private readonly richTextShell = requireElement<HTMLElement>('#note-richtext-editor');
+  private readonly richTextHost = requireElement<HTMLElement>('#note-richtext-content');
+  private readonly richTextToolbar = requireElement<HTMLElement>('#note-richtext-toolbar');
+  private readonly imageInput = requireElement<HTMLInputElement>('#note-richtext-image-input');
+  private readonly attachmentInput = requireElement<HTMLInputElement>('#note-richtext-attachment-input');
+  private readonly attachmentPreviewDialog = requireElement<HTMLDialogElement>('#note-attachment-preview-dialog');
+  private readonly attachmentPreviewTitle = requireElement<HTMLElement>('#note-attachment-preview-title');
+  private readonly attachmentPreviewMeta = requireElement<HTMLElement>('#note-attachment-preview-meta');
+  private readonly attachmentPreviewBadge = requireElement<HTMLElement>('#note-attachment-preview-badge');
+  private readonly attachmentPreviewBody = requireElement<HTMLElement>('#note-attachment-preview-body');
+  private readonly attachmentPreviewLoading = requireElement<HTMLElement>('#note-attachment-preview-loading');
+  private readonly attachmentPreviewError = requireElement<HTMLElement>('#note-attachment-preview-error');
+  private readonly attachmentPreviewImage = requireElement<HTMLImageElement>('#note-attachment-preview-image');
+  private readonly attachmentPreviewPdf = requireElement<HTMLIFrameElement>('#note-attachment-preview-pdf');
+  private readonly attachmentPreviewText = requireElement<HTMLElement>('#note-attachment-preview-text');
+  private readonly attachmentPreviewCloseButton = requireElement<HTMLButtonElement>('#note-attachment-preview-close');
+  private readonly copyButton = requireElement<HTMLButtonElement>('#note-copy-btn');
+  private readonly copyLabel = requireElement<HTMLElement>('#note-copy-label');
+  private readonly shareButton = requireElement<HTMLButtonElement>('#note-share-btn');
+  private readonly shareDialog = requireElement<HTMLDialogElement>('#note-share-dialog');
+  private readonly shareCloseButton = requireElement<HTMLButtonElement>('#note-share-close');
+  private readonly shareDurationSelect = requireElement<HTMLSelectElement>('#note-share-duration');
+  private readonly shareUrlText = requireElement<HTMLElement>('#note-share-url');
+  private readonly shareCopyButton = requireElement<HTMLButtonElement>('#note-share-copy');
+  private readonly shareStatus = requireElement<HTMLElement>('#note-share-status');
+  private readonly shareHistoryList = requireElement<HTMLElement>('#note-share-history');
+  private readonly downloadButton = requireElement<HTMLButtonElement>('#note-download-btn');
+  private readonly downloadMenu = requireElement<HTMLElement>('#note-download-menu');
+  private readonly saveStatus = requireElement<HTMLElement>('#note-save-status');
+  private readonly languageCompartment = new Compartment();
+  private readonly themeCompartment = new Compartment();
+  private readonly editorAttributesCompartment = new Compartment();
+  private codeEditor!: EditorView;
+  private richTextEditor!: NotesRichTextEditor;
+  private editorsMounted = false;
+
+  private notes: Note[] = [];
+  private treeNodes: NotesTreeNode[] = [];
+  private readonly notesById = new Map<string, Note>();
+  private readonly treeNodesById = new Map<string, NotesTreeNode>();
+  private readonly breadcrumbCache = new Map<string, string>();
+  private readonly renderedRowsById = new Map<string, HTMLElement>();
+  private readonly renderedTabButtonsById = new Map<string, {
+    select: HTMLButtonElement;
+    close: HTMLButtonElement;
+  }>();
+  private expandedNoteIds = new Set<string>();
+  private selectedId: string | undefined;
+  private openNoteIds: string[] = [];
+  private noteTabsVersion = 0;
+  private loaded = false;
+  private loadPromise: Promise<void> | undefined;
+  private loadError: string | undefined;
+  private creating = false;
+  private readonly editVersions = new Map<string, number>();
+  private readonly persistedVersions = new Map<string, number>();
+  private readonly queuedVersions = new Map<string, number>();
+  private readonly saveTimers = new Map<string, number>();
+  private readonly saveQueues = new Map<string, Promise<void>>();
+  private readonly persistedNotes = new Map<string, Note>();
+  private readonly loadedNoteIds = new Set<string>();
+  private readonly noteBodyRequests = new Map<string, Promise<void>>();
+  private readonly noteBodyErrors = new Map<string, string>();
+  private noteBodyGeneration = 0;
+  private readonly deletedIds = new Set<string>();
+  private readonly deletingNoteIds = new Set<string>();
+  private readonly saveErrorNoteIds = new Set<string>();
+  private editorLanguage: NoteLanguage = 'markdown';
+  private editorNoteId: string | undefined;
+  private replacingEditorDocument = false;
+  private switchingLanguage = false;
+  private languageFilter = '';
+  private noteExportInFlight = false;
+  private noteShareInFlight = false;
+  private shareSelectedDuration: NoteShareDurationHours = 24;
+  private shareNoteId: string | undefined;
+  private currentShare: NoteShareView | undefined;
+  private shareHistory: NoteShareView[] = [];
+  private shareRequestGeneration = 0;
+  private shareCopyResetTimer: number | undefined;
+  private shareOpener: HTMLButtonElement | undefined;
+  private attachmentPreviewRequest = 0;
+  private attachmentPreviewObjectUrl: string | undefined;
+  private attachmentPreviewOpener: HTMLButtonElement | undefined;
+  private readonly editorUploadTasks = new Set<Promise<void>>();
+  private pendingImagePosition: number | undefined;
+  private pendingAttachmentPosition: number | undefined;
+  private markdownPreviewEnabled = false;
+  private markdownFocusMode = false;
+  private markdownTypewriterMode = false;
+  private markdownUiFrame: number | undefined;
+  private markdownCenterSelectionOnNextFrame = false;
+  private markdownDocumentStatsText = '0 words · 0 characters · 0 lines';
+  private editorTheme: 'light' | 'dark' = 'light';
+  private draggingNoteId: string | undefined;
+  private selectionVersion = 0;
+  private workspaceMutationGeneration = 0;
+  private saveGeneration = 0;
+  private sidebarWidth = DEFAULT_NOTES_SIDEBAR_WIDTH;
+  private sidebarResizeDrag: { pointerId: number; startX: number; startWidth: number } | undefined;
+  private sidebarMeasureFrame: number | undefined;
+  private sidebarKeyboardSaveTimer: number | undefined;
+  private searchRenderTimer: number | undefined;
+  private searchResultIds: string[] = [];
+  private searchResultQuery = '';
+  private searchRequestGeneration = 0;
+  private searchPending = false;
+  private treeRevealGeneration = 0;
+  private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
+  private readonly persistentApplyIds = new Set<string>();
+  private active = false;
+  private findOpen = false;
+  private findMatches: readonly NotesFindMatch[] = [];
+  private findActiveIndex = -1;
+  private findTruncated = false;
+  private findRefreshFrame: number | undefined;
+  private editorReleaseGeneration = 0;
+
+  constructor() {
+    this.contentHost.dataset.theme = this.editorTheme;
+    this.setSidebarWidth(this.sidebarWidth);
+    this.updateEditorEmptyState();
+    this.newButton.addEventListener('click', () => void this.createNote(null));
+    this.findInput.addEventListener('input', () => this.refreshInNoteFind(false, true));
+    this.findInput.addEventListener('keydown', this.handleFindInputKeyDown);
+    this.findPreviousButton.addEventListener('click', () => this.moveInNoteFind(-1));
+    this.findNextButton.addEventListener('click', () => this.moveInNoteFind(1));
+    this.findCloseButton.addEventListener('click', () => this.closeInNoteFind(true));
+    this.searchInput.addEventListener('input', () => this.queueSearchRender());
+    this.list.addEventListener('keydown', (event) => this.handleListKeydown(event));
+    this.list.addEventListener('dragover', (event) => {
+      if (!this.draggingNoteId || this.searchInput.value.trim() || event.target !== this.list) return;
+      event.preventDefault();
+      this.list.dataset.rootDrop = 'true';
+    });
+    this.list.addEventListener('dragleave', (event) => {
+      if (event.target === this.list) delete this.list.dataset.rootDrop;
+    });
+    this.list.addEventListener('drop', (event) => {
+      if (!this.draggingNoteId || this.searchInput.value.trim() || event.target !== this.list) return;
+      event.preventDefault();
+      const movingId = this.draggingNoteId;
+      delete this.list.dataset.rootDrop;
+      void this.moveNote(movingId, null);
+    });
+
+    this.nameInput.addEventListener('input', () => this.updateSelectedMetadata());
+    this.languageToggle.addEventListener('click', (event) => this.toggleLanguageMenu(event));
+    this.languageToggle.addEventListener('keydown', (event) => this.handleLanguageToggleKeyDown(event));
+    this.languageSearch.addEventListener('input', () => {
+      this.languageFilter = this.languageSearch.value;
+      this.renderLanguageOptions();
+    });
+    this.languageMenu.addEventListener('keydown', (event) => this.handleLanguageMenuKeyDown(event));
+    this.languageOptions.addEventListener('click', (event) => this.handleLanguageOptionClick(event));
+    this.languageControl.addEventListener('focusout', () => {
+      window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (!(active instanceof window.Node) || !this.languageControl.contains(active)) {
+          this.closeLanguageMenu();
+        }
+      });
+    });
+    this.copyButton.addEventListener('click', () => void this.copySelectedNote());
+    this.shareButton.addEventListener('click', () => void this.openShareDialog());
+    this.shareCloseButton.addEventListener('click', () => this.shareDialog.close());
+    this.shareDialog.addEventListener('close', () => this.handleShareDialogClosed());
+    this.shareDialog.addEventListener('click', (event) => {
+      if (event.target === this.shareDialog) this.shareDialog.close();
+    });
+    this.shareDurationSelect.addEventListener('change', () => void this.handleShareDurationChange());
+    this.shareCopyButton.addEventListener('click', () => void this.copyCurrentShareLink());
+    this.shareHistoryList.addEventListener('click', (event) => void this.handleShareHistoryClick(event));
+    this.shareHistoryList.addEventListener('keydown', (event) => this.handleShareHistoryKeyDown(event));
+    this.downloadButton.addEventListener('click', (event) => this.toggleDownloadMenu(event));
+    this.downloadMenu.addEventListener('click', (event) => void this.handleDownloadMenuClick(event));
+    this.downloadMenu.addEventListener('keydown', (event) => this.handlePopupMenuKeyDown(
+      event,
+      this.downloadMenu,
+      this.downloadButton,
+      () => this.closeDownloadMenu(),
+    ));
+    this.imageInput.addEventListener('change', () => void this.uploadSelectedImage());
+    this.attachmentInput.addEventListener('change', () => void this.uploadSelectedAttachment());
+    this.attachmentPreviewCloseButton.addEventListener('click', () => this.attachmentPreviewDialog.close());
+    this.attachmentPreviewDialog.addEventListener('close', () => this.handleAttachmentPreviewClosed());
+    this.attachmentPreviewDialog.addEventListener('click', (event) => {
+      if (event.target === this.attachmentPreviewDialog) this.attachmentPreviewDialog.close();
+    });
+    window.addEventListener('beforeunload', () => this.clearAttachmentPreviewContent());
+    window.serviceApi.onCloseShortcutRequested(() => this.handleCloseShortcut());
+    this.markdownToolbar.addEventListener('click', (event) => this.handleMarkdownToolbarClick(event));
+    this.markdownOutlineButton.addEventListener('click', (event) => this.toggleMarkdownOutline(event));
+    this.markdownOutlineMenu.addEventListener('click', (event) => this.handleMarkdownOutlineClick(event));
+    this.markdownOutlineMenu.addEventListener('keydown', (event) => this.handlePopupMenuKeyDown(
+      event,
+      this.markdownOutlineMenu,
+      this.markdownOutlineButton,
+      () => this.closeMarkdownOutline(),
+    ));
+    document.addEventListener('pointerdown', this.handleNotesPopupOutsidePointerDown, true);
+    this.sidebarResizeHandle.addEventListener('pointerdown', this.handleSidebarResizePointerDown);
+    this.sidebarResizeHandle.addEventListener('pointermove', this.handleSidebarResizePointerMove);
+    this.sidebarResizeHandle.addEventListener('pointerup', this.handleSidebarResizePointerEnd);
+    this.sidebarResizeHandle.addEventListener('pointercancel', this.handleSidebarResizePointerEnd);
+    this.sidebarResizeHandle.addEventListener('lostpointercapture', this.handleSidebarResizeLostCapture);
+    this.sidebarResizeHandle.addEventListener('keydown', this.handleSidebarResizeKeyDown);
+    document.addEventListener('keydown', this.handleDocumentFindKeyDown, true);
+  }
+
+  private async handleCloseShortcut(): Promise<boolean> {
+    if (!this.active || this.openNoteIds.length <= 1) return false;
+    const id = this.selectedId;
+    if (!id) return false;
+    return this.closeNoteTab(id);
+  }
+
+  show(): void {
+    this.active = true;
+    this.editorReleaseGeneration += 1;
+    this.mountEditors();
+    void this.ensureLoaded();
+  }
+
+  hide(): void {
+    this.active = false;
+    const releaseGeneration = ++this.editorReleaseGeneration;
+    this.searchRequestGeneration += 1;
+    this.cancelSearchRender();
+    this.searchPending = false;
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    if (this.shareDialog.open) this.shareDialog.close();
+    if (this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.close();
+    this.resetInNoteFind(false);
+    this.list.replaceChildren();
+    this.renderedRowsById.clear();
+    this.tabList.replaceChildren();
+    this.renderedTabButtonsById.clear();
+    void this.flush().then(() => {
+      if (this.active || releaseGeneration !== this.editorReleaseGeneration) return;
+      this.releaseEditorResources();
+    }).catch(() => {
+      // A failed save keeps the editor and its document alive so the draft is
+      // never discarded merely because the Notes page was hidden.
+    });
+  }
+
+  async flush(): Promise<void> {
+    this.flushSearchRender();
+    this.finishSidebarResize();
+    this.flushQueuedSidebarWidthSave();
+    try {
+      await this.waitForEditorUploads();
+      await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
+    } finally {
+      this.flushSearchRender();
+    }
+  }
+
+  requestEditorMeasure(): void {
+    if (!this.editorsMounted) return;
+    this.codeEditor.requestMeasure();
+    this.richTextEditor.requestMeasure();
+  }
+
+  private mountEditors(): void {
+    if (this.editorsMounted) return;
+    this.codeEditor = new EditorView({
+      state: this.createEditorState('', 'markdown'),
+      parent: this.codeContentHost,
+    });
+    this.richTextEditor = new NotesRichTextEditor({
+      host: this.richTextHost,
+      toolbar: this.richTextToolbar,
+      onChange: () => {
+        this.updateSelectedRichTextContent();
+        this.queueInNoteFindRefresh();
+      },
+      onError: (message) => toast(message, 'error'),
+      onRequestImage: (file, position) => {
+        if (file) void this.uploadImageFile(file, position);
+        else {
+          this.pendingImagePosition = position;
+          this.imageInput.click();
+        }
+      },
+      onRequestAttachment: (file, position) => {
+        if (file) void this.uploadAttachmentFile(file, position);
+        else {
+          this.pendingAttachmentPosition = position;
+          this.attachmentInput.click();
+        }
+      },
+      onAttachmentAction: (action, reference, opener) => {
+        void this.runAttachmentAction(action, reference, opener);
+      },
+    });
+    this.codeEditor.dom.addEventListener('keydown', this.handleMarkdownKeyDown);
+    this.codeEditor.dom.addEventListener('click', this.handleMarkdownEditorClick);
+    this.codeEditor.scrollDOM.addEventListener('scroll', this.syncMarkdownPreviewScroll, { passive: true });
+    this.editorsMounted = true;
+  }
+
+  private releaseEditorResources(): void {
+    if (this.markdownUiFrame !== undefined) {
+      window.cancelAnimationFrame(this.markdownUiFrame);
+      this.markdownUiFrame = undefined;
+    }
+    this.markdownCenterSelectionOnNextFrame = false;
+    if (this.editorsMounted) {
+      this.codeEditor.dom.removeEventListener('keydown', this.handleMarkdownKeyDown);
+      this.codeEditor.dom.removeEventListener('click', this.handleMarkdownEditorClick);
+      this.codeEditor.scrollDOM.removeEventListener('scroll', this.syncMarkdownPreviewScroll);
+      this.codeEditor.destroy();
+      this.richTextEditor.destroy();
+      this.codeContentHost.replaceChildren();
+      this.richTextHost.replaceChildren();
+      this.editorsMounted = false;
+      this.editorNoteId = undefined;
+    }
+    this.markdownPreview.replaceChildren();
+    this.markdownStatus.textContent = '';
+    this.clearAttachmentPreviewContent();
+    if (this.selectedId && !this.isDirty(this.selectedId)) this.releaseNoteBody(this.selectedId);
+  }
+
+  private readonly handleDocumentFindKeyDown = (event: KeyboardEvent): void => {
+    if (!this.active || event.isComposing) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    if (modifier && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'f') {
+      if (!this.selectedNote() || this.attachmentPreviewDialog.open || this.persistentApplyIds.size > 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.openInNoteFind();
+      return;
+    }
+    if (event.key !== 'Escape' || !this.findOpen) return;
+    const target = event.target;
+    if (!(target instanceof Node)
+      || (!this.findBar.contains(target) && !this.contentHost.contains(target))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeInNoteFind(true);
+  };
+
+  private readonly handleFindInputKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      this.moveInNoteFind(event.shiftKey ? -1 : 1);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeInNoteFind(true);
+    }
+  };
+
+  private openInNoteFind(): void {
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    if (!this.findOpen) {
+      this.findOpen = true;
+      this.findBar.classList.remove('hidden');
+      this.findBar.setAttribute('aria-hidden', 'false');
+      this.refreshInNoteFind(false, Boolean(this.findInput.value));
+    }
+    window.requestAnimationFrame(() => {
+      if (!this.findOpen) return;
+      this.findInput.focus({ preventScroll: true });
+      this.findInput.select();
+    });
+  }
+
+  private closeInNoteFind(restoreEditorFocus: boolean): void {
+    if (this.findRefreshFrame !== undefined) {
+      window.cancelAnimationFrame(this.findRefreshFrame);
+      this.findRefreshFrame = undefined;
+    }
+    this.findOpen = false;
+    this.findBar.classList.add('hidden');
+    this.findBar.setAttribute('aria-hidden', 'true');
+    this.findMatches = [];
+    this.findActiveIndex = -1;
+    this.findTruncated = false;
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    if (!restoreEditorFocus) return;
+    if (!this.editorsMounted) return;
+    if (this.selectedNote()?.language === 'richtext') this.richTextEditor.focus();
+    else this.codeEditor.focus();
+  }
+
+  private resetInNoteFind(restoreEditorFocus: boolean): void {
+    this.findInput.value = '';
+    this.closeInNoteFind(restoreEditorFocus);
+  }
+
+  private queueInNoteFindRefresh(): void {
+    if (!this.findOpen || this.findRefreshFrame !== undefined) return;
+    this.findRefreshFrame = window.requestAnimationFrame(() => {
+      this.findRefreshFrame = undefined;
+      this.refreshInNoteFind(true, false);
+    });
+  }
+
+  private refreshInNoteFind(preserveActivePosition: boolean, reveal: boolean): void {
+    if (!this.findOpen) return;
+    const note = this.selectedNote();
+    if (!note || !this.editorsMounted) {
+      this.editor.inert = false;
+      this.resetInNoteFind(false);
+      return;
+    }
+    const previousPosition = preserveActivePosition && this.findActiveIndex >= 0
+      ? this.findMatches[this.findActiveIndex]?.from
+      : undefined;
+    const query = this.findInput.value;
+    const result = note.language === 'richtext'
+      ? this.richTextEditor.findText(query)
+      : findNotesTextMatches(this.codeEditor.state.doc.toString(), query);
+    this.findMatches = result.matches;
+    this.findTruncated = result.truncated;
+    const anchor = previousPosition ?? (note.language === 'richtext'
+      ? this.richTextEditor.findAnchor()
+      : this.codeEditor.state.selection.main.from);
+    this.findActiveIndex = initialNotesFindIndex(this.findMatches, anchor);
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    if (reveal) this.revealInNoteFindMatch();
+  }
+
+  private moveInNoteFind(direction: 1 | -1): void {
+    this.findActiveIndex = moveNotesFindIndex(
+      this.findActiveIndex,
+      this.findMatches.length,
+      direction,
+    );
+    this.applyInNoteFindDecorations();
+    this.updateInNoteFindControls();
+    this.revealInNoteFindMatch();
+    this.findInput.focus({ preventScroll: true });
+  }
+
+  private applyInNoteFindDecorations(): void {
+    if (!this.editorsMounted) {
+      const api = notesHighlightApi();
+      api?.registry.delete(NOTES_CODE_FIND_HIGHLIGHT);
+      api?.registry.delete(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT);
+      return;
+    }
+    const note = this.selectedNote();
+    const matches = this.findOpen ? this.findMatches : [];
+    const activeIndex = this.findOpen ? this.findActiveIndex : -1;
+    this.applyCodeFindHighlights(note?.language === 'richtext' ? [] : matches, activeIndex);
+    if (note?.language === 'richtext') this.richTextEditor.setFindMatches(matches, activeIndex);
+    else this.richTextEditor.clearFind();
+  }
+
+  private applyCodeFindHighlights(
+    matches: readonly NotesFindMatch[],
+    activeIndex: number,
+  ): void {
+    const api = notesHighlightApi();
+    if (!api) return;
+    api.registry.delete(NOTES_CODE_FIND_HIGHLIGHT);
+    api.registry.delete(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT);
+    if (!this.findOpen || matches.length === 0) return;
+
+    const visibleRanges = this.codeEditor.visibleRanges;
+    const ranges: Range[] = [];
+    let activeRange: Range | undefined;
+    for (const [index, match] of matches.entries()) {
+      if (!visibleRanges.some((visible) => match.from >= visible.from && match.to <= visible.to)) continue;
+      try {
+        const from = this.codeEditor.domAtPos(match.from);
+        const to = this.codeEditor.domAtPos(match.to);
+        const range = document.createRange();
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
+        ranges.push(range);
+        if (index === activeIndex) activeRange = range;
+      } catch {
+        // CodeMirror can replace a virtualized line between its viewport
+        // report and DOM lookup. The next viewport update retries it.
+      }
+    }
+    if (ranges.length > 0) api.registry.set(NOTES_CODE_FIND_HIGHLIGHT, api.create(...ranges));
+    if (activeRange) {
+      const active = api.create(activeRange);
+      active.priority = 1;
+      api.registry.set(NOTES_CODE_FIND_ACTIVE_HIGHLIGHT, active);
+    }
+  }
+
+  private revealInNoteFindMatch(): void {
+    const match = this.findMatches[this.findActiveIndex];
+    if (!match || !this.editorsMounted) return;
+    if (this.selectedNote()?.language === 'richtext') {
+      this.richTextEditor.revealFindMatch();
+      return;
+    }
+    this.codeEditor.dispatch({
+      effects: EditorView.scrollIntoView(match.from, { y: 'center' }),
+    });
+  }
+
+  private updateInNoteFindControls(): void {
+    const count = this.findMatches.length;
+    const current = this.findActiveIndex >= 0 ? this.findActiveIndex + 1 : 0;
+    const total = `${count.toLocaleString('en-US')}${this.findTruncated ? '+' : ''}`;
+    this.findCounter.textContent = `${current.toLocaleString('en-US')} / ${total}`;
+    this.findCounter.setAttribute(
+      'aria-label',
+      count > 0
+        ? `${current.toLocaleString('en-US')} of ${total} matches`
+        : 'No matches',
+    );
+    this.findPreviousButton.disabled = count === 0;
+    this.findNextButton.disabled = count === 0;
+    this.findBar.dataset.noResults = String(Boolean(this.findInput.value) && count === 0);
+  }
+
+  applyPersistedSidebarWidth(width: number): void {
+    if (this.sidebarResizeDrag
+      || this.sidebarKeyboardSaveTimer !== undefined
+      || this.sidebarWidthSaveTasks.size > 0) return;
+    this.setSidebarWidth(width);
+  }
+
+  private setSidebarWidth(value: number): void {
+    const width = clampNotesSidebarWidth(value);
+    this.sidebarWidth = width;
+    document.documentElement.style.setProperty('--notes-sidebar-width', `${width}px`);
+    this.sidebarResizeHandle.setAttribute('aria-valuenow', String(width));
+    if (this.sidebarMeasureFrame !== undefined) return;
+    this.sidebarMeasureFrame = window.requestAnimationFrame(() => {
+      this.sidebarMeasureFrame = undefined;
+      this.requestEditorMeasure();
+    });
+  }
+
+  private persistSidebarWidth(width: number): void {
+    const task = window.settingsApi.saveNotesSidebarWidth(width).then(
+      () => undefined,
+      (error) => {
+        toast(`Unable to save Notes sidebar width: ${toErrorMessage(error)}`, 'error');
+      },
+    );
+    this.sidebarWidthSaveTasks.add(task);
+    void task.finally(() => this.sidebarWidthSaveTasks.delete(task));
+  }
+
+  private queueSidebarWidthSave(): void {
+    if (this.sidebarKeyboardSaveTimer !== undefined) {
+      window.clearTimeout(this.sidebarKeyboardSaveTimer);
+    }
+    this.sidebarKeyboardSaveTimer = window.setTimeout(() => {
+      this.sidebarKeyboardSaveTimer = undefined;
+      this.persistSidebarWidth(this.sidebarWidth);
+    }, NOTES_SIDEBAR_KEYBOARD_SAVE_DEBOUNCE_MS);
+  }
+
+  private flushQueuedSidebarWidthSave(): void {
+    if (this.sidebarKeyboardSaveTimer === undefined) return;
+    window.clearTimeout(this.sidebarKeyboardSaveTimer);
+    this.sidebarKeyboardSaveTimer = undefined;
+    this.persistSidebarWidth(this.sidebarWidth);
+  }
+
+  private async waitForSidebarWidthSaves(): Promise<void> {
+    while (this.sidebarWidthSaveTasks.size > 0) {
+      await Promise.all([...this.sidebarWidthSaveTasks]);
+    }
+  }
+
+  private queueSearchRender(): void {
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
+    this.searchRenderTimer = window.setTimeout(() => {
+      this.searchRenderTimer = undefined;
+      void this.refreshWorkspaceSearch();
+    }, NOTE_SEARCH_DEBOUNCE_MS);
+  }
+
+  private cancelSearchRender(): void {
+    if (this.searchRenderTimer === undefined) return;
+    window.clearTimeout(this.searchRenderTimer);
+    this.searchRenderTimer = undefined;
+  }
+
+  private clearWorkspaceSearch(): void {
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchInput.value = '';
+    this.searchResultIds = [];
+    this.searchResultQuery = '';
+    this.searchPending = false;
+  }
+
+  private flushSearchRender(): void {
+    if (this.searchRenderTimer === undefined) return;
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
+    void this.refreshWorkspaceSearch();
+  }
+
+  private async refreshWorkspaceSearch(): Promise<void> {
+    const query = this.searchInput.value.trim();
+    const generation = ++this.searchRequestGeneration;
+    if (!query) {
+      this.searchResultQuery = '';
+      this.searchResultIds = [];
+      this.searchPending = false;
+      this.renderList();
+      return;
+    }
+    this.captureActiveEditorContent();
+    const active = this.selectedNote();
+    const activeNote = active && this.loadedNoteIds.has(active.id) ? cloneNote(active) : undefined;
+    this.searchResultQuery = query;
+    this.searchResultIds = [];
+    this.searchPending = true;
+    this.renderList();
+    try {
+      const ids = await window.notesApi.searchNotes(query, activeNote);
+      if (generation !== this.searchRequestGeneration || query !== this.searchInput.value.trim()) return;
+      this.searchResultIds = ids.filter((id) => this.notesById.has(id) && !this.deletedIds.has(id));
+    } catch (error) {
+      if (generation !== this.searchRequestGeneration || query !== this.searchInput.value.trim()) return;
+      this.searchResultIds = [];
+      toast(`Unable to search Notes: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      if (generation === this.searchRequestGeneration && query === this.searchInput.value.trim()) {
+        this.searchPending = false;
+        this.renderList();
+      }
+    }
+  }
+
+  private finishSidebarResize(pointerId?: number, releaseCapture = true): void {
+    const drag = this.sidebarResizeDrag;
+    if (!drag || (pointerId !== undefined && pointerId !== drag.pointerId)) return;
+    this.sidebarResizeDrag = undefined;
+    delete this.pageRoot.dataset.sidebarResizing;
+    if (releaseCapture && this.sidebarResizeHandle.hasPointerCapture(drag.pointerId)) {
+      try {
+        this.sidebarResizeHandle.releasePointerCapture(drag.pointerId);
+      } catch {
+        // Native cancellation can release pointer capture before this callback.
+      }
+    }
+    if (this.sidebarWidth !== drag.startWidth) this.persistSidebarWidth(this.sidebarWidth);
+  }
+
+  private readonly handleSidebarResizePointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    this.finishSidebarResize();
+    this.flushQueuedSidebarWidthSave();
+    this.sidebarResizeDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: this.sidebarWidth,
+    };
+    this.pageRoot.dataset.sidebarResizing = 'true';
+    try {
+      this.sidebarResizeHandle.setPointerCapture(event.pointerId);
+    } catch {
+      this.sidebarResizeDrag = undefined;
+      delete this.pageRoot.dataset.sidebarResizing;
+      return;
+    }
+    event.preventDefault();
+  };
+
+  private readonly handleSidebarResizePointerMove = (event: PointerEvent): void => {
+    const drag = this.sidebarResizeDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    this.setSidebarWidth(drag.startWidth + event.clientX - drag.startX);
+    event.preventDefault();
+  };
+
+  private readonly handleSidebarResizePointerEnd = (event: PointerEvent): void => {
+    this.finishSidebarResize(event.pointerId);
+  };
+
+  private readonly handleSidebarResizeLostCapture = (event: PointerEvent): void => {
+    this.finishSidebarResize(event.pointerId, false);
+  };
+
+  private readonly handleSidebarResizeKeyDown = (event: KeyboardEvent): void => {
+    const step = event.shiftKey ? NOTES_SIDEBAR_KEYBOARD_STEP * 4 : NOTES_SIDEBAR_KEYBOARD_STEP;
+    let requestedWidth: number | undefined;
+    if (event.key === 'ArrowLeft') requestedWidth = this.sidebarWidth - step;
+    if (event.key === 'ArrowRight') requestedWidth = this.sidebarWidth + step;
+    if (event.key === 'Home') requestedWidth = MIN_NOTES_SIDEBAR_WIDTH;
+    if (event.key === 'End') requestedWidth = MAX_NOTES_SIDEBAR_WIDTH;
+    if (requestedWidth === undefined) return;
+    const previousWidth = this.sidebarWidth;
+    this.setSidebarWidth(requestedWidth);
+    if (this.sidebarWidth !== previousWidth) this.queueSidebarWidthSave();
+    event.preventDefault();
+  };
+
+  applyEditorTheme(theme: 'light' | 'dark'): void {
+    if (theme === this.editorTheme) {
+      this.contentHost.dataset.theme = theme;
+      return;
+    }
+    this.editorTheme = theme;
+    this.contentHost.dataset.theme = theme;
+    if (!this.editorsMounted) return;
+    this.codeEditor.dispatch({
+      effects: this.themeCompartment.reconfigure(editorThemeExtensions(theme)),
+    });
+    this.requestEditorMeasure();
+  }
+
+  async lockForPersistentApply(persistentApplyId: string): Promise<void> {
+    this.persistentApplyIds.add(persistentApplyId);
+    this.resetInNoteFind(false);
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
+    this.pageRoot.inert = true;
+    this.selectionVersion += 1;
+    try {
+      await this.flush();
+    } catch (error) {
+      this.releasePersistentApply(persistentApplyId);
+      throw error;
+    }
+  }
+
+  releasePersistentApply(persistentApplyId: string): void {
+    this.persistentApplyIds.delete(persistentApplyId);
+    if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
+  }
+
+  async reload(persistentApplyId?: string): Promise<void> {
+    // Current persistent applies freeze Notes before their final flush, so the
+    // matching reload has no possible late draft to recover. Keep the recovery
+    // path for reload events from older or otherwise uncoordinated producers.
+    const coordinatedApply = Boolean(
+      persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
+    );
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
+    this.resetInNoteFind(false);
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && this.pageRoot.contains(activeElement)) activeElement.blur();
+    this.pageRoot.inert = true;
+    this.selectionVersion += 1;
+    const selectedBeforeReload = this.selectedId;
+    const openTabsBeforeReload = [...this.openNoteIds];
+    let selectedAfterRecovery: string | undefined;
+    let recoveredTabs = openTabsBeforeReload;
+    let conflictCount = 0;
+    try {
+      await this.waitForEditorUploads();
+      this.workspaceMutationGeneration += 1;
+      this.noteBodyGeneration += 1;
+      this.noteBodyRequests.clear();
+      if (!coordinatedApply && this.selectedId) this.captureEditorContent(this.selectedId);
+      const pending = coordinatedApply ? [] : this.notes
+        .filter((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))
+        .map((note): NoteDraftRecoveryInput => {
+          const expectedNote = this.persistedNotes.get(note.id);
+          if (!expectedNote) throw new Error('A Note draft has no persisted recovery base.');
+          return {
+            originalId: note.id,
+            draft: {
+              name: note.name,
+              content: note.content,
+              language: note.language,
+              tags: [...note.tags],
+            },
+            expectedNote: cloneNote(expectedNote),
+          };
+        });
+      this.saveGeneration += 1;
+      for (const timer of this.saveTimers.values()) window.clearTimeout(timer);
+      this.saveTimers.clear();
+      if (pending.length > 0) {
+        const result = await window.notesApi.recoverDrafts(pending);
+        const recoveredByOriginalId = new Map(
+          result.recovered.map((item) => [item.originalId, item.noteId]),
+        );
+        const selectedRecovery = result.recovered.find((item) => item.originalId === selectedBeforeReload);
+        selectedAfterRecovery = selectedRecovery?.noteId;
+        recoveredTabs = openTabsBeforeReload.map((id) => recoveredByOriginalId.get(id) ?? id);
+        conflictCount = result.recovered.filter((item) => item.conflict).length;
+      }
+
+      this.saveQueues.clear();
+      this.editVersions.clear();
+      this.persistedVersions.clear();
+      this.queuedVersions.clear();
+      this.persistedNotes.clear();
+      this.loadedNoteIds.clear();
+      this.noteBodyErrors.clear();
+      this.deletedIds.clear();
+      this.saveErrorNoteIds.clear();
+      this.loaded = false;
+      this.loadPromise = undefined;
+      this.loadError = undefined;
+      this.openNoteIds = recoveredTabs;
+      this.selectedId = selectedAfterRecovery ?? selectedBeforeReload;
+      await this.ensureLoaded();
+      if (conflictCount > 0) {
+        toast(
+          `${conflictCount} late ${conflictCount === 1 ? 'draft was' : 'drafts were'} preserved as Conflict ${conflictCount === 1 ? 'Note' : 'Notes'}.`,
+          'success',
+        );
+      }
+    } finally {
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      else if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
+    }
+  }
+
+  async applyPersistentDelta(delta: NotesWorkspaceDelta, persistentApplyId?: string): Promise<void> {
+    const coordinatedApply = Boolean(
+      persistentApplyId && this.persistentApplyIds.has(persistentApplyId),
+    );
+    if (!this.loaded) {
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      return;
+    }
+    this.cancelSearchRender();
+    this.searchRequestGeneration += 1;
+    this.searchPending = false;
+    this.resetInNoteFind(false);
+    this.pageRoot.inert = true;
+    this.selectionVersion += 1;
+    try {
+      if (!coordinatedApply) {
+        await this.reload(persistentApplyId);
+        return;
+      }
+      this.workspaceMutationGeneration += 1;
+      this.noteBodyGeneration += 1;
+      this.noteBodyRequests.clear();
+      this.saveGeneration += 1;
+      const selectedBefore = this.selectedId;
+      const openTabsBefore = [...this.openNoteIds];
+      const removed = new Set(delta.removedNoteIds);
+      const upserts = new Map(delta.upsertedNotes.map((note) => [note.id, rendererNote(note)]));
+      const previousIds = new Set(this.notes.map((note) => note.id));
+      const noteSetChanged = removed.size > 0
+        || delta.upsertedNotes.some((note) => !previousIds.has(note.id));
+      this.notes = this.notes
+        .filter((note) => !removed.has(note.id))
+        .map((note) => upserts.get(note.id) ?? note);
+      for (const note of upserts.values()) {
+        if (!previousIds.has(note.id)) this.notes.push(note);
+      }
+      this.notes.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+
+      const removedTreeIds = new Set(delta.removedTreeNodeIds);
+      const treeUpserts = new Map(delta.upsertedTreeNodes.map((node) => [node.noteId, { ...node }]));
+      const previousTreeIds = new Set(this.treeNodes.map((node) => node.noteId));
+      this.treeNodes = this.treeNodes
+        .filter((node) => !removedTreeIds.has(node.noteId))
+        .map((node) => treeUpserts.get(node.noteId) ?? node);
+      for (const node of treeUpserts.values()) {
+        if (!previousTreeIds.has(node.noteId)) this.treeNodes.push(node);
+      }
+      this.expandedNoteIds = new Set(delta.expandedNoteIds);
+
+      for (const id of removed) {
+        this.editVersions.delete(id);
+        this.persistedVersions.delete(id);
+        this.queuedVersions.delete(id);
+        this.saveQueues.delete(id);
+        this.persistedNotes.delete(id);
+        this.loadedNoteIds.delete(id);
+        this.noteBodyErrors.delete(id);
+        this.saveErrorNoteIds.delete(id);
+        this.clearSaveTimer(id);
+      }
+      for (const note of upserts.values()) {
+        this.clearSaveTimer(note.id);
+        this.editVersions.set(note.id, 0);
+        this.persistedVersions.set(note.id, 0);
+        this.queuedVersions.set(note.id, 0);
+        this.saveQueues.delete(note.id);
+        this.loadedNoteIds.delete(note.id);
+        this.persistedNotes.delete(note.id);
+        this.noteBodyErrors.delete(note.id);
+        this.saveErrorNoteIds.delete(note.id);
+      }
+      if (noteSetChanged) {
+        this.rebuildWorkspaceIndexes();
+      } else {
+        for (const note of upserts.values()) {
+          this.notesById.set(note.id, note);
+        }
+        for (const id of removedTreeIds) this.treeNodesById.delete(id);
+        for (const node of treeUpserts.values()) this.treeNodesById.set(node.noteId, node);
+        if (upserts.size > 0 || removedTreeIds.size > 0 || treeUpserts.size > 0) {
+          this.breadcrumbCache.clear();
+        }
+      }
+      if (this.selectedId && !this.notesById.has(this.selectedId)) {
+        this.selectedId = noteTabFallbackAfterRemoval(
+          openTabsBefore,
+          selectedBefore,
+          removed,
+        ) ?? this.treeNodes[0]?.noteId;
+      }
+      this.reconcileOpenNoteTabs();
+
+      const structuralChange = noteSetChanged
+        || removedTreeIds.size > 0
+        || treeUpserts.size > 0;
+      if (structuralChange || this.searchInput.value.trim()) {
+        this.renderList();
+      } else {
+        for (const note of upserts.values()) this.updateListNoteName(note);
+      }
+      if (selectedBefore !== this.selectedId
+        || !this.selectedId
+        || upserts.has(this.selectedId)) {
+        this.renderEditor();
+      } else {
+        this.renderTabs();
+        if (this.active && this.selectedId && !this.loadedNoteIds.has(this.selectedId)) {
+          void this.ensureNoteBody(this.selectedId);
+        }
+      }
+      this.updateSelectedSaveStatus();
+    } catch (error) {
+      await this.reload(persistentApplyId);
+      if (!this.loaded) throw error;
+    } finally {
+      if (persistentApplyId) this.releasePersistentApply(persistentApplyId);
+      else if (this.persistentApplyIds.size === 0) this.pageRoot.inert = false;
+    }
+  }
+
+  private rebuildWorkspaceIndexes(): void {
+    this.notesById.clear();
+    for (const note of this.notes) {
+      this.notesById.set(note.id, note);
+    }
+    this.treeNodesById.clear();
+    for (const node of this.treeNodes) this.treeNodesById.set(node.noteId, node);
+    this.breadcrumbCache.clear();
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    if (this.loaded) {
+      this.render();
+      return;
+    }
+    if (this.loadPromise) return this.loadPromise;
+
+    this.loadError = undefined;
+    this.newButton.disabled = true;
+    this.emptyState.textContent = 'Loading notes…';
+    this.emptyState.dataset.state = 'loading';
+    this.loadPromise = window.notesApi.getWorkspace().then((workspace) => {
+      this.notes = workspace.notes.map(rendererNote);
+      this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
+      this.rebuildWorkspaceIndexes();
+      this.expandedNoteIds = new Set(workspace.expandedNoteIds);
+      for (const note of this.notes) {
+        this.editVersions.set(note.id, 0);
+        this.persistedVersions.set(note.id, 0);
+      }
+      this.selectedId = this.notes.some((note) => note.id === this.selectedId)
+        ? this.selectedId
+        : this.treeNodes[0]?.noteId;
+      this.reconcileOpenNoteTabs();
+      this.loaded = true;
+      this.render();
+      this.updateSelectedSaveStatus();
+    }).catch((error) => {
+      this.loadError = `Unable to load notes: ${toErrorMessage(error)}`;
+      this.renderEditor();
+    }).finally(() => {
+      this.loadPromise = undefined;
+      this.newButton.disabled = this.creating;
+    });
+    return this.loadPromise;
+  }
+
+  private render(): void {
+    this.renderList();
+    this.renderEditor();
+  }
+
+  private applyWorkspace(
+    workspace: NotesWorkspaceSnapshot,
+    editVersionBaseline?: ReadonlyMap<string, number>,
+    preservePersistedBases = false,
+  ): void {
+    const localNotes = new Map(this.notes.map((note) => [note.id, note]));
+    this.notes = workspace.notes.map((summary) => {
+      const local = localNotes.get(summary.id);
+      const baselineVersion = editVersionBaseline?.get(summary.id);
+      const editedDuringRequest = local
+        && baselineVersion !== undefined
+        && (this.editVersions.get(summary.id) ?? 0) > baselineVersion;
+      if (editedDuringRequest) return cloneNote(local);
+      return this.loadedNoteIds.has(summary.id) && local
+        ? { ...summary, tags: [...summary.tags], content: local.content }
+        : rendererNote(summary);
+    });
+    this.treeNodes = workspace.tree.nodes.map((node) => ({ ...node }));
+    this.expandedNoteIds = new Set(workspace.expandedNoteIds);
+    if (!preservePersistedBases) {
+      for (const summary of workspace.notes) {
+        const persisted = this.persistedNotes.get(summary.id);
+        if (persisted) {
+          this.persistedNotes.set(summary.id, {
+            ...summary,
+            tags: [...summary.tags],
+            content: persisted.content,
+          });
+        }
+      }
+    }
+    const activeIds = new Set(this.notes.map((note) => note.id));
+    for (const note of this.notes) {
+      if (!this.editVersions.has(note.id)) this.editVersions.set(note.id, 0);
+      if (!this.persistedVersions.has(note.id)) this.persistedVersions.set(note.id, 0);
+      if (!this.queuedVersions.has(note.id)) this.queuedVersions.set(note.id, 0);
+    }
+    for (const id of [...this.editVersions.keys()]) {
+      if (activeIds.has(id)) continue;
+      this.editVersions.delete(id);
+      this.persistedVersions.delete(id);
+      this.queuedVersions.delete(id);
+      this.saveQueues.delete(id);
+      this.persistedNotes.delete(id);
+      this.loadedNoteIds.delete(id);
+      this.noteBodyErrors.delete(id);
+      this.saveErrorNoteIds.delete(id);
+      this.clearSaveTimer(id);
+    }
+    this.rebuildWorkspaceIndexes();
+    if (this.selectedId && !activeIds.has(this.selectedId)) this.selectedId = undefined;
+    this.reconcileOpenNoteTabs();
+  }
+
+  private treeChildren(): Map<string | null, NotesTreeNode[]> {
+    return noteTreeChildren(this.treeNodes.filter((node) => !this.deletedIds.has(node.noteId)));
+  }
+
+  private breadcrumb(noteId: string): string {
+    const cached = this.breadcrumbCache.get(noteId);
+    if (cached !== undefined || this.breadcrumbCache.has(noteId)) return cached ?? '';
+    const breadcrumb = noteTreeBreadcrumbFromIndexes(noteId, this.notesById, this.treeNodesById);
+    this.breadcrumbCache.set(noteId, breadcrumb);
+    return breadcrumb;
+  }
+
+  private visibleTreeRows(
+    children = this.treeChildren(),
+  ): NoteTreeRow[] {
+    return visibleNoteTreeRowsFromIndexes(this.notesById, children, this.expandedNoteIds);
+  }
+
+  private clearTreeDropMarkers(): void {
+    delete this.list.dataset.rootDrop;
+    for (const row of Array.from(this.list.querySelectorAll<HTMLElement>('.notes-tree-row'))) {
+      delete row.dataset.dropPosition;
+    }
+  }
+
+  private dropPlacement(target: NotesTreeNode, position: NoteTreeDropPosition): NoteTreePlacement | undefined {
+    if (!this.draggingNoteId) return undefined;
+    return resolveNoteTreeDropPlacement(this.treeNodes, this.draggingNoteId, target.noteId, position);
+  }
+
+  private renderListSaveIndicator(
+    nameRow: HTMLElement,
+    state: 'saving' | 'error' | undefined,
+  ): void {
+    nameRow.querySelector('.notes-list-save-indicator')?.remove();
+    nameRow.querySelector('.notes-list-save-label')?.remove();
+    if (!state) return;
+
+    const saveIndicator = document.createElement('span');
+    saveIndicator.className = 'notes-list-save-indicator';
+    saveIndicator.dataset.state = state;
+    saveIndicator.title = state === 'error' ? 'Save failed' : 'Saving';
+    saveIndicator.setAttribute('aria-hidden', 'true');
+
+    const saveLabel = document.createElement('span');
+    saveLabel.className = 'notes-list-save-label';
+    saveLabel.textContent = state === 'error' ? 'Save failed' : 'Saving';
+    nameRow.append(saveIndicator, saveLabel);
+  }
+
+  private updateListSaveIndicator(noteId: string): void {
+    const row = this.renderedRowsById.get(noteId);
+    const nameRow = row?.querySelector<HTMLElement>('.notes-list-item-name-row');
+    if (!nameRow) return;
+    this.renderListSaveIndicator(
+      nameRow,
+      noteSaveIndicatorState(this.isDirty(noteId), this.saveErrorNoteIds.has(noteId)),
+    );
+  }
+
+  private updateListNoteName(note: Note): void {
+    this.updateTabNoteName(note);
+    const row = this.renderedRowsById.get(note.id);
+    if (!row) return;
+    const displayName = note.name || 'Untitled';
+    const name = row.querySelector<HTMLElement>('.notes-list-item-name');
+    if (name) name.textContent = displayName;
+
+    const toggle = row.querySelector<HTMLButtonElement>('.notes-tree-toggle');
+    if (toggle) {
+      const expanded = this.expandedNoteIds.has(note.id);
+      toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${note.name}`);
+    }
+    const add = row.querySelector<HTMLButtonElement>('.notes-tree-add');
+    add?.setAttribute('aria-label', `New child Note under ${displayName}`);
+    const remove = row.querySelector<HTMLButtonElement>('.notes-list-remove');
+    if (remove) {
+      remove.setAttribute('aria-label', `Remove ${displayName}`);
+      remove.title = `Remove ${displayName}`;
+    }
+  }
+
+  private activeNoteIds(): Set<string> {
+    return new Set(
+      this.notes
+        .filter((note) => !this.deletedIds.has(note.id))
+        .map((note) => note.id),
+    );
+  }
+
+  private reconcileOpenNoteTabs(): void {
+    this.openNoteIds = reconcileOpenNoteIds(
+      this.openNoteIds,
+      this.activeNoteIds(),
+      this.selectedId,
+    );
+  }
+
+  private openNoteTab(id: string, userIntent: boolean): void {
+    if (this.openNoteIds.includes(id) || !this.notesById.has(id) || this.deletedIds.has(id)) return;
+    this.openNoteIds.push(id);
+    if (userIntent) this.noteTabsVersion += 1;
+  }
+
+  private updateTabNoteName(note: Note): void {
+    const buttons = this.renderedTabButtonsById.get(note.id);
+    if (!buttons) return;
+    const label = note.name || 'Untitled';
+    buttons.select.textContent = label;
+    buttons.select.title = label;
+    buttons.select.setAttribute('aria-label', `Open ${label}`);
+    buttons.close.setAttribute('aria-label', `Close ${label}`);
+    buttons.close.title = `Close ${label}`;
+  }
+
+  private focusNoteTab(id: string | undefined): void {
+    window.requestAnimationFrame(() => {
+      if (!id || this.selectedId !== id) return;
+      this.renderedTabButtonsById.get(id)?.select.focus({ preventScroll: true });
+    });
+  }
+
+  private renderTabs(): void {
+    if (!this.active) {
+      this.tabList.replaceChildren();
+      this.renderedTabButtonsById.clear();
+      return;
+    }
+    this.reconcileOpenNoteTabs();
+    this.tabList.replaceChildren();
+    this.renderedTabButtonsById.clear();
+    let activeTab: HTMLButtonElement | undefined;
+    for (const id of this.openNoteIds) {
+      const note = this.notesById.get(id);
+      if (!note) continue;
+      const active = id === this.selectedId;
+      const label = note.name || 'Untitled';
+      const item = document.createElement('div');
+      item.className = 'notes-tab';
+      item.dataset.active = String(active);
+
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'notes-tab-select';
+      select.setAttribute('role', 'tab');
+      select.setAttribute('aria-selected', String(active));
+      select.setAttribute('aria-label', `Open ${label}`);
+      select.tabIndex = active ? 0 : -1;
+      select.textContent = label;
+      select.title = label;
+      select.addEventListener('click', () => void this.selectNote(id, 'tab'));
+      select.addEventListener('keydown', (event) => this.handleNoteTabKeydown(event, id));
+
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'icon-btn notes-tab-close';
+      close.setAttribute('aria-label', `Close ${label}`);
+      close.title = `Close ${label}`;
+      close.appendChild(createIcon('M4 4l8 8M12 4l-8 8'));
+      close.addEventListener('click', () => void this.closeNoteTab(id));
+
+      item.append(select, close);
+      this.tabList.appendChild(item);
+      this.renderedTabButtonsById.set(id, { select, close });
+      if (active) activeTab = select;
+    }
+    if (activeTab) {
+      window.requestAnimationFrame(() => {
+        if (activeTab?.isConnected) activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      });
+    }
+  }
+
+  private handleNoteTabKeydown(event: KeyboardEvent, id: string): void {
+    const index = this.openNoteIds.indexOf(id);
+    if (index < 0) return;
+    let targetId: string | undefined;
+    if (event.key === 'ArrowLeft') targetId = this.openNoteIds[index - 1] ?? this.openNoteIds.at(-1);
+    if (event.key === 'ArrowRight') targetId = this.openNoteIds[index + 1] ?? this.openNoteIds[0];
+    if (event.key === 'Home') targetId = this.openNoteIds[0];
+    if (event.key === 'End') targetId = this.openNoteIds.at(-1);
+    if (!targetId) return;
+    event.preventDefault();
+    void this.selectNote(targetId, 'tab');
+  }
+
+  private async closeNoteTab(id: string): Promise<boolean> {
+    const index = this.openNoteIds.indexOf(id);
+    if (index < 0) return false;
+    const active = this.selectedId === id;
+    const selectionVersion = active ? ++this.selectionVersion : this.selectionVersion;
+    const canClose = await this.confirmCloseDirtyNoteTab(id);
+    if (!canClose) return true;
+    if (active && !this.isDirty(id)) {
+      await this.flushNote(id);
+      if (this.isDirty(id)) {
+        const closeAfterFailedSave = await this.confirmCloseDirtyNoteTab(id);
+        if (!closeAfterFailedSave) return true;
+      }
+    }
+    if (active) {
+      if (selectionVersion !== this.selectionVersion || this.selectedId !== id) return true;
+    }
+
+    this.openNoteIds.splice(index, 1);
+    this.noteTabsVersion += 1;
+    const focusId = this.openNoteIds[Math.min(index, this.openNoteIds.length - 1)];
+    if (!active) {
+      this.renderTabs();
+      if (focusId) {
+        window.requestAnimationFrame(() => {
+          this.renderedTabButtonsById.get(focusId)?.select.focus({ preventScroll: true });
+        });
+      }
+      return true;
+    }
+
+    this.releaseNoteBody(id);
+    this.selectedId = focusId;
+    this.renderList();
+    this.renderEditor();
+    if (focusId) this.focusNoteTab(focusId);
+    else this.newButton.focus();
+    this.updateSelectedSaveStatus();
+    return true;
+  }
+
+  private async confirmCloseDirtyNoteTab(id: string): Promise<boolean> {
+    const note = this.notesById.get(id);
+    if (!note || this.deletedIds.has(id)) return true;
+    let captureError: unknown;
+    try {
+      this.captureEditorContent(id);
+    } catch (error) {
+      captureError = error;
+      this.saveErrorNoteIds.add(id);
+      this.updateListSaveIndicator(id);
+      if (this.selectedId === id) {
+        this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+      }
+    }
+    if (!captureError && !this.isDirty(id)) return true;
+
+    try {
+      return await window.serviceApi.confirmAction({
+        title: 'Close Unsaved Note?',
+        message: `Close “${note.name.trim() || 'Untitled'}” with unsaved changes?`,
+        detail: captureError
+          ? `The latest editor content could not be prepared for saving: ${toErrorMessage(captureError)}`
+          : 'The Note has changes that have not been saved yet.',
+        kind: 'warning',
+        confirmLabel: 'Close Anyway',
+      });
+    } catch (error) {
+      toast(`Unable to confirm Note close: ${toErrorMessage(error)}`, 'error');
+      return false;
+    }
+  }
+
+  private renderList(focusId?: string): void {
+    this.cancelSearchRender();
+    if (!this.active) {
+      this.list.replaceChildren();
+      this.renderedRowsById.clear();
+      return;
+    }
+    const activeItem = document.activeElement instanceof HTMLButtonElement
+      && document.activeElement.classList.contains('notes-list-item')
+      ? document.activeElement
+      : undefined;
+    const restoreFocusId = focusId ?? activeItem?.dataset.noteId;
+    const searchActive = Boolean(this.searchInput.value.trim());
+    const children = searchActive
+      ? new Map<string | null, NotesTreeNode[]>()
+      : this.treeChildren();
+    const rows = searchActive
+      ? (this.searchResultQuery === this.searchInput.value.trim()
+        ? this.searchResultIds.flatMap((id) => {
+          const note = this.notesById.get(id);
+          return note ? [{
+            note,
+            node: this.treeNodesById.get(note.id) ?? { noteId: note.id, parentId: null, order: 0 },
+            depth: 0,
+          }] : [];
+        })
+        : [])
+      : this.visibleTreeRows(children);
+    const folderNoteIds = new Set(
+      this.treeNodes
+        .map((treeNode) => treeNode.parentId)
+        .filter((parentId): parentId is string => typeof parentId === 'string'),
+    );
+    this.renderedRowsById.clear();
+    const fragment = document.createDocumentFragment();
+
+    for (const { note, node, depth } of rows) {
+      const row = document.createElement('div');
+      row.className = 'notes-list-row notes-tree-row';
+      row.dataset.noteId = note.id;
+      row.dataset.selected = String(note.id === this.selectedId);
+      row.style.setProperty('--notes-tree-depth', String(depth));
+      this.renderedRowsById.set(note.id, row);
+
+      const hasChildren = folderNoteIds.has(note.id);
+      let toggle: HTMLElement;
+      if (hasChildren && !searchActive) {
+        const toggleButton = document.createElement('button');
+        toggleButton.type = 'button';
+        toggleButton.className = 'notes-tree-toggle';
+        toggleButton.dataset.expanded = String(this.expandedNoteIds.has(note.id));
+        toggleButton.setAttribute('aria-label', `${this.expandedNoteIds.has(note.id) ? 'Collapse' : 'Expand'} ${note.name}`);
+        toggleButton.setAttribute('aria-expanded', String(this.expandedNoteIds.has(note.id)));
+        toggleButton.appendChild(createIcon('m6 3 5 5-5 5'));
+        toggleButton.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void this.toggleTreeExpanded(note.id);
+        });
+        toggle = toggleButton;
+      } else {
+        toggle = document.createElement('span');
+        toggle.className = 'notes-tree-toggle-spacer';
+        toggle.setAttribute('aria-hidden', 'true');
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'notes-list-item';
+      button.dataset.noteId = note.id;
+      button.setAttribute('aria-current', note.id === this.selectedId ? 'true' : 'false');
+      if (hasChildren && !searchActive) {
+        button.setAttribute('aria-expanded', String(this.expandedNoteIds.has(note.id)));
+      }
+
+      const nameRow = document.createElement('span');
+      nameRow.className = 'notes-list-item-name-row';
+
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'notes-tree-type-icon';
+      typeIcon.dataset.type = hasChildren ? 'folder' : 'note';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.appendChild(createIcon(hasChildren
+        ? (this.expandedNoteIds.has(note.id)
+          ? 'M2.25 4.75h4l1.25 1.5h6.25v6.5H2.25z M2.25 4.75V3.25h4l1.25 1.5h4.25'
+          : 'M2.25 3.25h4l1.25 1.5h6.25v8H2.25z')
+        : 'M4 2.5h5l3 3v8H4z M9 2.5v3h3 M6 8h4 M6 10.5h4'));
+
+      const name = document.createElement('span');
+      name.className = 'notes-list-item-name';
+      name.textContent = note.name || 'Untitled';
+      nameRow.append(typeIcon, name);
+
+      this.renderListSaveIndicator(
+        nameRow,
+        noteSaveIndicatorState(this.isDirty(note.id), this.saveErrorNoteIds.has(note.id)),
+      );
+      button.appendChild(nameRow);
+
+      if (searchActive) {
+        const path = this.breadcrumb(note.id);
+        if (path) {
+          const breadcrumb = document.createElement('span');
+          breadcrumb.className = 'notes-tree-breadcrumb';
+          breadcrumb.textContent = path;
+          button.appendChild(breadcrumb);
+        }
+      }
+
+      button.addEventListener('click', () => {
+        if (searchActive) {
+          void this.revealSearchResult(note.id);
+          return;
+        }
+        void this.selectNote(note.id);
+        if (hasChildren && !searchActive) {
+          void this.toggleTreeExpanded(note.id);
+        }
+      });
+
+      const actions = document.createElement('span');
+      actions.className = 'notes-tree-actions';
+
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'notes-tree-add';
+      add.setAttribute('aria-label', `New child Note under ${note.name || 'Untitled'}`);
+      add.title = 'New child Note';
+      add.appendChild(createIcon('M8 3v10M3 8h10'));
+      add.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void this.createNote(note.id);
+      });
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'notes-list-remove';
+      remove.dataset.noteId = note.id;
+      remove.disabled = this.deletingNoteIds.has(note.id);
+      remove.setAttribute('aria-label', `Remove ${note.name || 'Untitled'}`);
+      remove.title = `Remove ${note.name || 'Untitled'}`;
+      remove.appendChild(createIcon('M3.25 4.5h9.5M6 2.75h4M5 4.5l.5 8.25h5l.5-8.25'));
+      remove.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void this.deleteNote(note.id);
+      });
+
+      actions.append(add, remove);
+      row.append(toggle, button, actions);
+
+      if (!searchActive) {
+        row.draggable = true;
+        row.addEventListener('dragstart', (event) => {
+          this.draggingNoteId = note.id;
+          this.list.dataset.dragging = 'true';
+          row.dataset.dragging = 'true';
+          event.dataTransfer?.setData('text/plain', note.id);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => {
+          this.draggingNoteId = undefined;
+          delete this.list.dataset.dragging;
+          delete row.dataset.dragging;
+          this.clearTreeDropMarkers();
+        });
+        row.addEventListener('dragover', (event) => {
+          if (!this.draggingNoteId || this.draggingNoteId === note.id) return;
+          const bounds = row.getBoundingClientRect();
+          const ratio = (event.clientY - bounds.top) / Math.max(1, bounds.height);
+          const position: NoteTreeDropPosition = ratio < 0.28 ? 'before' : ratio > 0.72 ? 'after' : 'inside';
+          this.clearTreeDropMarkers();
+          if (!this.dropPlacement(node, position)) {
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          row.dataset.dropPosition = position;
+        });
+        row.addEventListener('drop', (event) => {
+          if (!this.draggingNoteId || this.draggingNoteId === note.id) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const movingId = this.draggingNoteId;
+          const position = (row.dataset.dropPosition as 'before' | 'inside' | 'after' | undefined) ?? 'inside';
+          const placement = this.dropPlacement(node, position);
+          this.clearTreeDropMarkers();
+          if (!placement) return;
+          void this.moveNote(movingId, placement.parentId, placement.beforeNoteId);
+        });
+      }
+
+      fragment.appendChild(row);
+    }
+    if (rows.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'notes-list-empty';
+      empty.textContent = searchActive && this.searchPending
+        ? 'Searching notes…'
+        : this.notes.length > 0
+          ? 'No notes match your search.'
+          : 'No notes yet.';
+      fragment.appendChild(empty);
+    }
+
+    if (!searchActive && this.notes.length > 0) {
+      const rootDrop = document.createElement('div');
+      rootDrop.className = 'notes-tree-root-drop';
+      rootDrop.textContent = 'Move to top level';
+      rootDrop.addEventListener('dragover', (event) => {
+        if (!this.draggingNoteId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.clearTreeDropMarkers();
+        this.list.dataset.rootDrop = 'true';
+      });
+      rootDrop.addEventListener('drop', (event) => {
+        if (!this.draggingNoteId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const movingId = this.draggingNoteId;
+        this.clearTreeDropMarkers();
+        void this.moveNote(movingId, null);
+      });
+      fragment.appendChild(rootDrop);
+    }
+    this.list.replaceChildren(fragment);
+    if (restoreFocusId) {
+      Array.from(this.list.querySelectorAll<HTMLButtonElement>('.notes-list-item'))
+        .find((button) => button.dataset.noteId === restoreFocusId)
+        ?.focus();
+    }
+  }
+
+  private renderEditor(): void {
+    const note = this.selectedNote();
+    this.renderTabs();
+    if (!this.active) return;
+    this.mountEditors();
+    this.emptyState.classList.toggle('hidden', Boolean(note));
+    this.editor.classList.toggle('hidden', !note);
+    if (!note) {
+      this.resetInNoteFind(false);
+      this.closeLanguageMenu();
+      this.updateLanguageControl(undefined);
+      this.editorNoteId = undefined;
+      this.showEditorMode('markdown');
+      this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
+      this.emptyState.textContent = this.loadError ?? (this.loaded ? 'Create or select a note.' : 'Loading notes…');
+      this.emptyState.dataset.state = this.loadError ? 'error' : this.loaded ? 'empty' : 'loading';
+      return;
+    }
+
+    this.nameInput.value = note.name;
+    this.updateLanguageControl(note.language);
+    if (!this.loadedNoteIds.has(note.id)) {
+      this.editor.inert = true;
+      this.editorNoteId = undefined;
+      this.replacingEditorDocument = true;
+      try {
+        this.codeEditor.setState(this.createEditorState('', note.language === 'richtext' ? 'markdown' : note.language));
+        this.richTextEditor.setContent(EMPTY_RICH_TEXT_CONTENT);
+      } finally {
+        this.replacingEditorDocument = false;
+      }
+      this.showEditorMode(note.language);
+      const error = this.noteBodyErrors.get(note.id);
+      this.setSaveStatus(error ?? 'Loading Note…', error ? 'error' : 'saving');
+      if (!error) void this.ensureNoteBody(note.id);
+      return;
+    }
+    this.editor.inert = false;
+    const noteChanged = this.editorNoteId !== note.id;
+    if (noteChanged) this.closeLanguageMenu();
+    if (noteChanged) {
+      this.resetInNoteFind(false);
+      this.editorNoteId = note.id;
+      if (note.language === 'richtext') {
+        this.replaceRichTextDocument(note.content);
+      } else {
+        this.codeEditor.setState(this.createEditorState(note.content, note.language));
+      }
+    } else {
+      if (note.language === 'richtext') {
+        this.replaceRichTextDocument(note.content);
+      } else {
+        this.setEditorLanguage(note.language);
+        this.replaceEditorDocument(note.content);
+      }
+    }
+    this.showEditorMode(note.language);
+    this.updateEditorEmptyState();
+  }
+
+  private selectedNote(): Note | undefined {
+    return this.selectedId ? this.notesById.get(this.selectedId) : undefined;
+  }
+
+  private ensureNoteBody(id: string): Promise<void> {
+    if (this.loadedNoteIds.has(id)) return Promise.resolve();
+    const pending = this.noteBodyRequests.get(id);
+    if (pending) return pending;
+    const generation = this.noteBodyGeneration;
+    const request = window.notesApi.getNote(id).then((loaded) => {
+      if (generation !== this.noteBodyGeneration
+        || !this.active
+        || this.selectedId !== id
+        || this.deletedIds.has(id)) return;
+      const note = this.notesById.get(id);
+      if (!note) return;
+      Object.assign(note, loaded, { tags: [...loaded.tags] });
+      this.loadedNoteIds.add(id);
+      this.persistedNotes.set(id, cloneNote(loaded));
+      this.noteBodyErrors.delete(id);
+      this.breadcrumbCache.clear();
+      this.updateListNoteName(note);
+      this.renderEditor();
+      this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
+    }).catch((error) => {
+      if (generation !== this.noteBodyGeneration || !this.active || this.selectedId !== id) return;
+      this.noteBodyErrors.set(id, `Unable to load Note: ${toErrorMessage(error)}`);
+      this.renderEditor();
+    }).finally(() => {
+      if (this.noteBodyRequests.get(id) === request) this.noteBodyRequests.delete(id);
+    });
+    this.noteBodyRequests.set(id, request);
+    return request;
+  }
+
+  private releaseNoteBody(id: string): void {
+    if (this.isDirty(id)) return;
+    const note = this.notesById.get(id);
+    if (note) {
+      note.content = '';
+    }
+    this.loadedNoteIds.delete(id);
+    this.persistedNotes.delete(id);
+    this.noteBodyErrors.delete(id);
+  }
+
+  private async selectNote(id: string, source: 'tree' | 'tab' = 'tree'): Promise<void> {
+    if (!this.notes.some((note) => note.id === id)) return;
+    const selectionVersion = ++this.selectionVersion;
+    if (id === this.selectedId) {
+      this.openNoteTab(id, true);
+      this.renderTabs();
+      if (!this.loadedNoteIds.has(id)) void this.ensureNoteBody(id);
+      if (source === 'tab') {
+        this.clearWorkspaceSearch();
+        void this.revealTreeNote(id, false);
+        this.focusNoteTab(id);
+      }
+      return;
+    }
+    const previousId = this.selectedId;
+    if (previousId) {
+      await this.flushNote(previousId);
+      if (this.isDirty(previousId)) {
+        toast('Save the current Note before switching.', 'error');
+        return;
+      }
+    }
+    if (selectionVersion !== this.selectionVersion || !this.notes.some((note) => note.id === id)) return;
+    if (previousId) this.releaseNoteBody(previousId);
+    this.selectedId = id;
+    this.openNoteTab(id, true);
+    const selectedDirty = this.isDirty(id);
+    if (selectedDirty) this.saveErrorNoteIds.delete(id);
+    if (source === 'tab') this.clearWorkspaceSearch();
+    this.updateRenderedTreeSelection(previousId, id);
+    this.renderEditor();
+    if (source === 'tab') {
+      void this.revealTreeNote(id, false);
+      this.focusNoteTab(id);
+    }
+    if (selectedDirty) this.scheduleSave(id);
+    this.updateSelectedSaveStatus();
+  }
+
+  private updateRenderedTreeSelection(previousId: string | undefined, nextId: string): void {
+    if (previousId) {
+      const previousRow = this.renderedRowsById.get(previousId);
+      if (previousRow) {
+        previousRow.dataset.selected = 'false';
+        previousRow.querySelector<HTMLButtonElement>('.notes-list-item')
+          ?.setAttribute('aria-current', 'false');
+      }
+    }
+
+    const nextRow = this.renderedRowsById.get(nextId);
+    if (nextRow) {
+      nextRow.dataset.selected = 'true';
+      nextRow.querySelector<HTMLButtonElement>('.notes-list-item')
+        ?.setAttribute('aria-current', 'true');
+    }
+  }
+
+  private async revealSearchResult(noteId: string): Promise<void> {
+    await this.selectNote(noteId);
+    if (this.selectedId !== noteId) return;
+
+    this.clearWorkspaceSearch();
+    await this.revealTreeNote(noteId, true);
+  }
+
+  private async revealTreeNote(noteId: string, focusTreeRow: boolean): Promise<void> {
+    const generation = ++this.treeRevealGeneration;
+    const ancestorIds = noteTreeAncestorIdsFromIndexes(noteId, this.treeNodesById);
+    const collapsedAncestorIds = ancestorIds.filter((ancestorId) => !this.expandedNoteIds.has(ancestorId));
+    for (const ancestorId of ancestorIds) this.expandedNoteIds.add(ancestorId);
+    this.renderList(focusTreeRow ? noteId : undefined);
+    window.requestAnimationFrame(() => {
+      if (generation !== this.treeRevealGeneration
+        || this.selectedId !== noteId
+        || this.searchInput.value.trim()) return;
+      this.renderedRowsById.get(noteId)?.scrollIntoView({ block: 'nearest' });
+    });
+
+    if (collapsedAncestorIds.length === 0) return;
+    try {
+      const persistedIds = await window.notesApi.setTreeExpanded({
+        noteIds: collapsedAncestorIds,
+        expanded: true,
+      });
+      if (generation !== this.treeRevealGeneration || this.selectedId !== noteId) return;
+      const expansionChanged = persistedIds.length !== this.expandedNoteIds.size
+        || persistedIds.some((ancestorId) => !this.expandedNoteIds.has(ancestorId));
+      this.expandedNoteIds = new Set(persistedIds);
+      if (expansionChanged) this.renderList();
+    } catch (error) {
+      toast(`Unable to save the revealed Notes tree: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private updateSelectedMetadata(): void {
+    const note = this.selectedNote();
+    if (!note) return;
+
+    const previousName = note.name;
+    note.name = this.nameInput.value;
+    if (note.name !== previousName) {
+      this.breadcrumbCache.clear();
+      this.updateListNoteName(note);
+    }
+    this.markNoteEdited(note, Boolean(this.searchInput.value.trim()));
+  }
+
+  private updateSelectedCodeContent(): void {
+    if (this.replacingEditorDocument) return;
+    const note = this.selectedNote();
+    if (!note || note.language === 'richtext') return;
+    this.updateEditorEmptyState();
+    this.markNoteEdited(note, false, false);
+  }
+
+  private markdownActive(): boolean {
+    return this.selectedNote()?.language === 'markdown' && this.editorNoteId === this.selectedId;
+  }
+
+  private applyMarkdownCommand(commandValue: string): void {
+    if (!this.markdownActive()) return;
+    const commandMap: Readonly<Record<string, { command: MarkdownFormatCommand; headingLevel?: 1 | 2 | 3 }>> = {
+      bold: { command: 'bold' },
+      italic: { command: 'italic' },
+      strike: { command: 'strike' },
+      code: { command: 'inlineCode' },
+      heading1: { command: 'heading', headingLevel: 1 },
+      heading2: { command: 'heading', headingLevel: 2 },
+      heading3: { command: 'heading', headingLevel: 3 },
+      link: { command: 'link' },
+      quote: { command: 'quote' },
+      bullet: { command: 'bullet' },
+      numbered: { command: 'numbered' },
+      task: { command: 'task' },
+      table: { command: 'table' },
+      horizontalRule: { command: 'hr' },
+    };
+    const mapped = commandMap[commandValue];
+    if (!mapped) return;
+    const selection = this.codeEditor.state.selection.main;
+    const edit = applyMarkdownFormat(
+      this.codeEditor.state.doc.toString(),
+      { from: selection.from, to: selection.to },
+      mapped.command,
+      {
+        ...(mapped.headingLevel ? { headingLevel: mapped.headingLevel } : {}),
+        ...(mapped.command === 'table' ? { tableColumns: 3, tableRows: 2 } : {}),
+      },
+    );
+    this.codeEditor.dispatch({
+      changes: edit.change,
+      selection: { anchor: edit.selection.from, head: edit.selection.to },
+      scrollIntoView: true,
+    });
+    this.codeEditor.focus();
+  }
+
+  private readonly handleMarkdownKeyDown = (event: KeyboardEvent): void => {
+    if (!this.markdownActive()) return;
+    const modifier = event.metaKey || event.ctrlKey;
+    let command: string | undefined;
+    if (modifier && !event.altKey && event.code === 'KeyB') command = 'bold';
+    else if (modifier && !event.altKey && event.code === 'KeyI') command = 'italic';
+    else if (modifier && !event.altKey && event.code === 'KeyK') command = 'link';
+    else if (modifier && event.shiftKey && event.code === 'Digit7') command = 'numbered';
+    else if (modifier && event.shiftKey && event.code === 'Digit8') command = 'bullet';
+    else if (modifier && event.shiftKey && event.code === 'KeyX') command = 'strike';
+    else if (modifier && event.altKey && /^Digit[123]$/.test(event.code)) {
+      command = `heading${event.code.slice(-1)}`;
+    }
+    if (command) {
+      event.preventDefault();
+      this.applyMarkdownCommand(command);
+      return;
+    }
+    if (event.key === 'F8') {
+      event.preventDefault();
+      this.setMarkdownViewMode('focus', !this.markdownFocusMode);
+    } else if (event.key === 'F9') {
+      event.preventDefault();
+      this.setMarkdownViewMode('typewriter', !this.markdownTypewriterMode);
+    }
+  };
+
+  private readonly handleMarkdownEditorClick = (event: MouseEvent): void => {
+    if (!this.markdownActive()) return;
+    const position = this.codeEditor.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (position === null) return;
+    const line = this.codeEditor.state.doc.lineAt(position);
+    const match = /^(\s*[-+*]\s+\[)([ xX])(\])/.exec(line.text);
+    if (!match) return;
+    const checkboxFrom = line.from + match[1].length - 1;
+    const checkboxTo = checkboxFrom + 3;
+    if (position < checkboxFrom || position > checkboxTo) return;
+    event.preventDefault();
+    const statePosition = line.from + match[1].length;
+    this.codeEditor.dispatch({
+      changes: { from: statePosition, to: statePosition + 1, insert: match[2].toLocaleLowerCase() === 'x' ? ' ' : 'x' },
+      selection: { anchor: statePosition + 1 },
+    });
+    this.codeEditor.focus();
+  };
+
+  private handleMarkdownToolbarClick(event: Event): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const command = source.closest<HTMLElement>('[data-markdown-command]')?.dataset.markdownCommand;
+    if (command) {
+      event.preventDefault();
+      this.applyMarkdownCommand(command);
+      return;
+    }
+    const view = source.closest<HTMLElement>('[data-markdown-view]')?.dataset.markdownView;
+    if (view === 'focus' || view === 'typewriter' || view === 'preview') {
+      event.preventDefault();
+      const enabled = view === 'focus'
+        ? !this.markdownFocusMode
+        : view === 'typewriter'
+          ? !this.markdownTypewriterMode
+          : !this.markdownPreviewEnabled;
+      this.setMarkdownViewMode(view, enabled);
+    }
+  }
+
+  private setMarkdownViewMode(view: 'focus' | 'typewriter' | 'preview', enabled: boolean): void {
+    if (view === 'focus') this.markdownFocusMode = enabled;
+    else if (view === 'typewriter') this.markdownTypewriterMode = enabled;
+    else this.markdownPreviewEnabled = enabled;
+    this.codeEditorShell.dataset.focusMode = String(this.markdownFocusMode);
+    this.codeEditorShell.dataset.typewriterMode = String(this.markdownTypewriterMode);
+    this.codeLayout.dataset.preview = String(this.markdownPreviewEnabled);
+    for (const button of Array.from(this.markdownToolbar.querySelectorAll<HTMLElement>('[data-markdown-view]'))) {
+      const active = button.dataset.markdownView === 'focus'
+        ? this.markdownFocusMode
+        : button.dataset.markdownView === 'typewriter'
+          ? this.markdownTypewriterMode
+          : this.markdownPreviewEnabled;
+      button.setAttribute('aria-pressed', String(active));
+      button.dataset.active = String(active);
+    }
+    this.markdownPreview.classList.toggle('hidden', !this.markdownPreviewEnabled);
+    const note = this.selectedNote();
+    if (note?.language === 'markdown') this.captureEditorContent(note.id);
+    this.queueMarkdownViewportUpdate(this.markdownTypewriterMode);
+    this.codeEditor.requestMeasure();
+  }
+
+  private queueMarkdownViewportUpdate(centerSelection = false): void {
+    this.markdownCenterSelectionOnNextFrame ||= centerSelection;
+    if (this.markdownUiFrame !== undefined) return;
+    this.markdownUiFrame = window.requestAnimationFrame(() => {
+      this.markdownUiFrame = undefined;
+      const shouldCenterSelection = this.markdownCenterSelectionOnNextFrame;
+      this.markdownCenterSelectionOnNextFrame = false;
+      if (shouldCenterSelection && this.markdownActive()) {
+        this.codeEditor.dispatch({
+          effects: EditorView.scrollIntoView(this.codeEditor.state.selection.main.head, { y: 'center' }),
+        });
+      }
+    });
+  }
+
+  private updateMarkdownUi(markdown: string): void {
+    if (!this.markdownActive()) return;
+    const stats = getMarkdownStats(markdown);
+    this.markdownDocumentStatsText = `${stats.words} words · ${stats.characters} characters · ${stats.lines} lines`;
+    this.updateMarkdownSelectionStats();
+    if (this.markdownPreviewEnabled) {
+      const parsed = new DOMParser().parseFromString(
+        `<!doctype html><body>${renderMarkdownToSafeHtml(markdown)}</body>`,
+        'text/html',
+      );
+      this.markdownPreview.replaceChildren(...Array.from(parsed.body.childNodes));
+      this.syncMarkdownPreviewScroll();
+    }
+  }
+
+  private updateMarkdownSelectionStats(): void {
+    if (!this.markdownActive()) return;
+    const selection = this.codeEditor.state.selection.main;
+    const selected = selection.empty
+      ? ''
+      : this.codeEditor.state.doc.sliceString(selection.from, selection.to);
+    const selectionText = selected ? ` · ${getMarkdownStats(selected).words} selected` : '';
+    this.markdownStatus.textContent = `${this.markdownDocumentStatsText}${selectionText}`;
+  }
+
+  private readonly syncMarkdownPreviewScroll = (): void => {
+    if (!this.markdownPreviewEnabled || !this.markdownActive()) return;
+    const source = this.codeEditor.scrollDOM;
+    const sourceRange = Math.max(1, source.scrollHeight - source.clientHeight);
+    const targetRange = Math.max(0, this.markdownPreview.scrollHeight - this.markdownPreview.clientHeight);
+    this.markdownPreview.scrollTop = (source.scrollTop / sourceRange) * targetRange;
+  };
+
+  private toggleMarkdownOutline(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const opening = this.markdownOutlineMenu.classList.contains('hidden');
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    if (!opening) {
+      this.closeMarkdownOutline();
+      return;
+    }
+    const headings = extractMarkdownOutline(this.codeEditor.state.doc.toString());
+    const nodes: HTMLElement[] = headings.map((heading) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('role', 'menuitem');
+      button.dataset.markdownOutlineOffset = String(heading.offset);
+      button.style.setProperty('--markdown-outline-level', String(heading.level));
+      button.textContent = heading.text;
+      return button;
+    });
+    if (nodes.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = 'No headings yet.';
+      nodes.push(empty);
+    }
+    this.markdownOutlineMenu.replaceChildren(...nodes);
+    this.markdownOutlineMenu.classList.remove('hidden');
+    this.markdownOutlineButton.setAttribute('aria-expanded', 'true');
+    this.markdownOutlineMenu.querySelector<HTMLButtonElement>('button')?.focus();
+  }
+
+  private handleMarkdownOutlineClick(event: Event): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const item = source.closest<HTMLElement>('[data-markdown-outline-offset]');
+    const offset = Number(item?.dataset.markdownOutlineOffset);
+    if (!Number.isInteger(offset) || offset < 0 || offset > this.codeEditor.state.doc.length) return;
+    this.closeMarkdownOutline();
+    this.codeEditor.dispatch({
+      selection: { anchor: offset },
+      effects: EditorView.scrollIntoView(offset, { y: 'center' }),
+    });
+    this.codeEditor.focus();
+  }
+
+  private closeMarkdownOutline(): void {
+    this.markdownOutlineMenu.classList.add('hidden');
+    this.markdownOutlineButton.setAttribute('aria-expanded', 'false');
+  }
+
+  private updateSelectedRichTextContent(): void {
+    if (this.replacingEditorDocument) return;
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    this.markNoteEdited(note, false, false);
+  }
+
+  private markNoteEdited(
+    note: Note,
+    refreshSearchResults: boolean,
+    _refreshSearchEntry = true,
+  ): void {
+    const wasDirty = this.isDirty(note.id);
+    const hadSaveError = this.saveErrorNoteIds.delete(note.id);
+    this.editVersions.set(note.id, (this.editVersions.get(note.id) ?? 0) + 1);
+    if (this.selectedId === note.id) this.setSaveStatus('Saving…', 'saving');
+    if (!wasDirty || hadSaveError) this.updateListSaveIndicator(note.id);
+    if (refreshSearchResults) this.queueSearchRender();
+    this.scheduleSave(note.id);
+  }
+
+  private captureEditorContent(id: string): void {
+    const note = this.notesById.get(id);
+    if (!this.editorsMounted
+      || !this.loadedNoteIds.has(id)
+      || !note
+      || this.editorNoteId !== id
+      || this.selectedId !== id) return;
+    const content = note.language === 'richtext'
+      ? this.richTextEditor.getContent()
+      : this.codeEditor.state.doc.toString();
+    if (note.language === 'markdown') this.updateMarkdownUi(content);
+    if (note.content === content) return;
+    note.content = content;
+    this.updateEditorEmptyState();
+    if (this.searchInput.value.trim()) this.queueSearchRender();
+  }
+
+  private captureActiveEditorContent(): void {
+    if (this.selectedId) this.captureEditorContent(this.selectedId);
+  }
+
+  private updateLanguageControl(language: NoteLanguage | undefined): void {
+    const label = language ? noteLanguageLabel(language) : 'Language';
+    this.languageValue.textContent = label;
+    this.languageValue.title = label;
+    this.languageToggle.title = language ? `Note Language: ${label}` : 'Note Language';
+    this.languageToggle.setAttribute('aria-label', language ? `Note Language, ${label}` : 'Note Language');
+    this.languageToggle.setAttribute('aria-busy', String(this.switchingLanguage));
+    this.languageToggle.disabled = !language || this.switchingLanguage;
+    this.languageSearch.disabled = !language || this.switchingLanguage;
+    if (this.languageToggle.disabled) this.closeLanguageMenu();
+    else if (!this.languageMenu.classList.contains('hidden')) this.renderLanguageOptions();
+  }
+
+  private renderLanguageOptions(): void {
+    const selectedLanguage = this.selectedNote()?.language;
+    const options = filterNoteLanguageOptions(this.languageFilter);
+    const tabStop = noteLanguageRovingTabStop(options, selectedLanguage);
+    const nodes: HTMLElement[] = options.map((item) => {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'notes-language-option';
+      option.dataset.noteLanguage = item.value;
+      option.tabIndex = item.value === tabStop ? 0 : -1;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(item.value === selectedLanguage));
+      option.title = item.label;
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      const check = createIcon('m3.5 8.25 2.5 2.5 6.5-6.5');
+      check.classList.add('notes-language-option-check');
+      option.append(label, check);
+      return option;
+    });
+    if (nodes.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'notes-language-empty';
+      empty.setAttribute('role', 'status');
+      empty.textContent = 'No matching languages';
+      nodes.push(empty);
+    }
+    this.languageOptions.replaceChildren(...nodes);
+  }
+
+  private openLanguageMenu(): void {
+    if (this.languageToggle.disabled) return;
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    this.languageFilter = '';
+    this.languageSearch.value = '';
+    this.renderLanguageOptions();
+    this.languageMenu.classList.remove('hidden');
+    this.languageToggle.setAttribute('aria-expanded', 'true');
+    window.requestAnimationFrame(() => {
+      if (!this.languageMenu.classList.contains('hidden')) this.languageSearch.focus();
+    });
+  }
+
+  private closeLanguageMenu(restoreFocus = false): void {
+    this.languageMenu.classList.add('hidden');
+    this.languageToggle.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && !this.languageToggle.disabled) this.languageToggle.focus();
+  }
+
+  private toggleLanguageMenu(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.languageToggle.disabled) return;
+    if (this.languageMenu.classList.contains('hidden')) this.openLanguageMenu();
+    else this.closeLanguageMenu();
+  }
+
+  private handleLanguageToggleKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && !this.languageMenu.classList.contains('hidden')) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLanguageMenu(true);
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.openLanguageMenu();
+  }
+
+  private handleLanguageMenuKeyDown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeLanguageMenu(true);
+      return;
+    }
+    const options = Array.from(
+      this.languageOptions.querySelectorAll<HTMLButtonElement>('.notes-language-option:not(:disabled)'),
+    );
+    if (options.length === 0) return;
+    if (event.target === this.languageSearch) {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const selected = options.find((option) => option.getAttribute('aria-selected') === 'true');
+      const next = event.key === 'ArrowDown' ? selected ?? options[0] : options[options.length - 1];
+      event.preventDefault();
+      event.stopPropagation();
+      if (next) this.focusLanguageOption(next, options);
+      return;
+    }
+    const source = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('.notes-language-option')
+      : null;
+    if (!source || !this.languageOptions.contains(source)
+      || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const current = options.indexOf(source);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowUp'
+          ? (current - 1 + options.length) % options.length
+          : (current + 1) % options.length;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = options[nextIndex];
+    if (next) this.focusLanguageOption(next, options);
+  }
+
+  private focusLanguageOption(
+    option: HTMLButtonElement,
+    options = Array.from(
+      this.languageOptions.querySelectorAll<HTMLButtonElement>('.notes-language-option:not(:disabled)'),
+    ),
+  ): void {
+    for (const candidate of options) candidate.tabIndex = candidate === option ? 0 : -1;
+    option.focus();
+  }
+
+  private handleLanguageOptionClick(event: Event): void {
+    const source = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>('.notes-language-option')
+      : null;
+    if (!source || !this.languageOptions.contains(source)) return;
+    const targetLanguage = source.dataset.noteLanguage;
+    if (!isNoteLanguage(targetLanguage)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeLanguageMenu();
+    this.languageToggle.focus();
+    void this.changeSelectedLanguage(targetLanguage);
+  }
+
+  private async changeSelectedLanguage(targetLanguage: NoteLanguage): Promise<void> {
+    if (this.switchingLanguage) return;
+    const note = this.selectedNote();
+    if (!note) return;
+    const sourceLanguage = note.language;
+    if (!(targetLanguage in noteLanguageExtensions) || targetLanguage === sourceLanguage) {
+      this.updateLanguageControl(sourceLanguage);
+      return;
+    }
+    try {
+      this.captureEditorContent(note.id);
+    } catch (error) {
+      this.updateLanguageControl(sourceLanguage);
+      this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
+      return;
+    }
+
+    const crossesRichTextBoundary = sourceLanguage === 'richtext' || targetLanguage === 'richtext';
+    let hasContent = note.content.length > 0;
+    if (sourceLanguage === 'richtext') {
+      try {
+        const document = parseRichTextContent(note.content);
+        hasContent = (document.content ?? []).some((node) =>
+          node.type !== 'paragraph' || Boolean(node.content?.length)
+        );
+      } catch {
+        hasContent = true;
+      }
+    }
+
+    const switchFence: NoteLanguageSwitchFence = {
+      noteId: note.id,
+      sourceLanguage,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
+    let restoreLanguageToggle = false;
+    this.switchingLanguage = true;
+    this.updateLanguageControl(sourceLanguage);
+    try {
+      if (crossesRichTextBoundary && hasContent) {
+        const leavingRichText = sourceLanguage === 'richtext';
+        const confirmed = await window.serviceApi.confirmAction({
+          title: leavingRichText ? 'Leave Rich Text?' : 'Switch to Rich Text?',
+          message: leavingRichText
+            ? 'Switching to a code mode removes rich text formatting and embedded images.'
+            : 'The current plain text will be converted to a rich text document.',
+          detail: leavingRichText
+            ? 'Only the readable text will be kept.'
+            : 'Switching back later may discard rich text formatting.',
+          kind: 'warning',
+          confirmLabel: 'Switch',
+          cancelLabel: 'Cancel',
+        });
+        if (!confirmed) {
+          restoreLanguageToggle = true;
+          return;
+        }
+      }
+
+      const current = this.selectedNote();
+      if (!current || !isNoteLanguageSwitchFenceCurrent(switchFence, {
+        noteId: current.id,
+        sourceLanguage: current.language,
+        editVersion: this.editVersions.get(current.id) ?? 0,
+        selectionVersion: this.selectionVersion,
+        workspaceGeneration: this.workspaceMutationGeneration,
+      })) return;
+      this.resetInNoteFind(false);
+      if (targetLanguage === 'richtext') {
+        current.content = plainTextToRichTextContent(current.content);
+      } else if (sourceLanguage === 'richtext') {
+        current.content = extractRichTextPlainText(current.content);
+      }
+      current.language = targetLanguage;
+      this.markNoteEdited(current, Boolean(this.searchInput.value.trim()));
+      this.renderEditor();
+      if (targetLanguage === 'richtext') this.richTextEditor.focus();
+      else this.codeEditor.focus();
+    } catch (error) {
+      restoreLanguageToggle = true;
+      this.setSaveStatus(`Mode change failed: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.switchingLanguage = false;
+      const current = this.selectedNote();
+      this.updateLanguageControl(current?.language);
+      if (restoreLanguageToggle
+        && current
+        && !this.pageRoot.inert
+        && !this.languageToggle.disabled
+        && isNoteLanguageSwitchFenceCurrent(switchFence, {
+          noteId: current.id,
+          sourceLanguage: current.language,
+          editVersion: this.editVersions.get(current.id) ?? 0,
+          selectionVersion: this.selectionVersion,
+          workspaceGeneration: this.workspaceMutationGeneration,
+        })) {
+        this.languageToggle.focus();
+      }
+    }
+  }
+
+  private async uploadSelectedImage(): Promise<void> {
+    const file = this.imageInput.files?.[0];
+    this.imageInput.value = '';
+    const position = this.pendingImagePosition;
+    this.pendingImagePosition = undefined;
+    if (!file) return;
+    await this.uploadImageFile(file, position);
+  }
+
+  private trackEditorUpload(task: Promise<void>): Promise<void> {
+    this.editorUploadTasks.add(task);
+    void task.then(
+      () => this.editorUploadTasks.delete(task),
+      () => this.editorUploadTasks.delete(task),
+    );
+    return task;
+  }
+
+  private async waitForEditorUploads(): Promise<void> {
+    while (this.editorUploadTasks.size > 0) {
+      await Promise.allSettled([...this.editorUploadTasks]);
+    }
+  }
+
+  private uploadImageFile(file: File, position?: number): Promise<void> {
+    return this.trackEditorUpload(this.performImageUpload(file, position));
+  }
+
+  private async performImageUpload(file: File, position?: number): Promise<void> {
+    if (this.pageRoot.inert) return;
+    if (this.editorUploadTasks.size >= MAX_CONCURRENT_NOTE_ASSET_UPLOADS) {
+      toast('Wait for an active Notes upload to finish before adding another file.', 'error');
+      return;
+    }
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      toast('Only PNG, JPEG, and WebP images are supported.', 'error');
+      return;
+    }
+    if (file.size < 1 || file.size > NOTE_IMAGE_MAX_BYTES) {
+      toast('A Notes image must not exceed 10 MiB.', 'error');
+      return;
+    }
+
+    const insertionFence = {
+      noteId: note.id,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const alt = file.name
+        .replace(/\.(?:png|jpe?g|webp)$/i, '')
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .trim()
+        .slice(0, 500);
+      const result = await window.notesApi.uploadImage({
+        bytes,
+        mimeType: file.type,
+        ...(alt ? { alt } : {}),
+      });
+      if (result.status === 'not-configured') {
+        toast('Configure S3 in Settings before adding images.', 'error');
+        return;
+      }
+      if (insertionFence.workspaceGeneration !== this.workspaceMutationGeneration) {
+        toast('The image was uploaded after the Notes workspace changed and was not inserted.', 'error');
+        return;
+      }
+
+      const destination = this.notesById.get(note.id);
+      if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
+        toast('The image was uploaded, but its Note is no longer available.', 'error');
+        return;
+      }
+      if (this.selectedId === destination.id) {
+        const capturedPosition = insertionFence.noteId === this.selectedId
+          && insertionFence.editVersion === (this.editVersions.get(destination.id) ?? 0)
+          && insertionFence.selectionVersion === this.selectionVersion
+          ? position
+          : undefined;
+        if (!this.richTextEditor.insertImage(result.reference, capturedPosition)) {
+          throw new Error('The uploaded image could not be inserted.');
+        }
+      } else {
+        destination.content = appendImageToRichTextContent(destination.content, result.reference);
+        this.markNoteEdited(destination, Boolean(this.searchInput.value.trim()));
+      }
+      toast('Image added.', 'success');
+    } catch (error) {
+      toast(`Unable to add image: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async uploadSelectedAttachment(): Promise<void> {
+    const file = this.attachmentInput.files?.[0];
+    this.attachmentInput.value = '';
+    const position = this.pendingAttachmentPosition;
+    this.pendingAttachmentPosition = undefined;
+    if (!file) return;
+    await this.uploadAttachmentFile(file, position);
+  }
+
+  private uploadAttachmentFile(file: File, position?: number): Promise<void> {
+    return this.trackEditorUpload(this.performAttachmentUpload(file, position));
+  }
+
+  private async performAttachmentUpload(file: File, position?: number): Promise<void> {
+    if (this.pageRoot.inert) return;
+    if (this.editorUploadTasks.size >= MAX_CONCURRENT_NOTE_ASSET_UPLOADS) {
+      toast('Wait for an active Notes upload to finish before adding another file.', 'error');
+      return;
+    }
+    const note = this.selectedNote();
+    if (!note || note.language !== 'richtext') return;
+    if (file.size < 1 || file.size > NOTE_ATTACHMENT_MAX_BYTES) {
+      toast('A Notes attachment must be between 1 byte and 25 MiB.', 'error');
+      return;
+    }
+
+    const insertionFence = {
+      noteId: note.id,
+      editVersion: this.editVersions.get(note.id) ?? 0,
+      selectionVersion: this.selectionVersion,
+      workspaceGeneration: this.workspaceMutationGeneration,
+    };
+    try {
+      const result = await window.notesApi.uploadAttachment({
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        fileName: normalizeNoteAttachmentFileName(file.name),
+        mimeType: file.type || 'application/octet-stream',
+      });
+      if (result.status === 'not-configured') {
+        toast('Configure S3 in Settings before adding file attachments.', 'error');
+        return;
+      }
+      if (insertionFence.workspaceGeneration !== this.workspaceMutationGeneration) {
+        toast('The file was uploaded after the Notes workspace changed and was not inserted.', 'error');
+        return;
+      }
+      const destination = this.notesById.get(note.id);
+      if (!destination || destination.language !== 'richtext' || this.deletedIds.has(destination.id)) {
+        toast('The file was uploaded, but its Note is no longer available.', 'error');
+        return;
+      }
+      if (this.selectedId === destination.id) {
+        const capturedPosition = insertionFence.noteId === this.selectedId
+          && insertionFence.editVersion === (this.editVersions.get(destination.id) ?? 0)
+          && insertionFence.selectionVersion === this.selectionVersion
+          ? position
+          : undefined;
+        if (!this.richTextEditor.insertAttachment(result.reference, capturedPosition)) {
+          throw new Error('The uploaded file could not be inserted.');
+        }
+      } else {
+        destination.content = appendAttachmentToRichTextContent(destination.content, result.reference);
+        this.markNoteEdited(destination, Boolean(this.searchInput.value.trim()));
+      }
+      toast('File attached.', 'success');
+    } catch (error) {
+      toast(`Unable to attach file: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async runAttachmentAction(
+    action: 'view' | 'download',
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ): Promise<void> {
+    if (action === 'view') {
+      await this.openAttachmentPreview(reference, opener);
+      return;
+    }
+    try {
+      const result = await window.notesApi.downloadAttachment(reference);
+      if (result.status === 'saved') {
+        toast('Attachment downloaded.', 'success');
+      } else if (result.status === 'not-configured') {
+        toast('Configure S3 in Settings to access this attachment.', 'error');
+      } else if (result.status === 'missing') {
+        toast('The attachment is unavailable in S3.', 'error');
+      } else if (result.status === 'error') {
+        toast('The attachment could not be downloaded.', 'error');
+      }
+    } catch (error) {
+      toast(`Unable to download attachment: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async openAttachmentPreview(
+    reference: NoteAttachmentReference,
+    opener: HTMLButtonElement,
+  ): Promise<void> {
+    const expectedKind = noteAttachmentPreviewKind(reference);
+    if (!expectedKind) {
+      toast('This file is available for download only.', 'error');
+      return;
+    }
+
+    const request = ++this.attachmentPreviewRequest;
+    this.clearAttachmentPreviewContent();
+    this.attachmentPreviewOpener = opener;
+    this.attachmentPreviewTitle.textContent = reference.fileName;
+    this.attachmentPreviewMeta.textContent = formatAttachmentSize(reference.byteLength);
+    this.attachmentPreviewBadge.textContent = ({ pdf: 'PDF', image: 'IMG', text: 'TXT' } as const)[expectedKind];
+    this.attachmentPreviewBody.dataset.kind = expectedKind;
+    this.attachmentPreviewBody.setAttribute('aria-busy', 'true');
+    this.attachmentPreviewLoading.classList.remove('hidden');
+
+    try {
+      if (!this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.showModal();
+      const result = await window.notesApi.viewAttachment(reference);
+      if (request !== this.attachmentPreviewRequest || !this.attachmentPreviewDialog.open) return;
+      this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+      this.attachmentPreviewLoading.classList.add('hidden');
+      if (result.status !== 'loaded') {
+        this.showAttachmentPreviewError(
+          result.status === 'not-configured'
+            ? 'Configure S3 in Settings to preview this file.'
+            : result.status === 'missing'
+              ? 'This file is unavailable in S3.'
+              : 'This file could not be previewed safely. Download it to inspect it.',
+        );
+        return;
+      }
+      if (result.preview.kind !== expectedKind) {
+        this.showAttachmentPreviewError('This file could not be previewed safely. Download it to inspect it.');
+        return;
+      }
+      if (result.preview.kind === 'text') {
+        this.attachmentPreviewText.textContent = result.preview.text;
+        this.attachmentPreviewText.classList.remove('hidden');
+        return;
+      }
+      const mediaType = result.preview.kind === 'pdf' ? 'application/pdf' : result.preview.mimeType;
+      const objectUrl = URL.createObjectURL(new Blob([new Uint8Array(result.preview.bytes)], { type: mediaType }));
+      if (request !== this.attachmentPreviewRequest || !this.attachmentPreviewDialog.open) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      this.attachmentPreviewObjectUrl = objectUrl;
+      if (result.preview.kind === 'image') {
+        this.attachmentPreviewImage.alt = reference.fileName;
+        this.attachmentPreviewImage.src = objectUrl;
+        this.attachmentPreviewImage.classList.remove('hidden');
+      } else {
+        this.attachmentPreviewPdf.src = `${objectUrl}#toolbar=0&navpanes=0`;
+        this.attachmentPreviewPdf.classList.remove('hidden');
+      }
+    } catch (error) {
+      if (request !== this.attachmentPreviewRequest) return;
+      if (!this.attachmentPreviewDialog.open) {
+        this.attachmentPreviewRequest += 1;
+        this.clearAttachmentPreviewContent();
+        this.attachmentPreviewOpener = undefined;
+        if (opener.isConnected) opener.focus();
+        toast(`Unable to open the file preview: ${toErrorMessage(error)}`, 'error');
+        return;
+      }
+      this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+      this.attachmentPreviewLoading.classList.add('hidden');
+      this.showAttachmentPreviewError(`Unable to preview this file: ${toErrorMessage(error)}`);
+    }
+  }
+
+  private showAttachmentPreviewError(message: string): void {
+    this.attachmentPreviewError.textContent = message;
+    this.attachmentPreviewError.classList.remove('hidden');
+  }
+
+  private clearAttachmentPreviewContent(): void {
+    this.attachmentPreviewImage.removeAttribute('src');
+    this.attachmentPreviewImage.alt = '';
+    this.attachmentPreviewPdf.removeAttribute('src');
+    this.attachmentPreviewText.textContent = '';
+    this.attachmentPreviewImage.classList.add('hidden');
+    this.attachmentPreviewPdf.classList.add('hidden');
+    this.attachmentPreviewText.classList.add('hidden');
+    this.attachmentPreviewError.classList.add('hidden');
+    this.attachmentPreviewError.textContent = '';
+    this.attachmentPreviewLoading.classList.add('hidden');
+    this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
+    delete this.attachmentPreviewBody.dataset.kind;
+    if (this.attachmentPreviewObjectUrl) {
+      URL.revokeObjectURL(this.attachmentPreviewObjectUrl);
+      this.attachmentPreviewObjectUrl = undefined;
+    }
+  }
+
+  private handleAttachmentPreviewClosed(): void {
+    this.attachmentPreviewRequest += 1;
+    this.clearAttachmentPreviewContent();
+    const opener = this.attachmentPreviewOpener;
+    this.attachmentPreviewOpener = undefined;
+    if (opener?.isConnected) opener.focus();
+  }
+
+  private scheduleSave(id: string): void {
+    this.clearSaveTimer(id);
+    const timer = window.setTimeout(() => {
+      this.saveTimers.delete(id);
+      void this.flushNote(id);
+    }, NOTE_SAVE_DEBOUNCE_MS);
+    this.saveTimers.set(id, timer);
+  }
+
+  private clearSaveTimer(id: string): void {
+    const timer = this.saveTimers.get(id);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.saveTimers.delete(id);
+  }
+
+  private isDirty(id: string): boolean {
+    return (this.editVersions.get(id) ?? 0) > (this.persistedVersions.get(id) ?? 0);
+  }
+
+  private flushNote(id: string): Promise<void> {
+    this.clearSaveTimer(id);
+    const note = this.notesById.get(id);
+    try {
+      this.captureEditorContent(id);
+    } catch (error) {
+      if (note && !this.deletedIds.has(id)) {
+        this.saveErrorNoteIds.add(id);
+        this.updateListSaveIndicator(id);
+        if (this.selectedId === id) this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+      }
+      return this.saveQueues.get(id) ?? Promise.resolve();
+    }
+    const version = this.editVersions.get(id) ?? 0;
+    const completedVersion = this.persistedVersions.get(id) ?? 0;
+    const queuedVersion = this.queuedVersions.get(id) ?? 0;
+    if (!note || this.deletedIds.has(id) || version <= Math.max(completedVersion, queuedVersion)) {
+      return this.saveQueues.get(id) ?? Promise.resolve();
+    }
+    this.queuedVersions.set(id, version);
+
+    const draft: NoteDraft = {
+      name: note.name,
+      language: note.language,
+      tags: [...note.tags],
+      content: note.content,
+    };
+    const previous = this.saveQueues.get(id) ?? Promise.resolve();
+    const saveGeneration = this.saveGeneration;
+    const queued = previous.catch(() => undefined).then(async () => {
+      if (saveGeneration !== this.saveGeneration || this.deletedIds.has(id)) return;
+      const expectedNote = this.persistedNotes.get(id);
+      if (!expectedNote) throw new Error('This Note has no persisted save base. Reload Notes and try again.');
+      const saved = await window.notesApi.updateNote(id, draft, cloneNote(expectedNote));
+      if (saveGeneration !== this.saveGeneration || this.deletedIds.has(id)) return;
+
+      this.persistedNotes.set(id, cloneNote(saved));
+      this.persistedVersions.set(id, Math.max(this.persistedVersions.get(id) ?? 0, version));
+      this.saveErrorNoteIds.delete(id);
+      const current = this.notesById.get(id);
+      let normalizedNameChanged = false;
+      if (current && (this.editVersions.get(id) ?? 0) === version) {
+        normalizedNameChanged = current.name !== saved.name;
+        Object.assign(current, saved, { tags: [...saved.tags] });
+      }
+      if (normalizedNameChanged && current) {
+        this.breadcrumbCache.clear();
+        this.updateListNoteName(current);
+        if (this.searchInput.value.trim()) this.queueSearchRender();
+      }
+      this.updateListSaveIndicator(id);
+      if (this.selectedId === id) {
+        this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
+      }
+    }).catch((error) => {
+      if (saveGeneration !== this.saveGeneration) return;
+      if ((this.queuedVersions.get(id) ?? 0) === version) {
+        this.queuedVersions.set(id, this.persistedVersions.get(id) ?? 0);
+      }
+      if (!this.deletedIds.has(id)) {
+        this.saveErrorNoteIds.add(id);
+        this.updateListSaveIndicator(id);
+        if (this.selectedId === id) {
+          this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+        }
+      }
+    });
+    this.saveQueues.set(id, queued);
+    return queued;
+  }
+
+  private async flushAllPendingSaves(): Promise<void> {
+    const ids = new Set([...this.saveTimers.keys(), ...this.notes.filter((note) => this.isDirty(note.id)).map((note) => note.id)]);
+    await Promise.all([...ids].map((id) => this.flushNote(id)));
+    if (this.notes.some((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))) {
+      throw new Error('Some notes could not be saved. Fix the save error before syncing.');
+    }
+  }
+
+  private async toggleTreeExpanded(noteId: string): Promise<void> {
+    const expanded = !this.expandedNoteIds.has(noteId);
+    try {
+      const ids = await window.notesApi.setTreeExpanded({ noteId, expanded });
+      this.expandedNoteIds = new Set(ids);
+      this.renderList(noteId);
+    } catch (error) {
+      toast(`Unable to update the Notes tree: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async moveNote(noteId: string, parentId: string | null, beforeNoteId?: string): Promise<void> {
+    if (!isValidNoteTreeParent(this.treeNodes, noteId, parentId)) {
+      toast('A Note cannot be moved into its own subtree.', 'error');
+      this.renderList(noteId);
+      return;
+    }
+    try {
+      await this.waitForEditorUploads();
+      await this.flushAllPendingSaves();
+      const editVersionBaseline = new Map(this.editVersions);
+      const workspace = await window.notesApi.moveNote({
+        noteId,
+        parentId,
+        ...(beforeNoteId ? { beforeNoteId } : {}),
+      });
+      this.captureActiveEditorContent();
+      this.applyWorkspace(workspace, editVersionBaseline);
+      this.renderList(noteId);
+    } catch (error) {
+      toast(`Unable to move Note: ${toErrorMessage(error)}`, 'error');
+      this.renderList(noteId);
+    }
+  }
+
+  private async createNote(parentId: string | null): Promise<void> {
+    if (this.creating) return;
+    await this.ensureLoaded();
+    if (!this.loaded) return;
+    const selectionIntentVersion = this.selectionVersion;
+    this.creating = true;
+    this.newButton.disabled = true;
+    try {
+      await this.waitForEditorUploads();
+      await this.flushAllPendingSaves();
+      const editVersionBaseline = new Map(this.editVersions);
+      const previousIds = new Set(this.notes.map((note) => note.id));
+      const workspace = await window.notesApi.createNote({ parentId });
+      const note = workspace.notes.find((candidate) => !previousIds.has(candidate.id));
+      if (!note) throw new Error('The new Note was not returned.');
+      this.captureActiveEditorContent();
+      this.applyWorkspace(workspace, editVersionBaseline);
+      const selectCreatedNote = selectionIntentVersion === this.selectionVersion;
+      let committedSelectionVersion = this.selectionVersion;
+      if (selectCreatedNote) {
+        const previouslySelectedId = this.selectedId;
+        if (previouslySelectedId) this.releaseNoteBody(previouslySelectedId);
+        this.selectedId = note.id;
+        this.openNoteTab(note.id, true);
+        this.searchInput.value = '';
+        committedSelectionVersion = ++this.selectionVersion;
+      }
+      this.render();
+      this.updateSelectedSaveStatus();
+      if (selectCreatedNote) {
+        window.requestAnimationFrame(() => {
+          if (committedSelectionVersion !== this.selectionVersion || this.selectedId !== note.id) return;
+          this.nameInput.focus();
+          this.nameInput.select();
+        });
+      }
+    } catch (error) {
+      toast(`Unable to create Note: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.creating = false;
+      this.newButton.disabled = false;
+    }
+  }
+
+  private showShareDialog(opener: HTMLButtonElement): void {
+    this.shareOpener = opener;
+    this.closeLanguageMenu();
+    this.closeDownloadMenu();
+    this.closeMarkdownOutline();
+    this.closeShareHistoryMenus();
+    if (!this.shareDialog.open) this.shareDialog.showModal();
+  }
+
+  private async openShareDialog(): Promise<void> {
+    const note = this.selectedNote();
+    if (!note || this.noteShareInFlight) return;
+    const generation = ++this.shareRequestGeneration;
+    this.shareSelectedDuration = 24;
+    this.shareDurationSelect.value = '24';
+    this.shareNoteId = note.id;
+    this.currentShare = undefined;
+    this.shareHistory = [];
+    this.noteShareInFlight = true;
+    this.showShareDialog(this.shareButton);
+    this.setShareStatus('Creating share link...', 'default');
+    this.renderShareDialog();
+    this.updateShareButtonState();
+    try {
+      this.captureEditorContent(note.id);
+      await this.flushNote(note.id);
+      const current = this.notesById.get(note.id);
+      if (!current || this.deletedIds.has(note.id)) throw new Error('Note not found.');
+      const created = await window.notesApi.createShare({
+        noteId: current.id,
+        expiresInHours: this.shareSelectedDuration,
+      });
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== current.id) return;
+      this.currentShare = created;
+      await this.reloadShareHistory(current.id, created.shareId);
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== current.id) return;
+      this.setShareStatus('Share link created.', 'success');
+      this.renderShareDialog();
+      this.shareCopyButton.focus();
+    } catch (error) {
+      if (generation === this.shareRequestGeneration) {
+        this.setShareStatus(`Unable to share Note: ${toErrorMessage(error)}`, 'error');
+        this.renderShareDialog();
+      }
+    } finally {
+      this.noteShareInFlight = false;
+      this.updateShareButtonState();
+      if (generation === this.shareRequestGeneration) this.renderShareDialog();
+    }
+  }
+
+  private async reloadShareHistory(noteId: string, preferredShareId?: string): Promise<void> {
+    const history = await window.notesApi.listShares(noteId);
+    this.shareHistory = history;
+    const preferred = preferredShareId
+      ? history.find((share) => share.shareId === preferredShareId)
+      : undefined;
+    this.currentShare = preferred
+      ?? (this.currentShare ? history.find((share) => share.shareId === this.currentShare?.shareId) : undefined)
+      ?? history[0];
+  }
+
+  private async handleShareDurationChange(): Promise<void> {
+    this.shareSelectedDuration = parseNoteShareDuration(this.shareDurationSelect.value);
+    const noteId = this.shareNoteId;
+    const share = this.currentShare;
+    if (!noteId || !share || this.noteShareInFlight) {
+      this.renderShareDialog();
+      return;
+    }
+    const generation = ++this.shareRequestGeneration;
+    this.noteShareInFlight = true;
+    this.setShareStatus('Re-signing share link...', 'default');
+    this.renderShareDialog();
+    this.updateShareButtonState();
+    try {
+      const updated = await window.notesApi.resignShare({
+        noteId,
+        shareId: share.shareId,
+        expiresInHours: this.shareSelectedDuration,
+      });
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+      this.currentShare = updated;
+      await this.reloadShareHistory(noteId, updated.shareId);
+      if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+      this.setShareStatus('Share link re-signed.', 'success');
+      this.renderShareDialog();
+      this.shareCopyButton.focus();
+    } catch (error) {
+      if (generation === this.shareRequestGeneration) {
+        this.setShareStatus(`Unable to re-sign share link: ${toErrorMessage(error)}`, 'error');
+        this.renderShareDialog();
+      }
+    } finally {
+      this.noteShareInFlight = false;
+      this.updateShareButtonState();
+      if (generation === this.shareRequestGeneration) this.renderShareDialog();
+    }
+  }
+
+  private async copyCurrentShareLink(): Promise<void> {
+    const url = this.currentShare?.url;
+    if (!url || this.noteShareInFlight) return;
+    await this.copyShareLink(url, this.shareCopyButton);
+  }
+
+  private async copyShareLink(url: string, button?: HTMLButtonElement): Promise<void> {
+    try {
+      await window.serviceApi.writeClipboardText(url);
+      const target = button ?? this.shareCopyButton;
+      target.textContent = 'Copied';
+      target.dataset.copied = 'true';
+      if (target === this.shareCopyButton) {
+        if (this.shareCopyResetTimer !== undefined) window.clearTimeout(this.shareCopyResetTimer);
+        this.shareCopyResetTimer = window.setTimeout(() => {
+          this.shareCopyResetTimer = undefined;
+          this.shareCopyButton.textContent = 'Copy Link';
+          delete this.shareCopyButton.dataset.copied;
+        }, 1_200);
+      } else {
+        window.setTimeout(() => {
+          if (!target.isConnected) return;
+          target.textContent = 'Copy Link';
+          delete target.dataset.copied;
+        }, 1_200);
+      }
+    } catch (error) {
+      this.setShareStatus(`Unable to copy share link: ${toErrorMessage(error)}`, 'error');
+      this.renderShareDialog();
+    }
+  }
+
+  private closeShareHistoryMenus(except?: HTMLElement): void {
+    for (const menu of Array.from(this.shareHistoryList.querySelectorAll<HTMLElement>('[data-note-share-menu-popup]'))) {
+      if (except && menu === except) continue;
+      menu.classList.add('hidden');
+    }
+    for (const button of Array.from(this.shareHistoryList.querySelectorAll<HTMLButtonElement>('[data-note-share-menu]'))) {
+      const popup = button.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLElement>('[data-note-share-menu-popup]');
+      button.setAttribute('aria-expanded', String(Boolean(popup && !popup.classList.contains('hidden'))));
+    }
+  }
+
+  private handleShareHistoryKeyDown(event: KeyboardEvent): void {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const menu = source.closest<HTMLElement>('[data-note-share-menu-popup]');
+    if (!menu) return;
+    const trigger = menu.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLButtonElement>('[data-note-share-menu]');
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeShareHistoryMenus();
+      trigger?.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'));
+    if (items.length === 0) return;
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowUp'
+          ? current <= 0 ? items.length - 1 : current - 1
+          : current < 0 || current >= items.length - 1 ? 0 : current + 1;
+    event.preventDefault();
+    event.stopPropagation();
+    items[next]?.focus();
+  }
+
+  private async handleShareHistoryClick(event: Event): Promise<void> {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const copy = source.closest<HTMLButtonElement>('[data-note-share-copy]');
+    if (copy?.dataset.noteShareCopy) {
+      event.stopPropagation();
+      const share = this.shareHistory.find((candidate) => candidate.shareId === copy.dataset.noteShareCopy);
+      if (share?.url && !this.noteShareInFlight) await this.copyShareLink(share.url, copy);
+      return;
+    }
+    const menuButton = source.closest<HTMLButtonElement>('[data-note-share-menu]');
+    if (menuButton?.dataset.noteShareMenu) {
+      event.stopPropagation();
+      if (this.noteShareInFlight) return;
+      const popup = menuButton.closest<HTMLElement>('.note-share-history-menu-wrap')?.querySelector<HTMLElement>('[data-note-share-menu-popup]');
+      if (!popup) return;
+      const opening = popup.classList.contains('hidden');
+      this.closeShareHistoryMenus(popup);
+      popup.classList.toggle('hidden', !opening);
+      menuButton.setAttribute('aria-expanded', String(opening));
+      if (opening) popup.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus();
+      return;
+    }
+    const remove = source.closest<HTMLElement>('[data-note-share-delete]');
+    const noteId = this.shareNoteId;
+    const deleteShareId = remove?.dataset.noteShareDelete;
+    if (deleteShareId) {
+      if (!noteId || this.noteShareInFlight) return;
+      event.stopPropagation();
+      this.closeShareHistoryMenus();
+      const share = this.shareHistory.find((candidate) => candidate.shareId === deleteShareId);
+      const confirmed = await window.serviceApi.confirmAction({
+        title: 'Delete Share Link?',
+        message: `Delete the share link for "${share?.title || 'Untitled'}"?`,
+        detail: 'The static page and copied media files will be removed from S3.',
+        kind: 'warning',
+        confirmLabel: 'Delete',
+      });
+      if (!confirmed) return;
+      const generation = ++this.shareRequestGeneration;
+      this.noteShareInFlight = true;
+      this.setShareStatus('Deleting share link...', 'default');
+      this.renderShareDialog();
+      this.updateShareButtonState();
+      try {
+        await window.notesApi.deleteShare(noteId, deleteShareId);
+        if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+        await this.reloadShareHistory(noteId);
+        if (generation !== this.shareRequestGeneration || this.shareNoteId !== noteId) return;
+        this.setShareStatus('Share link deleted.', 'success');
+        this.renderShareDialog();
+      } catch (error) {
+        if (generation === this.shareRequestGeneration) {
+          this.setShareStatus(`Unable to delete share link: ${toErrorMessage(error)}`, 'error');
+          this.renderShareDialog();
+        }
+      } finally {
+        this.noteShareInFlight = false;
+        this.updateShareButtonState();
+        if (generation === this.shareRequestGeneration) this.renderShareDialog();
+      }
+      return;
+    }
+    const select = source.closest<HTMLElement>('[data-note-share-select]');
+    if (select?.dataset.noteShareSelect && !this.noteShareInFlight) this.selectShareHistoryItem(select.dataset.noteShareSelect);
+  }
+
+  private selectShareHistoryItem(shareId: string): void {
+    const share = this.shareHistory.find((candidate) => candidate.shareId === shareId);
+    if (!share) return;
+    this.currentShare = share;
+    this.setShareStatus(share.url ? 'Share link selected.' : 'This share has expired. Change the expiry to re-sign it.', 'default');
+    this.renderShareDialog();
+  }
+
+  private handleShareDialogClosed(): void {
+    this.shareRequestGeneration += 1;
+    if (this.shareCopyResetTimer !== undefined) {
+      window.clearTimeout(this.shareCopyResetTimer);
+      this.shareCopyResetTimer = undefined;
+    }
+    this.shareCopyButton.textContent = 'Copy Link';
+    delete this.shareCopyButton.dataset.copied;
+    this.closeShareHistoryMenus();
+    const opener = this.shareOpener;
+    this.shareOpener = undefined;
+    if (opener?.isConnected && !opener.disabled) opener.focus();
+  }
+
+  private setShareStatus(text: string, state: 'default' | 'success' | 'error'): void {
+    this.shareStatus.textContent = text;
+    this.shareStatus.dataset.state = state;
+    this.shareStatus.classList.toggle('hidden', !text);
+  }
+
+  private renderShareDialog(): void {
+    this.shareDurationSelect.value = String(this.shareSelectedDuration);
+    this.shareDurationSelect.disabled = this.noteShareInFlight || !this.currentShare;
+    const url = this.currentShare?.url ?? '';
+    this.shareUrlText.textContent = url || (this.noteShareInFlight
+      ? 'Preparing share link...'
+      : this.currentShare ? 'Change expiry to re-sign this share.' : 'No share link selected.');
+    this.shareUrlText.title = url;
+    this.shareCopyButton.disabled = this.noteShareInFlight || !url;
+    this.shareHistoryList.replaceChildren(this.renderShareHistoryFragment());
+  }
+
+  private renderShareHistoryFragment(): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    if (this.shareHistory.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'note-share-history-empty';
+      empty.textContent = this.noteShareInFlight ? 'Loading share history...' : 'No shared links yet.';
+      fragment.appendChild(empty);
+      return fragment;
+    }
+    for (const share of this.shareHistory) {
+      const item = document.createElement('article');
+      item.className = 'note-share-history-item';
+      item.dataset.noteShareSelect = share.shareId;
+      item.dataset.current = String(share.shareId === this.currentShare?.shareId);
+      item.dataset.status = share.status;
+
+      const link = document.createElement('span');
+      link.className = 'note-share-history-link';
+      link.textContent = share.url ?? 'Expired link';
+      link.title = share.url ?? '';
+
+      const expiry = document.createElement('span');
+      expiry.className = 'note-share-history-expiry';
+      expiry.textContent = share.status === 'active'
+        ? `Expires ${formatNoteShareExpiry(share.expiresAt)}`
+        : `Expired ${formatNoteShareExpiry(share.expiresAt)}`;
+
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'btn btn-secondary btn-sm note-share-history-copy';
+      copy.dataset.noteShareCopy = share.shareId;
+      copy.disabled = this.noteShareInFlight || !share.url;
+      copy.textContent = 'Copy Link';
+
+      const menuWrap = document.createElement('div');
+      menuWrap.className = 'note-share-history-menu-wrap';
+      const menuButton = document.createElement('button');
+      menuButton.type = 'button';
+      menuButton.className = 'note-share-history-menu-button';
+      menuButton.dataset.noteShareMenu = share.shareId;
+      menuButton.disabled = this.noteShareInFlight;
+      menuButton.setAttribute('aria-haspopup', 'menu');
+      menuButton.setAttribute('aria-expanded', 'false');
+      menuButton.setAttribute('aria-label', 'Share link actions');
+      menuButton.textContent = '…';
+      const menu = document.createElement('div');
+      menu.className = 'note-share-history-menu hidden';
+      menu.dataset.noteShareMenuPopup = share.shareId;
+      menu.setAttribute('role', 'menu');
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.setAttribute('role', 'menuitem');
+      remove.dataset.noteShareDelete = share.shareId;
+      remove.disabled = this.noteShareInFlight;
+      remove.textContent = 'Delete';
+      menu.append(remove);
+      menuWrap.append(menuButton, menu);
+
+      item.append(link, expiry, copy, menuWrap);
+      fragment.appendChild(item);
+    }
+    return fragment;
+  }
+
+  private toggleDownloadMenu(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (this.downloadButton.disabled) return;
+    const opening = this.downloadMenu.classList.contains('hidden');
+    this.closeLanguageMenu();
+    this.closeMarkdownOutline();
+    if (!opening) {
+      this.closeDownloadMenu();
+      return;
+    }
+    this.downloadMenu.classList.remove('hidden');
+    this.downloadButton.setAttribute('aria-expanded', 'true');
+    this.downloadMenu.querySelector<HTMLButtonElement>('button')?.focus();
+  }
+
+  private closeDownloadMenu(): void {
+    this.downloadMenu.classList.add('hidden');
+    this.downloadButton.setAttribute('aria-expanded', 'false');
+  }
+
+  private handlePopupMenuKeyDown(
+    event: KeyboardEvent,
+    menu: HTMLElement,
+    trigger: HTMLButtonElement,
+    close: () => void,
+  ): void {
+    if (event.key === 'Escape' || event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      trigger.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'));
+    if (items.length === 0) return;
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowUp'
+          ? current <= 0 ? items.length - 1 : current - 1
+          : current < 0 || current >= items.length - 1 ? 0 : current + 1;
+    event.preventDefault();
+    event.stopPropagation();
+    items[next]?.focus();
+  }
+
+  private readonly handleNotesPopupOutsidePointerDown = (event: PointerEvent): void => {
+    const source = event.target;
+    if (!(source instanceof window.Node)) return;
+    if (!this.languageControl.contains(source)) this.closeLanguageMenu();
+    if (!this.downloadMenu.contains(source) && !this.downloadButton.contains(source)) this.closeDownloadMenu();
+    if (!this.markdownOutlineMenu.contains(source) && !this.markdownOutlineButton.contains(source)) {
+      this.closeMarkdownOutline();
+    }
+    if (!this.shareHistoryList.contains(source)) this.closeShareHistoryMenus();
+  };
+
+  private async handleDownloadMenuClick(event: Event): Promise<void> {
+    const source = event.target;
+    if (!(source instanceof Element)) return;
+    const item = source.closest<HTMLElement>('[data-note-export-format]');
+    const format = item?.dataset.noteExportFormat;
+    if ((format !== 'pdf' && format !== 'markdown') || this.noteExportInFlight) return;
+    this.closeDownloadMenu();
+    const note = this.selectedNote();
+    if (!note || (note.language !== 'richtext' && note.language !== 'markdown')) return;
+    this.noteExportInFlight = true;
+    this.updateDownloadButtonState();
+    try {
+      this.captureEditorContent(note.id);
+      await this.flushNote(note.id);
+      const current = this.notesById.get(note.id);
+      if (!current || (current.language !== 'richtext' && current.language !== 'markdown')) return;
+      const result = await window.notesApi.exportNote({
+        title: current.name || 'Untitled',
+        language: current.language,
+        content: current.content,
+        format,
+      });
+      if (result.status === 'saved') {
+        const label = format === 'pdf' ? 'PDF' : 'Markdown';
+        toast(
+          result.canOpen ? `${label} saved. Click to open.` : `${label} saved.`,
+          'success',
+          result.canOpen ? 'open-note-export' : undefined,
+        );
+      }
+    } catch (error) {
+      toast(`Unable to download Note: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.noteExportInFlight = false;
+      this.updateDownloadButtonState();
+      if (!this.downloadButton.disabled) this.downloadButton.focus();
+    }
+  }
+
+  private async copySelectedNote(): Promise<void> {
+    const note = this.selectedNote();
+    if (!note) return;
+    try {
+      this.captureEditorContent(note.id);
+      const content = note.language === 'richtext'
+        ? extractRichTextPlainText(note.content)
+        : note.content;
+      await window.serviceApi.writeClipboardText(content);
+      this.copyLabel.textContent = 'Copied';
+      this.copyButton.dataset.copied = 'true';
+      window.setTimeout(() => {
+        this.copyLabel.textContent = 'Copy';
+        delete this.copyButton.dataset.copied;
+      }, 1_200);
+    } catch (error) {
+      this.setSaveStatus(`Copy failed: ${toErrorMessage(error)}`, 'error');
+    }
+  }
+
+  private async deleteNote(id: string): Promise<void> {
+    if (this.deletingNoteIds.has(id)) return;
+    this.deletingNoteIds.add(id);
+    this.renderList(id);
+
+    try {
+      await this.waitForEditorUploads();
+      await this.flushAllPendingSaves();
+      let promptUsesUpdatedScope = false;
+      let pendingPreview: NoteDeletePreview | null | undefined;
+
+      while (true) {
+        const preview = pendingPreview === undefined
+          ? await window.notesApi.previewNoteDelete(id)
+          : pendingPreview;
+        pendingPreview = undefined;
+        if (!preview || preview.expectedIds.length === 0) {
+          await this.reload();
+          return;
+        }
+
+        const scopeDetail = preview.expectedIds.length > 1
+          ? `This will permanently delete ${preview.expectedIds.length} Notes in this subtree.`
+          : 'This action cannot be undone.';
+        const confirmed = await window.serviceApi.confirmAction({
+          title: 'Delete Note',
+          message: `Delete “${preview.name || 'Untitled'}”?`,
+          detail: promptUsesUpdatedScope
+            ? `Updated deletion scope: ${scopeDetail}`
+            : scopeDetail,
+          kind: 'warning',
+          confirmLabel: 'Delete',
+          cancelLabel: 'Cancel',
+        });
+        if (!confirmed) return;
+
+        // Recheck only the lightweight authoritative scope after the native
+        // dialog. No complete Note bodies cross IPC for a confirmation retry.
+        const confirmedPreview = await window.notesApi.previewNoteDelete(id);
+        if (!confirmedPreview
+          || !sameNoteIdSet(preview.expectedIds, confirmedPreview.expectedIds)) {
+          pendingPreview = confirmedPreview;
+          promptUsesUpdatedScope = true;
+          continue;
+        }
+
+        const visibleBeforeDelete = this.searchInput.value.trim()
+          ? [...this.searchResultIds]
+          : this.visibleTreeRows().map((item) => item.note.id);
+        const deletedIndex = visibleBeforeDelete.indexOf(id);
+        const focusAfterDelete = visibleBeforeDelete.slice(deletedIndex + 1)
+          .find((candidate) => !confirmedPreview.expectedIds.includes(candidate))
+          ?? [...visibleBeforeDelete.slice(0, deletedIndex)].reverse()
+            .find((candidate) => !confirmedPreview.expectedIds.includes(candidate));
+        this.captureActiveEditorContent();
+        const selectedBeforeDelete = this.selectedId;
+        const openTabsBeforeDelete = [...this.openNoteIds];
+        const noteTabsVersionBeforeDelete = this.noteTabsVersion;
+        const removedNoteIds = new Set(confirmedPreview.expectedIds);
+        const editVersionBaseline = new Map(this.editVersions);
+        for (const noteId of confirmedPreview.expectedIds) {
+          this.deletedIds.add(noteId);
+          this.clearSaveTimer(noteId);
+        }
+        let optimisticSelectionVersion: number | undefined;
+        if (this.selectedId && this.deletedIds.has(this.selectedId)) {
+          this.selectedId = noteTabFallbackAfterRemoval(
+            openTabsBeforeDelete,
+            selectedBeforeDelete,
+            removedNoteIds,
+          ) ?? focusAfterDelete
+            ?? this.treeNodes.find((node) => !this.deletedIds.has(node.noteId))?.noteId;
+          optimisticSelectionVersion = ++this.selectionVersion;
+        }
+        this.render();
+
+        try {
+          const result = await window.notesApi.deleteNote({
+            id,
+            expectedIds: confirmedPreview.expectedIds,
+          });
+          if (result.status === 'changed') {
+            this.captureActiveEditorContent();
+            for (const noteId of confirmedPreview.expectedIds) this.deletedIds.delete(noteId);
+            if (this.noteTabsVersion === noteTabsVersionBeforeDelete) {
+              this.openNoteIds = openTabsBeforeDelete;
+            }
+            if (optimisticSelectionVersion !== undefined
+              && optimisticSelectionVersion === this.selectionVersion
+              && selectedBeforeDelete
+              && this.notesById.has(selectedBeforeDelete)) {
+              this.selectedId = selectedBeforeDelete;
+              this.selectionVersion += 1;
+            }
+            this.render();
+            pendingPreview = result.preview;
+            promptUsesUpdatedScope = true;
+            continue;
+          }
+
+          this.captureActiveEditorContent();
+          this.applyWorkspace({
+            notes: this.notes.filter((note) => !result.deletedIds.includes(note.id)),
+            tree: result.tree,
+            expandedNoteIds: result.expandedNoteIds,
+          }, editVersionBaseline, true);
+          for (const deletedId of result.deletedIds) this.deletedIds.delete(deletedId);
+          if (!this.selectedId) {
+            this.selectedId = focusAfterDelete ?? this.treeNodes[0]?.noteId;
+            this.selectionVersion += 1;
+          }
+          this.render();
+          this.renderList(focusAfterDelete ?? this.selectedId);
+          if (!this.selectedId) this.newButton.focus();
+          this.updateSelectedSaveStatus();
+          toast(
+            result.deletedIds.length === 1
+              ? 'Note deleted.'
+              : `${result.deletedIds.length} Notes deleted.`,
+            'success',
+          );
+          return;
+        } catch (error) {
+          this.captureActiveEditorContent();
+          for (const noteId of confirmedPreview.expectedIds) {
+            this.deletedIds.delete(noteId);
+            if (this.isDirty(noteId)) this.scheduleSave(noteId);
+          }
+          if (this.noteTabsVersion === noteTabsVersionBeforeDelete) {
+            this.openNoteIds = openTabsBeforeDelete;
+          }
+          if (optimisticSelectionVersion !== undefined
+            && optimisticSelectionVersion === this.selectionVersion
+            && selectedBeforeDelete
+            && this.notesById.has(selectedBeforeDelete)) {
+            this.selectedId = selectedBeforeDelete;
+            this.selectionVersion += 1;
+          }
+          this.render();
+          throw error;
+        }
+      }
+    } catch (error) {
+      this.setSaveStatus(`Delete failed: ${toErrorMessage(error)}`, 'error');
+    } finally {
+      this.deletingNoteIds.delete(id);
+      this.renderList(this.selectedId);
+    }
+  }
+
+  private handleListKeydown(event: KeyboardEvent): void {
+    const items = Array.from(this.list.querySelectorAll<HTMLButtonElement>('.notes-list-item'));
+    if (items.length === 0) return;
+    const current = document.activeElement instanceof HTMLButtonElement
+      ? items.indexOf(document.activeElement)
+      : -1;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      const item = current >= 0 ? items[current] : undefined;
+      const noteId = item?.dataset.noteId;
+      if (!item || !noteId || this.searchInput.value.trim()) return;
+      const children = this.treeChildren().get(noteId) ?? [];
+      if (event.key === 'ArrowRight') {
+        if (children.length === 0) return;
+        event.preventDefault();
+        if (!this.expandedNoteIds.has(noteId)) void this.toggleTreeExpanded(noteId);
+        else items.find((candidate) => candidate.dataset.noteId === children[0]?.noteId)?.focus();
+        return;
+      }
+      const node = this.treeNodesById.get(noteId);
+      event.preventDefault();
+      if (children.length > 0 && this.expandedNoteIds.has(noteId)) void this.toggleTreeExpanded(noteId);
+      else if (node?.parentId) items.find((candidate) => candidate.dataset.noteId === node.parentId)?.focus();
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    const next = current < 0 ? 0 : (current + direction + items.length) % items.length;
+    event.preventDefault();
+    items[next]?.focus();
+  }
+
+  private replaceEditorDocument(content: string): void {
+    const current = this.codeEditor.state.doc.toString();
+    if (current === content) {
+      this.updateEditorEmptyState();
+      return;
+    }
+    this.replacingEditorDocument = true;
+    try {
+      this.codeEditor.dispatch({
+        changes: { from: 0, to: this.codeEditor.state.doc.length, insert: content },
+      });
+    } finally {
+      this.replacingEditorDocument = false;
+    }
+    this.updateEditorEmptyState();
+  }
+
+  private createEditorState(content: string, language: NoteLanguage): EditorState {
+    this.editorLanguage = language;
+    return EditorState.create({
+      doc: content,
+      extensions: [
+        basicSetup,
+        this.themeCompartment.of(editorThemeExtensions(this.editorTheme)),
+        this.languageCompartment.of(noteLanguageExtension(language)),
+        EditorView.lineWrapping,
+        this.editorAttributesCompartment.of(EditorView.contentAttributes.of({
+          'aria-label': 'Note content',
+          'aria-multiline': 'true',
+          spellcheck: language === 'markdown' ? 'true' : 'false',
+        })),
+        EditorView.updateListener.of((update) => {
+          if (update.viewportChanged) this.queueInNoteFindRefresh();
+          if ((!update.docChanged && !update.selectionSet) || this.replacingEditorDocument) return;
+          if (update.docChanged) {
+            this.updateSelectedCodeContent();
+            this.queueInNoteFindRefresh();
+          }
+          if (update.selectionSet) {
+            this.updateMarkdownSelectionStats();
+            if (this.markdownTypewriterMode) this.queueMarkdownViewportUpdate(true);
+          }
+        }),
+      ],
+    });
+  }
+
+  private setEditorLanguage(language: NoteLanguage): void {
+    if (language === 'richtext') return;
+    if (language === this.editorLanguage) return;
+    this.editorLanguage = language;
+    this.codeEditor.dispatch({
+      effects: [
+        this.languageCompartment.reconfigure(noteLanguageExtension(language)),
+        this.editorAttributesCompartment.reconfigure(EditorView.contentAttributes.of({
+          'aria-label': 'Note content',
+          'aria-multiline': 'true',
+          spellcheck: language === 'markdown' ? 'true' : 'false',
+        })),
+      ],
+    });
+  }
+
+  private updateEditorEmptyState(): void {
+    const note = this.selectedNote();
+    if (!note) {
+      this.contentHost.dataset.empty = 'true';
+      return;
+    }
+    if (note.language !== 'richtext') {
+      this.contentHost.dataset.empty = String(this.codeEditor.state.doc.length === 0);
+      return;
+    }
+    try {
+      const document = parseRichTextContent(note.content);
+      const hasContent = (document.content ?? []).some((node) =>
+        node.type !== 'paragraph' || Boolean(node.content?.length)
+      );
+      this.contentHost.dataset.empty = String(!hasContent);
+    } catch {
+      this.contentHost.dataset.empty = 'false';
+    }
+  }
+
+  private replaceRichTextDocument(content: string): void {
+    const normalized = normalizeRichTextContent(content || EMPTY_RICH_TEXT_CONTENT);
+    if (this.richTextEditor.getContent() === normalized) return;
+    this.replacingEditorDocument = true;
+    try {
+      this.richTextEditor.setContent(normalized);
+    } finally {
+      this.replacingEditorDocument = false;
+    }
+  }
+
+  private showEditorMode(language: NoteLanguage): void {
+    const richText = language === 'richtext';
+    const markdown = language === 'markdown';
+    this.codeContentHost.classList.toggle('hidden', richText);
+    this.codeEditorShell.classList.toggle('hidden', richText);
+    this.richTextShell.classList.toggle('hidden', !richText);
+    this.markdownToolbar.classList.toggle('hidden', !markdown);
+    this.markdownStatus.classList.toggle('hidden', !markdown);
+    this.markdownPreview.classList.toggle('hidden', !markdown || !this.markdownPreviewEnabled);
+    this.codeLayout.dataset.preview = String(markdown && this.markdownPreviewEnabled);
+    this.updateDownloadButtonState();
+    this.updateShareButtonState();
+    if (!markdown) this.closeMarkdownOutline();
+    this.contentHost.dataset.mode = richText ? 'richtext' : 'code';
+    this.contentHost.dataset.language = language;
+    if (!richText) this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
+    if (markdown) this.updateMarkdownUi(this.selectedNote()?.content ?? '');
+  }
+
+  private updateDownloadButtonState(): void {
+    const note = this.selectedNote();
+    const exportable = note?.language === 'richtext' || note?.language === 'markdown';
+    this.downloadButton.disabled = this.noteExportInFlight || !exportable;
+    this.downloadButton.setAttribute('aria-busy', String(this.noteExportInFlight));
+  }
+
+  private updateShareButtonState(): void {
+    this.shareButton.disabled = this.noteShareInFlight || !this.selectedNote();
+    this.shareButton.setAttribute('aria-busy', String(this.noteShareInFlight));
+  }
+
+  private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {
+    if (this.saveStatus.textContent === text && this.saveStatus.dataset.state === state) return;
+    this.saveStatus.textContent = text;
+    this.saveStatus.dataset.state = state;
+    if (state === 'error' && text) toast(text, 'error');
+  }
+
+  private updateSelectedSaveStatus(): void {
+    const id = this.selectedId;
+    if (!id) {
+      this.setSaveStatus('', 'saved');
+      return;
+    }
+    if (!this.loadedNoteIds.has(id)) {
+      const error = this.noteBodyErrors.get(id);
+      this.setSaveStatus(error ?? 'Loading Note…', error ? 'error' : 'saving');
+      return;
+    }
+    const dirty = this.isDirty(id);
+    this.setSaveStatus(dirty ? 'Saving…' : 'Saved', dirty ? 'saving' : 'saved');
+  }
+}
+
+let page: NotesPage | undefined;
+let flushListenerRegistered = false;
+
+export function applyNotesFontSize(fontSize: number): void {
+  const normalized = Number.isInteger(fontSize) && fontSize >= 12 && fontSize <= 24 ? fontSize : 18;
+  document.documentElement.style.setProperty('--notes-editor-font-size', `${normalized}px`);
+  window.requestAnimationFrame(() => page?.requestEditorMeasure());
+}
+
+export function applyNotesEditorTheme(theme: 'light' | 'dark'): void {
+  const normalized = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.notesEditorTheme = normalized;
+  page?.applyEditorTheme(normalized);
+}
+
+export function applyNotesSidebarWidth(width: number): void {
+  const normalized = clampNotesSidebarWidth(width);
+  if (page) {
+    page.applyPersistedSidebarWidth(normalized);
+    return;
+  }
+  document.documentElement.style.setProperty('--notes-sidebar-width', `${normalized}px`);
+}
+
+export function registerNotesPage(): void {
+  page ??= new NotesPage();
+  if (!flushListenerRegistered) {
+    window.notesApi.onFlushRequested((request) => request.persistentApplyId
+      ? page?.lockForPersistentApply(request.persistentApplyId) ?? Promise.resolve()
+      : page?.flush() ?? Promise.resolve());
+    window.notesApi.onPersistentApplyReleased((persistentApplyId) => {
+      page?.releasePersistentApply(persistentApplyId);
+    });
+    flushListenerRegistered = true;
+  }
+  registerPage({
+    id: 'notes',
+    title: 'Notes',
+    icon: NOTES_NAV_ICON,
+    onShow: () => page?.show(),
+    onHide: () => page?.hide(),
+  });
+}
+
+export function flushNotesPage(): Promise<void> {
+  return page?.flush() ?? Promise.resolve();
+}
+
+export function reloadNotesPage(persistentApplyId?: string): Promise<void> {
+  return page?.reload(persistentApplyId) ?? Promise.resolve();
+}
+
+export function applyNotesPageDelta(
+  delta: NotesWorkspaceDelta,
+  persistentApplyId?: string,
+): Promise<void> {
+  return page?.applyPersistentDelta(delta, persistentApplyId) ?? Promise.resolve();
+}

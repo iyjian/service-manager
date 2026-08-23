@@ -5,8 +5,8 @@ const { pathToFileURL } = require('node:url');
 
 async function loadModules() {
   const [cellEdit, completion] = await Promise.all([
-    import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'sqlCellEdit.js')).href),
-    import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'sqlCompletion.js')).href),
+    import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'models', 'sqlCellEdit.js')).href),
+    import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'components', 'sqlCompletion.js')).href),
   ]);
   return { cellEdit, completion };
 }

@@ -1,4 +1,4 @@
-import { captureRendererException } from './sentry.js';
+import { captureRendererException } from './utils/sentry.js';
 import type {
   AppMemoryUsage,
   ConfigTransferResult,
@@ -12,15 +12,15 @@ import type {
   TunnelStatus,
   UpdateState,
 } from '../shared/types';
-import { ansiToHtml, escapeAttribute, escapeHtml } from './html.js';
-import { initNav, registerPage } from './nav.js';
-import { registerKubernetesPage } from './kubernetesPage.js';
-import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './notesPage.js';
-import { registerProxyPage } from './proxyPage.js';
-import { registerSqlPage } from './sqlPage.js';
-import { registerSettingsDialog } from './settingsDialog.js';
-import { maybeShowChangelog } from './changelog.js';
-import { trackStartupS3SyncWork, waitForStartupS3Sync } from './startupS3SyncGate.js';
+import { ansiToHtml, escapeAttribute, escapeHtml } from './utils/html.js';
+import { initNav, registerPage } from './pages/nav.js';
+import { registerKubernetesPage } from './pages/kubernetesPage.js';
+import { applyNotesPageDelta, registerNotesPage, reloadNotesPage } from './pages/notesPage.js';
+import { registerProxyPage } from './pages/proxyPage.js';
+import { registerSqlPage } from './pages/sqlPage.js';
+import { registerSettingsDialog } from './pages/settingsDialog.js';
+import { maybeShowChangelog } from './pages/changelog.js';
+import { trackStartupS3SyncWork, waitForStartupS3Sync } from './utils/startupS3SyncGate.js';
 import {
   canStartForward,
   canStartService,
@@ -29,7 +29,7 @@ import {
   formatStatus,
   runtimeStatusMarker,
   statusClass,
-} from './status.js';
+} from './models/status.js';
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);

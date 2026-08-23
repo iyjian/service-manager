@@ -7,7 +7,7 @@ const {
   normalizeS3NotesTreeSnapshot,
   parseS3SharedAppData,
   stageS3SharedAppDataForLocalApply,
-} = require('../dist/main/s3DataMerge');
+} = require('../dist/main/s3/s3DataMerge');
 
 const T0 = '2026-07-18T00:00:00.000Z';
 const T1 = '2026-07-18T01:00:00.000Z';

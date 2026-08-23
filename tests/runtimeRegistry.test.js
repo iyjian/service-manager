@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { RuntimeRegistry } = require('../dist/main/runtimeRegistry');
+const { RuntimeRegistry } = require('../dist/main/core/runtimeRegistry');
 
 function host() {
   return {

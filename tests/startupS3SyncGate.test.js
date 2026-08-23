@@ -9,7 +9,7 @@ const rendererRoot = path.join(projectRoot, 'dist', 'renderer');
 const mainRoot = path.join(projectRoot, 'dist', 'main');
 
 async function loadGate() {
-  return import(pathToFileURL(path.join(rendererRoot, 'startupS3SyncGate.js')).href);
+  return import(pathToFileURL(path.join(rendererRoot, 'utils', 'startupS3SyncGate.js')).href);
 }
 
 test('startup S3 loading detail follows the current bounded sync phase and count', async () => {
@@ -40,9 +40,9 @@ test('application startup owns an inert S3 overlay until main sync and renderer 
     readFile(path.join(rendererRoot, 'index.html'), 'utf8'),
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'renderer.js'), 'utf8'),
-    readFile(path.join(rendererRoot, 'startupS3SyncGate.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'preload.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'main.js'), 'utf8'),
+    readFile(path.join(rendererRoot, 'utils', 'startupS3SyncGate.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'preload.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'main.js'), 'utf8'),
   ]);
 
   assert.match(html, /id="app-startup-sync"[^>]*role="status"[^>]*aria-busy="true"/);

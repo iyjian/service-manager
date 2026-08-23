@@ -11,7 +11,7 @@ const {
   UserDataInstanceLockError,
   acquireUserDataInstanceLock,
   assertUserDataInstanceLockAvailable,
-} = require('../dist/main/userDataInstanceLock');
+} = require('../dist/main/core/userDataInstanceLock');
 
 const NOW = new Date('2026-07-20T00:00:00.000Z');
 

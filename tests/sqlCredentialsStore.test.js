@@ -7,7 +7,7 @@ const test = require('node:test');
 const {
   SQL_CREDENTIALS_SCHEMA_VERSION,
   SqlCredentialsStore,
-} = require('../dist/main/sqlCredentialsStore');
+} = require('../dist/main/sql/sqlCredentialsStore');
 
 function protector(overrides = {}) {
   return {

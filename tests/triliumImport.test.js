@@ -18,7 +18,7 @@ const {
   triliumSourceVersion,
   triliumStoredSourceVersion,
   triliumVersionTag,
-} = require('../dist/main/triliumImport');
+} = require('../dist/main/trilium/triliumImport');
 
 const ENDPOINT = 'https://notes.example.test/base';
 const TOKEN = 'test_ETAPI+/token=';

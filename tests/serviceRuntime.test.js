@@ -20,7 +20,7 @@ const {
   selectSystemdUnitName,
   shellQuoteSingle,
   shouldRetrySystemdSupportCheck,
-} = require('../dist/main/serviceRuntime');
+} = require('../dist/main/ssh/serviceRuntime');
 
 function host(id = 'host-1') {
   return {
@@ -126,7 +126,7 @@ test('classifySystemdSupportFailure applies runtime-log redaction to linger diag
 });
 
 test('compiled service runtime keeps linger probe stderr for safe failure classification', async () => {
-  const runtime = await readFile(path.join(__dirname, '..', 'dist', 'main', 'serviceRuntime.js'), 'utf8');
+  const runtime = await readFile(path.join(__dirname, '..', 'dist', 'main', 'ssh', 'serviceRuntime.js'), 'utf8');
   const lingerProbeStart = runtime.indexOf('loginctl show-user');
   const lingerProbe = runtime.slice(lingerProbeStart, lingerProbeStart + 400);
 

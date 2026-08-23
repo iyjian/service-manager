@@ -4,8 +4,8 @@ const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 
 const rendererPath = path.join(__dirname, '..', 'dist', 'renderer');
-const modelPath = path.join(rendererPath, 'kubernetesDetailModel.js');
-const customResourceModelPath = path.join(rendererPath, 'kubernetesCustomResourceModel.js');
+const modelPath = path.join(rendererPath, 'models', 'kubernetesDetailModel.js');
+const customResourceModelPath = path.join(rendererPath, 'models', 'kubernetesCustomResourceModel.js');
 
 test('detectKubernetesForwardPorts extracts stable deduplicated Pod TCP declarations with provenance', async () => {
   const { detectKubernetesForwardPorts } = await import(modelPath);
@@ -312,7 +312,7 @@ test('Kubernetes resource detail uses an overlay drawer header with Port Forward
 });
 
 test('Kubernetes built-in drawers dispatch to resource-specific text-safe sections with lazy collapsed content', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const renderDetailStart = page.indexOf('    renderDetail() {');
   const renderDetailEnd = page.indexOf('    renderOverview(detail, active) {', renderDetailStart);
   const builtInStart = page.indexOf('    renderBuiltinResourceDrawer(detail, active) {');
@@ -338,7 +338,7 @@ test('Kubernetes built-in drawers dispatch to resource-specific text-safe sectio
 });
 
 test('Kubernetes Pod drawer exposes a fenced direct system VNC action only for detected KubeVirt launchers', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const renderStart = page.indexOf('    renderDrawerVnc(detail, active) {');
   const openStart = page.indexOf('    async openVnc() {', renderStart);
   const podStart = page.indexOf('    renderPodDrawer(detail, active) {', openStart);
@@ -385,7 +385,7 @@ test('Kubernetes reserves a hidden workspace shell for the later Logs and Shell 
 });
 
 test('Kubernetes drawer binds local close, scrim, and YAML controls without starting workspace sessions', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const bindings = page.slice(
     page.indexOf("this.detailCloseButton.addEventListener('click'"),
     page.indexOf("this.portForwardDeclaredPort.addEventListener('change'"),
@@ -399,7 +399,7 @@ test('Kubernetes drawer binds local close, scrim, and YAML controls without star
 });
 
 test('drawer container actions target the persistent workspace while drawer close leaves tabs alone', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const drawer = page.slice(
     page.indexOf('    renderPodDrawer(detail, active) {'),
     page.indexOf('    createDrawerSection(', page.indexOf('    renderPodDrawer(detail, active) {')),
@@ -417,7 +417,7 @@ test('drawer container actions target the persistent workspace while drawer clos
 });
 
 test('Kubernetes page owns one workspace and awaits it before hide, Context change, disconnect, and deactivation', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const show = page.slice(page.indexOf('    show() {'), page.indexOf('    hide() {'));
   const hide = page.slice(page.indexOf('    hide() {'), page.indexOf('    destroy() {'));
   const workspace = page.slice(page.indexOf('    ensureWorkspace() {'), page.indexOf('    disposeWorkspace() {'));
@@ -435,7 +435,7 @@ test('Kubernetes page owns one workspace and awaits it before hide, Context chan
 });
 
 test('Kubernetes drawer close invalidates only the active detail and preserves runtime resources', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const closeDetail = page.slice(
     page.indexOf('    closeDetail() {'),
     page.indexOf('    displayDetail() {'),
@@ -450,7 +450,7 @@ test('Kubernetes drawer close invalidates only the active detail and preserves r
 });
 
 test('Kubernetes Pod drawer renders static containers and safe text-only values', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const drawer = page.slice(
     page.indexOf('    renderPodDrawer(detail, active) {'),
     page.indexOf('    createDrawerSection(', page.indexOf('    renderPodDrawer(detail, active) {')),
@@ -488,7 +488,7 @@ test('Kubernetes Pod drawer renders static containers and safe text-only values'
 });
 
 test('Kubernetes Pod drawer starts Labels collapsed and Containers expanded', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const drawerStart = page.indexOf('    renderPodDrawer(detail, active) {');
   const sectionStart = page.indexOf('    createDrawerSection(', drawerStart);
   const sectionEnd = page.indexOf('    requestDrawerEnvironment(', sectionStart);
@@ -523,7 +523,7 @@ test('Kubernetes Port Forward dialog keeps only port controls and defaults brows
 });
 
 test('Kubernetes detail controller safely integrates Overview and declared Port Forward models', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const overviewStart = page.indexOf('    renderOverview(detail, active) {');
   const overviewEnd = page.indexOf('    toggleDrawerYaml() {', overviewStart);
   const overview = page.slice(overviewStart, overviewEnd);
@@ -590,7 +590,7 @@ test('Kubernetes detail controller safely integrates Overview and declared Port 
 });
 
 test('Kubernetes detail loading synchronously fences stale actions for direct and related Pod navigation', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const resetStart = page.indexOf('    beginDrawerReplacement() {');
   const resetEnd = page.indexOf('    createDrawerRequest(', resetStart);
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
@@ -642,7 +642,7 @@ test('Kubernetes detail loading synchronously fences stale actions for direct an
 });
 
 test('Kubernetes related-Pod drawer navigation guards stale results and leaves the resource list active', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const openDetailStart = page.indexOf('    async openDetail(summary) {');
   const openDetailEnd = page.indexOf('    closeDetail() {', openDetailStart);
   const renderDetailStart = page.indexOf('    renderDetail() {');
@@ -672,7 +672,7 @@ test('Kubernetes related-Pod drawer navigation guards stale results and leaves t
 });
 
 test('Kubernetes drawer replacement synchronously clears stale Service actions before related Pod loading', async () => {
-  const page = await readFile(path.join(rendererPath, 'kubernetesPage.js'), 'utf8');
+  const page = await readFile(path.join(rendererPath, 'pages', 'kubernetesPage.js'), 'utf8');
   const replacementStart = page.indexOf('    beginDrawerReplacement() {');
   const replacementEnd = page.indexOf('    async openDetail(summary) {', replacementStart);
   const openDetailStart = page.indexOf('    async openDetail(summary) {');

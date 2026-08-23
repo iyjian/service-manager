@@ -10,7 +10,7 @@ const {
   inspectNotesImage,
   parseEncryptedNotesImageObject,
   parseNotesImageReference,
-} = require('../dist/main/notesImageS3');
+} = require('../dist/main/notes/notesImageS3');
 
 function png(width = 320, height = 180, length = 24) {
   const bytes = Buffer.alloc(Math.max(24, length));

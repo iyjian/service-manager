@@ -15,7 +15,7 @@ const {
   UiPreferencesStore,
   normalizeNotesSidebarWidth,
   normalizeUiPreferencesDraft,
-} = require('../dist/main/uiPreferencesStore');
+} = require('../dist/main/core/uiPreferencesStore');
 
 async function createStore(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-ui-preferences-'));

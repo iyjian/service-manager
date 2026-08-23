@@ -14,12 +14,12 @@ async function readIntegrationFiles() {
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'styles.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'renderer.js'), 'utf8'),
-    readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8'),
+    readFile(path.join(rendererRoot, 'pages', 'notesPage.js'), 'utf8'),
     readFile(path.join(rendererRoot, 'vendor', 'codemirror.js'), 'utf8'),
-    readFile(path.join(rendererRoot, 'settingsDialog.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'preload.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'main.js'), 'utf8'),
-    readFile(path.join(mainRoot, 'notesStore.js'), 'utf8'),
+    readFile(path.join(rendererRoot, 'pages', 'settingsDialog.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'preload.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'main.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'notes', 'notesStore.js'), 'utf8'),
   ]);
   return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main, notesStore };
 }
@@ -193,7 +193,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
 });
 
 test('Notes mutations publish target-only S3 intents while startup retains the full snapshot provider', async () => {
-  const main = await readFile(path.join(projectRoot, 'src', 'main', 'main.ts'), 'utf8');
+  const main = await readFile(path.join(projectRoot, 'src', 'main', 'core', 'main.ts'), 'utf8');
   assert.match(main, /snapshotProvider: collectS3SharedAppData,[\s\S]*?notesIncrementalProvider: collectS3ChangedNotes/);
   assert.match(main, /async function collectS3ChangedNotes\([\s\S]*?store\.get\(id\)[\s\S]*?tombstonesById\.get\(id\)[\s\S]*?intent\.includeTree/);
   assert.match(main, /IPC_CHANNELS\.notesUpdate[\s\S]*?\{ kind: 'notes', upsertIds: \[id\] \}/);
@@ -204,7 +204,7 @@ test('Notes mutations publish target-only S3 intents while startup retains the f
 
 test('compiled Notes exposes file cards, the six-dot command handle, and PDF or Markdown downloads', async () => {
   const { html, styles, renderer, notesPage, preload, main } = await readIntegrationFiles();
-  const richTextEditor = await readFile(path.join(rendererRoot, 'notesRichTextEditor.js'), 'utf8');
+  const richTextEditor = await readFile(path.join(rendererRoot, 'components', 'notesRichTextEditor.js'), 'utf8');
 
   assert.match(html, /id="note-copy-btn"[\s\S]*?id="note-download-btn"/);
   assert.match(html, /id="note-download-btn"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
@@ -302,7 +302,7 @@ test('compiled Notes exposes file cards, the six-dot command handle, and PDF or 
 
 test('Notes shared validators and export tools have distinct CommonJS main and ESM renderer artifacts', async () => {
   const [notesPage, packageManifest, copyMainRuntime, copyRenderer] = await Promise.all([
-    readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8'),
+    readFile(path.join(rendererRoot, 'pages', 'notesPage.js'), 'utf8'),
     readFile(path.join(projectRoot, 'package.json'), 'utf8'),
     readFile(path.join(projectRoot, 'scripts', 'copy-main-runtime.cjs'), 'utf8'),
     readFile(path.join(projectRoot, 'scripts', 'copy-renderer.cjs'), 'utf8'),
@@ -322,8 +322,8 @@ test('Notes shared validators and export tools have distinct CommonJS main and E
     assert.match(copyMainRuntime, new RegExp(`shared: '${runtime}\\.js', main: '${runtime}\\.cjs'`));
     assert.match(copyRenderer, new RegExp(`shared: '${runtime}\\.js', main: '${runtime}\\.cjs', renderer: '${runtime}\\.js'`));
   }
-  assert.match(notesPage, /from '\.\/noteRichText\.js'/);
-  assert.match(notesPage, /from '\.\/notesMarkdown\.js'/);
+  assert.match(notesPage, /from '\.\.\/noteRichText\.js'/);
+  assert.match(notesPage, /from '\.\.\/notesMarkdown\.js'/);
   assert.match(packageManifest, /"build:main": "tsc -p tsconfig\.main\.json && node scripts\/copy-main-runtime\.cjs"/);
 });
 
@@ -468,7 +468,7 @@ test('Notes uses full width with a persistent resizable tree, independent scroll
 });
 
 test('Notes releases hidden tree DOM and patches ordinary selection without rebuilding the tree', async () => {
-  const notesPage = await readFile(path.join(rendererRoot, 'notesPage.js'), 'utf8');
+  const notesPage = await readFile(path.join(rendererRoot, 'pages', 'notesPage.js'), 'utf8');
 
   assert.match(notesPage, /hide\(\) \{[\s\S]*?this\.list\.replaceChildren\(\);[\s\S]*?this\.renderedRowsById\.clear\(\);/);
   assert.match(notesPage, /hide\(\) \{[\s\S]*?this\.cancelSearchRender\(\);/);

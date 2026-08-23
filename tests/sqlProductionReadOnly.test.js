@@ -5,7 +5,7 @@ const test = require('node:test');
 
 test('Production SQL relies on the read-only database account without a mutation confirmation', async () => {
   const page = await readFile(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'pages', 'sqlPage.js'),
     'utf8',
   );
 

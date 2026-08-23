@@ -5,7 +5,7 @@ const {
   preserveServiceRuntimeFields,
   validateHostDraft,
   validateServiceDraft,
-} = require('../dist/main/validation');
+} = require('../dist/main/ssh/validation');
 
 test('validateServiceDraft treats exposed port 0 as no forwarding', () => {
   const service = validateServiceDraft({

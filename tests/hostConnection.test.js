@@ -7,7 +7,7 @@ const test = require('node:test');
 const {
   forwardToRuntimeConfig,
   resolveHostPrivateKey,
-} = require('../dist/main/hostConnection');
+} = require('../dist/main/ssh/hostConnection');
 
 async function withPrivateKeyFile(content, run) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'service-manager-'));

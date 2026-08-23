@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 async function loadResizeHelpers() {
-  return import('../dist/renderer/notesRichTextImageResize.js');
+  return import('../dist/renderer/utils/notesRichTextImageResize.js');
 }
 
 test('rich text image resize follows the dragged west or east edge', async () => {

@@ -8,7 +8,7 @@ const {
   NOTES_TREE_MAX_DEPTH,
   NOTES_TREE_SCHEMA_VERSION,
   NotesTreeStore,
-} = require('../dist/main/notesTreeStore');
+} = require('../dist/main/notes/notesTreeStore');
 
 async function createStore(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'service-manager-notes-tree-'));

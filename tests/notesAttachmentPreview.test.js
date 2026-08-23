@@ -5,7 +5,7 @@ const {
   createNotesAttachmentPreview,
   noteAttachmentPreviewKind,
   validateNotesAttachmentPreview,
-} = require('../dist/main/notesAttachmentPreview');
+} = require('../dist/main/notes/notesAttachmentPreview');
 
 function png() {
   return Buffer.from(

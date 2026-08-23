@@ -4,10 +4,10 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { NOTES_SCHEMA_VERSION, NotesStore } = require('../dist/main/notesStore');
-const { NotesTreeStore } = require('../dist/main/notesTreeStore');
-const { NotesTreeViewStore } = require('../dist/main/notesTreeViewStore');
-const { NotesWorkspaceApplyCoordinator } = require('../dist/main/notesWorkspaceApply');
+const { NOTES_SCHEMA_VERSION, NotesStore } = require('../dist/main/notes/notesStore');
+const { NotesTreeStore } = require('../dist/main/notes/notesTreeStore');
+const { NotesTreeViewStore } = require('../dist/main/notes/notesTreeViewStore');
+const { NotesWorkspaceApplyCoordinator } = require('../dist/main/notes/notesWorkspaceApply');
 
 function note(id, content, updatedAt = '2026-07-28T00:00:00.000Z') {
   return {

@@ -6,7 +6,7 @@ const {
   countServices,
   ensureUniqueImportedIds,
   parseImportedHostDrafts,
-} = require('../dist/main/configTransfer');
+} = require('../dist/main/ssh/configTransfer');
 
 function host(id) {
   return {

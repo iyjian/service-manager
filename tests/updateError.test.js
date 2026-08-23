@@ -4,7 +4,7 @@ const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 
-const modulePath = path.join(__dirname, '..', 'dist', 'main', 'updateError.js');
+const modulePath = path.join(__dirname, '..', 'dist', 'main', 'core', 'updateError.js');
 const { classifyUpdateFailure } = existsSync(modulePath) ? require(modulePath) : {};
 
 function getClassifier() {

@@ -7,12 +7,12 @@ const { pathToFileURL } = require('node:url');
 test('compiled SQL page uses the narrow main-process bridge and Service Manager layout', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
-  const page = await readFile(path.join(dist, 'renderer', 'sqlPage.js'), 'utf8');
-  const virtualTable = await readFile(path.join(dist, 'renderer', 'sqlVirtualResultTable.js'), 'utf8');
+  const page = await readFile(path.join(dist, 'renderer', 'pages', 'sqlPage.js'), 'utf8');
+  const virtualTable = await readFile(path.join(dist, 'renderer', 'components', 'sqlVirtualResultTable.js'), 'utf8');
   const styles = await readFile(path.join(dist, 'renderer', 'tailwind.css'), 'utf8');
   const baseStyles = await readFile(path.join(dist, 'renderer', 'styles.css'), 'utf8');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
 
   assert.match(html, /data-page="sql"/);
   assert.match(html, /id="sql-production-tab"/);
@@ -273,7 +273,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
 
 test('SQL editor font preferences stay within the local supported values', async () => {
   const page = await import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'pages', 'sqlPage.js'),
   ));
 
   assert.equal(page.clampSqlEditorFontSize(Number.NaN), 21);
@@ -289,7 +289,7 @@ test('SQL editor font preferences stay within the local supported values', async
 
 test('SQL field detail modes always expose Raw', async () => {
   const page = await import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlPage.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'pages', 'sqlPage.js'),
   ));
 
   assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['formatted', 'raw']);

@@ -5,7 +5,7 @@ const {
   AppQuitCleanupTimeoutError,
   AppQuitCoordinator,
   DEFAULT_APP_QUIT_CLEANUP_TIMEOUT_MS,
-} = require('../dist/main/quitCoordinator.js');
+} = require('../dist/main/core/quitCoordinator.js');
 
 function deferred() {
   let resolve;

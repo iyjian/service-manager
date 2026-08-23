@@ -52,7 +52,7 @@ test('sanitizeSentryEvent retains only safe static identity and app-relative sta
         },
         stacktrace: {
           frames: [{
-            filename: `file:///Users/private-user/projects/service-manager/dist/renderer/notesRichTextTable.js?token=${canary}`,
+            filename: `file:///Users/private-user/projects/service-manager/dist/renderer/components/notesRichTextTable.js?token=${canary}`,
             abs_path: `/Users/private-user/${canary}`,
             function: 'TableHoverController.openMenu',
             lineno: 287,
@@ -93,7 +93,7 @@ test('sanitizeSentryEvent retains only safe static identity and app-relative sta
     value: 'Application error [notes:table-menu]',
     stacktrace: {
       frames: [{
-        filename: 'app:///dist/renderer/notesRichTextTable.js',
+        filename: 'app:///dist/renderer/components/notesRichTextTable.js',
         function: 'TableHoverController.openMenu',
         lineno: 287,
         colno: 19,
@@ -177,10 +177,10 @@ test('Sentry collection policy explicitly disables every data category and unsaf
 
 test('Sentry is initialized before Electron and renderer application startup with a complete local ESM graph', async () => {
   const [main, mainSentry, renderer, rendererSentry, html] = await Promise.all([
-    fs.readFile(path.join(root, 'dist', 'main', 'main.js'), 'utf8'),
-    fs.readFile(path.join(root, 'dist', 'main', 'sentry.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'main', 'core', 'main.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'main', 'core', 'sentry.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'renderer', 'renderer.js'), 'utf8'),
-    fs.readFile(path.join(root, 'dist', 'renderer', 'sentry.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'renderer', 'utils', 'sentry.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'renderer', 'index.html'), 'utf8'),
   ]);
 
@@ -188,7 +188,7 @@ test('Sentry is initialized before Electron and renderer application startup wit
   assert.match(mainSentry, /@sentry\/electron\/main/);
   assert.match(mainSentry, /beforeSendTransaction:\s*\(\)\s*=>\s*null/);
   assert.match(mainSentry, /skipOpenTelemetrySetup:\s*true/);
-  assert.ok(renderer.indexOf("from './sentry.js'") < renderer.indexOf("from './nav.js'"));
+  assert.ok(renderer.indexOf("from './utils/sentry.js'") < renderer.indexOf("from './pages/nav.js'"));
   assert.match(rendererSentry, /@sentry\/electron\/renderer/);
   assert.match(rendererSentry, /window\.addEventListener\('error'/);
 

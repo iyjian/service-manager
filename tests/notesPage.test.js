@@ -13,7 +13,7 @@ async function loadNoteLanguageModules() {
   const highlightCommonJsEntry = dependencyRequire.resolve('@lezer/highlight');
   const highlightEsmEntry = path.join(path.dirname(highlightCommonJsEntry), 'index.js');
   const [notesPage, stateApi, languageApi, highlightApi] = await Promise.all([
-    import(path.join(distRenderer, 'notesPage.js')),
+    import(path.join(distRenderer, 'pages', 'notesPage.js')),
     import('@codemirror/state'),
     import('@codemirror/language'),
     import(pathToFileURL(highlightEsmEntry).href),
@@ -45,7 +45,7 @@ function note(overrides) {
 }
 
 test('Notes page delegates body search while retaining lightweight tree indexes and bounded debounce', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /NOTE_SEARCH_DEBOUNCE_MS = 120/);
   assert.match(source, /this\.searchInput\.addEventListener\('input', \(\) => this\.queueSearchRender\(\)\)/);
@@ -61,7 +61,7 @@ test('Notes page delegates body search while retaining lightweight tree indexes 
 });
 
 test('Notes name input updates one rendered row and only debounces ranking while search is active', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /private readonly renderedRowsById = new Map<string, HTMLElement>\(\)/);
   assert.match(source, /private updateListNoteName\(note: Note\): void \{[\s\S]*?this\.renderedRowsById\.get\(note\.id\)[\s\S]*?name\.textContent = displayName/);
@@ -70,7 +70,7 @@ test('Notes name input updates one rendered row and only debounces ranking while
 });
 
 test('Notes sidebar width clamp rounds finite pixels and enforces stable bounds', async () => {
-  const { clampNotesSidebarWidth } = await import(path.join(distRenderer, 'notesPage.js'));
+  const { clampNotesSidebarWidth } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
 
   assert.equal(clampNotesSidebarWidth(Number.NaN), 280);
   assert.equal(clampNotesSidebarWidth(100), 240);
@@ -81,7 +81,7 @@ test('Notes sidebar width clamp rounds finite pixels and enforces stable bounds'
 });
 
 test('Notes save indicator only occupies a tree row while saving or after a failure', async () => {
-  const { noteSaveIndicatorState } = await import(path.join(distRenderer, 'notesPage.js'));
+  const { noteSaveIndicatorState } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
 
   assert.equal(noteSaveIndicatorState(false, false), undefined);
   assert.equal(noteSaveIndicatorState(true, false), 'saving');
@@ -90,7 +90,7 @@ test('Notes save indicator only occupies a tree row while saving or after a fail
 });
 
 test('Notes delete confirmation compares subtree membership without rejecting harmless reorders', async () => {
-  const { sameNoteIdSet } = await import(path.join(distRenderer, 'notesPage.js'));
+  const { sameNoteIdSet } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
 
   assert.equal(sameNoteIdSet(['root', 'child'], ['child', 'root']), true);
   assert.equal(sameNoteIdSet(['root', 'child'], ['root', 'other']), false);
@@ -102,7 +102,7 @@ test('Notes session tabs preserve order and choose the right adjacent surviving 
   const {
     noteTabFallbackAfterRemoval,
     reconcileOpenNoteIds,
-  } = await import(path.join(distRenderer, 'notesPage.js'));
+  } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
   const active = new Set(['a', 'b', 'c', 'd']);
 
   assert.deepEqual(
@@ -117,7 +117,7 @@ test('Notes session tabs preserve order and choose the right adjacent surviving 
 });
 
 test('Notes tabs remain transient and reconcile through selection, reload, delta, and delete flows', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /private openNoteIds: string\[\] = \[\]/);
   assert.match(source, /private async selectNote\(id: string, source: 'tree' \| 'tab' = 'tree'\)[\s\S]*?this\.openNoteTab\(id, true\)/);
@@ -135,7 +135,7 @@ test('Notes tree resolves before, inside, and after drops while rejecting self-d
   const {
     isValidNoteTreeParent,
     resolveNoteTreeDropPlacement,
-  } = await import(path.join(distRenderer, 'notesPage.js'));
+  } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
   const nodes = [
     { noteId: 'root', parentId: null, order: 10 },
     { noteId: 'child', parentId: 'root', order: 10 },
@@ -164,7 +164,7 @@ test('Notes tree resolves before, inside, and after drops while rejecting self-d
 
 test('Note Language search keeps the product order and matches labels or useful aliases', async () => {
   const { NOTE_LANGUAGE_OPTIONS, filterNoteLanguageOptions } = await import(
-    path.join(distRenderer, 'notesPage.js')
+    path.join(distRenderer, 'pages', 'notesPage.js')
   );
   assert.deepEqual(
     NOTE_LANGUAGE_OPTIONS.map(({ value, label }) => [value, label]),
@@ -191,7 +191,7 @@ test('Note Language search keeps the product order and matches labels or useful 
 });
 
 test('Note Language switch fences reject stale selection, edits, and workspace generations', async () => {
-  const { isNoteLanguageSwitchFenceCurrent } = await import(path.join(distRenderer, 'notesPage.js'));
+  const { isNoteLanguageSwitchFenceCurrent } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
   const fence = {
     noteId: 'note-a',
     sourceLanguage: 'markdown',
@@ -216,7 +216,7 @@ test('Note Language filtering keeps exactly one preferred roving tab stop', asyn
   const {
     filterNoteLanguageOptions,
     noteLanguageRovingTabStop,
-  } = await import(path.join(distRenderer, 'notesPage.js'));
+  } = await import(path.join(distRenderer, 'pages', 'notesPage.js'));
 
   assert.equal(noteLanguageRovingTabStop(filterNoteLanguageOptions(''), 'markdown'), 'markdown');
   assert.equal(noteLanguageRovingTabStop(filterNoteLanguageOptions('ts'), 'markdown'), 'typescript');
@@ -224,7 +224,7 @@ test('Note Language filtering keeps exactly one preferred roving tab stop', asyn
 });
 
 test('Note Language popup owns search, keyboard navigation, focus return, and explicit mode changes', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /this\.languageToggle\.addEventListener\('click', \(event\) => this\.toggleLanguageMenu\(event\)\)/);
   assert.match(source, /this\.languageSearch\.addEventListener\('input',[\s\S]*?this\.renderLanguageOptions\(\)/);
@@ -399,7 +399,7 @@ test('Notes reconfigures one language compartment without replacing same-content
 });
 
 test('Notes page wires CRUD, copy, confirmation, and debounced flushes without unsafe dynamic HTML', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /registerPage\(\{\s*id: 'notes'/);
   assert.match(source, /window\.notesApi\.getWorkspace\(\)/);
@@ -444,7 +444,7 @@ test('Notes page wires CRUD, copy, confirmation, and debounced flushes without u
 });
 
 test('Notes tree workspace mutations flush first, fence request-time edits, persist expansion, and expose keyboard navigation', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /const editedDuringRequest = local[\s\S]*?this\.editVersions\.get\(summary\.id\)[\s\S]*?> baselineVersion/);
   assert.match(source, /this\.applyWorkspace\(workspace, editVersionBaseline\)/);
@@ -464,7 +464,7 @@ test('Notes tree workspace mutations flush first, fence request-time edits, pers
 
 test('Notes tree distinguishes folders from leaf Notes and the title looks like text until interaction', async () => {
   const [source, styles] = await Promise.all([
-    readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8'),
     readFile(path.join(distRenderer, 'tailwind.css'), 'utf8'),
   ]);
 
@@ -484,9 +484,9 @@ test('Notes tree distinguishes folders from leaf Notes and the title looks like 
 });
 
 test('Notes page connects Markdown tooling, attachment actions, and PDF or Markdown downloads', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
-  assert.match(source, /import \{[\s\S]*?applyMarkdownFormat,[\s\S]*?extractMarkdownOutline,[\s\S]*?getMarkdownStats,[\s\S]*?renderMarkdownToSafeHtml,[\s\S]*?\} from '\.\/notesMarkdown\.js'/);
+  assert.match(source, /import \{[\s\S]*?applyMarkdownFormat,[\s\S]*?extractMarkdownOutline,[\s\S]*?getMarkdownStats,[\s\S]*?renderMarkdownToSafeHtml,[\s\S]*?\} from '\.\.\/notesMarkdown\.js'/);
   assert.match(source, /const edit = applyMarkdownFormat\([\s\S]*?changes: edit\.change,[\s\S]*?anchor: edit\.selection\.from, head: edit\.selection\.to/);
   for (const command of ['bold', 'italic', 'strike', 'code', 'heading1', 'heading2', 'heading3', 'link', 'quote', 'bullet', 'numbered', 'task', 'table', 'horizontalRule']) {
     assert.match(source, new RegExp(`${command}: \\{ command:`));
@@ -538,7 +538,7 @@ test('Notes page connects Markdown tooling, attachment actions, and PDF or Markd
 
 test('Notes share action sits between Copy and Download and owns link history workflow', async () => {
   const [source, html, styles] = await Promise.all([
-    readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8'),
     readFile(path.join(root, 'src', 'renderer', 'index.html'), 'utf8'),
     readFile(path.join(distRenderer, 'tailwind.css'), 'utf8'),
   ]);
@@ -575,7 +575,7 @@ test('Notes share action sits between Copy and Download and owns link history wo
 });
 
 test('Notes page keeps user content in form values and reconfigurable CodeMirror state created through DOM APIs', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
 
   assert.match(source, /import \{ basicSetup, EditorView \} from 'codemirror'/);
   assert.match(source, /import \{ Compartment, EditorState, type Extension \} from '@codemirror\/state'/);
@@ -585,7 +585,7 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
   assert.match(source, /EditorView\.contentAttributes\.of/);
   assert.match(source, /document\.createElement\('button'\)/);
   assert.match(source, /document\.createElement\('span'\)/);
-  assert.match(source, /document\.createElementNS\(namespace, 'svg'\)/);
+  assert.match(source, /createIcon\(/);
   assert.match(source, /this\.nameInput\.value = note\.name/);
   assert.match(source, /this\.codeEditor\.setState\(this\.createEditorState\(note\.content, note\.language\)\)/);
   assert.match(source, /this\.replaceEditorDocument\(note\.content\)/);
@@ -602,7 +602,7 @@ test('Notes page keeps user content in form values and reconfigurable CodeMirror
 });
 
 test('Notes editor input marks dirty without serializing the complete document until capture', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
   const codeUpdateStart = source.indexOf('  private updateSelectedCodeContent(): void {');
   const codeUpdateEnd = source.indexOf('  private markdownActive(): boolean {', codeUpdateStart);
   const richUpdateStart = source.indexOf('  private updateSelectedRichTextContent(): void {');
@@ -625,7 +625,7 @@ test('Notes editor input marks dirty without serializing the complete document u
 });
 
 test('Notes workspace mutations capture deferred editor content and preserve newer selection intent', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
   const moveStart = source.indexOf('  private async moveNote(');
   const createStart = source.indexOf('  private async createNote(', moveStart);
   const downloadStart = source.indexOf('  private toggleDownloadMenu(', createStart);
@@ -648,7 +648,7 @@ test('Notes workspace mutations capture deferred editor content and preserve new
 });
 
 test('Notes flush owns active uploads and captured insertion positions are edit and workspace fenced', async () => {
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
+  const source = await readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8');
   assert.match(source, /private readonly editorUploadTasks = new Set<Promise<void>>\(\)/);
   assert.match(source, /async flush\(\): Promise<void> \{[\s\S]*?await this\.waitForEditorUploads\(\);[\s\S]*?this\.flushAllPendingSaves\(\)/);
   assert.match(source, /private async waitForEditorUploads\(\): Promise<void> \{[\s\S]*?Promise\.allSettled\(\[\.\.\.this\.editorUploadTasks\]\)/);

@@ -50,7 +50,7 @@ test('Settings Notes exposes a compact transient Trilium ETAPI import card with 
 });
 
 test('Trilium Settings flow flushes drafts, fences requests, converts HTML in batches, and keeps the token transient', async () => {
-  const settingsDialog = await source('src/renderer/settingsDialog.ts');
+  const settingsDialog = await source('src/renderer/pages/settingsDialog.ts');
   const importFlow = between(
     settingsDialog,
     'async function importFromTrilium(): Promise<void> {',
@@ -123,7 +123,7 @@ test('Trilium Settings flow flushes drafts, fences requests, converts HTML in ba
 
 test('preload exposes only the bounded Trilium prepare, image resolve, apply, cancel, and progress channels', async () => {
   const [preload, types] = await Promise.all([
-    source('src/main/preload.ts'),
+    source('src/main/core/preload.ts'),
     source('src/shared/types.ts'),
   ]);
   const settingsApi = between(preload, 'const settingsApi: SettingsApi = {', 'const proxyApi: ProxyApi = {');
@@ -140,8 +140,8 @@ test('preload exposes only the bounded Trilium prepare, image resolve, apply, ca
 
 test('main process owns Trilium preparation sessions and applies each import atomically before one sync marker and reload', async () => {
   const [main, s3Sync] = await Promise.all([
-    source('src/main/main.ts'),
-    source('src/main/s3Sync.ts'),
+    source('src/main/core/main.ts'),
+    source('src/main/s3/s3Sync.ts'),
   ]);
   const prepareHandler = between(
     main,
@@ -260,7 +260,7 @@ test('main process owns Trilium preparation sessions and applies each import ato
 test('persistent-data reload applies precise Notes deltas and reloads Hosts only when changed', async () => {
   const [renderer, main] = await Promise.all([
     source('src/renderer/renderer.ts'),
-    source('src/main/main.ts'),
+    source('src/main/core/main.ts'),
   ]);
   const reloadHandler = between(
     renderer,
@@ -277,7 +277,7 @@ test('persistent-data reload applies precise Notes deltas and reloads Hosts only
 });
 
 test('Trilium HTML conversion uses the live Tiptap schema, strips active content, and canonicalizes links and fallback text', async () => {
-  const editor = await source('src/renderer/notesRichTextEditor.ts');
+  const editor = await source('src/renderer/components/notesRichTextEditor.ts');
   const extensionFactory = between(
     editor,
     'function createNotesRichTextExtensions(',

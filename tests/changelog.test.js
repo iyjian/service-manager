@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { ChangelogSeenStore, parseChangelog } = require('../dist/main/changelog');
+const { ChangelogSeenStore, parseChangelog } = require('../dist/main/core/changelog');
 
 const SAMPLE = `# Changelog
 

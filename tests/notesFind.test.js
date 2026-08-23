@@ -7,7 +7,7 @@ const root = path.join(__dirname, '..');
 const distRenderer = path.join(root, 'dist', 'renderer');
 
 test('in-note find performs case-insensitive non-overlapping literal matching', async () => {
-  const { findNotesTextMatches } = await import(path.join(distRenderer, 'notesFind.js'));
+  const { findNotesTextMatches } = await import(path.join(distRenderer, 'models', 'notesFind.js'));
 
   assert.deepEqual(findNotesTextMatches('Alpha ALPHA alpha', 'alpha'), {
     matches: [
@@ -33,7 +33,7 @@ test('in-note find reports its bounded result set and wraps navigation', async (
     findNotesTextMatches,
     initialNotesFindIndex,
     moveNotesFindIndex,
-  } = await import(path.join(distRenderer, 'notesFind.js'));
+  } = await import(path.join(distRenderer, 'models', 'notesFind.js'));
   const result = findNotesTextMatches('x x x x', 'x', 3);
 
   assert.equal(result.truncated, true);
@@ -52,7 +52,7 @@ test('in-note find reports its bounded result set and wraps navigation', async (
 });
 
 test('Rich Text find crosses inline marks but not hard breaks or text blocks', async () => {
-  const { findRichTextMatches } = await import(path.join(distRenderer, 'notesRichTextEditor.js'));
+  const { findRichTextMatches } = await import(path.join(distRenderer, 'components', 'notesRichTextEditor.js'));
   const text = (value) => ({ isText: true, text: value });
   const hardBreak = { isText: false };
   const textblock = (children) => ({
@@ -93,8 +93,8 @@ test('Rich Text find crosses inline marks but not hard breaks or text blocks', a
 test('Notes page owns one accessible find bar and editor-specific highlight adapters', async () => {
   const [html, page, richText, styles] = await Promise.all([
     readFile(path.join(root, 'src', 'renderer', 'index.html'), 'utf8'),
-    readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8'),
-    readFile(path.join(root, 'src', 'renderer', 'notesRichTextEditor.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'renderer', 'pages', 'notesPage.ts'), 'utf8'),
+    readFile(path.join(root, 'src', 'renderer', 'components', 'notesRichTextEditor.ts'), 'utf8'),
     readFile(path.join(root, 'src', 'renderer', 'tailwind.css'), 'utf8'),
   ]);
 

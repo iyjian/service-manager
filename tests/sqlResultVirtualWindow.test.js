@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 async function loadVirtualWindow() {
   return import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlResultVirtualWindow.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'models', 'sqlResultVirtualWindow.js'),
   ).href);
 }
 

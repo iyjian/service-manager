@@ -6,7 +6,7 @@ const {
   childMemoryCommand,
   parseChildWorkingSetBytes,
   collectAppMemoryUsage,
-} = require('../dist/main/appMemory.js');
+} = require('../dist/main/core/appMemory.js');
 
 test('sumElectronWorkingSetBytes converts Electron KiB working sets to bytes', () => {
   assert.equal(

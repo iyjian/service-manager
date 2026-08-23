@@ -6,15 +6,15 @@ const test = require('node:test');
 test('compiled renderer uses browser-resolvable module specifiers', async () => {
   const renderer = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'renderer.js'), 'utf8');
 
-  assert.match(renderer, /from ['"]\.\/html\.js['"]/);
-  assert.match(renderer, /from ['"]\.\/status\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/utils\/html\.js['"]/);
+  assert.match(renderer, /from ['"]\.\/models\/status\.js['"]/);
   assert.doesNotMatch(renderer, /from ['"]\.\/(?:html|status)['"]/);
 });
 
 test('compiled Kubernetes bridge exposes only typed renderer-safe channels', async () => {
   const dist = path.join(__dirname, '..', 'dist');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
 
   assert.match(preload, /const kubernetesApi =/);
   assert.match(preload, /kubernetes:get-state/);
@@ -57,8 +57,8 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
 
 test('compiled KubeVirt VNC bridge derives its loopback URL only in main and closes on launcher failure', async () => {
   const dist = path.join(__dirname, '..', 'dist');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
 
   assert.match(preload, /openVnc:\s*\(input\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('kubernetes:open-vnc', input\)/);
   const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesOpenVnc');
@@ -78,9 +78,9 @@ test('compiled KubeVirt VNC bridge derives its loopback URL only in main and clo
 test('compiled Proxy traffic contract keeps Mihomo controller data in the main process', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
-  const proxyPage = await readFile(path.join(dist, 'renderer', 'proxyPage.js'), 'utf8');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+  const proxyPage = await readFile(path.join(dist, 'renderer', 'pages', 'proxyPage.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
 
   assert.match(html, /id="proxy-traffic"/);
   assert.match(preload, /onProxyTrafficChanged/);
@@ -94,7 +94,7 @@ test('compiled Proxy traffic contract keeps Mihomo controller data in the main p
 test('compiled renderer batches automatic service refreshes by host, keeps them silent, and preserves the single-service bridge', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
 
   assert.match(renderer, /MAX_CONCURRENT_HOST_SERVICE_REFRESHES = 4/);
   assert.match(renderer, /Promise\.all\(Array\.from\(\{ length: workerCount \}, \(\) => refreshNextHost\(\)\)\)/);
@@ -110,8 +110,8 @@ test('compiled renderer batches automatic service refreshes by host, keeps them 
 test('compiled host service refresh uses one batch IPC and fans changes into exact rAF-coalesced rows', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
-  const preload = await readFile(path.join(dist, 'main', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'main.js'), 'utf8');
+  const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
 
   const batchBridgeStart = preload.indexOf('onServiceStatusChanged:');
   const batchBridgeEnd = preload.indexOf('onForwardStatusChanged:', batchBridgeStart);
@@ -170,7 +170,7 @@ test('compiled host service refresh uses one batch IPC and fans changes into exa
 });
 
 test('compiled main delegates the single-service refresh compatibility path to the fenced batch core', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
   const refreshStart = main.indexOf('IPC_CHANNELS.refreshService');
   const refreshEnd = main.indexOf('IPC_CHANNELS.startService', refreshStart);
   const refreshHandler = main.slice(refreshStart, refreshEnd);
@@ -184,7 +184,7 @@ test('compiled main delegates the single-service refresh compatibility path to t
 });
 
 test('compiled main routes every normal quit through the asynchronous coordinator', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
   const beforeQuitStart = main.indexOf("app.on('before-quit'");
   const beforeQuit = main.slice(beforeQuitStart, beforeQuitStart + 800);
 
@@ -201,7 +201,7 @@ test('compiled main routes every normal quit through the asynchronous coordinato
 });
 
 test('compiled main shares one guarded cleanup path for normal quits and terminal signals', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
 
   assert.match(main, /process\.once\('SIGINT'/);
   assert.match(main, /process\.once\('SIGTERM'/);
@@ -212,8 +212,8 @@ test('compiled main shares one guarded cleanup path for normal quits and termina
 
 test('compiled main aborts auto-start retries before proxy shutdown begins', async () => {
   const dist = path.join(__dirname, '..', 'dist', 'main');
-  const main = await readFile(path.join(dist, 'main.js'), 'utf8');
-  const coordinator = await readFile(path.join(dist, 'quitCoordinator.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'core', 'main.js'), 'utf8');
+  const coordinator = await readFile(path.join(dist, 'core', 'quitCoordinator.js'), 'utf8');
 
   assert.match(main, /abortAutoStart: \(\) => autoStartAbortController\.abort\(\)/);
   assert.ok(coordinator.indexOf('abortAutoStart()') < coordinator.indexOf('await this.options.cleanup()'));
@@ -222,8 +222,8 @@ test('compiled main aborts auto-start retries before proxy shutdown begins', asy
 
 test('compiled updater requests cleanup before the coordinator launches NSIS', async () => {
   const dist = path.join(__dirname, '..', 'dist', 'main');
-  const main = await readFile(path.join(dist, 'main.js'), 'utf8');
-  const updater = await readFile(path.join(dist, 'updater.js'), 'utf8');
+  const main = await readFile(path.join(dist, 'core', 'main.js'), 'utf8');
+  const updater = await readFile(path.join(dist, 'core', 'updater.js'), 'utf8');
 
   assert.match(updater, /this\.requestInstall\(\);/);
   assert.match(updater, /installDownloadedUpdate\(\) \{[\s\S]*?autoUpdater\.quitAndInstall\(false, true\);/);

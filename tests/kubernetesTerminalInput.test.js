@@ -41,7 +41,7 @@ test('validateKubernetesTerminalInput rejects empty and non-string input', () =>
 });
 
 test('Kubernetes terminal IPC uses the exact-input validator for keyboard data', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'main.js'), 'utf8');
+  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
   const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesWriteTerminal');
   const handlerEnd = main.indexOf('IPC_CHANNELS.kubernetesResizeTerminal', handlerStart);
   const handler = main.slice(handlerStart, handlerEnd);

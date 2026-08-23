@@ -10,7 +10,7 @@ const {
   presignS3Get,
   signS3Request,
   splitS3BucketUrl,
-} = require('../dist/main/s3Request');
+} = require('../dist/main/s3/s3Request');
 
 const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'service-manager';

@@ -6,7 +6,7 @@ const test = require('node:test');
 const root = path.join(__dirname, '..');
 
 async function loadHelpers() {
-  return import('../dist/renderer/triliumRichText.js');
+  return import('../dist/renderer/models/triliumRichText.js');
 }
 
 test('Trilium checklist helpers recognize exact CKEditor class tokens', async () => {
@@ -172,7 +172,7 @@ test('Trilium table cell width mapping rejects malformed or incomplete span geom
 
 test('Trilium checklist adaptation runs before generic form stripping and owns HTML list parsing', async () => {
   const source = await readFile(
-    path.join(root, 'src', 'renderer', 'notesRichTextEditor.ts'),
+    path.join(root, 'src', 'renderer', 'components', 'notesRichTextEditor.ts'),
     'utf8',
   );
   const conversionStart = source.indexOf('export function convertTriliumHtmlToRichText(');
@@ -192,7 +192,7 @@ test('Trilium checklist adaptation runs before generic form stripping and owns H
 
 test('Trilium table adaptation runs before Tiptap conversion and uses official width attributes', async () => {
   const source = await readFile(
-    path.join(root, 'src', 'renderer', 'notesRichTextEditor.ts'),
+    path.join(root, 'src', 'renderer', 'components', 'notesRichTextEditor.ts'),
     'utf8',
   );
   const conversionStart = source.indexOf('export function convertTriliumHtmlToRichText(');

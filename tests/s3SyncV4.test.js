@@ -29,8 +29,8 @@ const {
   parseS3V4NotesTreePayload,
   serializeEncryptedS3ObjectV4,
   signS3V4Request,
-} = require('../dist/main/s3SyncV4');
-const { NOTE_LIMITS } = require('../dist/main/notesStore');
+} = require('../dist/main/s3/s3SyncV4');
+const { NOTE_LIMITS } = require('../dist/main/notes/notesStore');
 
 const ENDPOINT = 'https://s3.example.test';
 const BUCKET = 'service-manager';

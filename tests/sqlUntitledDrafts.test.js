@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 
 async function loadDrafts() {
   return import(pathToFileURL(
-    path.join(__dirname, '..', 'dist', 'renderer', 'sqlUntitledDrafts.js'),
+    path.join(__dirname, '..', 'dist', 'renderer', 'models', 'sqlUntitledDrafts.js'),
   ).href);
 }
 

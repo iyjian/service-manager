@@ -4,7 +4,7 @@ const { pathToFileURL } = require('node:url');
 const test = require('node:test');
 
 async function sqlResult() {
-  return import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'sqlResult.js')).href);
+  return import(pathToFileURL(path.join(__dirname, '..', 'dist', 'renderer', 'models', 'sqlResult.js')).href);
 }
 
 test('SQL results normalize tables, mutations, scalars, and multiple result sets', async () => {

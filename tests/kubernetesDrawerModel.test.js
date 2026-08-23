@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 test('buildKubernetesDrawerModel exposes compact Pod header and container values without evaluating Env', async () => {
-  const { buildKubernetesDrawerModel } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { buildKubernetesDrawerModel } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
   const model = buildKubernetesDrawerModel({
     metadata: { name: 'api', namespace: 'apps', labels: { tier: 'backend', app: 'api' } },
     spec: {
@@ -50,7 +50,7 @@ test('buildKubernetesDrawerModel exposes compact Pod header and container values
 });
 
 test('detectKubeVirtVncTarget requires a running launcher with matching VMI identity and controller owner', async () => {
-  const { detectKubeVirtVncTarget } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { detectKubeVirtVncTarget } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
   const detail = {
     metadata: {
       name: 'virt-launcher-kb-kmzyssjmw-mpvwz',
@@ -98,7 +98,7 @@ test('detectKubeVirtVncTarget requires a running launcher with matching VMI iden
 });
 
 test('detectKubeVirtVncTarget rejects names and incomplete or conflicting KubeVirt metadata', async () => {
-  const { detectKubeVirtVncTarget } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { detectKubeVirtVncTarget } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
   const metadata = {
     name: 'virt-launcher-demo-abcde',
     namespace: 'vms',
@@ -151,7 +151,7 @@ test('detectKubeVirtVncTarget rejects names and incomplete or conflicting KubeVi
 });
 
 test('buildKubernetesDrawerModel keeps normal containers before init containers and uses display defaults', async () => {
-  const { buildKubernetesDrawerModel } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { buildKubernetesDrawerModel } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
   const model = buildKubernetesDrawerModel({
     metadata: { name: 'api', namespace: 'apps' },
     spec: {
@@ -175,7 +175,7 @@ test('buildKubernetesDrawerModel keeps normal containers before init containers 
 });
 
 test('filterKubernetesEnvironmentEntries searches only the active entry fields', async () => {
-  const { filterKubernetesEnvironmentEntries } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { filterKubernetesEnvironmentEntries } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
   const entries = [
     { name: 'API_URL', source: 'literal', value: 'https://service.internal' },
     { name: 'CONFIG_MODE', source: 'configMapKeyRef', reference: 'configmap/settings/mode', value: 'production' },
@@ -190,7 +190,7 @@ test('filterKubernetesEnvironmentEntries searches only the active entry fields',
 });
 
 test('shouldRenderKubernetesEnvironment hides only absent or successfully resolved empty Env', async () => {
-  const { shouldRenderKubernetesEnvironment } = await import('../dist/renderer/kubernetesDrawerModel.js');
+  const { shouldRenderKubernetesEnvironment } = await import('../dist/renderer/models/kubernetesDrawerModel.js');
 
   assert.equal(shouldRenderKubernetesEnvironment(false), false);
   assert.equal(shouldRenderKubernetesEnvironment(true), true, 'declared Env remains available before lazy loading');

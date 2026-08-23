@@ -10,7 +10,7 @@ async function source(file) {
 }
 
 test('rich text registers the official resizable TableKit and a 3 by 3 header slash command', async () => {
-  const editor = await source('src/renderer/notesRichTextEditor.ts');
+  const editor = await source('src/renderer/components/notesRichTextEditor.ts');
   assert.match(editor, /import \{ TableKit \} from '@tiptap\/extension-table'/);
   assert.match(
     editor,
@@ -26,7 +26,7 @@ test('rich text registers the official resizable TableKit and a 3 by 3 header sl
 });
 
 test('Notion-style table controls remain a DOM adapter around official Tiptap commands', async () => {
-  const controls = await source('src/renderer/notesRichTextTable.ts');
+  const controls = await source('src/renderer/components/notesRichTextTable.ts');
   for (const label of [
     'Add Row Above',
     'Add Row Below',

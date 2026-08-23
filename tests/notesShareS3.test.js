@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const test = require('node:test');
 
-const { NotesShareS3Store } = require('../dist/main/notesShareS3');
+const { NotesShareS3Store } = require('../dist/main/notes/notesShareS3');
 
 const ENDPOINT = 'https://s3.example.com';
 const BUCKET = 'notes-bucket';

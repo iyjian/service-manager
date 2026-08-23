@@ -7,8 +7,8 @@ const root = path.resolve(__dirname, '..');
 
 test('UI preferences use narrow get, save, and change-notification IPC channels', async () => {
   const [main, preload] = await Promise.all([
-    fs.readFile(path.join(root, 'dist', 'main', 'main.js'), 'utf8'),
-    fs.readFile(path.join(root, 'dist', 'main', 'preload.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'main', 'core', 'main.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'main', 'core', 'preload.js'), 'utf8'),
   ]);
 
   assert.match(main, /settings:ui:get/);

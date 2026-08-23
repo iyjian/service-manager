@@ -6,7 +6,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 
 async function readEditorSource() {
-  return readFile(path.join(root, 'src', 'renderer', 'notesRichTextEditor.ts'), 'utf8');
+  return readFile(path.join(root, 'src', 'renderer', 'components', 'notesRichTextEditor.ts'), 'utf8');
 }
 
 async function readTailwindSource() {
@@ -120,7 +120,7 @@ test('rich text image loading is visibility-gated, bounded, and deduplicated in 
   assert.match(source, /this\.active < this\.maximumConcurrency/);
   assert.match(source, /this\.imageLoads\.destroy\(\)/);
 
-  const { BoundedNoteImageLoader } = await import('../dist/renderer/notesRichTextEditor.js');
+  const { BoundedNoteImageLoader } = await import('../dist/renderer/components/notesRichTextEditor.js');
   let active = 0;
   let maximumActive = 0;
   const releases = [];
@@ -261,7 +261,7 @@ test('rich text provides the requested Novel-style slash blocks without embeds o
 });
 
 test('six-dot block commands initially select the captured block format', async () => {
-  const { richTextBlockCommandTitle } = await import('../dist/renderer/notesRichTextEditor.js');
+  const { richTextBlockCommandTitle } = await import('../dist/renderer/components/notesRichTextEditor.js');
 
   assert.equal(richTextBlockCommandTitle('paragraph'), 'Text');
   assert.equal(richTextBlockCommandTitle('heading', { level: 1 }), 'Heading 1');
@@ -399,7 +399,7 @@ test('empty To-do does not inherit the empty-editor slash hint', async () => {
 });
 
 test('slash menu reveal math keeps keyboard selection inside its own scrolling viewport', async () => {
-  const { revealMenuItemScrollTop } = await import('../dist/renderer/notesRichTextMenuScroll.js');
+  const { revealMenuItemScrollTop } = await import('../dist/renderer/utils/notesRichTextMenuScroll.js');
   const base = {
     scrollHeight: 496,
     clientHeight: 330,

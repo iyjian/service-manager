@@ -12,8 +12,8 @@ const {
   measureBoundedJsonBytes,
   serializeEncryptedS3LocalRecovery,
   validateS3SyncSettingsDraft,
-} = require('../dist/main/s3Sync');
-const { createS3SharedAppData } = require('../dist/main/s3DataMerge');
+} = require('../dist/main/s3/s3Sync');
+const { createS3SharedAppData } = require('../dist/main/s3/s3DataMerge');
 const {
   createS3SyncHeadV4,
   createServiceManagerNoteObjectV4,
@@ -31,7 +31,7 @@ const {
   hashS3V4NotesTreeContent,
   hashS3V4Object,
   serializeEncryptedS3ObjectV4,
-} = require('../dist/main/s3SyncV4');
+} = require('../dist/main/s3/s3SyncV4');
 
 const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY';
@@ -2269,8 +2269,8 @@ test('S3SyncRuntime does not schedule its startup sync after shutdown starts', a
 
 test('automatic S3 sync has no focus, resume, or recurring full-reconcile trigger', async () => {
   const [runtimeSource, mainSource] = await Promise.all([
-    readFile(path.join(__dirname, '..', 'src', 'main', 's3Sync.ts'), 'utf8'),
-    readFile(path.join(__dirname, '..', 'src', 'main', 'main.ts'), 'utf8'),
+    readFile(path.join(__dirname, '..', 'src', 'main', 's3', 's3Sync.ts'), 'utf8'),
+    readFile(path.join(__dirname, '..', 'src', 'main', 'core', 'main.ts'), 'utf8'),
   ]);
   assert.doesNotMatch(runtimeSource, /AUTO_SYNC_INTERVAL_MS|setInterval\(|checkForRemoteChanges/);
   assert.doesNotMatch(mainSource, /powerMonitor|s3SyncRuntime\?\.checkForRemoteChanges/);

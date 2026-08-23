@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { RuntimeLogWriter, createRuntimeLogEntry } = require('../dist/main/runtimeLog');
+const { RuntimeLogWriter, createRuntimeLogEntry } = require('../dist/main/core/runtimeLog');
 
 test('createRuntimeLogEntry redacts sensitive and command context-key variants', () => {
   const entry = JSON.parse(createRuntimeLogEntry('service:diagnostic', new Error('failed'), {
