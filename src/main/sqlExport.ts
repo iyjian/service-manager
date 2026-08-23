@@ -145,7 +145,7 @@ function applyExcelHeaderStyle(buffer: Buffer): Buffer {
   const fontId = countOf(styles, 'fonts');
   const xfId = countOf(styles, 'cellXfs');
 
-  zip.updateFile(stylesPath, Buffer.from(injectStyles(styles, fillId, fontId, xfId), 'utf8'));
+  zip.updateFile(stylesPath, Buffer.from(injectStyles(styles, fillId, fontId), 'utf8'));
   zip.updateFile(sheetPath, Buffer.from(injectHeaderStyle(sheet, xfId), 'utf8'));
   return zip.toBuffer();
 }
@@ -159,7 +159,6 @@ function injectStyles(
   styles: string,
   fillId: number,
   fontId: number,
-  xfId: number,
 ): string {
   let out = styles;
 

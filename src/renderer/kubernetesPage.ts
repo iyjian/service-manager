@@ -3,7 +3,6 @@ import type {
   KubernetesCustomResourceDefinition,
   KubernetesCustomResourcePrinterColumn,
   KubernetesListSnapshot,
-  KubernetesLogState,
   KubernetesNamespaceScope,
   KubernetesPodEnvironment,
   KubernetesPodTarget,
@@ -15,7 +14,6 @@ import type {
   KubernetesResourceQuery,
   KubernetesResourceSummary,
   KubernetesState,
-  KubernetesTerminalState,
 } from '../shared/types';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS } from './codeHighlight.js';
@@ -562,150 +560,6 @@ export function nextKubernetesSort(
     : { column, direction: 'asc' };
 }
 
-export function shouldAutoScrollKubernetesLogs(following: boolean, preserveScroll: boolean): boolean {
-  return following && !preserveScroll;
-}
-
-export interface KubernetesLogAutoScrollScheduler {
-  schedule(key: string, callback: () => void): void;
-  cancel(): void;
-}
-
-export function createKubernetesLogAutoScrollScheduler(
-  requestFrame: (callback: FrameRequestCallback) => number,
-  cancelFrame: (frame: number) => void,
-): KubernetesLogAutoScrollScheduler {
-  let frame: number | undefined;
-  let key: string | undefined;
-  let callback: (() => void) | undefined;
-
-  const cancel = (): void => {
-    if (frame !== undefined) cancelFrame(frame);
-    frame = undefined;
-    key = undefined;
-    callback = undefined;
-  };
-
-  return {
-    schedule(nextKey, nextCallback) {
-      callback = nextCallback;
-      if (frame !== undefined && key === nextKey) return;
-      if (frame !== undefined) cancelFrame(frame);
-      key = nextKey;
-      frame = requestFrame(() => {
-        frame = undefined;
-        key = undefined;
-        const pendingCallback = callback;
-        callback = undefined;
-        pendingCallback?.();
-      });
-    },
-    cancel,
-  };
-}
-
-export type KubernetesLogScrollIntent = 'follow' | 'preserve' | 'incidental';
-export type KubernetesLogUpdateRoute = 'selected' | 'background' | 'stale';
-export type KubernetesPodWorkspace = 'logs' | 'terminal';
-
-export interface KubernetesLogViewportState {
-  visible: boolean;
-  detailGeneration: number;
-  selectedContainer?: string;
-  log?: KubernetesLogState;
-  error?: string;
-  search: string;
-}
-
-export interface KubernetesLogViewportElements {
-  followButton: Pick<HTMLButtonElement, 'disabled' | 'setAttribute'>;
-  pauseIcon: { classList: Pick<DOMTokenList, 'toggle'> };
-  playIcon: { classList: Pick<DOMTokenList, 'toggle'> };
-  clearButton: Pick<HTMLButtonElement, 'disabled'>;
-  output: Pick<HTMLPreElement, 'textContent' | 'scrollTop' | 'scrollHeight'>;
-  count: Pick<HTMLElement, 'textContent'>;
-  state: { classList: Pick<DOMTokenList, 'remove' | 'toggle'> };
-  stateLabel: Pick<HTMLElement, 'textContent'>;
-}
-
-export interface KubernetesLogViewport {
-  render(intent?: KubernetesLogScrollIntent): void;
-  cancel(): void;
-}
-
-export interface KubernetesLogFollowMutation {
-  token: symbol;
-  following: boolean;
-}
-
-export interface KubernetesLogFollowToggleOptions {
-  sessions: Map<string, KubernetesLogState>;
-  mutations: Map<string, KubernetesLogFollowMutation>;
-  getSelectedContainer: () => string | undefined;
-  viewport: KubernetesLogViewport;
-  setFollowing: (sessionId: string, following: boolean) => Promise<KubernetesLogState>;
-  onError: (error: unknown) => void;
-}
-
-export function claimKubernetesLogOpen(
-  requests: Map<string, symbol>,
-  key: string,
-): symbol | undefined {
-  if (requests.has(key)) return undefined;
-  const token = Symbol(key);
-  requests.set(key, token);
-  return token;
-}
-
-export function releaseKubernetesLogOpen(
-  requests: Map<string, symbol>,
-  key: string,
-  token: symbol,
-): void {
-  if (requests.get(key) === token) requests.delete(key);
-}
-
-export function applyKubernetesLogOpenFailure(options: {
-  requests: Map<string, symbol>;
-  key: string;
-  token: symbol;
-  selectedContainer: string | undefined;
-  targetContainer: string;
-  cache: () => void;
-  renderSelected: () => void;
-}): KubernetesLogUpdateRoute {
-  if (options.requests.get(options.key) !== options.token) return 'stale';
-  options.cache();
-  if (options.selectedContainer !== options.targetContainer) return 'background';
-  options.renderSelected();
-  return 'selected';
-}
-
-interface KubernetesPodWorkspaceTab {
-  classList: Pick<DOMTokenList, 'toggle'>;
-  setAttribute(name: string, value: string): void;
-}
-
-export function applyKubernetesPodWorkspace(
-  workspace: KubernetesPodWorkspace,
-  options: {
-    logsTab: KubernetesPodWorkspaceTab;
-    terminalTab: KubernetesPodWorkspaceTab;
-    hideTerminalDrawer: () => void;
-  },
-): void {
-  const terminalSelected = workspace === 'terminal';
-  options.logsTab.classList.toggle('kubernetes-log-view-tab-active', !terminalSelected);
-  options.logsTab.setAttribute('aria-selected', String(!terminalSelected));
-  options.terminalTab.classList.toggle('kubernetes-log-view-tab-active', terminalSelected);
-  options.terminalTab.setAttribute('aria-selected', String(terminalSelected));
-  if (!terminalSelected) options.hideTerminalDrawer();
-}
-
-function kubernetesPodTargetKey(target: KubernetesPodTarget): string {
-  return `${target.namespace}\u0000${target.podName}\u0000${target.container}`;
-}
-
 export function sameKubernetesPodTarget(
   left: KubernetesPodTarget | undefined,
   right: KubernetesPodTarget | undefined,
@@ -725,235 +579,6 @@ export function isCurrentKubernetesEnvironmentRequest(
     && current.visible
     && current.drawerGeneration === candidate.drawerGeneration
     && sameKubernetesPodTarget(current.target, candidate.target);
-}
-
-export async function openKubernetesTerminalWorkspace(options: {
-  target: KubernetesPodTarget;
-  requests: Map<string, symbol>;
-  selectWorkspace: (workspace: KubernetesPodWorkspace) => void;
-  focusTarget: (target: KubernetesPodTarget) => string | undefined;
-  focusSession: (id: string) => boolean;
-  claimSession: (id: string) => void;
-  openDrawer: (state: KubernetesTerminalState) => void;
-  requestTerminal: (target: KubernetesPodTarget) => Promise<KubernetesTerminalState>;
-  isCurrent: () => boolean;
-  reportError: (error: unknown) => void;
-}): Promise<void> {
-  options.selectWorkspace('terminal');
-  const existingId = options.focusTarget(options.target);
-  if (existingId) {
-    options.claimSession(existingId);
-    return;
-  }
-
-  const key = kubernetesPodTargetKey(options.target);
-  const token = claimKubernetesLogOpen(options.requests, key);
-  if (!token) return;
-  try {
-    const state = await options.requestTerminal(options.target);
-    options.openDrawer(state);
-    if (options.requests.get(key) !== token || !options.isCurrent()) return;
-    if (options.focusSession(state.id)) {
-      options.claimSession(state.id);
-      return;
-    }
-    options.selectWorkspace('logs');
-    if (state.state === 'error') {
-      options.reportError(state.error ?? 'Kubernetes terminal failed.');
-    }
-  } catch (error) {
-    if (options.requests.get(key) !== token || !options.isCurrent()) return;
-    options.selectWorkspace('logs');
-    options.reportError(error);
-  } finally {
-    releaseKubernetesLogOpen(options.requests, key, token);
-  }
-}
-
-export type KubernetesTerminalFinalRoute = 'background' | 'retained' | 'fallback';
-
-export function routeKubernetesTerminalFinalState(options: {
-  state: KubernetesTerminalState;
-  selectedTarget: KubernetesPodTarget | undefined;
-  workspace: KubernetesPodWorkspace;
-  workspaceSessionId: string | undefined;
-  replacementSessionId: string | undefined;
-  claimSession: (id: string) => void;
-  selectLogs: () => void;
-  reportError: (message: string) => void;
-}): KubernetesTerminalFinalRoute {
-  if ((options.state.state !== 'closed' && options.state.state !== 'error')
-    || options.workspace !== 'terminal'
-    || options.state.id !== options.workspaceSessionId
-    || !sameKubernetesPodTarget(options.state, options.selectedTarget)) {
-    return 'background';
-  }
-  if (options.state.state === 'error') {
-    options.reportError(options.state.error ?? 'Kubernetes terminal failed.');
-  }
-  if (options.replacementSessionId) {
-    options.claimSession(options.replacementSessionId);
-    return 'retained';
-  }
-  options.selectLogs();
-  return 'fallback';
-}
-
-export function routeKubernetesLogUpdate(
-  sessions: Map<string, KubernetesLogState>,
-  selectedContainer: string | undefined,
-  state: KubernetesLogState,
-  allowNewSession = false,
-): KubernetesLogUpdateRoute {
-  const current = sessions.get(state.container);
-  if ((current && current.sessionId !== state.sessionId)
-    || (!current && (!allowNewSession || state.container !== selectedContainer))) {
-    return 'stale';
-  }
-  sessions.set(state.container, state);
-  return state.container === selectedContainer ? 'selected' : 'background';
-}
-
-export function applyKubernetesLogUpdate(
-  sessions: Map<string, KubernetesLogState>,
-  selectedContainer: string | undefined,
-  state: KubernetesLogState,
-  viewport: KubernetesLogViewport,
-  intent: KubernetesLogScrollIntent,
-  allowNewSession = false,
-): KubernetesLogUpdateRoute {
-  const route = routeKubernetesLogUpdate(sessions, selectedContainer, state, allowNewSession);
-  if (route === 'selected') viewport.render(intent);
-  return route;
-}
-
-export function shouldApplyKubernetesLogBroadcast(
-  mutations: ReadonlyMap<string, KubernetesLogFollowMutation>,
-  state: KubernetesLogState,
-): boolean {
-  const mutation = mutations.get(state.sessionId);
-  return !mutation || mutation.following === state.following;
-}
-
-export async function runKubernetesLogFollowToggle(
-  options: KubernetesLogFollowToggleOptions,
-): Promise<void> {
-  const container = options.getSelectedContainer();
-  const previous = container ? options.sessions.get(container) : undefined;
-  if (!previous) return;
-
-  const desired = !previous.following;
-  const token = Symbol(previous.sessionId);
-  options.mutations.set(previous.sessionId, { token, following: desired });
-  const optimistic = { ...previous, following: desired };
-  applyKubernetesLogUpdate(
-    options.sessions,
-    options.getSelectedContainer(),
-    optimistic,
-    options.viewport,
-    desired ? 'follow' : 'preserve',
-  );
-
-  const isCurrent = (): boolean => options.mutations.get(previous.sessionId)?.token === token
-    && options.sessions.get(previous.container)?.sessionId === previous.sessionId;
-
-  try {
-    const next = await options.setFollowing(previous.sessionId, desired);
-    if (!isCurrent()) return;
-    applyKubernetesLogUpdate(
-      options.sessions,
-      options.getSelectedContainer(),
-      next,
-      options.viewport,
-      next.following ? 'follow' : 'preserve',
-    );
-  } catch (error) {
-    if (!isCurrent()) return;
-    if (options.sessions.get(previous.container) === optimistic) {
-      applyKubernetesLogUpdate(
-        options.sessions,
-        options.getSelectedContainer(),
-        previous,
-        options.viewport,
-        previous.following ? 'follow' : 'preserve',
-      );
-    }
-    options.onError(error);
-  } finally {
-    if (options.mutations.get(previous.sessionId)?.token === token) options.mutations.delete(previous.sessionId);
-  }
-}
-
-export function formatKubernetesLogCount(filtered: number, total: number): string {
-  const unit = total === 1 ? 'line' : 'lines';
-  return filtered === total ? `${total} ${unit}` : `${filtered} of ${total} ${unit}`;
-}
-
-export function createKubernetesLogViewport(options: {
-  getState: () => KubernetesLogViewportState;
-  elements: KubernetesLogViewportElements;
-  requestFrame: (callback: FrameRequestCallback) => number;
-  cancelFrame: (frame: number) => void;
-}): KubernetesLogViewport {
-  const autoScroll = createKubernetesLogAutoScrollScheduler(options.requestFrame, options.cancelFrame);
-
-  return {
-    render(intent = 'incidental'): void {
-      const previousScrollTop = options.elements.output.scrollTop;
-      const state = options.getState();
-      const log = state.log;
-      const following = log?.following === true;
-      const followLabel = following ? 'Pause log follow' : 'Resume log follow';
-      options.elements.followButton.disabled = !log;
-      options.elements.clearButton.disabled = !log;
-      options.elements.followButton.setAttribute('aria-label', followLabel);
-      options.elements.followButton.setAttribute('title', followLabel);
-      options.elements.pauseIcon.classList.toggle('hidden', !following);
-      options.elements.playIcon.classList.toggle('hidden', following);
-      if (!log) {
-        options.elements.output.textContent = state.selectedContainer
-          ? state.error ?? 'Loading logs…'
-          : 'No container is available.';
-        options.elements.count.textContent = '0 lines';
-        options.elements.state.classList.remove('kubernetes-log-state-live');
-        options.elements.stateLabel.textContent = 'Paused';
-        autoScroll.cancel();
-        options.elements.output.scrollTop = previousScrollTop;
-        return;
-      }
-
-      const search = state.search.trim().toLocaleLowerCase();
-      const lines = search ? log.lines.filter((line) => line.toLocaleLowerCase().includes(search)) : log.lines;
-      options.elements.count.textContent = formatKubernetesLogCount(lines.length, log.lines.length);
-      options.elements.state.classList.toggle('kubernetes-log-state-live', log.following);
-      options.elements.stateLabel.textContent = log.following ? 'Live' : 'Paused';
-      options.elements.output.textContent = lines.join('\n');
-      if (!shouldAutoScrollKubernetesLogs(log.following, intent !== 'follow')) {
-        if (!log.following || intent === 'preserve') autoScroll.cancel();
-        options.elements.output.scrollTop = previousScrollTop;
-        return;
-      }
-
-      const request = {
-        sessionId: log.sessionId,
-        container: log.container,
-        detailGeneration: state.detailGeneration,
-      };
-      const requestKey = `${request.sessionId}\u0000${request.container}\u0000${request.detailGeneration}`;
-      autoScroll.schedule(requestKey, () => {
-        const current = options.getState();
-        if (!current.visible || !current.log?.following) return;
-        if (current.log.sessionId !== request.sessionId) return;
-        if (current.log.container !== request.container) return;
-        if (current.selectedContainer !== request.container) return;
-        if (current.detailGeneration !== request.detailGeneration) return;
-        options.elements.output.scrollTop = options.elements.output.scrollHeight;
-      });
-    },
-    cancel(): void {
-      autoScroll.cancel();
-    },
-  };
 }
 
 export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
@@ -1158,14 +783,6 @@ export async function runKubernetesDrawerDetailRequest<T>(
     if (!lifecycle.isCurrent()) return;
     lifecycle.onError(error);
   }
-}
-
-/** A close owns cleanup only until a later detail lifecycle increments its generation. */
-export function isCurrentKubernetesDetailClose(
-  closingGeneration: number,
-  currentGeneration: number,
-): boolean {
-  return currentGeneration === closingGeneration + 1;
 }
 
 /** Exact page/drawer/summary ownership guard for every asynchronous drawer result. */
@@ -2796,7 +2413,7 @@ class KubernetesPage implements KubernetesPageController {
     } else this.renderOverview(detail, active);
     this.renderDrawerVnc(detail, active);
     this.renderDrawerPortForward(active);
-    const related = this.renderRelatedDetail(detail, active);
+    const related = this.renderRelatedDetail(active);
     if (related) this.detailOverview.appendChild(related);
     this.detailOverview.appendChild(this.renderDrawerEvents(active));
     if (!this.detailYamlWrap.classList.contains('hidden')) {
@@ -3885,7 +3502,7 @@ class KubernetesPage implements KubernetesPageController {
    * detail-only section. The active resource list owns Watch lifecycle, so no
    * relation path may activate a list or replace its snapshot.
    */
-  private renderRelatedDetail(detail: Record<string, unknown>, active: ActiveDetail): HTMLElement | undefined {
+  private renderRelatedDetail(active: ActiveDetail): HTMLElement | undefined {
     const state = this.relatedState(active);
     if (!state) return undefined;
 

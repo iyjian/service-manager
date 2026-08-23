@@ -1,4 +1,4 @@
-import type { KubernetesConnectionState, KubernetesContextInfo, KubernetesState } from '../../shared/types';
+import type { KubernetesContextInfo, KubernetesState } from '../../shared/types';
 import type { KubernetesClient } from './kubernetesClient';
 
 export const DEFAULT_KUBERNETES_RETRY_DELAYS_MS = [200, 500, 1_000, 2_000, 5_000] as const;

@@ -173,26 +173,6 @@ test('hasActiveKubernetesPortForward matches only a live forward for the exact d
   ], target), true);
 });
 
-test('formatKubernetesDeclaredPortLabel returns plain display text', async () => {
-  const { formatKubernetesDeclaredPortLabel } = await import(modelPath);
-
-  assert.equal(formatKubernetesDeclaredPortLabel({
-    remotePort: 3000,
-    declarations: [
-      { owner: 'aigc-lms-ui', name: 'http', source: 'container' },
-      { owner: 'metrics-sidecar', name: 'metrics', source: 'restartable-init' },
-    ],
-  }), '3000 · http (aigc-lms-ui), metrics (metrics-sidecar)');
-  assert.equal(formatKubernetesDeclaredPortLabel({
-    remotePort: 443,
-    declarations: [
-      { owner: 'api & worker', source: 'container' },
-      { name: '<external>', source: 'service' },
-    ],
-  }), '443 · api & worker, <external>');
-  assert.equal(formatKubernetesDeclaredPortLabel({ remotePort: 8080, declarations: [] }), '8080');
-});
-
 test('buildKubernetesOverviewFields returns only Kind Namespace Status Name and Pod IP in order', async () => {
   const { buildKubernetesOverviewFields } = await import(modelPath);
   const podDetail = {
@@ -402,47 +382,6 @@ test('Kubernetes reserves a hidden workspace shell for the later Logs and Shell 
   assert.match(workspace, /id="kubernetes-workspace-pane"/);
   assert.match(workspace, /id="kubernetes-workspace-pane" class="kubernetes-workspace-pane" role="tabpanel"/);
   assert.doesNotMatch(workspace, /kubernetes-log-|kubernetes-terminal-/);
-});
-
-test('Kubernetes terminal workspace selection keeps tab state accessible and hides sessions only for Logs', async () => {
-  const { applyKubernetesPodWorkspace } = await import(path.join(rendererPath, 'kubernetesPage.js'));
-  const button = () => {
-    const classes = new Set();
-    const attributes = new Map();
-    return {
-      classes,
-      attributes,
-      classList: {
-        toggle(name, force) {
-          if (force) classes.add(name);
-          else classes.delete(name);
-        },
-      },
-      setAttribute(name, value) { attributes.set(name, value); },
-    };
-  };
-  const logsTab = button();
-  const terminalTab = button();
-  let hideCount = 0;
-  const tabs = {
-    logsTab,
-    terminalTab,
-    hideTerminalDrawer: () => { hideCount += 1; },
-  };
-
-  applyKubernetesPodWorkspace('terminal', tabs);
-  assert.equal(logsTab.classes.has('kubernetes-log-view-tab-active'), false);
-  assert.equal(logsTab.attributes.get('aria-selected'), 'false');
-  assert.equal(terminalTab.classes.has('kubernetes-log-view-tab-active'), true);
-  assert.equal(terminalTab.attributes.get('aria-selected'), 'true');
-  assert.equal(hideCount, 0);
-
-  applyKubernetesPodWorkspace('logs', tabs);
-  assert.equal(logsTab.classes.has('kubernetes-log-view-tab-active'), true);
-  assert.equal(logsTab.attributes.get('aria-selected'), 'true');
-  assert.equal(terminalTab.classes.has('kubernetes-log-view-tab-active'), false);
-  assert.equal(terminalTab.attributes.get('aria-selected'), 'false');
-  assert.equal(hideCount, 1);
 });
 
 test('Kubernetes drawer binds local close, scrim, and YAML controls without starting workspace sessions', async () => {

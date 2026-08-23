@@ -71,14 +71,6 @@ export function baseResourceQuery(query: KubernetesResourceQuery): KubernetesRes
   };
 }
 
-export interface KubernetesVirtualWindow<T> {
-  start: number;
-  end: number;
-  offsetTop: number;
-  totalHeight: number;
-  items: T[];
-}
-
 const CLUSTER_SCOPED_KINDS = new Set<KubernetesResourceKind>(['nodes', 'namespaces']);
 
 function resourceScope(query: KubernetesResourceQuery): 'namespaced' | 'cluster' {
@@ -277,58 +269,6 @@ export function projectLoadedResourceItems(
   });
 }
 
-function positiveFinite(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${name} must be a positive finite number.`);
-  }
-
-  return value;
-}
-
-function nonNegativeFinite(value: number, name: string): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative finite number.`);
-  }
-
-  return value;
-}
-
-/**
- * Projects a fixed-height list into the bounded range a virtual table needs
- * to render. `end` is exclusive and includes one overscan range before and
- * after the visible rows.
- */
-export function projectVirtualWindow<T>(
-  items: T[],
-  scrollTop: number,
-  rowHeight: number,
-  viewportHeight: number,
-  overscan: number
-): KubernetesVirtualWindow<T> {
-  const validRowHeight = positiveFinite(rowHeight, 'rowHeight');
-  const validViewportHeight = nonNegativeFinite(viewportHeight, 'viewportHeight');
-  const validOverscan = Math.floor(nonNegativeFinite(overscan, 'overscan'));
-  const totalHeight = items.length * validRowHeight;
-  const maxScrollTop = Math.max(0, totalHeight - validViewportHeight);
-  const clampedScrollTop = Number.isFinite(scrollTop)
-    ? Math.min(Math.max(0, scrollTop), maxScrollTop)
-    : 0;
-  const visibleStart = Math.floor(clampedScrollTop / validRowHeight);
-  const visibleEnd = Math.min(
-    items.length,
-    Math.ceil((clampedScrollTop + validViewportHeight) / validRowHeight)
-  );
-  const start = Math.max(0, visibleStart - validOverscan);
-  const end = Math.min(items.length, visibleEnd + validOverscan);
-
-  return {
-    start,
-    end,
-    offsetTop: start * validRowHeight,
-    totalHeight,
-    items: items.slice(start, end),
-  };
-}
 
 function copyWithoutSecretFields(value: unknown): unknown {
   if (Array.isArray(value)) {

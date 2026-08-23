@@ -69,10 +69,6 @@ export function activatePage(pageId: string): void {
   next.onShow?.();
 }
 
-export function getActivePageId(): string | null {
-  return activePageId;
-}
-
 export function initNav(defaultPageId: string): void {
   let saved: string | null = null;
   try {

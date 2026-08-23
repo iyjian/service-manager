@@ -163,8 +163,6 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /window\.notesApi\.createNote\(\{ parentId \}\)/);
   assert.match(notesPage, /window\.notesApi\.moveNote\(\{/);
   assert.match(notesPage, /window\.notesApi\.setTreeExpanded\(\{ noteId, expanded \}\)/);
-  assert.match(notesPage, /export function visibleNoteTreeRows\(/);
-  assert.match(notesPage, /export function noteTreeBreadcrumb\(/);
   assert.match(notesPage, /export function resolveNoteTreeDropPlacement\(/);
   assert.match(notesPage, /await this\.flushAllPendingSaves\(\);[\s\S]*?const editVersionBaseline = new Map\(this\.editVersions\)[\s\S]*?this\.applyWorkspace\(workspace, editVersionBaseline\)/);
   assert.match(notesPage, /This will permanently delete \$\{preview\.expectedIds\.length\} Notes in this subtree\./);

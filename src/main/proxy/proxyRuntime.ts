@@ -144,7 +144,6 @@ export class ProxyRuntime extends EventEmitter {
   private child: ChildProcess | null = null;
   private api: MihomoApi | null = null;
   private trafficAbortController: AbortController | null = null;
-  private trafficMonitor: Promise<void> | null = null;
   private traffic: ProxyTraffic | null = null;
   private lastTrafficBroadcastAt = 0;
   private delayResults = new Map<string, ProxyDelayResult>();
@@ -403,7 +402,6 @@ export class ProxyRuntime extends EventEmitter {
   private stopTrafficMonitor(): void {
     this.trafficAbortController?.abort();
     this.trafficAbortController = null;
-    this.trafficMonitor = null;
     this.clearTraffic();
   }
 
@@ -416,7 +414,7 @@ export class ProxyRuntime extends EventEmitter {
     const api = this.api;
     const controller = new AbortController();
     this.trafficAbortController = controller;
-    this.trafficMonitor = (async () => {
+    void (async () => {
       try {
         for await (const traffic of api.streamTraffic(controller.signal)) {
           if (controller.signal.aborted || this.api !== api || this.runStatus !== 'running') {
@@ -434,7 +432,6 @@ export class ProxyRuntime extends EventEmitter {
       } finally {
         if (this.trafficAbortController === controller) {
           this.trafficAbortController = null;
-          this.trafficMonitor = null;
           this.clearTraffic();
         }
       }

@@ -24,15 +24,6 @@ export interface LlmSettingsView {
   hasToken: boolean;
 }
 
-export interface LlmSettingsDraft {
-  endpoint: string;
-  selectedModel: string;
-  /** Missing or empty preserves the current token. */
-  token?: string;
-  /** Token removal must always be explicit. */
-  clearToken?: boolean;
-}
-
 export interface NormalizedLlmSettingsDraft {
   endpoint: string;
   selectedModel: string;

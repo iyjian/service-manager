@@ -1,4 +1,4 @@
-import type { ProxyDelayResult, ProxyGroupInfo, ProxyGroupOptionInfo, ProxyGroupsInfo } from '../../shared/types';
+import type { ProxyDelayResult, ProxyGroupOptionInfo, ProxyGroupsInfo } from '../../shared/types';
 
 export interface MihomoProxyRecord {
   name: string;

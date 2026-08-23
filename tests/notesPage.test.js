@@ -44,45 +44,6 @@ function note(overrides) {
   };
 }
 
-test('Notes search ranks name matches ahead of global metadata and content matches', async () => {
-  const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
-  const notes = [
-    note({ id: 'content', name: 'Runbook', content: 'deploy api server' }),
-    note({ id: 'tag', name: 'Operations', tags: ['api'] }),
-    note({ id: 'name-contains', name: 'Internal API client' }),
-    note({ id: 'name-prefix', name: 'API examples' }),
-    note({ id: 'name-exact', name: 'api' }),
-  ];
-
-  assert.deepEqual(
-    rankNotes(notes, ' API ').map(({ id }) => id),
-    ['name-exact', 'name-prefix', 'name-contains', 'tag', 'content'],
-  );
-});
-
-test('Notes search includes lower-priority language matches and drops unrelated notes', async () => {
-  const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
-  const notes = [
-    note({ id: 'language', name: 'Typed helper', language: 'typescript' }),
-    note({ id: 'content', name: 'Compiler note', content: 'typescript narrowing' }),
-    note({ id: 'unrelated', name: 'Shell aliases', language: 'bash' }),
-  ];
-
-  assert.deepEqual(rankNotes(notes, 'typescript').map(({ id }) => id), ['language', 'content']);
-});
-
-test('Notes empty search sorts by updated time descending and stays stable for ties', async () => {
-  const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
-  const notes = [
-    note({ id: 'old', updatedAt: '2026-01-01T00:00:00.000Z' }),
-    note({ id: 'new-a', updatedAt: '2026-03-01T00:00:00.000Z' }),
-    note({ id: 'new-b', updatedAt: '2026-03-01T00:00:00.000Z' }),
-  ];
-
-  assert.deepEqual(rankNotes(notes, '  ').map(({ id }) => id), ['new-a', 'new-b', 'old']);
-  assert.deepEqual(notes.map(({ id }) => id), ['old', 'new-a', 'new-b']);
-});
-
 test('Notes page delegates body search while retaining lightweight tree indexes and bounded debounce', async () => {
   const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
 
@@ -126,71 +87,6 @@ test('Notes save indicator only occupies a tree row while saving or after a fail
   assert.equal(noteSaveIndicatorState(true, false), 'saving');
   assert.equal(noteSaveIndicatorState(false, true), 'error');
   assert.equal(noteSaveIndicatorState(true, true), 'error');
-});
-
-test('Notes ranking keeps one hundred list entries available for the scrolling sidebar', async () => {
-  const { rankNotes } = await import(path.join(distRenderer, 'notesPage.js'));
-  const notes = Array.from({ length: 100 }, (_, index) => note({
-    id: `note-${index}`,
-    name: `Snippet ${String(index).padStart(3, '0')}`,
-    updatedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
-  }));
-
-  const ranked = rankNotes(notes, '');
-  assert.equal(ranked.length, 100);
-  assert.equal(ranked[0].id, 'note-99');
-  assert.equal(ranked[99].id, 'note-0');
-});
-
-test('Notes tree renders arbitrary expanded levels and search breadcrumbs keep the complete ancestor path', async () => {
-  const {
-    noteTreeAncestorIds,
-    noteTreeBreadcrumb,
-    noteTreeSubtreeIds,
-    visibleNoteTreeRows,
-  } = await import(path.join(distRenderer, 'notesPage.js'));
-  const notes = [
-    note({ id: 'root', name: 'Root' }),
-    note({ id: 'child', name: 'Child' }),
-    note({ id: 'grandchild', name: 'Grandchild' }),
-    note({ id: 'second-child', name: 'Second child' }),
-    note({ id: 'sibling', name: 'Sibling' }),
-  ];
-  const nodes = [
-    { noteId: 'root', parentId: null, order: 10 },
-    { noteId: 'child', parentId: 'root', order: 10 },
-    { noteId: 'grandchild', parentId: 'child', order: 10 },
-    { noteId: 'second-child', parentId: 'root', order: 20 },
-    { noteId: 'sibling', parentId: null, order: 20 },
-  ];
-
-  assert.deepEqual(
-    visibleNoteTreeRows(notes, nodes, new Set(['root', 'child']))
-      .map(({ note: item, depth }) => [item.id, depth]),
-    [['root', 0], ['child', 1], ['grandchild', 2], ['second-child', 1], ['sibling', 0]],
-  );
-  assert.deepEqual(
-    visibleNoteTreeRows(notes, nodes, new Set(['root']))
-      .map(({ note: item, depth }) => [item.id, depth]),
-    [['root', 0], ['child', 1], ['second-child', 1], ['sibling', 0]],
-  );
-  assert.equal(noteTreeBreadcrumb('grandchild', notes, nodes), 'Root / Child');
-  assert.deepEqual(noteTreeAncestorIds('grandchild', nodes), ['root', 'child']);
-  assert.deepEqual(noteTreeAncestorIds('root', nodes), []);
-  assert.deepEqual(noteTreeAncestorIds('missing', nodes), []);
-  assert.deepEqual(noteTreeSubtreeIds('root', nodes), ['root', 'child', 'grandchild', 'second-child']);
-  assert.deepEqual(noteTreeSubtreeIds('missing', nodes), []);
-});
-
-test('Notes search result reveal bounds malformed ancestor cycles', async () => {
-  const { noteTreeAncestorIds } = await import(path.join(distRenderer, 'notesPage.js'));
-  const cyclicNodes = [
-    { noteId: 'target', parentId: 'parent', order: 10 },
-    { noteId: 'parent', parentId: 'grandparent', order: 10 },
-    { noteId: 'grandparent', parentId: 'parent', order: 10 },
-  ];
-
-  assert.deepEqual(noteTreeAncestorIds('target', cyclicNodes), ['grandparent', 'parent']);
 });
 
 test('Notes delete confirmation compares subtree membership without rejecting harmless reorders', async () => {
@@ -726,21 +622,6 @@ test('Notes editor input marks dirty without serializing the complete document u
   assert.match(capture, /this\.richTextEditor\.getContent\(\)/);
   assert.match(capture, /this\.codeEditor\.state\.doc\.toString\(\)/);
   assert.match(source, /private flushNote\(id: string\)[\s\S]*?this\.captureEditorContent\(id\)/);
-});
-
-test('Notes rich text mode searches readable content, confirms lossy changes, and uploads images through narrow IPC', async () => {
-  const { rankNotes, plainTextToRichTextContent } = await loadNoteLanguageModules();
-  const richContent = plainTextToRichTextContent('Alpha rich body');
-  const richNote = note({ id: 'rich', language: 'richtext', content: richContent });
-  assert.deepEqual(rankNotes([richNote], 'rich body').map(({ id }) => id), ['rich']);
-
-  const source = await readFile(path.join(root, 'src', 'renderer', 'notesPage.ts'), 'utf8');
-  assert.match(source, /title: leavingRichText \? 'Leave Rich Text\?' : 'Switch to Rich Text\?'/);
-  assert.match(source, /window\.notesApi\.uploadImage\(\{/);
-  assert.match(source, /Configure S3 in Settings before adding images\./);
-  assert.match(source, /NOTE_IMAGE_MAX_BYTES = 10 \* 1024 \* 1024/);
-  assert.match(source, /this\.richTextEditor\.insertImage\(result\.reference, capturedPosition\)/);
-  assert.match(source, /onRequestImage: \(file, position\) => \{[\s\S]*?this\.uploadImageFile\(file, position\)[\s\S]*?this\.imageInput\.click\(\)/);
 });
 
 test('Notes workspace mutations capture deferred editor content and preserve newer selection intent', async () => {

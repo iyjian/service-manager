@@ -1,5 +1,4 @@
-import type { HostConfig, ProxyCustomRule, ProxySettings } from '../shared/types';
-import type { NotesSnapshot } from './notesStore';
+import type { ProxyCustomRule, ProxySettings } from '../shared/types';
 
 const PROXY_MODES = new Set(['direct', 'rule', 'global']);
 const PROXY_RULE_TYPES = new Set([
@@ -76,51 +75,3 @@ export interface PersistentProxySnapshot {
   subscriptionYaml?: string;
 }
 
-function cloneProxySnapshot(value: PersistentProxySnapshot): PersistentProxySnapshot {
-  return {
-    settings: sanitizeProxySettingsForSnapshot(value.settings),
-    ...(typeof value.subscriptionYaml === 'string' ? { subscriptionYaml: value.subscriptionYaml } : {}),
-  };
-}
-
-function safeKubernetesSelection(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.length > 16_384) {
-    return undefined;
-  }
-  return value;
-}
-
-export async function collectPersistentAppData(options: {
-  hosts: HostConfig[];
-  notes: NotesSnapshot;
-  proxy: PersistentProxySnapshot;
-  kubernetesContextSelection?: string;
-}): Promise<Record<string, unknown>> {
-  const proxy = cloneProxySnapshot(options.proxy);
-  const selectedContext = safeKubernetesSelection(options.kubernetesContextSelection);
-
-  return {
-    hosts: {
-      schemaVersion: 1,
-      items: options.hosts.map((host) => ({
-        ...host,
-        jumpHosts: host.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
-        forwards: host.forwards.map((forward) => ({ ...forward })),
-        services: host.services.map((service) => ({ ...service })),
-      })),
-    },
-    notes: {
-      schemaVersion: options.notes.schemaVersion,
-      notes: options.notes.notes.map((note) => ({ ...note, tags: [...note.tags] })),
-    },
-    proxy: {
-      schemaVersion: 1,
-      settings: proxy.settings,
-      ...(proxy.subscriptionYaml !== undefined ? { subscriptionYaml: proxy.subscriptionYaml } : {}),
-    },
-    kubernetes: {
-      schemaVersion: 1,
-      ...(selectedContext !== undefined ? { selectedContext } : {}),
-    },
-  };
-}

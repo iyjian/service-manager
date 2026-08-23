@@ -8,7 +8,8 @@ async function loadModule(name) {
 }
 
 test('SQL statement scanner ignores semicolons inside strings, identifiers, and comments', async () => {
-  const { splitSqlStatements } = await loadModule('sqlStatement.js');
+  const { findSqlStatementBoundaries } = await loadModule('sqlStatement.js');
+  const splitSqlStatements = (src) => findSqlStatementBoundaries(src).map(({ from, to }) => ({ from, to, sql: src.slice(from, to) }));
   const source = [
     "select ';' as value;",
     'select `semi;column` from demo /* ; ignored */;',
@@ -69,81 +70,12 @@ test('SQL execution resolves a selection first and otherwise the cursor statemen
   });
 });
 
-test('SQL current-statement highlight follows the exact execution range', async () => {
-  const { EditorState } = await import('@codemirror/state');
-  const {
-    currentSqlStatementHighlightRange,
-    sqlCurrentStatementHighlight,
-  } = await loadModule('sqlStatementHighlight.js');
-  const source = 'select 1;\n\n-- next\nselect 2;';
-  let state = EditorState.create({
-    doc: source,
-    selection: { anchor: source.indexOf('2') },
-    extensions: [sqlCurrentStatementHighlight],
-  });
-
-  assert.deepEqual(
-    currentSqlStatementHighlightRange(state),
-    {
-      from: source.indexOf('-- next'),
-      to: source.length,
-    },
-  );
-
-  state = state.update({ selection: { anchor: 10 } }).state;
-  assert.deepEqual(
-    currentSqlStatementHighlightRange(state),
-    {
-      from: source.indexOf('-- next'),
-      to: source.length,
-    },
-  );
-
-  const inserted = 'select 0;\n';
-  state = state.update({
-    changes: { from: 0, insert: inserted },
-  }).state;
-  assert.deepEqual(
-    currentSqlStatementHighlightRange(state),
-    {
-      from: inserted.length + source.indexOf('-- next'),
-      to: inserted.length + source.length,
-    },
-  );
-
-  state = state.update({
-    selection: { anchor: 0, head: state.doc.length },
-  }).state;
-  assert.equal(currentSqlStatementHighlightRange(state), undefined);
-});
-
-test('SQL production guard is conservative and template parameters preserve reference behavior', async () => {
+test('SQL template parameters preserve reference behavior', async () => {
   const {
     extractSqlTemplateParamNames,
-    isLikelyReadOnlySql,
     replaceSqlTemplateParams,
   } = await loadModule('sqlStatement.js');
 
-  assert.equal(isLikelyReadOnlySql('/* safe */ SELECT 1'), true);
-  assert.equal(isLikelyReadOnlySql('-- comment\nshow tables'), true);
-  assert.equal(isLikelyReadOnlySql('with rows as (select 1) select * from rows'), true);
-  assert.equal(isLikelyReadOnlySql('with rows as (select 1) update rows set x = 1'), false);
-  assert.equal(isLikelyReadOnlySql('with rows as (select 1) delete from rows'), false);
-  assert.equal(isLikelyReadOnlySql('with rows as (select 1) insert into rows select 1'), false);
-  assert.equal(isLikelyReadOnlySql('with a as (select 1), b as (select 2) select * from b'), true);
-  assert.equal(isLikelyReadOnlySql('with recursive a as (select 1 union all select n + 1 from a where n < 10) select * from a'), true);
-  assert.equal(isLikelyReadOnlySql("with rows as (select ')' as c) select * from rows"), true);
-  assert.equal(
-    isLikelyReadOnlySql(
-      'with submits as (select ifnull(tpp.problemId, p.id) as problemId, '
-      + 'count(case when s.status = 1 then 1 end) as submits '
-      + 'from t_solution_submit s left join t_problem p on s.problemSyncKey = p.syncKey '
-      + 'group by ifnull(tpp.problemId, p.id)) '
-      + 'select submits.name, submits.submits from submits',
-    ),
-    true,
-  );
-  assert.equal(isLikelyReadOnlySql('update users set active = 1'), false);
   assert.deepEqual(extractSqlTemplateParamNames('select {{ id }}, {{name}}, {{id}}'), ['id', 'name']);
   assert.equal(
     replaceSqlTemplateParams('select * from users where id={{ id }} and name={{name}}', { id: '7', name: "'Ada'" }),

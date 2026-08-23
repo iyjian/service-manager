@@ -5,7 +5,6 @@ const {
   appendBoundedLogLines,
   normalizeKubernetesLogStartTime,
   PodInteractionManager,
-  shellFallbacks,
 } = require('../dist/main/kubernetes/podInteractions');
 
 const POD_INPUT = {
@@ -746,7 +745,6 @@ test('PodInteractionManager opens the default shell and closes page-scoped strea
   const manager = createManager(fakeClient);
   const terminal = await manager.openTerminal(POD_INPUT);
 
-  assert.deepEqual(shellFallbacks(), ['/bin/sh', 'ash', 'bash', '/bin/sh']);
   assert.equal(terminal.shell, '/bin/sh');
   assert.deepEqual(fakeClient.terminalInputs, [{
     ...POD_INPUT,

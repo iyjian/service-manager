@@ -61,11 +61,6 @@ export interface SqlTextRange {
   to: number;
 }
 
-export interface SqlEnumCommentPart {
-  text: string;
-  isDefault: boolean;
-}
-
 export interface SqlEnumValuePart {
   value: string;
   description: string;
@@ -576,35 +571,6 @@ export function parseSqlEnumComment(
     });
   }
   return { description, values };
-}
-
-export function sqlEnumCommentParts(
-  comment: string,
-  defaultValue?: string,
-): readonly SqlEnumCommentPart[] {
-  const normalizedDefault = defaultValue === undefined
-    ? undefined
-    : normalizeSqlEnumValue(defaultValue);
-  if (normalizedDefault === undefined) return [{ text: comment, isDefault: false }];
-
-  const pattern = /(^|[^0-9])([0-9]+)(?=\s*-\s*)/g;
-  for (const match of comment.matchAll(pattern)) {
-    const prefix = match[1] ?? '';
-    const enumValue = match[2];
-    if (
-      enumValue === undefined
-      || normalizeSqlEnumValue(enumValue) !== normalizedDefault
-      || match.index === undefined
-    ) continue;
-    const valueFrom = match.index + prefix.length;
-    const valueTo = valueFrom + enumValue.length;
-    return [
-      ...(valueFrom > 0 ? [{ text: comment.slice(0, valueFrom), isDefault: false }] : []),
-      { text: enumValue, isDefault: true },
-      ...(valueTo < comment.length ? [{ text: comment.slice(valueTo), isDefault: false }] : []),
-    ];
-  }
-  return [{ text: comment, isDefault: false }];
 }
 
 export function resolveSqlDefaultTable(

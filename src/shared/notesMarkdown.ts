@@ -414,8 +414,6 @@ export function applyMarkdownFormat(
   }
 }
 
-export const formatMarkdownSelection = applyMarkdownFormat;
-
 function splitSourceLines(markdown: string): MarkdownSourceLine[] {
   if (!markdown) return [];
   const lines: MarkdownSourceLine[] = [];
@@ -591,8 +589,6 @@ export function getMarkdownStats(markdown: string): MarkdownDocumentStats {
     charactersWithoutSpaces: Array.from(plainText.replace(/\s/gu, '')).length,
   };
 }
-
-export const calculateMarkdownStats = getMarkdownStats;
 
 function escapeHtml(value: string): string {
   return value
@@ -1057,8 +1053,6 @@ export function renderMarkdownToSafeHtml(markdown: string): string {
   return renderBlocks(normalized ? normalized.split('\n') : [], { headingIds: new Map() });
 }
 
-export const renderMarkdownSafeHtml = renderMarkdownToSafeHtml;
-
 /** Creates a cross-platform leaf filename; path separators and reserved names are removed. */
 export function createSafeNoteFilename(title: string, extension: string = 'md'): string {
   const safeExtension = extension.replace(/^\.+/, '').toLocaleLowerCase();
@@ -1080,5 +1074,3 @@ export function createSafeNoteFilename(title: string, extension: string = 'md'):
   ).replace(/[. ]+$/g, '') || 'Note';
   return `${stem}.${suffix}`;
 }
-
-export const safeMarkdownFilename = createSafeNoteFilename;

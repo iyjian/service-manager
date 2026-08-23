@@ -1831,7 +1831,7 @@ class SqlPage {
     this.renderRecordList();
     this.renderResult();
     this.renderBusyState();
-    if (focus) this.focusTab(key);
+    if (focus) this.focusTab();
   }
 
   private renderTabs(): void {
@@ -1924,7 +1924,7 @@ class SqlPage {
     this.selectTab(target.key, true);
   }
 
-  private focusTab(key: string): void {
+  private focusTab(): void {
     window.requestAnimationFrame(() => {
       this.queryTabs.querySelector<HTMLButtonElement>(`.sql-query-tab[data-active='true'] .sql-query-tab-select`)?.focus({
         preventScroll: true,

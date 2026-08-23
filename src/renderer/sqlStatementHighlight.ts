@@ -56,8 +56,3 @@ export const sqlCurrentStatementHighlight = StateField.define<SqlStatementHighli
   },
 });
 
-export function currentSqlStatementHighlightRange(
-  state: EditorState,
-): SqlStatementBoundary | undefined {
-  return state.field(sqlCurrentStatementHighlight, false)?.active;
-}

@@ -303,10 +303,6 @@ export function normalizeKubernetesLogStartTime(value: string): string {
   return timestamp.toISOString();
 }
 
-export function shellFallbacks(): readonly ['/bin/sh', 'ash', 'bash', '/bin/sh'] {
-  return SHELL_FALLBACKS;
-}
-
 function assertNonEmpty(value: string, label: string): void {
   if (!value.trim()) {
     throw new Error(`Kubernetes ${label} is required.`);

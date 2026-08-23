@@ -17,7 +17,6 @@ import type {
   KubernetesRelatedResourceRequest,
   KubernetesResourceQuery,
   KubernetesResourceWindowRange,
-  KubernetesResourceSummary,
   KubernetesState,
   KubernetesTerminalState,
   KubernetesTerminalOutput,

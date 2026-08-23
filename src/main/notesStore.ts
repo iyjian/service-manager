@@ -895,18 +895,6 @@ export class NotesStore {
     );
   }
 
-  private async writeReplacementCompleteFile(directory: string, files: string[]): Promise<void> {
-    const completion: ReplacementCompleteFile = {
-      schemaVersion: NOTES_SCHEMA_VERSION,
-      files: [...files].sort(),
-    };
-    await this.writeAtomicPrivateFile(
-      directory,
-      REPLACEMENT_COMPLETE_FILE,
-      JSON.stringify(completion),
-    );
-  }
-
   private parseIncrementalApplyManifest(value: unknown): IncrementalApplyManifest {
     if (!isRecord(value)
       || value.schemaVersion !== INCREMENTAL_APPLY_SCHEMA_VERSION

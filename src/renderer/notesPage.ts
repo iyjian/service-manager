@@ -141,12 +141,6 @@ export const NOTE_LANGUAGE_OPTIONS: readonly NoteLanguageOption[] = Object.freez
   { value: 'text', label: 'Plain Text', keywords: ['plain', 'text', 'txt'] },
 ]);
 
-export const NOTE_SHARE_DURATION_OPTIONS: ReadonlyArray<{ value: NoteShareDurationHours; label: string }> = Object.freeze([
-  { value: 24, label: '24 hours' },
-  { value: 72, label: '3 days' },
-  { value: 168, label: '7 days' },
-]);
-
 export function parseNoteShareDuration(value: string): NoteShareDurationHours {
   const hours = Number(value);
   if (hours === 24 || hours === 72 || hours === 168) return hours;
@@ -282,97 +276,6 @@ const NOTES_NAV_ICON = `
   </svg>
 `;
 
-interface RankedNote {
-  note: Note;
-  score: number;
-  index: number;
-  updatedAt: number;
-}
-
-interface NoteSearchIndexEntry {
-  note: Note;
-  index: number;
-  name: string;
-  tags: readonly string[];
-  language: string;
-  content?: string;
-  updatedAt: number;
-}
-
-function timestampValue(value: string): number {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-const richTextPlainTextCache = new WeakMap<Note, { content: string; text: string }>();
-
-function searchableNoteContent(note: Note): string {
-  if (note.language !== 'richtext') return note.content;
-  const cached = richTextPlainTextCache.get(note);
-  if (cached?.content === note.content) return cached.text;
-  let text = '';
-  try {
-    text = extractRichTextPlainText(note.content);
-  } catch {
-    // Main-process validation normally prevents this. A damaged note remains
-    // visible by name and metadata without letting search parse arbitrary HTML.
-  }
-  richTextPlainTextCache.set(note, { content: note.content, text });
-  return text;
-}
-
-function createNoteSearchIndexEntry(note: Note, index: number): NoteSearchIndexEntry {
-  return {
-    note,
-    index,
-    name: note.name.trim().toLocaleLowerCase(),
-    tags: note.tags.map((tag) => tag.toLocaleLowerCase()),
-    language: note.language.toLocaleLowerCase(),
-    updatedAt: timestampValue(note.updatedAt),
-  };
-}
-
-function noteSearchScore(entry: NoteSearchIndexEntry, query: string): number {
-  if (entry.name === query) return 1_000;
-  if (entry.name.startsWith(query)) return 900;
-  if (entry.name.includes(query)) return 800;
-
-  if (entry.tags.some((tag) => tag === query)) return 600;
-  if (entry.tags.some((tag) => tag.includes(query))) return 500;
-
-  if (entry.language === query) return 400;
-  if (entry.language.includes(query)) return 350;
-
-  entry.content ??= searchableNoteContent(entry.note).toLocaleLowerCase();
-  return entry.content.includes(query) ? 200 : 0;
-}
-
-function rankNoteSearchIndex(
-  entries: readonly NoteSearchIndexEntry[],
-  query: string,
-  excludedIds?: ReadonlySet<string>,
-): Note[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const ranked: RankedNote[] = [];
-  for (const entry of entries) {
-    if (excludedIds?.has(entry.note.id)) continue;
-    const score = normalizedQuery ? noteSearchScore(entry, normalizedQuery) : 1;
-    if (score <= 0) continue;
-    ranked.push({
-      note: entry.note,
-      index: entry.index,
-      score,
-      updatedAt: entry.updatedAt,
-    });
-  }
-
-  return ranked
-    .sort((left, right) => {
-      if (right.score !== left.score) return right.score - left.score;
-      return right.updatedAt - left.updatedAt || left.index - right.index;
-    })
-    .map(({ note }) => note);
-}
 
 /** Converts plain note text into safe, canonical Tiptap JSON. */
 export function plainTextToRichTextContent(value: string): string {
@@ -414,17 +317,6 @@ function setMessage(
   action?: 'open-note-export',
 ): void {
   window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text, level, action } }));
-}
-
-/**
- * Returns a new array ranked by search relevance. Name matches always precede
- * tag, language, and content matches. An empty query shows the newest notes.
- */
-export function rankNotes(notes: readonly Note[], query: string): Note[] {
-  return rankNoteSearchIndex(
-    notes.map((note, index) => createNoteSearchIndexEntry(note, index)),
-    query,
-  );
 }
 
 export function noteSaveIndicatorState(
@@ -486,17 +378,6 @@ function visibleNoteTreeRowsFromIndexes(
   return rows;
 }
 
-/** Returns the visible pre-order tree while respecting device-local expansion state. */
-export function visibleNoteTreeRows(
-  notes: readonly Note[],
-  nodes: readonly NotesTreeNode[],
-  expandedNoteIds: ReadonlySet<string>,
-): NoteTreeRow[] {
-  const notesById = new Map(notes.map((note) => [note.id, note]));
-  const children = noteTreeChildren(nodes);
-  return visibleNoteTreeRowsFromIndexes(notesById, children, expandedNoteIds);
-}
-
 function noteTreeBreadcrumbFromIndexes(
   noteId: string,
   notesById: ReadonlyMap<string, Note>,
@@ -526,44 +407,6 @@ function noteTreeAncestorIdsFromIndexes(
     parentId = nodesById.get(parentId)?.parentId ?? null;
   }
   return ancestorIds;
-}
-
-/** Returns only ancestor names for compact global-search context. */
-export function noteTreeBreadcrumb(
-  noteId: string,
-  notes: readonly Note[],
-  nodes: readonly NotesTreeNode[],
-): string {
-  const nodesById = new Map(nodes.map((node) => [node.noteId, node]));
-  const notesById = new Map(notes.map((note) => [note.id, note]));
-  return noteTreeBreadcrumbFromIndexes(noteId, notesById, nodesById);
-}
-
-/** Returns the bounded root-to-parent path needed to reveal a nested search result. */
-export function noteTreeAncestorIds(
-  noteId: string,
-  nodes: readonly NotesTreeNode[],
-): string[] {
-  return noteTreeAncestorIdsFromIndexes(
-    noteId,
-    new Map(nodes.map((node) => [node.noteId, node])),
-  );
-}
-
-/** Returns a bounded deterministic subtree, including the requested root. */
-export function noteTreeSubtreeIds(rootId: string, nodes: readonly NotesTreeNode[]): string[] {
-  if (!nodes.some((node) => node.noteId === rootId)) return [];
-  const children = noteTreeChildren(nodes);
-  const result: string[] = [];
-  const visited = new Set<string>();
-  const append = (noteId: string): void => {
-    if (visited.has(noteId)) return;
-    visited.add(noteId);
-    result.push(noteId);
-    for (const child of children.get(noteId) ?? []) append(child.noteId);
-  };
-  append(rootId);
-  return result;
 }
 
 /** Compares confirmed subtree membership without treating a harmless reorder as a change. */
@@ -2089,7 +1932,6 @@ class NotesPage {
       row.style.setProperty('--notes-tree-depth', String(depth));
       this.renderedRowsById.set(note.id, row);
 
-      const childNodes = children.get(note.id) ?? [];
       const hasChildren = folderNoteIds.has(note.id);
       let toggle: HTMLElement;
       if (hasChildren && !searchActive) {

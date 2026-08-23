@@ -3,8 +3,6 @@ import { isIP } from 'node:net';
 import type {
   ProxyCustomRule,
   ProxyCustomRuleDraft,
-  ProxyException,
-  ProxyExceptionDraft,
   ProxyExceptionType,
   ProxyRuleTarget,
 } from '../../shared/types';
@@ -131,15 +129,4 @@ export function buildCustomRuleRules(rules: ProxyCustomRuleDraft[], proxyTarget:
     }
     return proxyTarget ? `${rule.type},${rule.value},${proxyTarget}` : [];
   });
-}
-
-// Compatibility aliases retain the stable internal IPC method names. Callers
-// may supply either target; only persisted ProxySettings.exceptions records are
-// historical Direct Exceptions and are coerced during runtime migration.
-export function normalizeProxyExceptions(drafts: ProxyExceptionDraft[]): ProxyCustomRule[] {
-  return normalizeProxyCustomRules(drafts);
-}
-
-export function buildDirectExceptionRules(exceptions: ProxyException[]): string[] {
-  return buildCustomRuleRules(exceptions, undefined);
 }

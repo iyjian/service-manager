@@ -5,7 +5,6 @@ const {
   compareKubernetesSortValues,
   mergeResourcePage,
   projectLoadedResourceItems,
-  projectVirtualWindow,
   resourceQueryKey,
   sanitizeSecretForCache,
 } = require('../dist/main/kubernetes/resourceQuery');
@@ -144,22 +143,6 @@ test('Custom Resource printer columns sort using their CRD type', () => {
   assert.deepEqual(projectLoadedResourceItems(items, query).map((item) => item.name), [
     'minus-ten', 'minus-two', 'positive',
   ]);
-});
-
-test('projectVirtualWindow renders only a bounded slice of 10,000 rows', () => {
-  const rows = Array.from({ length: 10_000 }, (_, index) => index);
-  const window = projectVirtualWindow(rows, 8_000, 32, 640, 8);
-
-  assert.equal(window.totalHeight, 320_000);
-  assert.ok(window.items.length <= 36);
-  assert.equal(window.items[0], 242);
-  assert.equal(window.offsetTop, 7_744);
-});
-
-test('projectVirtualWindow clamps scroll offsets at both ends', () => {
-  const rows = Array.from({ length: 10 }, (_, index) => index);
-  assert.deepEqual(projectVirtualWindow(rows, -100, 10, 20, 1).items, [0, 1, 2]);
-  assert.deepEqual(projectVirtualWindow(rows, 100_000, 10, 20, 1).items, [7, 8, 9]);
 });
 
 test('sanitizeSecretForCache makes a new object and strips data fields recursively', () => {

@@ -252,19 +252,7 @@ test('ANTLR SQL parsing does not print SQL syntax recovery to console', async ()
 });
 
 test('SQL enum comments mark only the matching database default value', async () => {
-  const { parseSqlEnumComment, sqlEnumCommentParts } = await loadCompletion();
-  const spaced = '难度-1 - 很简单 2 - 简单 3 - 一般 4 - 难 5 - 很难';
-  const compact = '状态-0-待处理 1-处理中 2-完成';
-  const markedSpaced = sqlEnumCommentParts(spaced, '03');
-  const markedCompact = sqlEnumCommentParts(compact, '0');
-
-  assert.equal(markedSpaced.map((part) => part.text).join(''), spaced);
-  assert.deepEqual(markedSpaced.filter((part) => part.isDefault), [{ text: '3', isDefault: true }]);
-  assert.equal(markedCompact.map((part) => part.text).join(''), compact);
-  assert.deepEqual(markedCompact.filter((part) => part.isDefault), [{ text: '0', isDefault: true }]);
-  assert.deepEqual(sqlEnumCommentParts(spaced), [{ text: spaced, isDefault: false }]);
-  assert.deepEqual(sqlEnumCommentParts(spaced, '9'), [{ text: spaced, isDefault: false }]);
-  assert.deepEqual(sqlEnumCommentParts(spaced, 'CURRENT_TIMESTAMP'), [{ text: spaced, isDefault: false }]);
+  const { parseSqlEnumComment } = await loadCompletion();
   assert.deepEqual(parseSqlEnumComment('单元类型-1 - 练习 2 - 知识 3 - 竞赛 4 - 项目 5 - 错题集', '4'), {
     description: '单元类型',
     values: [

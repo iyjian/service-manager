@@ -134,21 +134,6 @@ export function detectKubernetesForwardPorts(
   return result;
 }
 
-export function formatKubernetesDeclaredPortLabel(port: KubernetesDeclaredPort): string {
-  const declarations = Array.isArray(port.declarations) ? port.declarations : [];
-  const provenance = declarations.flatMap((declaration) => {
-    const owner = nonEmptyString(declaration.owner);
-    const name = nonEmptyString(declaration.name);
-    if (name && owner) return [`${name} (${owner})`];
-    if (name) return [name];
-    if (owner) return [owner];
-    return [];
-  });
-  return provenance.length > 0
-    ? `${port.remotePort} · ${provenance.join(', ')}`
-    : String(port.remotePort);
-}
-
 export function buildKubernetesPortForwardDialogModel(
   ports: readonly KubernetesDeclaredPort[],
 ): {
