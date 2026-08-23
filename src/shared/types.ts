@@ -1096,6 +1096,19 @@ export interface SqlExecutionOptions {
   limit?: number;
 }
 
+export type SqlExportFormat = 'excel' | 'csv';
+
+export interface SqlExportInput {
+  format: SqlExportFormat;
+  columns: string[];
+  rows: string[][];
+  suggestedName: string;
+}
+
+export type SqlExportResult =
+  | { status: 'saved'; path: string }
+  | { status: 'cancelled' };
+
 export interface SqlSchemaEnumMetadata {
   comment: string;
   nullable: boolean;
@@ -1136,6 +1149,7 @@ export interface SqlApi {
   deleteQuery(environment: SqlEnvironment, id: number): Promise<void>;
   execute(environment: SqlEnvironment, statement: string, options?: SqlExecutionOptions): Promise<SqlExecutionResult>;
   getSchema(environment: SqlEnvironment): Promise<SqlDatabaseSchema>;
+  exportResult(input: SqlExportInput): Promise<SqlExportResult>;
 }
 
 export interface LlmSettingsView {

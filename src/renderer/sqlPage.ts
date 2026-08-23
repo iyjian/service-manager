@@ -2,6 +2,7 @@ import type {
   SqlAuthState,
   SqlDatabaseSchema,
   SqlEnvironment,
+  SqlExportFormat,
   SqlJsonValue,
   SqlQueryDraft,
   SqlQueryRecord,
@@ -341,6 +342,11 @@ export function normalizeSqlSelectLimit(value: unknown): number {
   const numeric = typeof value === 'string' ? Number(value.trim()) : Number(value);
   if (!Number.isFinite(numeric)) return SQL_DEFAULT_SELECT_LIMIT;
   return Math.min(SQL_MAX_SELECT_LIMIT, Math.max(SQL_MIN_SELECT_LIMIT, Math.trunc(numeric)));
+}
+
+function sanitizeSqlExportName(title: string): string {
+  const cleaned = title.replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned ? cleaned.slice(0, 80) : 'query-result';
 }
 
 function selectedSqlLineStarts(state: EditorState): number[] {
@@ -692,6 +698,8 @@ class SqlPage {
   private readonly editorHost = requireElement<HTMLElement>('#sql-editor');
   private readonly resultContent = requireElement<HTMLElement>('#sql-result-content');
   private readonly resultMeta = requireElement<HTMLElement>('#sql-result-meta');
+  private readonly exportButton = requireElement<HTMLButtonElement>('#sql-export-button');
+  private readonly exportMenu = requireElement<HTMLElement>('#sql-export-menu');
   private readonly valueDialog = requireElement<HTMLDialogElement>('#sql-value-dialog');
   private readonly valueDialogTitle = requireElement<HTMLElement>('#sql-value-dialog-title');
   private readonly valueCopyRaw = requireElement<HTMLButtonElement>('#sql-value-copy-raw');
@@ -1068,6 +1076,7 @@ class SqlPage {
     window.addEventListener('beforeunload', () => this.persistUntitledDrafts());
     this.bindSidebarResizer();
     this.bindResultResizer();
+    this.bindExportControls();
   }
 
   private async handleCloseShortcut(): Promise<boolean> {
@@ -2362,6 +2371,8 @@ class SqlPage {
   private renderResult(): void {
     this.destroyResultTable();
     const tab = this.currentTab();
+    this.exportButton.disabled = tab?.result?.kind !== 'table';
+    this.closeExportMenu();
     if (tab?.executing) {
       this.resultMeta.textContent = '';
       const node = document.createElement('div');
@@ -3327,6 +3338,71 @@ class SqlPage {
       this.applyEditorHeight(this.editorHeight() + delta);
       writeStoredValue(EDITOR_HEIGHT_KEY, String(this.editorHeight()));
     });
+  }
+
+  private bindExportControls(): void {
+    this.exportButton.addEventListener('click', () => {
+      const willOpen = this.exportMenu.classList.contains('hidden');
+      this.closeExportMenu();
+      if (willOpen) this.openExportMenu();
+    });
+    for (const item of Array.from(this.exportMenu.querySelectorAll<HTMLButtonElement>('[data-export-format]'))) {
+      item.addEventListener('click', () => {
+        const format = item.dataset.exportFormat;
+        this.closeExportMenu();
+        if (format === 'excel' || format === 'csv') void this.exportResult(format);
+      });
+    }
+    document.addEventListener('pointerdown', (event) => {
+      if (this.exportMenu.classList.contains('hidden')) return;
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('.sql-results-export')) return;
+      this.closeExportMenu();
+    });
+    this.exportButton.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        this.closeExportMenu();
+        this.exportButton.focus();
+      }
+    });
+    this.exportMenu.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      this.closeExportMenu();
+      this.exportButton.focus();
+    });
+  }
+
+  private openExportMenu(): void {
+    this.exportMenu.classList.remove('hidden');
+    this.exportButton.setAttribute('aria-expanded', 'true');
+  }
+
+  private closeExportMenu(): void {
+    this.exportMenu.classList.add('hidden');
+    this.exportButton.setAttribute('aria-expanded', 'false');
+  }
+
+  private exportData(): { columns: string[]; rows: string[][]; suggestedName: string } | undefined {
+    const tab = this.currentTab();
+    if (!tab || tab.result?.kind !== 'table') return undefined;
+    const { columns, rows } = tab.result;
+    return {
+      columns,
+      rows: rows.map((row) => columns.map((column) => formatSqlCell(row[column]))),
+      suggestedName: sanitizeSqlExportName(tab.title),
+    };
+  }
+
+  private async exportResult(format: SqlExportFormat): Promise<void> {
+    const data = this.exportData();
+    if (!data) return;
+    try {
+      await window.sqlApi.exportResult({ format, ...data });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.resultMeta.textContent = `Export failed: ${message}`;
+    }
   }
 
   private sidebarWidth(): number {

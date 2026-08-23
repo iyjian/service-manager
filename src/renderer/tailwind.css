@@ -5356,8 +5356,36 @@
     @apply justify-start gap-3 border-b border-zinc-200 px-3;
   }
 
-  .sql-results-head > div {
-    @apply gap-2;
+  .sql-results-head-info {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .sql-results-export {
+    @apply relative ml-auto;
+  }
+
+  .sql-export-button {
+    @apply inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 text-[12px] font-medium text-zinc-600 outline-none transition hover:bg-zinc-50 hover:text-zinc-900 focus-visible:ring-2 focus-visible:ring-zinc-300 disabled:cursor-default disabled:opacity-40;
+  }
+
+  .sql-export-button svg {
+    @apply h-3.5 w-3.5;
+  }
+
+  .sql-export-button .sql-export-chevron {
+    @apply h-3 w-3 text-zinc-400 transition-transform;
+  }
+
+  .sql-export-button[aria-expanded='true'] .sql-export-chevron {
+    @apply rotate-180;
+  }
+
+  .sql-export-menu {
+    @apply absolute right-0 top-full z-30 mt-1 min-w-40 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 shadow-lg;
+  }
+
+  .sql-export-menu button {
+    @apply block w-full px-3 py-1.5 text-left text-[12.5px] text-zinc-700 outline-none transition hover:bg-zinc-50 hover:text-zinc-950 focus-visible:bg-zinc-50;
   }
 
   .sql-result-content {
@@ -5389,6 +5417,27 @@
 
   .sql-result-table th {
     @apply sticky top-0 z-10 whitespace-nowrap border-b border-r border-zinc-200 bg-zinc-100 px-3 py-2 font-bold text-zinc-600;
+  }
+
+  .sql-result-col-resizer {
+    @apply absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize border-0 bg-transparent p-0 outline-none;
+    touch-action: none;
+  }
+
+  .sql-result-col-resizer::after {
+    content: '';
+    @apply absolute inset-y-0 right-[3px] block w-px bg-zinc-300 transition;
+  }
+
+  .sql-result-col-resizer:hover::after,
+  .sql-result-col-resizer:active::after {
+    @apply w-0.5 bg-blue-500;
+  }
+
+  body.sql-resizing-column,
+  body.sql-resizing-column * {
+    cursor: col-resize !important;
+    user-select: none !important;
   }
 
   .sql-result-table td {

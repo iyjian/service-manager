@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.75] - 2026-08-23
+
+### Added
+- SQL query results can now be exported to Excel (.xlsx) or CSV (.csv). Excel exports style the header row (dark fill with white text) and auto-fit each column's width to its longest cell.
+- SQL result table columns are now resizable by dragging the divider between column headers.
+
 ## [0.3.74] - 2026-08-22
 
 ### Added

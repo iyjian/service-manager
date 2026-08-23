@@ -432,9 +432,20 @@
             <div id="sql-result-resizer" class="sql-result-resizer" role="separator" aria-label="Resize SQL editor and results" aria-orientation="horizontal" aria-controls="sql-editor sql-results" aria-valuemin="180" aria-valuenow="320" tabindex="0"></div>
             <section id="sql-results" class="sql-results" aria-label="SQL results">
               <header class="sql-results-head">
-                <div>
+                <div class="sql-results-head-info">
                   <h2>Results</h2>
                   <span id="sql-result-meta"></span>
+                </div>
+                <div class="sql-results-export">
+                  <button id="sql-export-button" type="button" class="sql-export-button" aria-haspopup="menu" aria-expanded="false" disabled>
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8"></path><path d="m5 7 3 3 3-3"></path><path d="M3 12.5h10"></path></svg>
+                    <span>Export</span>
+                    <svg class="sql-export-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+                  </button>
+                  <div id="sql-export-menu" class="sql-export-menu hidden" role="menu" aria-label="Export format">
+                    <button type="button" role="menuitem" data-export-format="excel">Excel (.xlsx)</button>
+                    <button type="button" role="menuitem" data-export-format="csv">CSV (.csv)</button>
+                  </div>
                 </div>
               </header>
               <div id="sql-result-content" class="sql-result-content">

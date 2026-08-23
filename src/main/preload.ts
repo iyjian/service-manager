@@ -32,6 +32,7 @@ import type {
   SqlApi,
   SqlEnvironment,
   SqlExecutionOptions,
+  SqlExportInput,
   SqlLoginInput,
   SqlQueryDraft,
   S3SyncState,
@@ -310,6 +311,7 @@ const sqlApi: SqlApi = {
     ipcRenderer.invoke('sql:execute', { environment, statement, ...(options ? { options } : {}) }),
   getSchema: (environment: SqlEnvironment) =>
     ipcRenderer.invoke('sql:schema:get', environment),
+  exportResult: (input: SqlExportInput) => ipcRenderer.invoke('sql:export', input),
 };
 
 const kubernetesApi: KubernetesApi = {

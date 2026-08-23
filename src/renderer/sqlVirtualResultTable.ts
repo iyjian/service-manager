@@ -7,8 +7,13 @@ import {
 import {
   calculateSqlResultVirtualWindow,
   SQL_RESULT_ESTIMATED_ROW_HEIGHT,
-  SQL_RESULT_VIRTUALIZE_AFTER_ROWS,
 } from './sqlResultVirtualWindow.js';
+
+const SQL_RESULT_COLUMN_MIN_WIDTH = 56;
+const SQL_RESULT_COLUMN_MAX_CONTENT_WIDTH = 320;
+const SQL_RESULT_COLUMN_PADDING = 24;
+const SQL_RESULT_RESIZE_MIN_WIDTH = 40;
+const SQL_RESULT_RESIZE_MAX_WIDTH = 1000;
 
 type SqlTableResult = Extract<SqlDisplayResult, { kind: 'table' }>;
 
@@ -29,6 +34,8 @@ export class SqlVirtualResultTable {
   private readonly onOpenValue: SqlVirtualResultTableOptions['onOpenValue'];
   private readonly onWindowRendered: SqlVirtualResultTableOptions['onWindowRendered'];
   private readonly wrap: HTMLDivElement;
+  private readonly table: HTMLTableElement;
+  private readonly columnElements: HTMLTableColElement[] = [];
   private readonly body: HTMLTableSectionElement;
   private readonly resizeObserver: ResizeObserver;
   private rowHeight = SQL_RESULT_ESTIMATED_ROW_HEIGHT;
@@ -51,18 +58,16 @@ export class SqlVirtualResultTable {
     table.className = 'sql-result-table';
     table.setAttribute('aria-rowcount', String(this.result.rows.length + 1));
     table.setAttribute('aria-colcount', String(this.result.columns.length));
+    this.table = table;
 
     const head = document.createElement('thead');
-    const columnElements: HTMLTableColElement[] = [];
-    if (this.result.rows.length > SQL_RESULT_VIRTUALIZE_AFTER_ROWS) {
-      const columnGroup = document.createElement('colgroup');
-      for (const _column of this.result.columns) {
-        const columnElement = document.createElement('col');
-        columnElements.push(columnElement);
-        columnGroup.append(columnElement);
-      }
-      table.append(columnGroup);
+    const columnGroup = document.createElement('colgroup');
+    for (const _column of this.result.columns) {
+      const columnElement = document.createElement('col');
+      this.columnElements.push(columnElement);
+      columnGroup.append(columnElement);
     }
+    table.append(columnGroup);
     const headRow = document.createElement('tr');
     for (const [columnIndex, column] of this.result.columns.entries()) {
       const cell = document.createElement('th');
@@ -72,7 +77,10 @@ export class SqlVirtualResultTable {
       label.className = 'sql-result-column-name';
       label.textContent = column;
       label.title = column;
-      cell.append(label);
+      const resizer = document.createElement('span');
+      resizer.className = 'sql-result-col-resizer';
+      resizer.setAttribute('aria-hidden', 'true');
+      cell.append(label, resizer);
       headRow.append(cell);
     }
     head.append(headRow);
@@ -81,7 +89,8 @@ export class SqlVirtualResultTable {
     table.append(head, this.body);
     this.wrap.append(table);
     this.host.replaceChildren(this.wrap);
-    if (columnElements.length > 0) this.applyStableColumnWidths(table, columnElements);
+    this.applyStableColumnWidths();
+    this.bindColumnResize();
     this.host.addEventListener('scroll', this.handleScroll, { passive: true });
     this.host.addEventListener('click', this.handleClick);
     this.host.addEventListener('dblclick', this.handleDblClick);
@@ -218,10 +227,8 @@ export class SqlVirtualResultTable {
     return row;
   }
 
-  private applyStableColumnWidths(
-    table: HTMLTableElement,
-    columnElements: readonly HTMLTableColElement[],
-  ): void {
+  private applyStableColumnWidths(): void {
+    this.table.style.tableLayout = 'fixed';
     const longestValues = this.result.columns.map(() => '');
     for (const row of this.result.rows) {
       for (const [columnIndex, column] of this.result.columns.entries()) {
@@ -233,17 +240,68 @@ export class SqlVirtualResultTable {
     }
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
-    if (!context) return;
-    const style = getComputedStyle(table);
-    context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
-    for (const [columnIndex, columnElement] of columnElements.entries()) {
-      const header = this.result.columns[columnIndex] ?? '';
+    if (context) {
+      const style = getComputedStyle(this.table);
+      context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    }
+    const widths = this.result.columns.map((column, columnIndex) => {
+      if (!context) return SQL_RESULT_COLUMN_MIN_WIDTH;
       const value = longestValues[columnIndex] ?? '';
       const textWidth = Math.max(
-        context.measureText(header).width,
+        context.measureText(column).width,
         context.measureText(value).width,
       );
-      columnElement.style.width = `${Math.ceil(Math.min(320, textWidth) + 24)}px`;
+      return this.columnPixelWidth(textWidth);
+    });
+    // Distribute leftover space so small results still fill the viewport.
+    const total = widths.reduce((sum, width) => sum + width, 0);
+    const available = this.host.clientWidth;
+    if (available > total && total > 0) {
+      const scale = available / total;
+      for (let index = 0; index < widths.length; index += 1) {
+        widths[index] = widths[index] * scale;
+      }
+    }
+    for (const [columnIndex, columnElement] of this.columnElements.entries()) {
+      columnElement.style.width = `${Math.round(widths[columnIndex] ?? SQL_RESULT_COLUMN_MIN_WIDTH)}px`;
+    }
+  }
+
+  private columnPixelWidth(textWidth: number): number {
+    const contentWidth = Math.min(SQL_RESULT_COLUMN_MAX_CONTENT_WIDTH, Math.ceil(textWidth));
+    return Math.max(SQL_RESULT_COLUMN_MIN_WIDTH, contentWidth + SQL_RESULT_COLUMN_PADDING);
+  }
+
+  private bindColumnResize(): void {
+    for (const [columnIndex, cell] of Array.from(
+      this.table.querySelectorAll<HTMLTableCellElement>('thead th'),
+    ).entries()) {
+      const resizer = cell.querySelector<HTMLElement>('.sql-result-col-resizer');
+      const columnElement = this.columnElements[columnIndex];
+      if (!resizer || !columnElement) continue;
+      resizer.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const startX = event.clientX;
+        const startWidth = cell.getBoundingClientRect().width;
+        document.body.classList.add('sql-resizing-column');
+        const handleMove = (moveEvent: PointerEvent): void => {
+          const width = Math.min(
+            SQL_RESULT_RESIZE_MAX_WIDTH,
+            Math.max(SQL_RESULT_RESIZE_MIN_WIDTH, startWidth + (moveEvent.clientX - startX)),
+          );
+          columnElement.style.width = `${Math.round(width)}px`;
+        };
+        const handleUp = (): void => {
+          document.body.classList.remove('sql-resizing-column');
+          window.removeEventListener('pointermove', handleMove);
+          window.removeEventListener('pointerup', handleUp);
+          window.removeEventListener('pointercancel', handleUp);
+        };
+        window.addEventListener('pointermove', handleMove);
+        window.addEventListener('pointerup', handleUp);
+        window.addEventListener('pointercancel', handleUp);
+      });
     }
   }
 

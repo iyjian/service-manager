@@ -125,6 +125,7 @@ import { LlmSettingsStore } from './llmSettingsStore';
 import { fetchLlmModels } from './llmModels';
 import { SqlCredentialsStore } from './sqlCredentialsStore';
 import { SqlRuntime } from './sqlRuntime';
+import { exportSqlResult, parseSqlExportInput } from './sqlExport';
 import {
   S3SyncRuntime,
   type S3LocalChange,
@@ -238,6 +239,7 @@ const IPC_CHANNELS = {
   sqlQueryDelete: 'sql:query:delete',
   sqlExecute: 'sql:execute',
   sqlSchemaGet: 'sql:schema:get',
+  sqlExport: 'sql:export',
   s3SettingsGet: 'settings:s3:get',
   s3SettingsSave: 'settings:s3:save',
   s3SettingsTest: 'settings:s3:test',
@@ -2927,6 +2929,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.sqlSchemaGet, async (_event, environment: unknown) =>
     getSqlRuntime().getSchema(environment)
   );
+  ipcMain.handle(IPC_CHANNELS.sqlExport, async (event, input: unknown) => {
+    const parsed = parseSqlExportInput(input);
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    return exportSqlResult(parsed, parentWindow);
+  });
   ipcMain.handle(IPC_CHANNELS.s3SettingsGet, async () => getS3SyncRuntime().getS3SyncSettings());
   ipcMain.handle(
     IPC_CHANNELS.startupS3SyncGet,
