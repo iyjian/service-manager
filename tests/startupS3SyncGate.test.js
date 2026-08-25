@@ -36,14 +36,16 @@ test('startup S3 loading detail follows the current bounded sync phase and count
 });
 
 test('application startup owns an inert S3 overlay until main sync and renderer apply settle', async () => {
-  const [html, styles, renderer, gate, preload, main] = await Promise.all([
+  const [html, styles, renderer, gate, preload, mainEntry, ipcChannels] = await Promise.all([
     readFile(path.join(rendererRoot, 'index.html'), 'utf8'),
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'renderer.js'), 'utf8'),
     readFile(path.join(rendererRoot, 'utils', 'startupS3SyncGate.js'), 'utf8'),
     readFile(path.join(mainRoot, 'core', 'preload.js'), 'utf8'),
     readFile(path.join(mainRoot, 'core', 'main.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'ipcChannels.js'), 'utf8'),
   ]);
+  const main = `${mainEntry}\n${ipcChannels}`;
 
   assert.match(html, /id="app-startup-sync"[^>]*role="status"[^>]*aria-busy="true"/);
   assert.match(html, /id="app-layout" class="app-layout" inert aria-hidden="true"/);

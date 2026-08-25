@@ -6,10 +6,12 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 
 test('UI preferences use narrow get, save, and change-notification IPC channels', async () => {
-  const [main, preload] = await Promise.all([
+  const [mainEntry, ipcChannels, preload] = await Promise.all([
     fs.readFile(path.join(root, 'dist', 'main', 'core', 'main.js'), 'utf8'),
+    fs.readFile(path.join(root, 'dist', 'main', 'core', 'ipcChannels.js'), 'utf8'),
     fs.readFile(path.join(root, 'dist', 'main', 'core', 'preload.js'), 'utf8'),
   ]);
+  const main = `${mainEntry}\n${ipcChannels}`;
 
   assert.match(main, /settings:ui:get/);
   assert.match(main, /settings:ui:save/);

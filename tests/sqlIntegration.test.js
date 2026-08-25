@@ -12,7 +12,12 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   const styles = await readFile(path.join(dist, 'renderer', 'tailwind.css'), 'utf8');
   const baseStyles = await readFile(path.join(dist, 'renderer', 'styles.css'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
+  const [mainEntry, appWindow, ipcChannels] = await Promise.all([
+    readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8'),
+    readFile(path.join(dist, 'main', 'core', 'appWindow.js'), 'utf8'),
+    readFile(path.join(dist, 'main', 'core', 'ipcChannels.js'), 'utf8'),
+  ]);
+  const main = `${mainEntry}\n${appWindow}\n${ipcChannels}`;
 
   assert.match(html, /data-page="sql"/);
   assert.match(html, /id="sql-production-tab"/);

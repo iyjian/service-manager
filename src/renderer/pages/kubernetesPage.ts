@@ -28,6 +28,15 @@ import {
 } from '../models/kubernetesCustomResourcePrinterColumns.js';
 import { registerPage } from './nav.js';
 import { createKubernetesVirtualTable, type KubernetesVirtualTable } from '../components/kubernetesVirtualTable.js';
+import { renderTextTabs } from '../components/tabs.js';
+import {
+  bindListboxKeyboardNavigation,
+  closeDropdownOnFocusOut,
+  focusSelectedMenuOption,
+  isDropdownMenuOpen,
+  setDropdownMenuOpen,
+  shouldCloseDropdownMenu,
+} from '../components/selectMenu.js';
 import {
   buildKubernetesDrawerModel,
   detectKubeVirtVncTarget,
@@ -544,11 +553,11 @@ export function decideKubernetesContextActivation(
   return 'terminal';
 }
 
-export function shouldCloseNamespaceMenu(
+export function shouldCloseKubernetesSelectorMenu(
   control: Pick<HTMLElement, 'contains'>,
   target: Node | null,
 ): boolean {
-  return target !== null && !control.contains(target);
+  return shouldCloseDropdownMenu(control, target);
 }
 
 export function nextKubernetesSort(
@@ -1055,22 +1064,18 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private setContextMenuOpen(open: boolean): void {
-    const visible = open && !this.contextToggle.disabled;
-    this.contextMenu.classList.toggle('hidden', !visible);
-    this.contextToggle.setAttribute('aria-expanded', String(visible));
+    setDropdownMenuOpen(this.contextToggle, this.contextMenu, open);
   }
 
   private setNamespaceMenuOpen(open: boolean): void {
-    const visible = open && !this.namespaceToggle.disabled;
-    this.namespaceMenu.classList.toggle('hidden', !visible);
-    this.namespaceToggle.setAttribute('aria-expanded', String(visible));
+    setDropdownMenuOpen(this.namespaceToggle, this.namespaceMenu, open);
   }
 
   private setCustomResourceMenuOpen(open: boolean): void {
-    const visible = open && !this.customResourceToggle.disabled && this.resourceKind === 'custom-resources';
-    if (visible) this.positionCustomResourceMenu();
-    this.customResourceMenu.classList.toggle('hidden', !visible);
-    this.customResourceToggle.setAttribute('aria-expanded', String(visible));
+    setDropdownMenuOpen(this.customResourceToggle, this.customResourceMenu, open, {
+      disabled: this.resourceKind !== 'custom-resources',
+      beforeOpen: () => this.positionCustomResourceMenu(),
+    });
   }
 
   private positionCustomResourceMenu(): void {
@@ -1096,33 +1101,14 @@ class KubernetesPage implements KubernetesPageController {
     this.bound = true;
 
     this.contextToggle.addEventListener('click', () => {
-      const opening = this.contextMenu.classList.contains('hidden');
+      const opening = !isDropdownMenuOpen(this.contextMenu);
       this.setNamespaceMenuOpen(false);
       this.setCustomResourceMenuOpen(false);
       this.setContextMenuOpen(opening);
-      if (opening) {
-        window.requestAnimationFrame(() => {
-          if (this.contextMenu.classList.contains('hidden')) return;
-          (this.contextMenu.querySelector<HTMLButtonElement>('[aria-selected="true"]')
-            ?? this.contextMenu.querySelector<HTMLButtonElement>('.kubernetes-selector-option'))?.focus();
-        });
-      }
+      if (opening) focusSelectedMenuOption(this.contextMenu, '.kubernetes-selector-option');
     });
-    this.contextMenu.addEventListener('keydown', (event) => {
-      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-      const options = Array.from(this.contextMenu.querySelectorAll<HTMLButtonElement>('.kubernetes-selector-option'));
-      if (options.length === 0) return;
-      event.preventDefault();
-      const current = options.indexOf(document.activeElement as HTMLButtonElement);
-      const next = event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? options.length - 1
-          : event.key === 'ArrowDown'
-            ? (current + 1 + options.length) % options.length
-            : (current - 1 + options.length) % options.length;
-      options[next]?.focus();
-    });
+    bindListboxKeyboardNavigation(this.contextMenu, '.kubernetes-selector-option');
+    bindListboxKeyboardNavigation(this.customResourceMenu, '.kubernetes-selector-option');
     this.reloadButton.addEventListener('click', () => {
       void this.reloadKubeconfig();
     });
@@ -1130,7 +1116,7 @@ class KubernetesPage implements KubernetesPageController {
       void this.reconnect();
     });
     this.namespaceToggle.addEventListener('click', () => {
-      const opening = this.namespaceMenu.classList.contains('hidden');
+      const opening = !isDropdownMenuOpen(this.namespaceMenu);
       this.setContextMenuOpen(false);
       this.setCustomResourceMenuOpen(false);
       if (opening) {
@@ -1141,7 +1127,7 @@ class KubernetesPage implements KubernetesPageController {
       this.setNamespaceMenuOpen(opening);
       if (opening) {
         window.requestAnimationFrame(() => {
-          if (!this.namespaceMenu.classList.contains('hidden')) this.namespaceSearch.focus();
+          if (isDropdownMenuOpen(this.namespaceMenu)) this.namespaceSearch.focus();
         });
       }
     });
@@ -1150,7 +1136,7 @@ class KubernetesPage implements KubernetesPageController {
       this.renderNamespaceOptions();
     });
     this.customResourceToggle.addEventListener('click', () => {
-      const opening = this.customResourceMenu.classList.contains('hidden');
+      const opening = !isDropdownMenuOpen(this.customResourceMenu);
       this.setContextMenuOpen(false);
       this.setNamespaceMenuOpen(false);
       if (opening) {
@@ -1161,7 +1147,7 @@ class KubernetesPage implements KubernetesPageController {
       this.setCustomResourceMenuOpen(opening);
       if (opening) {
         window.requestAnimationFrame(() => {
-          if (!this.customResourceMenu.classList.contains('hidden')) this.customResourceSearch.focus();
+          if (isDropdownMenuOpen(this.customResourceMenu)) this.customResourceSearch.focus();
         });
       }
     });
@@ -1170,31 +1156,31 @@ class KubernetesPage implements KubernetesPageController {
       this.renderCustomResourceOptions();
     });
     this.secondaryRow.addEventListener('scroll', () => {
-      if (!this.customResourceMenu.classList.contains('hidden')) this.positionCustomResourceMenu();
+      if (isDropdownMenuOpen(this.customResourceMenu)) this.positionCustomResourceMenu();
     });
     window.addEventListener('resize', () => {
-      if (!this.customResourceMenu.classList.contains('hidden')) this.positionCustomResourceMenu();
+      if (isDropdownMenuOpen(this.customResourceMenu)) this.positionCustomResourceMenu();
     });
     document.addEventListener('pointerdown', (event) => {
       const target = event.target instanceof Node ? event.target : null;
-      if (!this.contextMenu.classList.contains('hidden')
-        && shouldCloseNamespaceMenu(this.contextControl, target)) {
+      if (isDropdownMenuOpen(this.contextMenu)
+        && shouldCloseKubernetesSelectorMenu(this.contextControl, target)) {
         this.setContextMenuOpen(false);
       }
-      if (!this.namespaceMenu.classList.contains('hidden')
-        && shouldCloseNamespaceMenu(this.namespaceControl, target)) {
+      if (isDropdownMenuOpen(this.namespaceMenu)
+        && shouldCloseKubernetesSelectorMenu(this.namespaceControl, target)) {
         this.setNamespaceMenuOpen(false);
       }
-      if (!this.customResourceMenu.classList.contains('hidden')
-        && shouldCloseNamespaceMenu(this.customResourceControl, target)) {
+      if (isDropdownMenuOpen(this.customResourceMenu)
+        && shouldCloseKubernetesSelectorMenu(this.customResourceControl, target)) {
         this.setCustomResourceMenuOpen(false);
       }
     });
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
-      const contextOpen = !this.contextMenu.classList.contains('hidden');
-      const namespaceOpen = !this.namespaceMenu.classList.contains('hidden');
-      const customResourceOpen = !this.customResourceMenu.classList.contains('hidden');
+      const contextOpen = isDropdownMenuOpen(this.contextMenu);
+      const namespaceOpen = isDropdownMenuOpen(this.namespaceMenu);
+      const customResourceOpen = isDropdownMenuOpen(this.customResourceMenu);
       if (!contextOpen && !namespaceOpen && !customResourceOpen) return;
       this.closeSelectorMenus();
       if (contextOpen) this.contextToggle.focus();
@@ -1202,21 +1188,9 @@ class KubernetesPage implements KubernetesPageController {
       else this.customResourceToggle.focus();
     });
     document.addEventListener('keydown', (event) => this.handleYamlFindShortcut(event), true);
-    this.contextControl.addEventListener('focusout', () => {
-      window.requestAnimationFrame(() => {
-        if (!this.contextControl.contains(document.activeElement)) this.setContextMenuOpen(false);
-      });
-    });
-    this.namespaceControl.addEventListener('focusout', () => {
-      window.requestAnimationFrame(() => {
-        if (!this.namespaceControl.contains(document.activeElement)) this.setNamespaceMenuOpen(false);
-      });
-    });
-    this.customResourceControl.addEventListener('focusout', () => {
-      window.requestAnimationFrame(() => {
-        if (!this.customResourceControl.contains(document.activeElement)) this.setCustomResourceMenuOpen(false);
-      });
-    });
+    closeDropdownOnFocusOut(this.contextControl, () => this.setContextMenuOpen(false));
+    closeDropdownOnFocusOut(this.namespaceControl, () => this.setNamespaceMenuOpen(false));
+    closeDropdownOnFocusOut(this.customResourceControl, () => this.setCustomResourceMenuOpen(false));
     this.searchInput.addEventListener('input', () => this.debounceSearch());
     this.tableHeader.addEventListener('click', (event) => {
       const button = event.target instanceof Element
@@ -1509,9 +1483,9 @@ class KubernetesPage implements KubernetesPageController {
       });
       this.contextMenu.appendChild(option);
     }
-    if (focusedContext && !this.contextMenu.classList.contains('hidden')) {
+    if (focusedContext && isDropdownMenuOpen(this.contextMenu)) {
       window.requestAnimationFrame(() => {
-        if (this.contextMenu.classList.contains('hidden')) return;
+        if (!isDropdownMenuOpen(this.contextMenu)) return;
         Array.from(this.contextMenu.querySelectorAll<HTMLButtonElement>('[data-context]'))
           .find((option) => option.dataset.context === focusedContext)
           ?.focus();
@@ -1521,7 +1495,7 @@ class KubernetesPage implements KubernetesPageController {
 
   private restoreNamespaceChoiceFocus(namespace: string | null): void {
     window.requestAnimationFrame(() => {
-      if (this.namespaceMenu.classList.contains('hidden')) return;
+      if (!isDropdownMenuOpen(this.namespaceMenu)) return;
       const target = namespace === null
         ? this.namespaceAll.querySelector<HTMLInputElement>('input[type="checkbox"]')
         : Array.from(this.namespaceOptions.querySelectorAll<HTMLInputElement>('input[data-namespace]'))
@@ -1613,33 +1587,34 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private renderCategoryTabs(): void {
-    this.categoryTabs.replaceChildren();
-    for (const category of Object.keys(RESOURCE_CATEGORIES) as KubernetesCategory[]) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'kubernetes-category-tab';
-      button.classList.toggle('kubernetes-tab-active', category === this.category);
-      button.textContent = category;
-      button.addEventListener('click', () => this.selectCategory(category));
-      this.categoryTabs.appendChild(button);
-    }
+    renderTextTabs({
+      container: this.categoryTabs,
+      tabs: (Object.keys(RESOURCE_CATEGORIES) as KubernetesCategory[])
+        .map((category) => ({ id: category, label: category })),
+      activeId: this.category,
+      buttonClassName: 'kubernetes-category-tab',
+      activeClassName: 'kubernetes-tab-active',
+      onSelect: (category) => this.selectCategory(category),
+    });
   }
 
   private renderResourceTabs(): void {
-    this.resourceTabs.replaceChildren();
     const showTabs = categoryUsesResourceTabs(this.category);
     this.resourceTabs.classList.toggle('hidden', !showTabs);
     if (showTabs) {
-      for (const kind of RESOURCE_CATEGORIES[this.category]) {
-        const resourceKind = kind as KubernetesResourceKind;
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'kubernetes-resource-tab';
-        button.classList.toggle('kubernetes-tab-active', resourceKind === this.resourceKind);
-        button.textContent = resourceLabel(resourceKind);
-        button.addEventListener('click', () => this.selectResource(resourceKind));
-        this.resourceTabs.appendChild(button);
-      }
+      renderTextTabs({
+        container: this.resourceTabs,
+        tabs: RESOURCE_CATEGORIES[this.category].map((kind) => {
+          const resourceKind = kind as KubernetesResourceKind;
+          return { id: resourceKind, label: resourceLabel(resourceKind) };
+        }),
+        activeId: this.resourceKind,
+        buttonClassName: 'kubernetes-resource-tab',
+        activeClassName: 'kubernetes-tab-active',
+        onSelect: (resourceKind) => this.selectResource(resourceKind),
+      });
+    } else {
+      this.resourceTabs.replaceChildren();
     }
     this.renderCustomResourceControl();
   }

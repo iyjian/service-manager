@@ -54,6 +54,7 @@ import {
 } from '../notesMarkdown.js';
 import { toast } from '../components/toast.js';
 import { createIcon } from '../components/icon.js';
+import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
 
 export { normalizeNoteAttachmentFileName };
 
@@ -708,9 +709,7 @@ class NotesPage {
     this.shareButton.addEventListener('click', () => void this.openShareDialog());
     this.shareCloseButton.addEventListener('click', () => this.shareDialog.close());
     this.shareDialog.addEventListener('close', () => this.handleShareDialogClosed());
-    this.shareDialog.addEventListener('click', (event) => {
-      if (event.target === this.shareDialog) this.shareDialog.close();
-    });
+    closeOnBackdropClick(this.shareDialog, () => this.shareDialog.close());
     this.shareDurationSelect.addEventListener('change', () => void this.handleShareDurationChange());
     this.shareCopyButton.addEventListener('click', () => void this.copyCurrentShareLink());
     this.shareHistoryList.addEventListener('click', (event) => void this.handleShareHistoryClick(event));
@@ -727,9 +726,7 @@ class NotesPage {
     this.attachmentInput.addEventListener('change', () => void this.uploadSelectedAttachment());
     this.attachmentPreviewCloseButton.addEventListener('click', () => this.attachmentPreviewDialog.close());
     this.attachmentPreviewDialog.addEventListener('close', () => this.handleAttachmentPreviewClosed());
-    this.attachmentPreviewDialog.addEventListener('click', (event) => {
-      if (event.target === this.attachmentPreviewDialog) this.attachmentPreviewDialog.close();
-    });
+    closeOnBackdropClick(this.attachmentPreviewDialog, () => this.attachmentPreviewDialog.close());
     window.addEventListener('beforeunload', () => this.clearAttachmentPreviewContent());
     window.serviceApi.onCloseShortcutRequested(() => this.handleCloseShortcut());
     this.markdownToolbar.addEventListener('click', (event) => this.handleMarkdownToolbarClick(event));
@@ -3037,7 +3034,7 @@ class NotesPage {
     this.attachmentPreviewLoading.classList.remove('hidden');
 
     try {
-      if (!this.attachmentPreviewDialog.open) this.attachmentPreviewDialog.showModal();
+      openDialog(this.attachmentPreviewDialog);
       const result = await window.notesApi.viewAttachment(reference);
       if (request !== this.attachmentPreviewRequest || !this.attachmentPreviewDialog.open) return;
       this.attachmentPreviewBody.setAttribute('aria-busy', 'false');
@@ -3307,7 +3304,7 @@ class NotesPage {
     this.closeDownloadMenu();
     this.closeMarkdownOutline();
     this.closeShareHistoryMenus();
-    if (!this.shareDialog.open) this.shareDialog.showModal();
+    openDialog(this.shareDialog);
   }
 
   private async openShareDialog(): Promise<void> {

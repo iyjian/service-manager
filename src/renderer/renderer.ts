@@ -21,6 +21,7 @@ import { registerSqlPage } from './pages/sqlPage.js';
 import { registerSettingsDialog } from './pages/settingsDialog.js';
 import { maybeShowChangelog } from './pages/changelog.js';
 import { trackStartupS3SyncWork, waitForStartupS3Sync } from './utils/startupS3SyncGate.js';
+import { activateTabSet, bindTabButtons } from './components/tabs.js';
 import {
   canStartForward,
   canStartService,
@@ -110,6 +111,12 @@ const startupS3SyncReady = waitForStartupS3Sync();
 
 type LogLoadReason = 'refresh' | 'older';
 type HostEditSection = 'path' | 'forwards' | 'services';
+
+const hostEditTabItems = hostEditTabButtons.flatMap((button) => {
+  const id = button.dataset.hostEditTab as HostEditSection | undefined;
+  const panel = hostEditPanels.find((candidate) => candidate.dataset.hostEditPanel === id);
+  return id && panel ? [{ id, button, panel }] : [];
+});
 
 let hosts: HostView[] = [];
 let hostDialogMode: 'create' | 'edit' = 'create';
@@ -471,17 +478,7 @@ function updateHostEditCounts(): void {
 }
 
 function setActiveHostEditSection(section: HostEditSection, focusTab = false): void {
-  for (const tab of hostEditTabButtons) {
-    const selected = tab.dataset.hostEditTab === section;
-    tab.setAttribute('aria-selected', String(selected));
-    tab.tabIndex = selected ? 0 : -1;
-    if (selected && focusTab) {
-      tab.focus();
-    }
-  }
-  for (const panel of hostEditPanels) {
-    panel.classList.toggle('hidden', panel.dataset.hostEditPanel !== section);
-  }
+  activateTabSet(hostEditTabItems, section, { focus: focusTab, hiddenClass: 'hidden' });
 }
 
 function syncJumpSection(): void {
@@ -2405,23 +2402,7 @@ updateHostEditCounts();
 setActiveHostEditSection('path');
 resetServiceLogState();
 
-hostEditTabButtons.forEach((tab, index) => {
-  tab.addEventListener('click', () => {
-    const section = tab.dataset.hostEditTab as HostEditSection | undefined;
-    if (section) setActiveHostEditSection(section);
-  });
-  tab.addEventListener('keydown', (event) => {
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % hostEditTabButtons.length;
-    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + hostEditTabButtons.length) % hostEditTabButtons.length;
-    if (event.key === 'Home') nextIndex = 0;
-    if (event.key === 'End') nextIndex = hostEditTabButtons.length - 1;
-    if (nextIndex === null) return;
-    event.preventDefault();
-    const section = hostEditTabButtons[nextIndex]?.dataset.hostEditTab as HostEditSection | undefined;
-    if (section) setActiveHostEditSection(section, true);
-  });
-});
+bindTabButtons(hostEditTabItems, setActiveHostEditSection);
 
 addHostButton.addEventListener('click', () => {
   openHostDialog('create');

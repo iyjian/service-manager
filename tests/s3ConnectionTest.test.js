@@ -19,6 +19,12 @@ const ACCESS_KEY = 'AKIDEXAMPLE';
 const SECRET_KEY = 'very-private-secret';
 const NOW = new Date('2026-07-19T04:05:06.000Z');
 
+function normalizeCompiledMain(source) {
+  return source
+    .replace(/\belectron_1\.ipcMain\b/g, 'ipcMain')
+    .replace(/\bipcChannels_1\.IPC_CHANNELS\b/g, 'IPC_CHANNELS');
+}
+
 function draft(overrides = {}) {
   return {
     endpoint: ENDPOINT,
@@ -60,10 +66,12 @@ function runtimeOptions(userDataPath, fetchImpl, overrides = {}) {
 }
 
 test('Settings preload and main IPC expose the draft-only S3 connection Test', async () => {
-  const [preload, main] = await Promise.all([
+  const [preload, mainEntry, ipcChannels] = await Promise.all([
     readFile(path.join(__dirname, '../dist/main/core/preload.js'), 'utf8'),
     readFile(path.join(__dirname, '../dist/main/core/main.js'), 'utf8'),
+    readFile(path.join(__dirname, '../dist/main/core/ipcChannels.js'), 'utf8'),
   ]);
+  const main = normalizeCompiledMain(`${mainEntry}\n${ipcChannels}`);
   assert.match(
     preload,
     /testS3Connection:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:test', draft\)/,

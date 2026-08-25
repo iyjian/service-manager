@@ -1,4 +1,5 @@
 import type { KubernetesResourceSummary } from '../../shared/types';
+import { calculateFixedVirtualWindow } from './virtualScroll.js';
 
 export interface KubernetesVirtualWindowInput {
   itemCount: number;
@@ -34,35 +35,26 @@ export interface KubernetesVirtualTable {
   dispose(): void;
 }
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
-}
-
 /**
  * The DOM-free portion of the list projection. Keeping this separate makes
  * the 10k-row performance boundary testable without a browser renderer.
  */
 export function calculateVirtualWindow(input: KubernetesVirtualWindowInput): KubernetesVirtualWindow {
-  const itemCount = Math.max(0, Math.floor(input.itemCount));
-  const rowHeight = Number.isFinite(input.rowHeight) && input.rowHeight > 0 ? input.rowHeight : 1;
-  const viewportHeight = Math.max(0, Number.isFinite(input.viewportHeight) ? input.viewportHeight : 0);
-  const overscan = Math.max(0, Math.floor(Number.isFinite(input.overscan) ? input.overscan : 0));
-  const totalHeight = itemCount * rowHeight;
-  const scrollTop = clamp(
-    Number.isFinite(input.scrollTop) ? input.scrollTop : 0,
-    0,
-    Math.max(0, totalHeight - viewportHeight)
-  );
-  const visibleStart = Math.floor(scrollTop / rowHeight);
-  const visibleEnd = Math.min(itemCount, Math.ceil((scrollTop + viewportHeight) / rowHeight));
-  const start = Math.max(0, visibleStart - overscan);
-  const end = Math.min(itemCount, visibleEnd + overscan);
+  const window = calculateFixedVirtualWindow({
+    itemCount: input.itemCount,
+    rowHeight: input.rowHeight,
+    viewportHeight: input.viewportHeight,
+    scrollTop: input.scrollTop,
+    overscan: input.overscan,
+    clampScrollTop: true,
+    minimumVisibleRows: 0,
+  });
 
   return {
-    start,
-    end,
-    offsetTop: start * rowHeight,
-    totalHeight,
+    start: window.start,
+    end: window.end,
+    offsetTop: window.offsetTop,
+    totalHeight: window.totalHeight,
   };
 }
 

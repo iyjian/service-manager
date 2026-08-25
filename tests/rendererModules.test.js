@@ -3,6 +3,21 @@ const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const test = require('node:test');
 
+function importedCall(name, argsPattern) {
+  return new RegExp(`(?:${name}|\\(0, [A-Za-z0-9_]+_1\\.${name}\\))\\(${argsPattern}\\)`);
+}
+
+async function readMainRuntime(dist) {
+  const mainRoot = path.join(dist, 'main');
+  const [main, appWindow, ipcChannels, kubernetesIpcHandlers] = await Promise.all([
+    readFile(path.join(mainRoot, 'core', 'main.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'appWindow.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'ipcChannels.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'kubernetes', 'ipcHandlers.js'), 'utf8'),
+  ]);
+  return [main, appWindow, ipcChannels, kubernetesIpcHandlers].join('\n');
+}
+
 test('compiled renderer uses browser-resolvable module specifiers', async () => {
   const renderer = await readFile(path.join(__dirname, '..', 'dist', 'renderer', 'renderer.js'), 'utf8');
 
@@ -14,7 +29,7 @@ test('compiled renderer uses browser-resolvable module specifiers', async () => 
 test('compiled Kubernetes bridge exposes only typed renderer-safe channels', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(dist);
 
   assert.match(preload, /const kubernetesApi =/);
   assert.match(preload, /kubernetes:get-state/);
@@ -46,7 +61,7 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
   assert.ok(startTimeHandlerStart >= 0 && startTimeHandlerEnd > startTimeHandlerStart);
   const startTimeHandler = main.slice(startTimeHandlerStart, startTimeHandlerEnd);
   assert.match(startTimeHandler, /payload\.startTime/);
-  assert.match(startTimeHandler, /validateKubernetesText\(payload\.startTime, 'log start time', 64\)/);
+  assert.match(startTimeHandler, importedCall('validateKubernetesText', "payload\\.startTime, 'log start time', 64"));
   assert.doesNotMatch(startTimeHandler, /podName|container|deploymentName|selector/);
   const kubernetesBridgeStart = preload.indexOf('const kubernetesApi =');
   const kubernetesBridgeEnd = preload.indexOf('function subscribe', kubernetesBridgeStart);
@@ -58,17 +73,17 @@ test('compiled Kubernetes bridge exposes only typed renderer-safe channels', asy
 test('compiled KubeVirt VNC bridge derives its loopback URL only in main and closes on launcher failure', async () => {
   const dist = path.join(__dirname, '..', 'dist');
   const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(dist);
 
   assert.match(preload, /openVnc:\s*\(input\)\s*=>\s*electron_1\.ipcRenderer\.invoke\('kubernetes:open-vnc', input\)/);
   const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesOpenVnc');
   const handlerEnd = main.indexOf('IPC_CHANNELS.kubernetesStartPortForward', handlerStart);
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   const handler = main.slice(handlerStart, handlerEnd);
-  assert.match(handler, /openVnc\(validateKubernetesVncTarget\(input\)\)/);
+  assert.match(handler, new RegExp(`openVnc\\(${importedCall('validateKubernetesVncTarget', 'input').source}\\)`));
   assert.match(handler, /viewerPassword = handle\.takeViewerPassword\(\)/);
   assert.match(handler, /`vnc:\$\{encodeURIComponent\(viewerPassword\)\}@127\.0\.0\.1`/);
-  assert.match(handler, /shell\.openExternal\(`vnc:\/\/\$\{authority\}:\$\{handle\.localPort\}`\)/);
+  assert.match(handler, /options\.openExternal\(`vnc:\/\/\$\{authority\}:\$\{handle\.localPort\}`\)/);
   assert.match(handler, /catch\s*\{[\s\S]*?handle\.close\(\)/);
   assert.doesNotMatch(handler, /input\.(?:url|vmiName|localPort)/);
   assert.doesNotMatch(preload, /viewerPassword|takeViewerPassword/);
@@ -80,7 +95,7 @@ test('compiled Proxy traffic contract keeps Mihomo controller data in the main p
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
   const proxyPage = await readFile(path.join(dist, 'renderer', 'pages', 'proxyPage.js'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(dist);
 
   assert.match(html, /id="proxy-traffic"/);
   assert.match(preload, /onProxyTrafficChanged/);
@@ -111,7 +126,7 @@ test('compiled host service refresh uses one batch IPC and fans changes into exa
   const dist = path.join(__dirname, '..', 'dist');
   const renderer = await readFile(path.join(dist, 'renderer', 'renderer.js'), 'utf8');
   const preload = await readFile(path.join(dist, 'main', 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(dist, 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(dist);
 
   const batchBridgeStart = preload.indexOf('onServiceStatusChanged:');
   const batchBridgeEnd = preload.indexOf('onForwardStatusChanged:', batchBridgeStart);
@@ -133,7 +148,7 @@ test('compiled host service refresh uses one batch IPC and fans changes into exa
   assert.match(batchRuntime, /runtimeRegistry\.setServiceForwardStatus\(/);
   assert.match(batchRuntime, /runtimeRegistry\.setServiceStatus\(/);
   assert.equal(
-    (batchRuntime.match(/broadcast\(IPC_CHANNELS\.serviceStatusBatchChanged, \{ changes \}\)/g) ?? []).length,
+    (batchRuntime.match(/broadcast\((?:IPC_CHANNELS|ipcChannels_1\.IPC_CHANNELS)\.serviceStatusBatchChanged, \{ changes \}\)/g) ?? []).length,
     1
   );
   assert.doesNotMatch(batchRuntime, /emit(?:Forward)?Status\(/);
@@ -170,7 +185,7 @@ test('compiled host service refresh uses one batch IPC and fans changes into exa
 });
 
 test('compiled main delegates the single-service refresh compatibility path to the fenced batch core', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(path.join(__dirname, '..', 'dist'));
   const refreshStart = main.indexOf('IPC_CHANNELS.refreshService');
   const refreshEnd = main.indexOf('IPC_CHANNELS.startService', refreshStart);
   const refreshHandler = main.slice(refreshStart, refreshEnd);
@@ -184,7 +199,7 @@ test('compiled main delegates the single-service refresh compatibility path to t
 });
 
 test('compiled main routes every normal quit through the asynchronous coordinator', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(path.join(__dirname, '..', 'dist'));
   const beforeQuitStart = main.indexOf("app.on('before-quit'");
   const beforeQuit = main.slice(beforeQuitStart, beforeQuitStart + 800);
 
@@ -201,7 +216,7 @@ test('compiled main routes every normal quit through the asynchronous coordinato
 });
 
 test('compiled main shares one guarded cleanup path for normal quits and terminal signals', async () => {
-  const main = await readFile(path.join(__dirname, '..', 'dist', 'main', 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(path.join(__dirname, '..', 'dist'));
 
   assert.match(main, /process\.once\('SIGINT'/);
   assert.match(main, /process\.once\('SIGTERM'/);
@@ -212,7 +227,7 @@ test('compiled main shares one guarded cleanup path for normal quits and termina
 
 test('compiled main aborts auto-start retries before proxy shutdown begins', async () => {
   const dist = path.join(__dirname, '..', 'dist', 'main');
-  const main = await readFile(path.join(dist, 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(path.join(__dirname, '..', 'dist'));
   const coordinator = await readFile(path.join(dist, 'core', 'quitCoordinator.js'), 'utf8');
 
   assert.match(main, /abortAutoStart: \(\) => autoStartAbortController\.abort\(\)/);
@@ -222,7 +237,7 @@ test('compiled main aborts auto-start retries before proxy shutdown begins', asy
 
 test('compiled updater requests cleanup before the coordinator launches NSIS', async () => {
   const dist = path.join(__dirname, '..', 'dist', 'main');
-  const main = await readFile(path.join(dist, 'core', 'main.js'), 'utf8');
+  const main = await readMainRuntime(path.join(__dirname, '..', 'dist'));
   const updater = await readFile(path.join(dist, 'core', 'updater.js'), 'utf8');
 
   assert.match(updater, /this\.requestInstall\(\);/);

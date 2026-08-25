@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.76] - 2026-08-25
+
+### Changed
+- Consolidated shared renderer tab, dropdown menu, and fixed-row virtual scrolling helpers for more consistent keyboard, focus, and large-list behavior across Settings, Hosts, Kubernetes, and SQL result views.
+- Split main-process window/menu, IPC channel, and Kubernetes IPC handling into focused modules to make the application startup structure easier to read and maintain.
+
 ## [0.3.75] - 2026-08-23
 
 ### Added

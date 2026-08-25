@@ -502,7 +502,7 @@ test('Notes page connects Markdown tooling, attachment actions, and PDF or Markd
   assert.match(source, /this\.richTextEditor\.insertAttachment\(result\.reference, capturedPosition\)/);
   assert.match(source, /if \(action === 'view'\) \{\s*await this\.openAttachmentPreview\(reference, opener\);\s*return;/);
   assert.match(source, /const expectedKind = noteAttachmentPreviewKind\(reference\)/);
-  assert.match(source, /this\.attachmentPreviewDialog\.showModal\(\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
+  assert.match(source, /openDialog\(this\.attachmentPreviewDialog\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
   assert.match(source, /result\.preview\.kind === 'text'[\s\S]*?this\.attachmentPreviewText\.textContent = result\.preview\.text/);
   assert.match(source, /result\.preview\.kind === 'pdf' \? 'application\/pdf'[\s\S]*?URL\.createObjectURL\(new Blob/);
   assert.match(source, /this\.attachmentPreviewPdf\.src = `\$\{objectUrl\}#toolbar=0&navpanes=0`/);

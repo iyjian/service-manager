@@ -8,20 +8,21 @@ const distRenderer = path.join(__dirname, '..', 'dist', 'renderer');
 
 test('Kubernetes environment bridge exposes only the active Pod resolver and validates its IPC target', async () => {
   const root = path.join(__dirname, '..');
-  const [preload, main, client, runtime] = await Promise.all([
+  const [preload, ipcChannels, kubernetesIpcHandlers, client, runtime] = await Promise.all([
     readFile(path.join(root, 'dist', 'main', 'core', 'preload.js'), 'utf8'),
-    readFile(path.join(root, 'dist', 'main', 'core', 'main.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'core', 'ipcChannels.js'), 'utf8'),
+    readFile(path.join(root, 'dist', 'main', 'kubernetes', 'ipcHandlers.js'), 'utf8'),
     readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesClient.js'), 'utf8'),
     readFile(path.join(root, 'dist', 'main', 'kubernetes', 'kubernetesRuntime.js'), 'utf8'),
   ]);
 
   assert.match(preload, /getPodContainerEnvironment:\s*\(input\)\s*=>[\s\S]*?ipcRenderer\.invoke\('kubernetes:get-pod-environment', input\)/);
-  assert.match(main, /kubernetesGetPodEnvironment:\s*'kubernetes:get-pod-environment'/);
-  const handlerStart = main.indexOf('IPC_CHANNELS.kubernetesGetPodEnvironment');
-  const handlerEnd = main.indexOf('IPC_CHANNELS.kubernetesOpenLogs', handlerStart);
+  assert.match(ipcChannels, /kubernetesGetPodEnvironment:\s*'kubernetes:get-pod-environment'/);
+  const handlerStart = kubernetesIpcHandlers.indexOf('IPC_CHANNELS.kubernetesGetPodEnvironment');
+  const handlerEnd = kubernetesIpcHandlers.indexOf('IPC_CHANNELS.kubernetesOpenLogs', handlerStart);
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
-  const handler = main.slice(handlerStart, handlerEnd);
-  assert.match(handler, /validateKubernetesPodTarget\(input\)/);
+  const handler = kubernetesIpcHandlers.slice(handlerStart, handlerEnd);
+  assert.match(handler, /(?:validateKubernetesPodTarget|\(0, ipcValidation_1\.validateKubernetesPodTarget\))\(input\)/);
 
   const clientStart = client.indexOf('async getPodContainerEnvironment(input)');
   const clientEnd = client.indexOf('async listEvents', clientStart);
@@ -116,15 +117,15 @@ test('Kubernetes Namespace multi-selection is sorted and falls back to All Names
   });
 });
 
-test('Kubernetes Namespace menu closes only for an outside pointer target', async () => {
-  const { shouldCloseNamespaceMenu } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
+test('Kubernetes selector menus close only for an outside pointer target', async () => {
+  const { shouldCloseKubernetesSelectorMenu } = await import(path.join(distRenderer, 'pages', 'kubernetesPage.js'));
   const inside = {};
   const outside = {};
   const control = { contains: (target) => target === inside };
 
-  assert.equal(shouldCloseNamespaceMenu(control, inside), false);
-  assert.equal(shouldCloseNamespaceMenu(control, outside), true);
-  assert.equal(shouldCloseNamespaceMenu(control, null), false);
+  assert.equal(shouldCloseKubernetesSelectorMenu(control, inside), false);
+  assert.equal(shouldCloseKubernetesSelectorMenu(control, outside), true);
+  assert.equal(shouldCloseKubernetesSelectorMenu(control, null), false);
 });
 
 test('Kubernetes Namespace filtering is compact, case-insensitive, and preserves sorted unique values', async () => {
@@ -455,10 +456,10 @@ test('Kubernetes query transitions synchronously clear stale virtual rows and fe
   assert.match(clear, /this\.table\?\.setWindow\(\{ start: 0, end: 0, total: 0, items: \[\] \}\)/);
   assert.match(clear, /this\.tableViewport\.scrollTop = 0/);
   assert.match(virtualTable, /if \(total === 0\)[\s\S]*?cancelAnimationFrame[\s\S]*?rows\.replaceChildren\(\)[\s\S]*?return;/);
-  assert.match(page, /if \(this\.contextMenu\.classList\.contains\('hidden'\)\)\s*return;/);
-  assert.match(page, /if \(!this\.namespaceMenu\.classList\.contains\('hidden'\)\)\s*this\.namespaceSearch\.focus\(\)/);
-  assert.match(page, /this\.contextControl\.addEventListener\('focusout'/);
-  assert.match(page, /this\.namespaceControl\.addEventListener\('focusout'/);
+  assert.match(page, /focusSelectedMenuOption\(this\.contextMenu, '\.kubernetes-selector-option'\)/);
+  assert.match(page, /if \(isDropdownMenuOpen\(this\.namespaceMenu\)\)\s*this\.namespaceSearch\.focus\(\)/);
+  assert.match(page, /closeDropdownOnFocusOut\(this\.contextControl/);
+  assert.match(page, /closeDropdownOnFocusOut\(this\.namespaceControl/);
 });
 
 test('Custom Resources opens a searchable custom selector without a redundant resource tab', async () => {

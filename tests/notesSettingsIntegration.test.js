@@ -8,8 +8,29 @@ const rendererRoot = path.join(distRoot, 'renderer');
 const mainRoot = path.join(distRoot, 'main');
 const projectRoot = path.join(__dirname, '..');
 
+function normalizeCompiledMain(source) {
+  return source
+    .replace(/\belectron_1\.ipcMain\b/g, 'ipcMain')
+    .replace(/\belectron_1\.app\b/g, 'app')
+    .replace(/\belectron_1\.shell\b/g, 'shell')
+    .replace(/\bipcChannels_1\.IPC_CHANNELS\b/g, 'IPC_CHANNELS');
+}
+
 async function readIntegrationFiles() {
-  const [html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main, notesStore] = await Promise.all([
+  const [
+    html,
+    styles,
+    baseStyles,
+    renderer,
+    notesPage,
+    codeMirrorVendor,
+    settingsDialog,
+    preload,
+    mainEntry,
+    appWindow,
+    ipcChannels,
+    notesStore,
+  ] = await Promise.all([
     readFile(path.join(rendererRoot, 'index.html'), 'utf8'),
     readFile(path.join(rendererRoot, 'tailwind.css'), 'utf8'),
     readFile(path.join(rendererRoot, 'styles.css'), 'utf8'),
@@ -19,8 +40,11 @@ async function readIntegrationFiles() {
     readFile(path.join(rendererRoot, 'pages', 'settingsDialog.js'), 'utf8'),
     readFile(path.join(mainRoot, 'core', 'preload.js'), 'utf8'),
     readFile(path.join(mainRoot, 'core', 'main.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'appWindow.js'), 'utf8'),
+    readFile(path.join(mainRoot, 'core', 'ipcChannels.js'), 'utf8'),
     readFile(path.join(mainRoot, 'notes', 'notesStore.js'), 'utf8'),
   ]);
+  const main = normalizeCompiledMain([mainEntry, appWindow, ipcChannels].join('\n'));
   return { html, styles, baseStyles, renderer, notesPage, codeMirrorVendor, settingsDialog, preload, main, notesStore };
 }
 
@@ -247,7 +271,7 @@ test('compiled Notes exposes file cards, the six-dot command handle, and PDF or 
   assert.match(notesPage, /window\.notesApi\.exportNote\(\{/);
   assert.match(notesPage, /format !== 'pdf' && format !== 'markdown'/);
   assert.match(notesPage, /result\.canOpen \? `\$\{label\} saved\. Click to open\.`[\s\S]*?result\.canOpen \? 'open-note-export' : undefined/);
-  assert.match(notesPage, /attachmentPreviewDialog\.showModal\(\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
+  assert.match(notesPage, /openDialog\(this\.attachmentPreviewDialog\)[\s\S]*?window\.notesApi\.viewAttachment\(reference\)/);
   assert.match(notesPage, /attachmentPreviewText\.textContent = result\.preview\.text/);
   assert.match(notesPage, /URL\.createObjectURL\(new Blob/);
   assert.match(notesPage, /attachmentPreviewPdf\.src = `\$\{objectUrl\}#toolbar=0&navpanes=0`/);
@@ -296,7 +320,7 @@ test('compiled Notes exposes file cards, the six-dot command handle, and PDF or 
   assert.match(main, /const rendererWindows = new Set\(\)/);
   assert.match(main, /rendererWindows\.add\(window\)[\s\S]*?rendererWindows\.delete\(window\)/);
   assert.match(main, /function rendererNotesWindows\(\) \{\s*return \[\.\.\.rendererWindows\]\.filter/);
-  assert.match(main, /function primaryRendererWindow\(\)[\s\S]*?rendererWindows\.has\(focused\)/);
+  assert.match(main, /function primaryRendererWindow\([^)]*rendererWindows[\s\S]*?rendererWindows\.has\(focused\)/);
   assert.doesNotMatch(main, /BrowserWindow\.getAllWindows\(\)/);
 });
 
@@ -641,8 +665,10 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?saveLlmSettings\(llmDraft\)[\s\S]*?closeSettingsDialog\(\)/);
   assert.match(settingsDialog, /function shouldSaveS3Draft\(draft\)[\s\S]*?draft\.endpoint[\s\S]*?hasCredentials[\s\S]*?hasSyncEncryptionKey/);
   assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'llm'\]/);
-  assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?panel\.hidden = !selected/);
-  assert.match(settingsDialog, /event\.key === 'ArrowRight'[\s\S]*?event\.key === 'ArrowLeft'[\s\S]*?activateTab/);
+  assert.match(settingsDialog, /import \{ activateTabSet, bindTabButtons \} from '\.\.\/components\/tabs\.js'/);
+  assert.match(settingsDialog, /const settingsTabItems = settingsTabOrder\.map\(\(id\) => \(\{ id, \.\.\.settingsTabs\[id\] \}\)\)/);
+  assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?activateTabSet\(settingsTabItems, tab, \{ focus \}\)/);
+  assert.match(settingsDialog, /bindTabButtons\(settingsTabItems, activateTab, 'both'\)/);
   assert.doesNotMatch(settingsDialog, /clearCredentials|Clear Credentials/);
   assert.match(settingsDialog, /notesEditorTheme !== 'light' && notesEditorTheme !== 'dark'/);
   assert.match(settingsDialog, /return \{ notesFontSize, notesEditorTheme \}/);

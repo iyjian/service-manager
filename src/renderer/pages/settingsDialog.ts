@@ -19,6 +19,8 @@ import {
   flushNotesPage,
 } from './notesPage.js';
 import { convertTriliumHtmlToRichText } from '../components/notesRichTextEditor.js';
+import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
+import { activateTabSet, bindTabButtons } from '../components/tabs.js';
 
 const DEFAULT_NOTES_FONT_SIZE = 14;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
@@ -98,6 +100,7 @@ const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
   },
 };
 const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'llm'];
+const settingsTabItems = settingsTabOrder.map((id) => ({ id, ...settingsTabs[id] }));
 const syncPhaseLabels: Record<S3SyncProgressPhase, string> = {
   checking: 'Checking cloud',
   'reading-local': 'Preparing data',
@@ -182,14 +185,7 @@ function toErrorMessage(error: unknown): string {
 
 function activateTab(tab: SettingsTab, focus = false): void {
   activeTab = tab;
-  for (const name of settingsTabOrder) {
-    const selected = name === tab;
-    const { button, panel } = settingsTabs[name];
-    button.setAttribute('aria-selected', String(selected));
-    button.tabIndex = selected ? 0 : -1;
-    panel.hidden = !selected;
-  }
-  if (focus) settingsTabs[tab].button.focus();
+  activateTabSet(settingsTabItems, tab, { focus });
 }
 
 function setSaveFeedback(message = '', level: 'success' | 'error' = 'error'): void {
@@ -928,7 +924,7 @@ async function openSettings(): Promise<void> {
   resetTriliumImportUi();
   updateControls();
   setSaveFeedback();
-  if (!dialog.open) dialog.showModal();
+  openDialog(dialog);
   setStatus('Loading S3 settings…');
 
   const [settingsResult, preferencesResult, llmResult] = await Promise.allSettled([
@@ -977,20 +973,6 @@ async function openSettings(): Promise<void> {
   else endpointInput.focus();
 }
 
-function handleTabKeydown(event: KeyboardEvent): void {
-  const currentIndex = settingsTabOrder.findIndex((name) => settingsTabs[name].button === event.target);
-  if (currentIndex < 0) return;
-  let nextIndex: number | undefined;
-  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % settingsTabOrder.length;
-  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-    nextIndex = (currentIndex - 1 + settingsTabOrder.length) % settingsTabOrder.length;
-  } else if (event.key === 'Home') nextIndex = 0;
-  else if (event.key === 'End') nextIndex = settingsTabOrder.length - 1;
-  if (nextIndex === undefined) return;
-  event.preventDefault();
-  activateTab(settingsTabOrder[nextIndex] ?? 's3', true);
-}
-
 export function registerSettingsDialog(): void {
   openButton.parentElement?.append(openButton);
   activateTab(activeTab);
@@ -1019,11 +1001,7 @@ export function registerSettingsDialog(): void {
     llmTokenClearRequested = false;
     updateControls();
   });
-  for (const name of settingsTabOrder) {
-    const { button } = settingsTabs[name];
-    button.addEventListener('click', () => activateTab(name));
-    button.addEventListener('keydown', handleTabKeydown);
-  }
+  bindTabButtons(settingsTabItems, activateTab, 'both');
 
   window.settingsApi.onS3SyncStateChanged(renderSyncState);
   window.settingsApi.onUiPreferencesChanged(renderUiPreferences);
@@ -1077,8 +1055,8 @@ export function registerSettingsDialog(): void {
     })().catch((error) => setStatus(`Unable to copy Sync Encryption Key: ${toErrorMessage(error)}`, 'error'));
   });
 
-  dialog.addEventListener('click', (event) => {
-    if (!busy && !credentialRevealPending && event.target === dialog) closeSettingsDialog();
+  closeOnBackdropClick(dialog, () => {
+    if (!busy && !credentialRevealPending) closeSettingsDialog();
   });
   dialog.addEventListener('cancel', (event) => {
     if (busy || credentialRevealPending) event.preventDefault();

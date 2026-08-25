@@ -75,6 +75,7 @@ import {
 } from '../models/sqlUntitledDrafts.js';
 import { SqlVirtualResultTable } from '../components/sqlVirtualResultTable.js';
 import { toast } from '../components/toast.js';
+import { tabIndexForKey } from '../components/tabs.js';
 
 export { normalizeSqlEditorSource } from '../models/sqlUntitledDrafts.js';
 
@@ -1911,11 +1912,8 @@ class SqlPage {
     const tabs = this.currentState().tabs;
     const index = tabs.findIndex((tab) => tab.key === key);
     if (index < 0) return;
-    let target: SqlQueryTab | undefined;
-    if (event.key === 'ArrowLeft') target = tabs[index - 1] ?? tabs.at(-1);
-    if (event.key === 'ArrowRight') target = tabs[index + 1] ?? tabs[0];
-    if (event.key === 'Home') target = tabs[0];
-    if (event.key === 'End') target = tabs.at(-1);
+    const targetIndex = tabIndexForKey(event.key, index, tabs.length);
+    const target = targetIndex === undefined ? undefined : tabs[targetIndex];
     if (!target) return;
     event.preventDefault();
     this.selectTab(target.key, true);

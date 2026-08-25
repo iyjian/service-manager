@@ -139,10 +139,12 @@ test('preload exposes only the bounded Trilium prepare, image resolve, apply, ca
 });
 
 test('main process owns Trilium preparation sessions and applies each import atomically before one sync marker and reload', async () => {
-  const [main, s3Sync] = await Promise.all([
+  const [mainEntry, ipcChannels, s3Sync] = await Promise.all([
     source('src/main/core/main.ts'),
+    source('src/main/core/ipcChannels.ts'),
     source('src/main/s3/s3Sync.ts'),
   ]);
+  const main = `${mainEntry}\n${ipcChannels}`;
   const prepareHandler = between(
     main,
     'ipcMain.handle(IPC_CHANNELS.triliumImportPrepare',

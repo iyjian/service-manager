@@ -176,7 +176,11 @@ test('Host header shows live total app memory instead of host runtime totals', a
   const html = await readFile(path.join(rendererDir, 'index.html'), 'utf8');
   const renderer = await readFile(path.join(rendererDir, 'renderer.js'), 'utf8');
   const preload = await readFile(path.join(mainDir, 'core', 'preload.js'), 'utf8');
-  const main = await readFile(path.join(mainDir, 'core', 'main.js'), 'utf8');
+  const [mainEntry, ipcChannels] = await Promise.all([
+    readFile(path.join(mainDir, 'core', 'main.js'), 'utf8'),
+    readFile(path.join(mainDir, 'core', 'ipcChannels.js'), 'utf8'),
+  ]);
+  const main = `${mainEntry}\n${ipcChannels}`;
 
   assert.match(html, /id="page-stats"/);
   assert.match(renderer, /Memory \$\{formatGigabytes\(bytes\)\} GB/);
