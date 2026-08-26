@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.77] - 2026-08-26
+
+### Fixed
+- Fixed SQL cell value details so JSON fields open in the formatted viewer from the detail button, while double-click opens formatted JSON in the editor when updates are supported.
+- Fixed SQL cell editor layout overflow when long JSON or generated UPDATE statements are displayed, while generated SQL keeps edited JSON compact.
+
 ## [0.3.76] - 2026-08-25
 
 ### Changed

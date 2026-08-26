@@ -101,6 +101,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-result-cell-value\{[^}]*max-width:320px[^}]*white-space:nowrap/);
   assert.match(styles, /\.sql-result-cell-detail/);
   assert.match(styles, /\.sql-value-dialog/);
+  assert.match(styles, /\.sql-value-dialog-shell\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
   assert.match(styles, /\.sql-value-copy-raw/);
   assert.match(styles, /\.sql-value-find-bar\{/);
   assert.match(styles, /\.sql-value-find-input\{/);
@@ -199,6 +200,11 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /sqlCellPresentation/);
   assert.match(page, /Formatted JSON cell value/);
   assert.match(page, /sqlValueModesForKind/);
+  assert.match(page, /openValueDialog\(column, sqlCellPresentation\(row\[column\]\), row, 'edit'\)/);
+  assert.match(page, /openValueDialog\(column, presentation, row, 'view'\)/);
+  assert.match(page, /const initialText = presentation\.kind === 'json' && presentation\.formatted !== undefined\s*\? presentation\.formatted\s*: presentation\.raw/);
+  assert.match(page, /valueSqlOriginalText = initialText/);
+  assert.match(page, /sqlEditedTextForUpdate\(this\.valuePresentation, this\.valueEditInput\.value\)/);
   assert.match(page, /detectSqlValueLanguage/);
   assert.match(page, /retryTableEnumAfterSchemaLoad\(view, position, selectedRange\)/);
   assert.match(page, /ensureSchemaLoaded\(environment, true\)/);
@@ -236,6 +242,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(virtualTable, /className = 'sql-result-table'/);
   assert.match(virtualTable, /calculateSqlResultVirtualWindow/);
   assert.match(virtualTable, /data-sql-cell-detail/);
+  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(row\[column\]\), row, 'view'\)/);
+  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(dataRow\[column\]\), dataRow, 'edit'\)/);
   assert.doesNotMatch(page, /resultStatus/);
   assert.doesNotMatch(page, /Query ran/);
   assert.match(page, /replace\(\/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);
@@ -311,5 +319,17 @@ test('SQL field detail modes always expose Raw', async () => {
   assert.equal(
     page.detectSqlValueLanguage('# Heading\n\nThis is **bold** and [a link](https://example.com).\n\n- one\n- two'),
     'markdown',
+  );
+  assert.equal(
+    page.sqlEditedTextForUpdate({ kind: 'json' }, '{\n  "enabled": true,\n  "items": [\n    1,\n    2\n  ]\n}'),
+    '{"enabled":true,"items":[1,2]}',
+  );
+  assert.equal(
+    page.sqlEditedTextForUpdate({ kind: 'json' }, '{ invalid json'),
+    '{ invalid json',
+  );
+  assert.equal(
+    page.sqlEditedTextForUpdate({ kind: 'text' }, '{\n  "enabled": true\n}'),
+    '{\n  "enabled": true\n}',
   );
 });

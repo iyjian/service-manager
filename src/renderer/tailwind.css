@@ -5544,6 +5544,7 @@
 
   .sql-value-dialog-shell {
     @apply grid h-full min-h-0 overflow-hidden;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 48px auto auto minmax(0, 1fr);
   }
 
@@ -5737,7 +5738,7 @@
   }
 
   .sql-value-sql-panel {
-    @apply flex min-h-0 flex-col border-t border-zinc-200 bg-zinc-50;
+    @apply flex min-h-0 min-w-0 flex-col border-t border-zinc-200 bg-zinc-50;
   }
 
   #sql-value-dialog[data-mode='edit'] .sql-value-sql-panel {
@@ -5771,11 +5772,11 @@
   }
 
   .sql-value-sql-body {
-    @apply flex min-h-0 flex-1 flex-col px-3 pb-3;
+    @apply flex min-h-0 min-w-0 flex-1 flex-col px-3 pb-3;
   }
 
   .sql-value-sql-code-wrap {
-    @apply relative min-h-0 flex-1 overflow-auto rounded-md border border-zinc-200 bg-white px-2 py-2;
+    @apply relative min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-zinc-200 bg-white px-2 py-2;
   }
 
   .sql-value-sql-code {

@@ -24,6 +24,7 @@ export interface SqlVirtualResultTableOptions {
     column: string,
     presentation: SqlCellPresentation,
     row: Readonly<Record<string, unknown>>,
+    mode?: 'view' | 'edit',
   ) => void;
   onWindowRendered: () => void;
 }
@@ -131,7 +132,7 @@ export class SqlVirtualResultTable {
     const row = this.result.rows[rowIndex];
     const column = this.result.columns[columnIndex];
     if (!row || column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(row[column]), row);
+    this.onOpenValue(column, sqlCellPresentation(row[column]), row, 'view');
   };
 
   private readonly handleDblClick = (event: MouseEvent): void => {
@@ -147,7 +148,7 @@ export class SqlVirtualResultTable {
     const columnIndex = Array.from(row.cells).indexOf(cell);
     const column = this.result.columns[columnIndex];
     if (column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow);
+    this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow, 'edit');
   };
 
   private selectRow(rowIndex: number | undefined): void {

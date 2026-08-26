@@ -418,6 +418,18 @@ export function sqlValueModesForKind(
     : SQL_TEXT_VALUE_MODES;
 }
 
+export function sqlEditedTextForUpdate(
+  presentation: Pick<SqlCellPresentation, 'kind'>,
+  editedText: string,
+): string {
+  if (presentation.kind !== 'json') return editedText;
+  try {
+    return JSON.stringify(JSON.parse(editedText.trim())) ?? editedText;
+  } catch {
+    return editedText;
+  }
+}
+
 export function sqlShortcutLabel(platform: string): string {
   return /mac/i.test(platform) ? '⌘Enter' : 'Ctrl+Enter';
 }
@@ -2402,7 +2414,7 @@ class SqlPage {
       this.resultTable = new SqlVirtualResultTable({
         host: this.resultContent,
         result: tab.result,
-        onOpenValue: (column, presentation, row) => this.openValueDialog(column, presentation, row),
+        onOpenValue: (column, presentation, row, mode) => this.openValueDialog(column, presentation, row, mode),
         onWindowRendered: () => this.refreshCellOverflowButtons(),
       });
       return;
@@ -2455,7 +2467,7 @@ class SqlPage {
           const columnIndex = Array.from(rowNode.cells).indexOf(cell);
           const column = result.columns[columnIndex];
           if (column === undefined) return;
-          this.openValueDialog(column, sqlCellPresentation(row[column]), row);
+          this.openValueDialog(column, sqlCellPresentation(row[column]), row, 'edit');
         });
         for (const column of result.columns) {
           const cell = document.createElement('td');
@@ -2472,7 +2484,7 @@ class SqlPage {
           detail.setAttribute('aria-label', `View full ${column} value`);
           detail.title = `View full ${column} value`;
           detail.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.25" cy="8" r="1.15"></circle><circle cx="8" cy="8" r="1.15"></circle><circle cx="12.75" cy="8" r="1.15"></circle></svg>';
-          detail.addEventListener('click', () => this.openValueDialog(column, presentation, row));
+          detail.addEventListener('click', () => this.openValueDialog(column, presentation, row, 'view'));
           content.append(text, detail);
           cell.append(content);
           rowNode.append(cell);
@@ -2552,6 +2564,7 @@ class SqlPage {
     column: string,
     presentation: SqlCellPresentation,
     row: Readonly<Record<string, unknown>>,
+    mode: 'view' | 'edit' = 'view',
   ): void {
     this.clearValueDialog();
     this.valueDialogTitle.textContent = column;
@@ -2563,7 +2576,7 @@ class SqlPage {
 
     const edit = this.resolveCellEditContext(column, row);
     let focusTarget: HTMLElement = this.valueClose;
-    if (edit.kind === 'edit') {
+    if (mode === 'edit' && edit.kind === 'edit') {
       this.valueEditContext = {
         table: edit.table,
         column,
@@ -2578,7 +2591,7 @@ class SqlPage {
         : undefined;
       this.valueDetectedLanguage = detectedLanguage;
       focusTarget = this.renderValueView(presentation, detectedLanguage);
-      this.applyValuePanelForView(edit.kind === 'multi' ? 'multi' : 'view');
+      this.applyValuePanelForView(mode === 'edit' && edit.kind === 'multi' ? 'multi' : 'view');
     }
 
     this.valueDialog.showModal();
@@ -2656,19 +2669,22 @@ class SqlPage {
   }
 
   private renderValueEdit(presentation: SqlCellPresentation): void {
+    const initialText = presentation.kind === 'json' && presentation.formatted !== undefined
+      ? presentation.formatted
+      : presentation.raw;
     this.valueDialog.dataset.mode = 'edit';
     this.valueKind.textContent = 'Edit';
     this.valueModes.classList.add('hidden');
     this.valueContent.classList.add('hidden');
     this.valueEdit.classList.remove('hidden');
-    this.valueEditInput.value = presentation.raw;
+    this.valueEditInput.value = initialText;
     this.valueSqlPanel.classList.remove('hidden');
     this.valueSqlResizer.classList.remove('hidden');
     this.valueSqlBody.classList.remove('hidden');
     this.valueSqlNotice.classList.add('hidden');
     this.valueSqlExecuting = false;
     this.valueSqlExecuted = false;
-    this.valueSqlOriginalText = presentation.raw;
+    this.valueSqlOriginalText = initialText;
     this.valueSqlStatus.textContent = '';
     delete this.valueSqlStatus.dataset.error;
     delete this.valueSqlStatus.dataset.success;
@@ -2683,7 +2699,9 @@ class SqlPage {
       table: context.table,
       column: context.column,
       originalValue: context.originalValue,
-      editedText: this.valueEditInput.value,
+      editedText: this.valuePresentation
+        ? sqlEditedTextForUpdate(this.valuePresentation, this.valueEditInput.value)
+        : this.valueEditInput.value,
       primaryKey: context.primaryKey,
     });
   }
