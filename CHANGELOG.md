@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.78] - 2026-08-27
+
+### Changed
+- Consolidated duplicated renderer DOM lookup and error-message helpers into shared utilities, so Hosts, Notes, Kubernetes, SQL, Proxy, Settings, and Changelog views resolve elements and present error messages through one implementation.
+- Settings error messages now strip Electron's IPC invocation prefix even when the underlying error lacks an `Error:` wrapper, matching the other views.
+
 ## [0.3.77] - 2026-08-26
 
 ### Fixed

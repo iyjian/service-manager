@@ -21,17 +21,13 @@ import {
 import { convertTriliumHtmlToRichText } from '../components/notesRichTextEditor.js';
 import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
 import { activateTabSet, bindTabButtons } from '../components/tabs.js';
+import { requireElement } from '../utils/dom.js';
+import { toCleanErrorMessage as toErrorMessage } from '../utils/error.js';
 
 const DEFAULT_NOTES_FONT_SIZE = 14;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
 const MIN_NOTES_FONT_SIZE = 12;
 const MAX_NOTES_FONT_SIZE = 24;
-
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
 
 const dialog = requireElement<HTMLDialogElement>('#settings-dialog');
 const form = requireElement<HTMLFormElement>('#settings-form');
@@ -177,11 +173,6 @@ const s3Inputs = [
   secretKeyInput,
   syncEncryptionKeyInput,
 ];
-
-function toErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
-  return message.replace(/^Error invoking remote method '[^']+': Error: /, '');
-}
 
 function activateTab(tab: SettingsTab, focus = false): void {
   activeTab = tab;

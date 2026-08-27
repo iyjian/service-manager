@@ -1,10 +1,5 @@
 import type { ChangelogEntry, ChangelogView } from '../../shared/types';
-
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
+import { requireElement } from '../utils/dom.js';
 
 let wired = false;
 let view: ChangelogView | null = null;

@@ -13,6 +13,8 @@ import type {
 import { registerPage } from './nav.js';
 import { haveSameProxyCustomRules, haveSameProxyGroupStructure } from '../models/proxyGroupView.js';
 import { setMessage } from '../renderer.js';
+import { requireElement } from '../utils/dom.js';
+import { toErrorMessage } from '../utils/error.js';
 
 const PROXY_NAV_ICON = `
   <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -21,12 +23,6 @@ const PROXY_NAV_ICON = `
     <path d="M8 2.5c1.8 1.5 2.7 3.3 2.7 5.5S9.8 12 8 13.5C6.2 12 5.3 10.2 5.3 8S6.2 4 8 2.5z"></path>
   </svg>
 `;
-
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
 
 const coreBadge = requireElement<HTMLElement>('#proxy-core-badge');
 const statusBadge = requireElement<HTMLElement>('#proxy-status-badge');
@@ -95,11 +91,6 @@ const RULE_VALUE_PLACEHOLDERS: Record<ProxyExceptionType, string> = {
   'DST-PORT': '443',
   'SRC-PORT': '443',
 };
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === 'string' ? error : String(error);
-}
 
 function formatTrafficRate(bytesPerSecond: number): string {
   const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];

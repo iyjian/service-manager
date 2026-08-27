@@ -26,6 +26,8 @@ import {
 } from '@codemirror/view';
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from '../codeHighlight.js';
+import { requireElement } from '../utils/dom.js';
+import { stripIpcErrorPrefix } from '../utils/error.js';
 import { registerPage } from './nav.js';
 import {
   findNotesTextMatches,
@@ -222,12 +224,6 @@ const SQL_TEXT_VALUE_MODES: readonly SqlValueMode[] = Object.freeze([
 let tabSequence = 0;
 let queryNameDialogSequence = 0;
 
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
-
 function newEnvironmentState(): SqlEnvironmentState {
   return {
     records: [],
@@ -260,7 +256,7 @@ function environmentLabel(environment: SqlEnvironment): string {
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
-    return error.message.trim().replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+    return stripIpcErrorPrefix(error.message.trim()).trim();
   }
   return 'The SQL operation failed.';
 }

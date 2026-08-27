@@ -8,6 +8,7 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   const dist = path.join(__dirname, '..', 'dist');
   const html = await readFile(path.join(dist, 'renderer', 'index.html'), 'utf8');
   const page = await readFile(path.join(dist, 'renderer', 'pages', 'sqlPage.js'), 'utf8');
+  const errorUtils = await readFile(path.join(dist, 'renderer', 'utils', 'error.js'), 'utf8');
   const virtualTable = await readFile(path.join(dist, 'renderer', 'components', 'sqlVirtualResultTable.js'), 'utf8');
   const styles = await readFile(path.join(dist, 'renderer', 'tailwind.css'), 'utf8');
   const baseStyles = await readFile(path.join(dist, 'renderer', 'styles.css'), 'utf8');
@@ -246,7 +247,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(dataRow\[column\]\), dataRow, 'edit'\)/);
   assert.doesNotMatch(page, /resultStatus/);
   assert.doesNotMatch(page, /Query ran/);
-  assert.match(page, /replace\(\/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);
+  assert.match(page, /stripIpcErrorPrefix\(error\.message\.trim\(\)\)\.trim\(\)/);
+  assert.match(errorUtils, /IPC_ERROR_PREFIX_PATTERN = \/\^Error invoking remote method '\[\^'\]\+': \(\?:Error: \)\?\//);
   assert.match(page, /sessionUser\.textContent = user\?\.userName \?\? ['"]{2}/);
   assert.doesNotMatch(page, /sessionUser\.textContent\s*=.*user\?\.name/);
   assert.match(page, /textContent = formatSqlCell/);

@@ -12,6 +12,8 @@ import type {
   TunnelStatus,
   UpdateState,
 } from '../shared/types';
+import { requireElement } from './utils/dom.js';
+import { toErrorMessage } from './utils/error.js';
 import { ansiToHtml, escapeAttribute, escapeHtml } from './utils/html.js';
 import { initNav, registerPage } from './pages/nav.js';
 import { registerKubernetesPage } from './pages/kubernetesPage.js';
@@ -31,12 +33,6 @@ import {
   runtimeStatusMarker,
   statusClass,
 } from './models/status.js';
-
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
 
 const hostDialog = requireElement<HTMLDialogElement>('#host-dialog');
 const hostDialogTitle = requireElement<HTMLElement>('#host-dialog-title');
@@ -168,13 +164,6 @@ const hostDialogMessageView: MessageView = {
   root: hostDialogMessageElement,
   text: hostDialogMessageTextElement,
 };
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return typeof error === 'string' ? error : String(error);
-}
 
 function shouldPromoteServiceError(message: string | undefined): boolean {
   if (!message) {

@@ -59,6 +59,8 @@ import {
   type KubernetesBuiltinDetailCondition,
   type KubernetesBuiltinDetailSection,
 } from '../models/kubernetesBuiltinResourceModel.js';
+import { requireElement } from '../utils/dom.js';
+import { toErrorMessage } from '../utils/error.js';
 
 type ToastLevel = 'default' | 'success' | 'error';
 
@@ -358,12 +360,6 @@ interface PortForwardDraft {
   targetName: string;
 }
 
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
-
 function resourceLabel(kind: KubernetesResourceKind): string {
   const labels: Record<KubernetesResourceKind, string> = {
     pods: 'Pods',
@@ -379,11 +375,6 @@ function resourceLabel(kind: KubernetesResourceKind): string {
     'custom-resources': 'Custom Resources',
   };
   return labels[kind];
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === 'string' ? error : String(error);
 }
 
 function isClusterScoped(kind: KubernetesResourceKind): boolean {

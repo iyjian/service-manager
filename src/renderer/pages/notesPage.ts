@@ -55,6 +55,8 @@ import {
 import { toast } from '../components/toast.js';
 import { createIcon } from '../components/icon.js';
 import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
+import { requireElement } from '../utils/dom.js';
+import { toCleanErrorMessage as toErrorMessage } from '../utils/error.js';
 
 export { normalizeNoteAttachmentFileName };
 
@@ -456,17 +458,6 @@ export function resolveNoteTreeDropPlacement(
     placement = { parentId: target.parentId, ...(next ? { beforeNoteId: next.noteId } : {}) };
   }
   return isValidNoteTreeParent(nodes, movingNoteId, placement.parentId) ? placement : undefined;
-}
-
-function requireElement<T extends Element>(selector: string): T {
-  const element = document.querySelector<T>(selector);
-  if (!element) throw new Error(`Missing required element: ${selector}`);
-  return element;
-}
-
-function toErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
-  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 }
 
 function cloneNote(note: Note): Note {
