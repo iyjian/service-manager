@@ -72,6 +72,39 @@ test('SQL cell SET literal keeps NULL, quotes strings, and falls back for unpars
   assert.equal(cellEdit.buildSqlSetLiteral(5, ''), 'NULL');
 });
 
+test('SQL cell edits compare against the current runtime value after execution', async () => {
+  const { cellEdit } = await loadModules();
+  const text = { kind: 'text' };
+
+  assert.equal(cellEdit.sqlEditedRuntimeValue(1, text, '2'), 2);
+  assert.equal(cellEdit.isSqlEditedValueChanged(2, text, '2'), false);
+  assert.equal(cellEdit.isSqlEditedValueChanged(2, text, '1'), true);
+  assert.equal(cellEdit.sqlEditedRuntimeValue(true, text, '0'), false);
+  assert.equal(cellEdit.sqlEditedRuntimeValue(null, text, 'NULL'), null);
+});
+
+test('SQL JSON cell edits use canonical text for dirty checks and local table values', async () => {
+  const { cellEdit } = await loadModules();
+  const json = { kind: 'json' };
+
+  assert.equal(
+    cellEdit.isSqlEditedValueChanged('{"enabled":true}', json, '{\n  "enabled": true\n}'),
+    false,
+  );
+  assert.equal(
+    cellEdit.sqlEditedRuntimeValue('{"enabled":true}', json, '{\n  "enabled": false\n}'),
+    '{"enabled":false}',
+  );
+  assert.deepEqual(
+    cellEdit.sqlEditedRuntimeValue({ enabled: true }, json, '{\n  "enabled": false\n}'),
+    { enabled: false },
+  );
+  assert.equal(
+    cellEdit.isSqlEditedValueChanged({ enabled: true }, json, '{\n  "enabled": false\n}'),
+    true,
+  );
+});
+
 test('SQL cell literals escape quotes and composite primary keys join with AND', async () => {
   const { cellEdit } = await loadModules();
 

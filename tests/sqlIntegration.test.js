@@ -44,6 +44,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(html, /id="sql-value-find-previous"/);
   assert.match(html, /id="sql-value-find-next"/);
   assert.match(html, /id="sql-value-find-close"/);
+  assert.match(html, /id="sql-value-edit-highlights"[^>]*aria-hidden="true"/);
+  assert.match(html, /id="sql-value-edit-input"/);
   assert.doesNotMatch(html, /id="sql-result-status"/);
   assert.match(html, /id="sql-session-actions" class="sql-session-actions hidden"/);
   assert.doesNotMatch(html, /Tips:/);
@@ -101,19 +103,28 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(styles, /\.sql-result-table-wrap\{[^}]*width:max-content/);
   assert.match(styles, /\.sql-result-cell-value\{[^}]*max-width:320px[^}]*white-space:nowrap/);
   assert.match(styles, /\.sql-result-cell-detail/);
+  assert.match(styles, /\.sql-mutation-result\{/);
+  assert.match(styles, /\.sql-mutation-metrics\{[^}]*min-width:520px/);
+  assert.doesNotMatch(styles, /\.sql-mutation-message\{/);
+  assert.doesNotMatch(styles, /\.sql-mutation-detail/);
+  assert.doesNotMatch(styles, /\.sql-mutation-text-button/);
   assert.match(styles, /\.sql-value-dialog/);
   assert.match(styles, /\.sql-value-dialog-shell\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
   assert.match(styles, /\.sql-value-copy-raw/);
   assert.match(styles, /\.sql-value-find-bar\{/);
   assert.match(styles, /\.sql-value-find-input\{/);
   assert.match(styles, /\.sql-value-find-match-active\{/);
-  assert.doesNotMatch(styles, /\.sql-value-code\.sql-value-code-raw/);
+  assert.match(styles, /\.sql-value-code\.sql-value-code-raw\{font-size:14px/);
+  assert.match(styles, /\.sql-value-edit-wrap\{/);
+  assert.match(styles, /\.sql-value-edit-highlights\{[^}]*font-size:14px/);
+  assert.match(styles, /\.sql-value-edit-highlights \.sql-value-find-match\{/);
+  assert.match(styles, /\.sql-value-edit-input\{font-size:14px/);
+  assert.match(styles, /\.sql-value-edit-input\{[^}]*background-color:transparent/);
+  assert.match(styles, /\.sql-value-sql-code\{[^}]*font-size:13px/);
   assert.match(styles, /\.sql-value-line-numbers\{[^}]*position:sticky[^}]*left:0/);
   assert.match(styles, /\.sql-value-code>code\{[^}]*min-width:max-content/);
-  assert.match(
-    styles,
-    /\.sql-value-code,\.sql-value-line-numbers\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/,
-  );
+  assert.match(styles, /\.sql-value-code\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/);
+  assert.match(styles, /\.sql-value-line-numbers\{[^}]*font-size:calc\(var\(--sql-editor-font-size\)\*\.88889\)/);
   assert.match(styles, /\.sql-value-code code::selection\{[^}]*background-color:rgb\(37 99 235/);
   assert.match(styles, /\.sql-value-json-editor/);
   assert.match(
@@ -122,6 +133,8 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   );
   assert.match(styles, /\.sql-value-json-editor \.cm-selectionBackground/);
   assert.match(styles, /\.sql-value-html-frame\{[^}]*pointer-events:none/);
+  assert.match(styles, /#sql-value-dialog\[data-mode=single\] \.sql-value-sql-panel\{[^}]*height:var\(--sql-value-sql-height,160px\)/);
+  assert.doesNotMatch(styles, /\[data-mode=edit\]/);
   assert.match(page, /resolveSqlStatement/);
   assert.match(page, /sqlCurrentStatementHighlight/);
   assert.match(page, /isSqlRunShortcut/);
@@ -201,11 +214,20 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /sqlCellPresentation/);
   assert.match(page, /Formatted JSON cell value/);
   assert.match(page, /sqlValueModesForKind/);
-  assert.match(page, /openValueDialog\(column, sqlCellPresentation\(row\[column\]\), row, 'edit'\)/);
-  assert.match(page, /openValueDialog\(column, presentation, row, 'view'\)/);
-  assert.match(page, /const initialText = presentation\.kind === 'json' && presentation\.formatted !== undefined\s*\? presentation\.formatted\s*: presentation\.raw/);
+  assert.match(page, /openValueDialog\(column, sqlCellPresentation\(row\[column\]\), row\)/);
+  assert.match(page, /openValueDialog\(column, presentation, row\)/);
+  assert.doesNotMatch(page, /openValueDialog\([^;]+,\s*['"](view|edit)['"]\)/);
+  assert.match(page, /function sqlValueRawEditorText\(presentation\) \{[\s\S]*?presentation\.kind === ['"]json['"] && presentation\.formatted !== undefined[\s\S]*?presentation\.formatted/);
+  assert.match(page, /prepareValueUpdatePanel\(this\.valueRaw\)/);
+  assert.match(page, /valueRawEditorInitialized/);
+  assert.match(page, /currentValueRawText\(\)/);
+  assert.match(page, /frame\.srcdoc = sandboxedHtmlDocument\(rawText\)/);
+  assert.match(page, /JSON\.parse\(rawText\.trim\(\)\)/);
   assert.match(page, /valueSqlOriginalText = initialText/);
   assert.match(page, /sqlEditedTextForUpdate\(this\.valuePresentation, this\.valueEditInput\.value\)/);
+  assert.match(page, /isSqlEditedValueChanged\([\s\S]*?this\.valueEditContext\.currentValue[\s\S]*?this\.valueEditInput\.value/);
+  assert.match(page, /applyExecutedCellValue\(context, updatedValue, committedText\)/);
+  assert.match(page, /tab\.lastResponseText = jsonText\(cachedSqlTableResult\(tab\.result\)\)/);
   assert.match(page, /detectSqlValueLanguage/);
   assert.match(page, /retryTableEnumAfterSchemaLoad\(view, position, selectedRange\)/);
   assert.match(page, /ensureSchemaLoaded\(environment, true\)/);
@@ -217,11 +239,26 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /The SQL schema could not be loaded\. Double-click a table name to retry\./);
   assert.match(page, /mode === 'highlighted'/);
   assert.match(page, /valueModes\.classList\.remove\('hidden'\)/);
-  assert.match(page, /const text = this\.valueFormatted \?\? this\.valueRaw;/);
+  assert.match(page, /const text = this\.currentValueRawText\(\);/);
   assert.match(page, /window\.serviceApi\.writeClipboardText\(text\)/);
+  assert.match(page, /valueEditInput\.addEventListener\(['"]input['"], \(\) => \{[\s\S]*?this\.scheduleValueFind\(\)/);
+  assert.match(page, /valueEditInput\.addEventListener\(['"]scroll['"], \(\) => this\.syncValueEditFindHighlights\(\)/);
+  assert.match(page, /valueFindInput\.addEventListener\(['"]input['"], \(\) => this\.refreshValueFindNow\(false, true\)\)/);
+  assert.match(page, /valueFindInput\.addEventListener\(['"]compositionend['"], \(\) => this\.refreshValueFindNow\(false, true\)\)/);
+  assert.match(page, /refreshValueFindNow\(preserveActivePosition, reveal\)/);
+  assert.match(page, /const anchor = preserveActivePosition && this\.valueFindActiveIndex >= 0/);
   assert.match(page, /findNotesTextMatches\(this\.currentValueFindText\(\), this\.valueFindInput\.value\)/);
   assert.match(page, /openValueFind\(\)/);
+  assert.match(page, /this\.refreshValueFindNow\(true, false\);\s*this\.moveValueFind\(event\.shiftKey \? -1 : 1\)/);
   assert.match(page, /moveValueFind\(event\.shiftKey \? -1 : 1\)/);
+  assert.match(page, /if \(this\.isValueRawEditorVisible\(\)\)\s*return this\.valueEditInput\.value/);
+  assert.match(page, /applyValueEditFindHighlights/);
+  assert.match(page, /valueEditHighlights\.replaceChildren\(fragment\)/);
+  assert.match(page, /valueEditHighlights\.scrollTop = this\.valueEditInput\.scrollTop/);
+  assert.match(page, /this\.revealValueFindMatch\(\);\s*this\.valueFindInput\.focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(page, /setSelectionRange\(start, end\)/);
+  assert.doesNotMatch(page, /event\.isComposing \|\| this\.isValueRawEditorVisible\(\)\) return/);
+  assert.doesNotMatch(page, /if \(!this\.valueDialog\.open \|\| this\.isValueRawEditorVisible\(\)\) return/);
   assert.match(page, /sql-value-find-match-active/);
   assert.match(page, /lineNumbers\.className = 'sql-value-line-numbers'/);
   assert.match(page, /pre\.append\(lineNumbers, code\)/);
@@ -230,6 +267,15 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(page, /selectedRange\.compareBoundaryPoints\(Range\.START_TO_START, contentRange\)/);
   assert.match(page, /if \(!event\.repeat\)\s*return/);
   assert.match(page, /formatSqlDuration/);
+  assert.match(page, /mutationSummaryTitle/);
+  assert.match(page, /Execution successful/);
+  assert.match(page, /Update successful/);
+  assert.match(page, /Matched Rows/);
+  assert.match(page, /Changed Rows/);
+  assert.doesNotMatch(page, /Show raw result/);
+  assert.doesNotMatch(page, /Copy summary/);
+  assert.doesNotMatch(page, /summaryRawValue/);
+  assert.doesNotMatch(page, /Execution summary copied\./);
   assert.match(page, /highlightAuto/);
   assert.match(page, /setAttribute\(['"]sandbox['"], ['"]{2}\)/);
   assert.match(page, /Content-Security-Policy/);
@@ -243,8 +289,14 @@ test('compiled SQL page uses the narrow main-process bridge and Service Manager 
   assert.match(virtualTable, /className = 'sql-result-table'/);
   assert.match(virtualTable, /calculateSqlResultVirtualWindow/);
   assert.match(virtualTable, /data-sql-cell-detail/);
-  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(row\[column\]\), row, 'view'\)/);
-  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(dataRow\[column\]\), dataRow, 'edit'\)/);
+  assert.match(virtualTable, /addEventListener\(['"]keydown['"], this\.handleKeyDown\)/);
+  assert.match(virtualTable, /this\.selectedRowIndex === undefined/);
+  assert.match(virtualTable, /event\.preventDefault\(\)/);
+  assert.match(virtualTable, /this\.host\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(virtualTable, /scrollRowIntoView\(targetIndex\)/);
+  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(row\[column\]\), row\)/);
+  assert.match(virtualTable, /this\.onOpenValue\(column, sqlCellPresentation\(dataRow\[column\]\), dataRow\)/);
+  assert.doesNotMatch(virtualTable, /'view'|'edit'/);
   assert.doesNotMatch(page, /resultStatus/);
   assert.doesNotMatch(page, /Query ran/);
   assert.match(page, /stripIpcErrorPrefix\(error\.message\.trim\(\)\)\.trim\(\)/);
@@ -307,16 +359,16 @@ test('SQL field detail modes always expose Raw', async () => {
     path.join(__dirname, '..', 'dist', 'renderer', 'pages', 'sqlPage.js'),
   ));
 
-  assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['formatted', 'raw']);
-  assert.deepEqual(page.sqlValueModesForKind('html').map((mode) => mode.id), ['preview', 'raw']);
+  assert.deepEqual(page.sqlValueModesForKind('json').map((mode) => mode.id), ['raw', 'formatted']);
+  assert.deepEqual(page.sqlValueModesForKind('html').map((mode) => mode.id), ['raw', 'preview']);
   assert.deepEqual(page.sqlValueModesForKind('text').map((mode) => mode.id), ['raw']);
   assert.deepEqual(
     page.sqlValueModesForKind('text', 'markdown').map((mode) => [mode.id, mode.label]),
-    [['highlighted', 'Markdown'], ['raw', 'Raw']],
+    [['raw', 'Raw'], ['highlighted', 'Markdown']],
   );
   assert.deepEqual(
     page.sqlValueModesForKind('text', 'sql').map((mode) => [mode.id, mode.label]),
-    [['highlighted', 'SQL'], ['raw', 'Raw']],
+    [['raw', 'Raw'], ['highlighted', 'SQL']],
   );
   assert.equal(
     page.detectSqlValueLanguage('# Heading\n\nThis is **bold** and [a link](https://example.com).\n\n- one\n- two'),

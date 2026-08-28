@@ -6,6 +6,7 @@ import type { ChangelogEntry, ChangelogView } from '../../shared/types';
 const RELEASE_PATTERN = /^## \[?([0-9]+\.[0-9]+\.[0-9]+)\]?(?:\s*-\s*(.*))?$/;
 const SECTION_PATTERN = /^### (.+)$/;
 const BULLET_PATTERN = /^[-*] (.*)$/;
+const VERSION_PATTERN = /^([0-9]+)\.([0-9]+)\.([0-9]+)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -68,19 +69,85 @@ async function readChangelogEntries(): Promise<{ en: ChangelogEntry[]; zh: Chang
   return cachedEntries;
 }
 
+function normalizeStoredVersion(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 ? trimmed : null;
+}
+
+function compareChangelogVersions(left: string, right: string): number | undefined {
+  const leftMatch = VERSION_PATTERN.exec(left);
+  const rightMatch = VERSION_PATTERN.exec(right);
+  if (!leftMatch || !rightMatch) return undefined;
+  for (let index = 1; index <= 3; index += 1) {
+    const leftPart = Number(leftMatch[index]);
+    const rightPart = Number(rightMatch[index]);
+    if (leftPart !== rightPart) return leftPart - rightPart;
+  }
+  return 0;
+}
+
+export function isChangelogVersionInRange(
+  version: string,
+  currentVersion: string,
+  previousVersion: string | null,
+): boolean {
+  if (!previousVersion) return version === currentVersion;
+  const currentAfterPrevious = compareChangelogVersions(currentVersion, previousVersion);
+  if (currentAfterPrevious !== undefined && currentAfterPrevious <= 0) {
+    return version === currentVersion;
+  }
+  const afterPrevious = compareChangelogVersions(version, previousVersion);
+  const beforeCurrent = compareChangelogVersions(version, currentVersion);
+  if (afterPrevious === undefined || beforeCurrent === undefined) return version === currentVersion;
+  return afterPrevious > 0 && beforeCurrent <= 0;
+}
+
+function highlightedChangelogEntries(
+  entries: ChangelogEntry[],
+  currentVersion: string,
+  previousVersion: string | null,
+): ChangelogEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    sections: entry.sections.map((section) => ({
+      ...section,
+      items: [...section.items],
+    })),
+    ...(isChangelogVersionInRange(entry.version, currentVersion, previousVersion)
+      ? { highlighted: true }
+      : {}),
+  }));
+}
+
 export async function buildChangelogView(
   currentVersion: string,
   seenVersion: string | null,
+  previousVersion: string | null = null,
 ): Promise<ChangelogView> {
   if (seenVersion === currentVersion) {
-    return { currentVersion, shouldShow: false, en: [], zh: [] };
+    return {
+      currentVersion,
+      ...(previousVersion ? { previousVersion } : {}),
+      shouldShow: false,
+      en: [],
+      zh: [],
+    };
   }
   const { en, zh } = await readChangelogEntries();
-  return { currentVersion, shouldShow: true, en, zh };
+  return {
+    currentVersion,
+    ...(previousVersion ? { previousVersion } : {}),
+    shouldShow: true,
+    en: highlightedChangelogEntries(en, currentVersion, previousVersion),
+    zh: highlightedChangelogEntries(zh, currentVersion, previousVersion),
+  };
 }
 
 export class ChangelogSeenStore {
   private seenVersion: string | null = null;
+  private lastRunVersion: string | null = null;
+  private previousRunVersion: string | null = null;
 
   constructor(private readonly filePath: string) {}
 
@@ -88,12 +155,16 @@ export class ChangelogSeenStore {
     try {
       const raw = await fs.readFile(this.filePath, 'utf8');
       const data = JSON.parse(raw) as unknown;
-      if (isRecord(data) && typeof data.version === 'string') {
-        this.seenVersion = data.version;
+      if (isRecord(data)) {
+        this.seenVersion = normalizeStoredVersion(data.version);
+        this.lastRunVersion = normalizeStoredVersion(data.lastRunVersion) ?? this.seenVersion;
+        this.previousRunVersion = normalizeStoredVersion(data.previousRunVersion);
       }
     } catch {
       // A missing or damaged file means the user has not seen a changelog yet.
       this.seenVersion = null;
+      this.lastRunVersion = null;
+      this.previousRunVersion = null;
     }
   }
 
@@ -101,12 +172,50 @@ export class ChangelogSeenStore {
     return this.seenVersion;
   }
 
-  async markSeen(version: string): Promise<void> {
-    if (this.seenVersion === version) {
+  getPreviousRunVersion(): string | null {
+    return this.previousRunVersion;
+  }
+
+  async recordRun(version: string): Promise<void> {
+    const normalized = normalizeStoredVersion(version);
+    if (!normalized) return;
+    const previous = this.lastRunVersion;
+    if (previous === normalized) {
+      if (this.seenVersion === normalized && this.previousRunVersion) {
+        this.previousRunVersion = null;
+        await this.save();
+      }
       return;
     }
+    this.previousRunVersion = previous ?? null;
+    this.lastRunVersion = normalized;
+    await this.save();
+  }
+
+  async markSeen(version: string): Promise<void> {
+    const normalized = normalizeStoredVersion(version);
+    if (!normalized) return;
+    if (this.seenVersion === normalized && this.lastRunVersion && !this.previousRunVersion) {
+      return;
+    }
+    this.seenVersion = normalized;
+    this.lastRunVersion = this.lastRunVersion ?? normalized;
+    if (this.lastRunVersion === normalized) {
+      this.previousRunVersion = null;
+    }
+    await this.save();
+  }
+
+  private async save(): Promise<void> {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify({ version }, null, 2), 'utf8');
-    this.seenVersion = version;
+    await fs.writeFile(
+      this.filePath,
+      JSON.stringify({
+        version: this.seenVersion,
+        lastRunVersion: this.lastRunVersion,
+        previousRunVersion: this.previousRunVersion,
+      }, null, 2),
+      'utf8',
+    );
   }
 }

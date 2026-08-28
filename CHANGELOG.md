@@ -2,11 +2,22 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
-## [0.3.78] - 2026-08-27
+## [0.3.78] - 2026-08-28
+
+### Added
+- The changelog dialog now highlights releases newer than the user's previous installed version through the current version.
 
 ### Changed
-- Consolidated duplicated renderer DOM lookup and error-message helpers into shared utilities, so Hosts, Notes, Kubernetes, SQL, Proxy, Settings, and Changelog views resolve elements and present error messages through one implementation.
-- Settings error messages now strip Electron's IPC invocation prefix even when the underlying error lacks an `Error:` wrapper, matching the other views.
+- Settings now shows cleaner error messages when an operation fails.
+- SQL result cell value popups now use one Raw-first dialog for viewing and updating values, with formatted JSON, HTML previews, Markdown, SQL, and other detected views still available.
+- SQL cell value Raw editors now use the same compact font size as the result table, while the generated Update SQL panel keeps its smaller fixed size.
+- SQL mutation result summaries now use a compact success panel with matched rows, changed rows, warnings, and duration, while omitting raw MySQL text and copy-summary controls.
+
+### Fixed
+- Fixed SQL result cell edits so a successful generated UPDATE immediately refreshes the visible table value and the cached result.
+- Fixed SQL cell edit dirty-state tracking after an update, so editing a value back to a previously displayed value can still be executed when it differs from the current cell value.
+- Fixed SQL result table arrow-key behavior so Up and Down move the highlighted row instead of scrolling the table.
+- SQL cell value popup search now works in the Raw editor, highlights matches immediately while typing, and keeps focus in the search box when pressing Enter.
 
 ## [0.3.77] - 2026-08-26
 

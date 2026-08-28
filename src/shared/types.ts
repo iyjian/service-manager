@@ -144,11 +144,13 @@ export interface ChangelogSection {
 export interface ChangelogEntry {
   version: string;
   date?: string;
+  highlighted?: boolean;
   sections: ChangelogSection[];
 }
 
 export interface ChangelogView {
   currentVersion: string;
+  previousVersion?: string;
   shouldShow: boolean;
   en: ChangelogEntry[];
   zh: ChangelogEntry[];

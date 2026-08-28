@@ -490,7 +490,10 @@
         <div id="sql-value-modes" class="sql-value-modes" role="tablist" aria-label="Cell value view"></div>
         <div id="sql-value-content" class="sql-value-content"></div>
         <div id="sql-value-edit" class="sql-value-edit hidden">
-          <textarea id="sql-value-edit-input" class="sql-value-edit-input" spellcheck="false" aria-label="Edit cell value"></textarea>
+          <div class="sql-value-edit-wrap">
+            <pre id="sql-value-edit-highlights" class="sql-value-edit-highlights" aria-hidden="true"></pre>
+            <textarea id="sql-value-edit-input" class="sql-value-edit-input" spellcheck="false" aria-label="Edit cell value"></textarea>
+          </div>
         </div>
         <section id="sql-value-sql-panel" class="sql-value-sql-panel hidden" aria-label="Update SQL">
           <div id="sql-value-sql-resizer" class="sql-value-sql-resizer hidden" role="separator" aria-orientation="horizontal" aria-label="Resize update SQL panel" aria-valuemin="64" aria-valuemax="80" aria-valuenow="160" tabindex="0"></div>

@@ -2,11 +2,18 @@ export type SqlResultRow = Record<string, unknown>;
 
 export type SqlDisplayResult =
   | { kind: 'table'; title: string; rows: SqlResultRow[]; columns: string[] }
-  | { kind: 'summary'; title: string; items: Array<{ label: string; value: unknown }>; message?: string }
+  | { kind: 'summary'; title: string; items: Array<{ label: string; value: unknown }>; message?: string; raw?: unknown }
   | { kind: 'scalar'; title: string; value: string | number | boolean | null }
   | { kind: 'empty'; title: string; message: string; rowCount?: 0 }
   | { kind: 'json'; title: string; value: unknown }
   | { kind: 'multi'; title: string; results: SqlDisplayResult[] };
+
+export interface SqlMutationSummaryMetrics {
+  affectedRows?: number;
+  matchedRows?: number;
+  changedRows?: number;
+  warnings?: number;
+}
 
 export interface SqlCellPresentation {
   raw: string;
@@ -20,6 +27,8 @@ const MUTATION_KEYS = [
   'changedRows',
   'insertId',
   'warningStatus',
+  'warningCount',
+  'warnings',
   'fieldCount',
   'serverStatus',
   'message',
@@ -52,6 +61,7 @@ function mutationSummaryResult(value: Record<string, unknown>, title: string): S
     items: summaryKeys
       .filter((key) => key !== 'message' && key !== 'info')
       .map((key) => ({ label: key, value: value[key] })),
+    raw: { ...value },
     ...(typeof value.message === 'string'
       ? { message: value.message }
       : typeof value.info === 'string'
@@ -173,6 +183,51 @@ export function formatSqlDuration(durationMs: number | undefined): string {
   if (durationMs < 1_000) return `${Math.round(durationMs)} ms`;
   if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(2)} s`;
   return `${(durationMs / 1_000).toFixed(1)} s`;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(value.trim())) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function summaryNumber(
+  result: Extract<SqlDisplayResult, { kind: 'summary' }>,
+  label: string,
+): number | undefined {
+  const item = result.items.find((entry) => entry.label === label);
+  return item ? numberValue(item.value) : undefined;
+}
+
+export function parseSqlMutationMessage(message: string | undefined): SqlMutationSummaryMetrics {
+  if (!message) return {};
+  const match = /Rows\s+matched:\s*(\d+)\s+Changed:\s*(\d+)\s+Warnings:\s*(\d+)/i.exec(message);
+  if (!match) return {};
+  return {
+    matchedRows: Number(match[1]),
+    changedRows: Number(match[2]),
+    warnings: Number(match[3]),
+  };
+}
+
+export function sqlMutationSummaryMetrics(
+  result: Extract<SqlDisplayResult, { kind: 'summary' }>,
+): SqlMutationSummaryMetrics {
+  const parsed = parseSqlMutationMessage(result.message);
+  const affectedRows = summaryNumber(result, 'affectedRows');
+  const matchedRows = parsed.matchedRows ?? affectedRows;
+  const changedRows = parsed.changedRows ?? summaryNumber(result, 'changedRows') ?? affectedRows;
+  const warnings = parsed.warnings
+    ?? summaryNumber(result, 'warningStatus')
+    ?? summaryNumber(result, 'warningCount')
+    ?? summaryNumber(result, 'warnings');
+  return {
+    ...(affectedRows !== undefined ? { affectedRows } : {}),
+    ...(matchedRows !== undefined ? { matchedRows } : {}),
+    ...(changedRows !== undefined ? { changedRows } : {}),
+    ...(warnings !== undefined ? { warnings } : {}),
+  };
 }
 
 export function sqlResultRowCount(result: SqlDisplayResult): number {

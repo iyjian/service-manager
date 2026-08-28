@@ -2891,7 +2891,12 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.changelogGet, async () => {
-    return buildChangelogView(app.getVersion(), getChangelogSeenStore().getSeenVersion());
+    const store = getChangelogSeenStore();
+    return buildChangelogView(
+      app.getVersion(),
+      store.getSeenVersion(),
+      store.getPreviousRunVersion(),
+    );
   });
 
   ipcMain.handle(IPC_CHANNELS.changelogMarkSeen, async () => {
@@ -3141,6 +3146,7 @@ app.whenReady()
 
     changelogSeenStore = new ChangelogSeenStore(path.join(app.getPath('userData'), 'changelog-seen.json'));
     await changelogSeenStore.load();
+    await changelogSeenStore.recordRun(app.getVersion()).catch(() => undefined);
 
     const credentialProtector = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),

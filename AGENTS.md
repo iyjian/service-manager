@@ -254,7 +254,7 @@ Those belong in `/docs`.
 
 ## Changelog Rules
 
-Every code change that affects behavior, UI, configuration, dependencies, architecture, or user experience must update both:
+Every code change that affects user-visible behavior, UI, configuration, dependency-driven runtime behavior, or user experience must update both:
 
 - `CHANGELOG.md`
 - `CHANGELOG.zh.md`
@@ -267,21 +267,26 @@ When updating changelog files:
 - Keep the newest release entries first.
 - Do not create a placeholder version such as `NEXT VERSION`, `Unreleased`, or `TBD`.
 - GitHub CI automatically increments the version number during release.
-- Calculate the changelog version based on the latest existing version number plus 1.
+- Treat the local `package.json` version as the latest released production version.
+- Calculate the changelog version from the local `package.json` version plus 1, not from the latest existing changelog entry.
+- If the changelog already has an entry for that next version, add the new notes to that existing entry instead of creating a higher version.
+- Changelog entries are for users. Include only user-visible changes, important fixes, and behavior changes.
+- Do not mention internal refactors, test changes, CI changes, contributor workflow, changelog maintenance rules, or implementation details unless they directly change user-visible behavior.
+- Update only the current next-release entry unless the user explicitly asks to edit historical changelog entries.
 
 For example:
 
-- Current latest version: `0.3.72`
-- New changelog version should be: `0.3.73`
+- Local `package.json` version: `0.3.77`
+- New changelog version should be: `0.3.78`
 
 The changelog entry should:
 
 - Follow the existing release history format.
 - Use the calculated next version number directly.
 - Use the current date.
-- Describe user-visible changes, important fixes, behavior changes, and architectural changes.
+- Describe user-visible changes, important fixes, and behavior changes.
 - Keep entries concise and meaningful.
-- Avoid internal implementation details unless they affect future development or maintenance.
+- Avoid internal implementation details.
 
 Example:
 
@@ -294,4 +299,4 @@ Example:
 
 ### Changed
 
-- Improved synchronization workflow for safer incremental updates.
+- Improved cloud sync reliability when local notes and remote data change at the same time.

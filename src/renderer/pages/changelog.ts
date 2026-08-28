@@ -38,7 +38,9 @@ function setLang(lang: 'zh' | 'en'): void {
 
 function renderHeader(): void {
   if (!view) return;
-  requireElement<HTMLElement>('#changelog-version').textContent = `v${view.currentVersion}`;
+  requireElement<HTMLElement>('#changelog-version').textContent = view.previousVersion
+    ? `v${view.currentVersion} · from v${view.previousVersion}`
+    : `v${view.currentVersion}`;
 }
 
 function renderBody(): void {
@@ -57,6 +59,7 @@ function renderBody(): void {
 function renderEntry(entry: ChangelogEntry): HTMLElement {
   const root = document.createElement('section');
   root.className = 'changelog-entry';
+  if (entry.highlighted) root.classList.add('changelog-entry-highlighted');
 
   const heading = document.createElement('div');
   heading.className = 'changelog-entry-heading';

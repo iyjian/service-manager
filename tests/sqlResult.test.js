@@ -8,7 +8,13 @@ async function sqlResult() {
 }
 
 test('SQL results normalize tables, mutations, scalars, and multiple result sets', async () => {
-  const { normalizeSqlResult, sqlResultRowCount, sqlResultRowCountInfo } = await sqlResult();
+  const {
+    normalizeSqlResult,
+    parseSqlMutationMessage,
+    sqlMutationSummaryMetrics,
+    sqlResultRowCount,
+    sqlResultRowCountInfo,
+  } = await sqlResult();
   const table = normalizeSqlResult([{ id: 1, name: 'Ada' }, { id: 2, active: true }]);
   assert.equal(table.kind, 'table');
   assert.deepEqual(table.columns, ['id', 'name', 'active']);
@@ -18,11 +24,33 @@ test('SQL results normalize tables, mutations, scalars, and multiple result sets
   const mutation = normalizeSqlResult({ affectedRows: 3, changedRows: 2, message: 'ok' });
   assert.equal(mutation.kind, 'summary');
   assert.equal(mutation.message, 'ok');
+  assert.deepEqual(mutation.raw, { affectedRows: 3, changedRows: 2, message: 'ok' });
   assert.deepEqual(mutation.items.map((item) => item.label), ['affectedRows', 'changedRows']);
+  assert.deepEqual(sqlMutationSummaryMetrics(mutation), {
+    affectedRows: 3,
+    matchedRows: 3,
+    changedRows: 2,
+  });
 
-  const rawMutation = normalizeSqlResult([[], { affectedRows: 4, changedRows: 1, info: 'Rows matched: 4' }]);
+  const rawMutation = normalizeSqlResult([[], {
+    affectedRows: 4,
+    changedRows: 1,
+    warningStatus: 2,
+    info: 'Rows matched: 4  Changed: 1  Warnings: 2',
+  }]);
   assert.equal(rawMutation.kind, 'summary');
-  assert.equal(rawMutation.message, 'Rows matched: 4');
+  assert.equal(rawMutation.message, 'Rows matched: 4  Changed: 1  Warnings: 2');
+  assert.deepEqual(sqlMutationSummaryMetrics(rawMutation), {
+    affectedRows: 4,
+    matchedRows: 4,
+    changedRows: 1,
+    warnings: 2,
+  });
+  assert.deepEqual(parseSqlMutationMessage('Rows matched: 9 Changed: 0 Warnings: 1'), {
+    matchedRows: 9,
+    changedRows: 0,
+    warnings: 1,
+  });
 
   const multi = normalizeSqlResult([[{ value: 1 }], 7, []]);
   assert.equal(multi.kind, 'multi');

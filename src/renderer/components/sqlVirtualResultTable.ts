@@ -7,6 +7,7 @@ import {
 import {
   calculateSqlResultVirtualWindow,
   SQL_RESULT_ESTIMATED_ROW_HEIGHT,
+  SQL_RESULT_HEADER_HEIGHT,
 } from '../models/sqlResultVirtualWindow.js';
 
 const SQL_RESULT_COLUMN_MIN_WIDTH = 56;
@@ -24,7 +25,6 @@ export interface SqlVirtualResultTableOptions {
     column: string,
     presentation: SqlCellPresentation,
     row: Readonly<Record<string, unknown>>,
-    mode?: 'view' | 'edit',
   ) => void;
   onWindowRendered: () => void;
 }
@@ -36,6 +36,7 @@ export class SqlVirtualResultTable {
   private readonly onWindowRendered: SqlVirtualResultTableOptions['onWindowRendered'];
   private readonly wrap: HTMLDivElement;
   private readonly table: HTMLTableElement;
+  private readonly originalHostTabIndex: string | null;
   private readonly columnElements: HTMLTableColElement[] = [];
   private readonly body: HTMLTableSectionElement;
   private readonly resizeObserver: ResizeObserver;
@@ -52,6 +53,8 @@ export class SqlVirtualResultTable {
     this.result = options.result;
     this.onOpenValue = options.onOpenValue;
     this.onWindowRendered = options.onWindowRendered;
+    this.originalHostTabIndex = this.host.getAttribute('tabindex');
+    if (this.originalHostTabIndex === null) this.host.tabIndex = 0;
     this.wrap = document.createElement('div');
     this.wrap.className = 'sql-result-table-wrap';
 
@@ -95,6 +98,7 @@ export class SqlVirtualResultTable {
     this.host.addEventListener('scroll', this.handleScroll, { passive: true });
     this.host.addEventListener('click', this.handleClick);
     this.host.addEventListener('dblclick', this.handleDblClick);
+    this.host.addEventListener('keydown', this.handleKeyDown);
     this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
     this.resizeObserver.observe(this.host);
     this.renderWindow(true);
@@ -106,11 +110,23 @@ export class SqlVirtualResultTable {
     this.host.removeEventListener('scroll', this.handleScroll);
     this.host.removeEventListener('click', this.handleClick);
     this.host.removeEventListener('dblclick', this.handleDblClick);
+    this.host.removeEventListener('keydown', this.handleKeyDown);
+    if (this.originalHostTabIndex === null) {
+      this.host.removeAttribute('tabindex');
+    } else {
+      this.host.setAttribute('tabindex', this.originalHostTabIndex);
+    }
     this.resizeObserver.disconnect();
     if (this.renderFrame !== undefined) window.cancelAnimationFrame(this.renderFrame);
     if (this.measureFrame !== undefined) window.cancelAnimationFrame(this.measureFrame);
     this.renderFrame = undefined;
     this.measureFrame = undefined;
+  }
+
+  public refresh(): void {
+    if (this.destroyed) return;
+    this.applyStableColumnWidths();
+    this.renderWindow(true);
   }
 
   private readonly handleScroll = (): void => {
@@ -124,6 +140,7 @@ export class SqlVirtualResultTable {
     if (clickedRow && this.host.contains(clickedRow)) {
       const rowIndex = Number(clickedRow.dataset.sqlResultRow);
       this.selectRow(Number.isInteger(rowIndex) ? rowIndex : undefined);
+      this.host.focus({ preventScroll: true });
     }
     const detail = target.closest<HTMLButtonElement>('[data-sql-cell-detail="true"]');
     if (!detail || !this.host.contains(detail)) return;
@@ -132,7 +149,7 @@ export class SqlVirtualResultTable {
     const row = this.result.rows[rowIndex];
     const column = this.result.columns[columnIndex];
     if (!row || column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(row[column]), row, 'view');
+    this.onOpenValue(column, sqlCellPresentation(row[column]), row);
   };
 
   private readonly handleDblClick = (event: MouseEvent): void => {
@@ -148,22 +165,56 @@ export class SqlVirtualResultTable {
     const columnIndex = Array.from(row.cells).indexOf(cell);
     const column = this.result.columns[columnIndex];
     if (column === undefined) return;
-    this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow, 'edit');
+    this.onOpenValue(column, sqlCellPresentation(dataRow[column]), dataRow);
+  };
+
+  private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (
+      event.defaultPrevented
+      || event.metaKey
+      || event.ctrlKey
+      || event.altKey
+      || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')
+      || this.result.rows.length === 0
+      || this.selectedRowIndex === undefined
+    ) return;
+    event.preventDefault();
+    const targetIndex = event.key === 'ArrowUp'
+      ? Math.max(0, this.selectedRowIndex - 1)
+      : Math.min(this.result.rows.length - 1, this.selectedRowIndex + 1);
+    this.selectRow(targetIndex);
+    this.scrollRowIntoView(targetIndex);
   };
 
   private selectRow(rowIndex: number | undefined): void {
     if (this.selectedRowIndex === rowIndex) return;
     const previous = this.selectedRowIndex;
     this.selectedRowIndex = rowIndex;
-    if (previous !== undefined) {
-      this.body
-        .querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${previous}"]`)
-        ?.classList.remove('sql-result-row-selected');
+    const previousRow = previous === undefined
+      ? undefined
+      : this.body.querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${previous}"]`);
+    if (previousRow) {
+      previousRow.classList.remove('sql-result-row-selected');
+      previousRow.setAttribute('aria-selected', 'false');
     }
-    if (rowIndex !== undefined) {
-      this.body
-        .querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${rowIndex}"]`)
-        ?.classList.add('sql-result-row-selected');
+    const nextRow = rowIndex === undefined
+      ? undefined
+      : this.body.querySelector<HTMLTableRowElement>(`tr[data-sql-result-row="${rowIndex}"]`);
+    if (nextRow) {
+      nextRow.classList.add('sql-result-row-selected');
+      nextRow.setAttribute('aria-selected', 'true');
+    }
+  }
+
+  private scrollRowIntoView(rowIndex: number): void {
+    const rowTop = SQL_RESULT_HEADER_HEIGHT + (rowIndex * this.rowHeight);
+    const rowBottom = rowTop + this.rowHeight;
+    const visibleTop = this.host.scrollTop + SQL_RESULT_HEADER_HEIGHT;
+    const visibleBottom = this.host.scrollTop + this.host.clientHeight;
+    if (rowTop < visibleTop) {
+      this.host.scrollTop = Math.max(0, rowTop - SQL_RESULT_HEADER_HEIGHT);
+    } else if (rowBottom > visibleBottom) {
+      this.host.scrollTop = Math.max(0, rowBottom - this.host.clientHeight);
     }
   }
 
@@ -332,8 +383,8 @@ export class SqlVirtualResultTable {
       detail.dataset.sqlCellDetail = 'true';
       detail.dataset.sqlRowIndex = String(rowIndex);
       detail.dataset.sqlColumnIndex = String(columnIndex);
-      detail.setAttribute('aria-label', `View full ${column} value`);
-      detail.title = `View full ${column} value`;
+      detail.setAttribute('aria-label', `Open full ${column} value`);
+      detail.title = `Open full ${column} value`;
       detail.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.25" cy="8" r="1.15"></circle><circle cx="8" cy="8" r="1.15"></circle><circle cx="12.75" cy="8" r="1.15"></circle></svg>';
       content.append(text, detail);
       cell.append(content);

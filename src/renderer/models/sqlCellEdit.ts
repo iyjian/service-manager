@@ -1,3 +1,5 @@
+import type { SqlCellPresentation } from './sqlResult.js';
+
 /**
  * Builds UPDATE statements for the SQL cell-value editor.
  *
@@ -39,6 +41,101 @@ export function buildSqlSetLiteral(originalValue: unknown, editedText: string): 
     return escapeSqlStringLiteral(editedText);
   }
   return escapeSqlStringLiteral(editedText);
+}
+
+export function sqlEditedTextForUpdate(
+  presentation: Pick<SqlCellPresentation, 'kind'>,
+  editedText: string,
+): string {
+  if (presentation.kind !== 'json') return editedText;
+  try {
+    return JSON.stringify(JSON.parse(editedText.trim())) ?? editedText;
+  } catch {
+    return editedText;
+  }
+}
+
+function parseJsonText(value: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(value) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function jsonComparable(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+export function sqlEditedRuntimeValue(
+  currentValue: unknown,
+  presentation: Pick<SqlCellPresentation, 'kind'>,
+  editedText: string,
+): unknown {
+  const normalizedText = sqlEditedTextForUpdate(presentation, editedText);
+  const trimmed = normalizedText.trim();
+  if (currentValue === null || currentValue === undefined) {
+    if (trimmed === '' || trimmed.toLocaleUpperCase() === 'NULL') return null;
+    return normalizedText;
+  }
+  if (typeof currentValue === 'number') {
+    if (trimmed === '') return null;
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : normalizedText;
+  }
+  if (typeof currentValue === 'boolean') {
+    const lower = trimmed.toLocaleLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0') return false;
+    if (lower === '' || lower === 'null') return null;
+    return normalizedText;
+  }
+  if (presentation.kind === 'json' && typeof currentValue === 'object') {
+    const parsed = parseJsonText(normalizedText);
+    if (parsed.ok) return parsed.value;
+  }
+  return normalizedText;
+}
+
+export function sqlCellRuntimeValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if ((left === null || left === undefined) && (right === null || right === undefined)) return true;
+  if (typeof left !== typeof right) return false;
+  if (typeof left === 'object' && left !== null && right !== null) {
+    const leftJson = jsonComparable(left);
+    const rightJson = jsonComparable(right);
+    return leftJson !== undefined && leftJson === rightJson;
+  }
+  return false;
+}
+
+export function isSqlEditedValueChanged(
+  currentValue: unknown,
+  presentation: Pick<SqlCellPresentation, 'kind'>,
+  editedText: string,
+): boolean {
+  if (presentation.kind === 'json') {
+    const editedJson = parseJsonText(editedText.trim());
+    if (editedJson.ok) {
+      if (typeof currentValue === 'string') {
+        const currentJson = parseJsonText(currentValue.trim());
+        if (currentJson.ok) {
+          return jsonComparable(currentJson.value) !== jsonComparable(editedJson.value);
+        }
+      }
+      if (typeof currentValue === 'object' && currentValue !== null) {
+        return jsonComparable(currentValue) !== jsonComparable(editedJson.value);
+      }
+    }
+  }
+  return !sqlCellRuntimeValuesEqual(
+    currentValue,
+    sqlEditedRuntimeValue(currentValue, presentation, editedText),
+  );
 }
 
 /** Builds a WHERE primary-key literal directly from the stored value type. */
