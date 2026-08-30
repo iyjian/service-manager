@@ -4192,7 +4192,7 @@
   }
 
   .host-dialog {
-    @apply w-[min(1120px,calc(100vw-32px))] max-h-[calc(100vh-40px)] border-0 bg-transparent p-0;
+    @apply w-[min(1040px,calc(100vw-32px))] max-h-[calc(100vh-40px)] border-0 bg-transparent p-0;
   }
 
   .service-log-dialog {
@@ -4205,7 +4205,7 @@
 
   #host-dialog .host-edit-dialog-panel {
     @apply flex w-full flex-col overflow-hidden p-0;
-    height: min(700px, calc(100vh - 40px));
+    height: min(720px, calc(100vh - 40px));
   }
 
   #host-dialog .host-edit-dialog-panel > .dialog-head {
@@ -4238,184 +4238,15 @@
   }
 
   #host-dialog .host-edit-tab-count {
-    @apply ml-1 font-normal tabular-nums text-zinc-400;
+    @apply ml-1.5 inline-flex h-4 items-center rounded-full bg-zinc-950/5 px-1.5 text-[10.5px] font-medium tabular-nums text-zinc-400;
+  }
+
+  #host-dialog .host-edit-tab[aria-selected='true'] .host-edit-tab-count {
+    @apply bg-zinc-950/10 text-zinc-500;
   }
 
   #host-dialog .host-edit-panel {
     @apply flex min-h-0 flex-1 flex-col overflow-hidden bg-white;
-  }
-
-  #host-dialog .host-edit-path-toolbar {
-    @apply grid shrink-0 items-end gap-3 border-b border-zinc-200 bg-zinc-50/70 px-3 py-2;
-    grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) auto;
-  }
-
-  #host-dialog .host-edit-name-field {
-    @apply min-w-0;
-  }
-
-  #host-dialog .host-edit-panel-actions,
-  #host-dialog .host-edit-key-actions,
-  #host-dialog .host-edit-actions-end {
-    @apply flex shrink-0 items-center gap-2;
-  }
-
-  #host-dialog .host-edit-route {
-    @apply flex min-w-0 items-center justify-end gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-[12px] text-zinc-600;
-  }
-
-  #host-dialog .host-edit-route-endpoint,
-  #host-dialog .host-edit-route-hop {
-    @apply inline-flex h-7 shrink-0 items-center gap-1 px-1 font-medium;
-  }
-
-  #host-dialog .host-edit-route-endpoint svg,
-  #host-dialog .host-edit-step-cell svg {
-    @apply h-4 w-4 shrink-0;
-  }
-
-  #host-dialog .host-edit-route-target {
-    @apply text-zinc-950;
-  }
-
-  #host-dialog .host-edit-route-arrow {
-    @apply h-3.5 w-3.5 shrink-0 text-zinc-400;
-  }
-
-  #host-dialog .host-edit-panel-actionbar {
-    @apply flex h-10 shrink-0 items-center justify-end border-b border-zinc-200 bg-white px-3;
-  }
-
-  #host-dialog .host-edit-table-scroll {
-    @apply min-h-0 flex-1 overflow-auto bg-white;
-  }
-
-  #host-dialog .host-edit-table {
-    @apply min-h-full w-full;
-  }
-
-  #host-dialog .host-edit-path-table {
-    min-width: 900px;
-  }
-
-  #host-dialog .host-edit-forward-table {
-    min-width: 880px;
-  }
-
-  #host-dialog .host-edit-service-table {
-    min-width: 860px;
-  }
-
-  #host-dialog .host-edit-path-grid,
-  #host-dialog .host-edit-forward-grid,
-  #host-dialog .host-edit-service-grid {
-    @apply grid items-start gap-2 px-2;
-  }
-
-  #host-dialog .host-edit-path-grid {
-    grid-template-columns: 104px minmax(170px, 1.25fr) 72px minmax(130px, 0.9fr) 124px minmax(170px, 1fr) 32px;
-  }
-
-  #host-dialog .host-edit-forward-grid {
-    grid-template-columns: minmax(130px, 0.9fr) minmax(145px, 1fr) 88px minmax(145px, 1fr) 88px 48px 32px;
-  }
-
-  #host-dialog .host-edit-service-grid {
-    grid-template-columns: minmax(145px, 0.9fr) 180px 200px minmax(280px, 2.1fr) 32px;
-  }
-
-  #host-dialog .host-edit-table-head {
-    @apply sticky top-0 z-[2] min-h-8 items-center border-b border-zinc-200 bg-zinc-100/95 py-1.5 text-[11px] font-medium text-zinc-500 backdrop-blur;
-  }
-
-  #host-dialog .host-edit-table-body:empty::before {
-    content: attr(data-empty);
-    @apply block border-b border-zinc-100 px-3 py-3 text-[12px] text-zinc-400;
-  }
-
-  #host-dialog .host-edit-path-row,
-  #host-dialog .host-edit-resource-row {
-    @apply min-h-10 border-0 border-b border-zinc-100 bg-white py-1.5 shadow-none;
-    border-radius: 0;
-  }
-
-  #host-dialog .host-edit-target-row {
-    @apply bg-zinc-50/70;
-  }
-
-  #host-dialog .host-edit-cell-label,
-  #host-dialog .host-edit-credential-cell {
-    @apply block min-w-0;
-  }
-
-  #host-dialog .host-edit-table .input {
-    @apply h-7 rounded px-2 text-[12px];
-  }
-
-  #host-dialog .host-edit-step-cell {
-    @apply flex h-7 min-w-0 items-center gap-1.5 font-medium text-zinc-800;
-  }
-
-  #host-dialog .host-edit-step-number {
-    @apply inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-zinc-300 bg-white font-mono text-[10px] text-zinc-600;
-  }
-
-  #host-dialog .host-edit-credential-toggle {
-    @apply flex h-7 w-full min-w-0 items-center justify-between gap-1 rounded border border-zinc-300 bg-white px-2 text-left text-[11px] text-zinc-700 outline-none transition hover:border-zinc-400 hover:bg-zinc-50 focus-visible:border-blue-500 focus-visible:ring-4 focus-visible:ring-blue-500/10;
-  }
-
-  #host-dialog .host-edit-credential-toggle > span {
-    @apply min-w-0 truncate;
-  }
-
-  #host-dialog .host-edit-credential-toggle svg {
-    @apply h-3.5 w-3.5 shrink-0 transition-transform;
-  }
-
-  #host-dialog .host-edit-credential-toggle[aria-expanded='true'] svg {
-    @apply rotate-180;
-  }
-
-  #host-dialog .host-edit-target-marker {
-    @apply flex h-7 items-center justify-center text-zinc-400;
-  }
-
-  #host-dialog .host-edit-target-marker svg {
-    @apply h-4 w-4;
-  }
-
-  #host-dialog .host-edit-path-details {
-    @apply col-span-full grid items-end gap-2 border-t border-zinc-100 pt-2;
-    grid-template-columns: minmax(280px, 1fr) minmax(180px, 0.55fr) auto;
-  }
-
-  #host-dialog .host-edit-path-details textarea.input {
-    @apply min-h-[52px] max-h-40 resize-y font-mono text-[12px] leading-5;
-  }
-
-  #host-dialog .host-edit-key-actions {
-    @apply h-7 self-end;
-  }
-
-  #host-dialog .host-edit-auto-cell {
-    @apply flex h-7 items-center justify-center;
-  }
-
-  #host-dialog .host-edit-center {
-    @apply text-center;
-  }
-
-  #host-dialog .host-edit-row-remove {
-    @apply inline-flex h-7 w-7 items-center justify-center self-start rounded border border-transparent bg-transparent p-0 text-red-500 outline-none transition hover:border-red-200 hover:bg-red-50 focus-visible:ring-2 focus-visible:ring-red-300;
-  }
-
-  #host-dialog .host-edit-row-remove svg {
-    @apply h-4 w-4;
-  }
-
-  #host-dialog .host-edit-service-table .service-command-input {
-    @apply h-7 min-h-7 resize-y py-1 font-mono text-[12px] leading-5;
-    max-height: 120px;
   }
 
   #host-dialog .host-edit-actions {
@@ -4613,110 +4444,8 @@
     @apply m-0 text-[12px] font-semibold uppercase tracking-[0.18em] text-zinc-500;
   }
 
-  .forward-list {
-    @apply grid gap-2;
-  }
-
-  .forward-list:empty::before {
-    content: attr(data-empty);
-    @apply block rounded-lg border border-dashed border-zinc-300 bg-white/70 px-3 py-2 text-[12.5px] text-zinc-500;
-  }
-
-  .forward-row {
-    @apply rounded-lg border border-zinc-200 bg-white shadow-sm;
-  }
-
-  .jump-host-editor-row {
-    @apply p-2.5;
-  }
-
-  .jump-host-editor-head {
-    @apply mb-3 flex items-center justify-between gap-3;
-  }
-
-  .jump-host-editor-title {
-    @apply font-mono text-sm font-semibold text-zinc-950;
-  }
-
-  .jump-host-editor-row .form-row + .form-row {
-    @apply mt-3;
-  }
-
-  .editor-row {
-    @apply overflow-hidden p-0;
-  }
-
-  .editor-summary {
-    @apply grid min-h-10 w-full cursor-pointer items-center gap-3 border-0 bg-transparent px-2.5 py-1.5 text-left text-inherit transition hover:bg-zinc-50;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .editor-summary-main {
-    @apply grid min-w-0 gap-0.5;
-  }
-
-  .editor-summary-title {
-    @apply truncate text-[13px] font-semibold text-zinc-950;
-  }
-
-  .editor-summary-meta {
-    @apply truncate font-mono text-[12px] text-zinc-500;
-  }
-
-  .editor-summary-toggle {
-    @apply text-sm font-medium text-zinc-500;
-  }
-
-  .editor-body {
-    @apply hidden border-t border-zinc-100 p-2.5;
-  }
-
-  .editor-row-expanded .editor-body {
-    @apply flex;
-  }
-
-  .forward-editor-fields {
-    @apply flex flex-wrap items-end gap-3;
-  }
-
-  .forward-name {
-    @apply min-w-[180px] flex-1;
-  }
-
-  .forward-local-host,
-  .forward-remote-host {
-    @apply min-w-[160px] flex-1;
-  }
-
-  .forward-local-port,
-  .forward-remote-port {
-    @apply w-40 shrink-0;
-  }
-
   .forward-auto {
     @apply mb-2 inline-flex items-center gap-2 text-sm font-medium text-zinc-700;
-  }
-
-  .forward-remove {
-    @apply self-end;
-  }
-
-  .service-editor-row {
-    @apply block;
-  }
-
-  .editor-row-expanded .service-editor-fields {
-    @apply grid items-end gap-3;
-    grid-template-columns: minmax(180px, 1.6fr) minmax(120px, 0.8fr) minmax(200px, 1fr) auto;
-  }
-
-  .service-command-field,
-  .service-command-hint {
-    grid-column: 1 / -1;
-  }
-
-  .service-command-hint {
-    @apply -mt-2 text-[12px] text-zinc-500;
   }
 
   .form-actions {
@@ -6068,10 +5797,6 @@
 
     .runtime-section-services {
       @apply border-l-0;
-    }
-
-    .editor-row-expanded .service-editor-fields {
-      @apply grid-cols-1;
     }
 
     .service-log-dialog {

@@ -1,0 +1,1980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="canvas:width" content="1280" />
+<meta name="canvas:height" content="900" />
+<title>Edit Host · Service Manager</title>
+<style>
+/* ============================================================
+   Service Manager — Host editor redesign (high-fidelity mockup)
+   Tokens replicate src/renderer/styles.css exactly; seed tokens
+   drive derived values so Appearance/radius/density can be nudged.
+   ============================================================ */
+:root {
+  /* Seed tokens */
+  --seed-bg: #fafafa;
+  --seed-surface: #ffffff;
+  --seed-fg: #09090b;
+  --seed-primary: #0a0a0a;
+  --seed-primary-fg: #ffffff;
+  --seed-focus: #3b82f6;
+  --seed-radius: 6px;
+  --card-pad: 12px;
+  --dialog-width: 1040px;
+  --dialog-height: 720px;
+
+  /* Derived surfaces */
+  --color-bg-page: var(--seed-bg);
+  --color-bg-surface: var(--seed-surface);
+  --color-bg-subtle: color-mix(in srgb, var(--seed-fg) 4%, var(--seed-surface));
+  --color-bg-hover: var(--color-bg-subtle);
+
+  /* Derived borders */
+  --color-border: color-mix(in srgb, var(--seed-fg) 11%, var(--seed-surface));
+  --color-border-strong: color-mix(in srgb, var(--seed-fg) 18%, var(--seed-surface));
+  --color-border-subtle: color-mix(in srgb, var(--seed-fg) 5%, var(--seed-surface));
+
+  /* Derived foreground */
+  --color-fg-primary: var(--seed-fg);
+  --color-fg-secondary: color-mix(in srgb, var(--seed-fg) 76%, var(--seed-bg));
+  --color-fg-tertiary: color-mix(in srgb, var(--seed-fg) 48%, var(--seed-bg));
+  --color-fg-quaternary: color-mix(in srgb, var(--seed-fg) 30%, var(--seed-bg));
+
+  /* Accent / focus */
+  --color-accent: var(--seed-primary);
+  --color-accent-hover: color-mix(in srgb, var(--seed-primary) 85%, var(--seed-surface));
+  --color-accent-fg: var(--seed-primary-fg);
+  --color-focus: var(--seed-focus);
+  --color-focus-ring: color-mix(in srgb, var(--seed-focus) 12%, transparent);
+
+  /* Semantic */
+  --color-error: #ef4444;
+  --color-error-strong: #dc2626;
+  --color-error-bg: #fef2f2;
+  --color-error-border: #fecaca;
+  --color-success-border: #a7f3d0;
+  --color-success-bg: #ecfdf5;
+  --color-success-fg: #065f46;
+  --color-info-border: var(--color-border);
+  --color-info-bg: var(--color-bg-subtle);
+  --color-info-fg: var(--color-fg-secondary);
+
+  /* Typography */
+  --font-family-base: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', Inter, 'PingFang SC', sans-serif;
+  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace;
+
+  /* Spacing / radius */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius-sm: 4px;
+  --radius: var(--seed-radius);
+  --radius-lg: calc(var(--seed-radius) + 2px);
+  --radius-panel: calc(var(--seed-radius) + 6px);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-dialog: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-family-base);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-fg-primary);
+  background: var(--color-bg-page);
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+svg { display: block; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.hidden { display: none !important; }
+.mono { font-family: var(--font-family-mono); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-fg-quaternary); }
+
+/* ------------------------------------------------------------
+   Fake app backdrop + modal scrim (dialog context)
+   ------------------------------------------------------------ */
+.app-mock {
+  position: fixed; inset: 0; z-index: 0;
+  display: grid; grid-template-columns: 216px minmax(0, 1fr);
+  background: var(--color-bg-page);
+}
+.app-mock-sidebar {
+  background: var(--color-bg-surface);
+  border-right: 1px solid var(--color-border);
+  padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.app-mock-bar {
+  height: 10px; border-radius: 3px; background: var(--color-bg-subtle);
+}
+.app-mock-bar.is-brand { width: 56%; background: var(--color-border); }
+.app-mock-bar.is-nav { width: 78%; }
+.app-mock-bar.is-nav-active { width: 70%; background: var(--color-border-strong); }
+.app-mock-main { display: flex; flex-direction: column; min-width: 0; }
+.app-mock-topbar {
+  height: 48px; flex-shrink: 0;
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex; align-items: center; gap: 10px; padding: 0 16px;
+}
+.app-mock-content { padding: 20px 16px; display: grid; gap: 10px; }
+.app-mock-content .app-mock-bar { height: 34px; border-radius: 6px; }
+.app-mock-content .app-mock-bar:nth-child(1) { width: 92%; }
+.app-mock-content .app-mock-bar:nth-child(2) { width: 84%; }
+.app-mock-content .app-mock-bar:nth-child(3) { width: 88%; }
+.app-mock-content .app-mock-bar:nth-child(4) { width: 72%; }
+
+.scrim {
+  position: fixed; inset: 0; z-index: 1;
+  background: rgba(9, 9, 11, 0.45);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.stage {
+  position: relative; z-index: 2;
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px 16px;
+}
+
+/* ------------------------------------------------------------
+   Dialog chrome (replicates .host-dialog / .dialog-panel)
+   ------------------------------------------------------------ */
+.host-dialog {
+  width: min(var(--dialog-width), calc(100vw - 32px));
+}
+.dialog-panel {
+  display: flex; flex-direction: column;
+  height: min(var(--dialog-height), calc(100vh - 48px));
+  overflow: hidden;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-surface);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-dialog);
+}
+.dialog-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-shrink: 0;
+}
+.section-title {
+  margin: 0;
+  font-size: 15px; font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg-primary);
+}
+.dialog-head-actions { display: flex; align-items: center; gap: var(--space-2); }
+
+/* ------------------------------------------------------------
+   Buttons (replicates .btn family)
+   ------------------------------------------------------------ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  height: 32px; padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  font-size: 13px; font-weight: 500;
+  cursor: pointer; outline: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn:disabled { cursor: not-allowed; opacity: 0.45; }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.btn-primary {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.btn-primary:hover { background: var(--color-accent-hover); }
+.btn-secondary {
+  border-color: var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-fg-secondary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+.btn-secondary:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-hover);
+}
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-fg-tertiary);
+}
+.btn-ghost:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-fg-secondary);
+}
+.btn-icon {
+  display: inline-flex; width: 16px; height: 16px;
+  align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.btn-icon svg { width: 100%; height: 100%; }
+.icon-btn {
+  display: inline-flex; width: 28px; height: 28px;
+  align-items: center; justify-content: center;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-fg-tertiary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.icon-btn svg { width: 16px; height: 16px; }
+.icon-btn:hover { background: var(--color-bg-hover); color: var(--color-fg-primary); }
+
+/* ------------------------------------------------------------
+   Form primitives (replicates .input / .field / .checkbox)
+   ------------------------------------------------------------ */
+.input {
+  height: 32px; width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-surface);
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--color-fg-primary);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input::placeholder { color: var(--color-fg-quaternary); }
+.input:hover { border-color: var(--color-fg-quaternary); }
+.input:focus {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 4px var(--color-focus-ring);
+}
+textarea.input {
+  min-height: 32px; height: auto;
+  padding: 6px 12px;
+  line-height: 20px;
+  resize: none;
+}
+.input.is-invalid,
+.input.is-invalid:hover,
+.input.is-invalid:focus {
+  border-color: var(--color-error);
+}
+.input.is-invalid:focus {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-error) 12%, transparent);
+}
+.checkbox {
+  appearance: none; -webkit-appearance: none;
+  width: 16px; height: 16px; margin: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: var(--color-bg-surface);
+  display: inline-grid; place-content: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.checkbox:hover { border-color: var(--color-fg-quaternary); }
+.checkbox:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.checkbox:checked::before {
+  content: '';
+  width: 9px; height: 9px;
+  background: var(--color-accent-fg);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+.checkbox:focus-visible {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+.field {
+  display: flex; flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.field-xs {
+  font-size: 12.5px; font-weight: 500;
+  color: var(--color-fg-secondary);
+}
+.he-field-error {
+  font-size: 12px; font-weight: 400;
+  color: var(--color-error-strong);
+}
+
+/* Password field with visibility toggle */
+.he-password-wrap { position: relative; max-width: 360px; }
+.he-password-wrap .input { padding-right: 36px; font-family: var(--font-family-mono); }
+.he-password-toggle {
+  position: absolute; right: 4px; top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+}
+.he-password-toggle:hover { color: var(--color-fg-secondary); background: var(--color-bg-hover); }
+.he-password-toggle svg { width: 14px; height: 14px; }
+.he-password-toggle .icon-eye-off { display: none; }
+.he-password-toggle[aria-pressed='true'] .icon-eye { display: none; }
+.he-password-toggle[aria-pressed='true'] .icon-eye-off { display: block; }
+
+/* ------------------------------------------------------------
+   Message banner (replicates .message-banner states)
+   ------------------------------------------------------------ */
+.message-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  margin-bottom: 0;
+  border-radius: var(--radius-panel);
+  border: 1px solid;
+  padding: 8px 12px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.dialog-head + .message-banner { margin-top: 0; }
+.message-banner + .host-edit-form { margin-top: var(--space-3); }
+.message-default { border-color: var(--color-info-border); background: var(--color-info-bg); color: var(--color-info-fg); }
+.message-success { border-color: var(--color-success-border); background: var(--color-success-bg); color: var(--color-success-fg); }
+.message-error { border-color: var(--color-error-border); background: var(--color-error-bg); color: var(--color-error-strong); }
+.message-text { flex: 1; min-width: 0; text-align: left; }
+.message-close {
+  display: inline-flex; width: 24px; height: 24px; flex-shrink: 0;
+  align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius);
+  background: transparent; color: currentColor;
+  opacity: 0.7; cursor: pointer;
+}
+.message-close:hover { opacity: 1; background: rgba(0, 0, 0, 0.05); }
+.message-close svg { width: 14px; height: 14px; }
+
+/* ------------------------------------------------------------
+   Tabs (replicates #host-dialog .host-edit-tabs)
+   ------------------------------------------------------------ */
+.host-edit-form {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0;
+}
+.host-edit-tabs {
+  display: flex; align-items: stretch;
+  gap: var(--space-1);
+  height: 40px; flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-subtle);
+  padding: 0 var(--space-3);
+  overflow-x: auto;
+}
+.host-edit-tab {
+  position: relative; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: transparent;
+  padding: 0 10px;
+  font-size: 12px; font-weight: 500;
+  color: color-mix(in srgb, var(--seed-fg) 42%, var(--seed-bg));
+  cursor: pointer; outline: none;
+  transition: color 0.15s ease;
+}
+.host-edit-tab:hover { color: var(--color-fg-secondary); }
+.host-edit-tab[aria-selected='true'] { color: var(--color-fg-primary); }
+.host-edit-tab[aria-selected='true']::after {
+  content: '';
+  position: absolute; left: 8px; right: 8px; bottom: -1px;
+  height: 2px; background: var(--color-accent);
+}
+.host-edit-tab-count {
+  display: inline-flex; align-items: center;
+  height: 15px; padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--seed-fg) 5%, var(--seed-surface));
+  font-size: 10.5px; font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg-quaternary);
+}
+.host-edit-tab[aria-selected='true'] .host-edit-tab-count {
+  background: color-mix(in srgb, var(--seed-fg) 7%, var(--seed-surface));
+  color: var(--color-fg-tertiary);
+}
+.host-edit-panel {
+  display: flex; flex-direction: column;
+  flex: 1; min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg-surface);
+}
+.host-edit-panel[hidden] { display: none; }
+
+/* ------------------------------------------------------------
+   Connection Path tab — toolbar (name + route chips)
+   ------------------------------------------------------------ */
+.he-toolbar {
+  display: flex; flex-direction: column;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--seed-fg) 2%, var(--seed-surface));
+  padding: 10px var(--space-3);
+  flex-shrink: 0;
+}
+.he-name-field { max-width: 280px; }
+.he-route {
+  display: flex; align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 1px;
+}
+.he-route-chip {
+  display: inline-flex; align-items: center;
+  height: 24px; padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  font-family: var(--font-family-mono);
+  font-size: 11.5px;
+  color: var(--color-fg-secondary);
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.he-route-chip.is-local { color: var(--color-fg-tertiary); }
+.he-route-chip.is-active {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-subtle);
+  color: var(--color-fg-primary);
+}
+.he-route-sep { color: var(--color-fg-quaternary); flex-shrink: 0; }
+.he-route-sep svg { width: 12px; height: 12px; }
+
+/* ------------------------------------------------------------
+   Connection Path tab — vertical stepper rail
+   ------------------------------------------------------------ */
+.he-path-scroll {
+  flex: 1; min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+}
+.he-rail {
+  position: relative;
+  display: flex; flex-direction: column;
+  gap: var(--space-3);
+  max-width: 880px;
+  padding: 2px 0;
+}
+.he-rail::before {
+  content: '';
+  position: absolute;
+  left: 12px; top: 14px; bottom: 14px;
+  width: 1px;
+  background: var(--color-border-strong);
+}
+.he-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: var(--space-3);
+  align-items: start;
+}
+.he-marker {
+  position: relative; z-index: 1;
+  display: flex; justify-content: center;
+}
+.he-dot {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-fg-tertiary);
+  font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.he-dot svg { width: 12px; height: 12px; }
+.he-dot.is-target { border-color: var(--color-accent); }
+.he-dot.is-target::after {
+  content: '';
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+/* Inline Add Hop on the rail */
+.he-add-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: var(--space-3);
+  align-items: center;
+  border: 0; background: transparent;
+  padding: 0; margin: 0;
+  cursor: pointer; text-align: left;
+}
+.he-add-dot {
+  position: relative; z-index: 1;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-bg-surface);
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-fg-tertiary);
+  transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+.he-add-dot svg { width: 12px; height: 12px; }
+.he-add-label { font-size: 12px; color: var(--color-fg-tertiary); transition: color 0.15s ease; }
+.he-add-row:hover .he-add-dot {
+  border-style: solid;
+  border-color: var(--color-fg-quaternary);
+  background: var(--color-bg-subtle);
+  color: var(--color-fg-secondary);
+}
+.he-add-row:hover .he-add-label { color: var(--color-fg-secondary); }
+.he-local-chip {
+  display: inline-flex; align-items: center;
+  gap: 6px;
+  height: 28px; padding: 0 10px;
+  margin-top: -2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  font-size: 12px; font-weight: 500;
+  color: var(--color-fg-secondary);
+}
+.he-local-chip svg { width: 13px; height: 13px; color: var(--color-fg-tertiary); }
+.he-local-chip .he-local-sub { font-weight: 400; color: var(--color-fg-quaternary); }
+
+/* Node card: summary row + collapsible editor body */
+.he-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  padding: 4px 6px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.he-card[data-expanded='true'] {
+  padding: var(--card-pad);
+  box-shadow: var(--shadow-pop);
+}
+.he-card:focus-within { border-color: var(--color-border-strong); }
+.he-card.is-target { border-color: var(--color-border-strong); }
+.he-card-summary {
+  display: flex; align-items: center;
+  gap: var(--space-1);
+  min-height: 32px;
+}
+.he-card-toggle {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  border: 0; background: transparent;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer; text-align: left;
+  transition: background-color 0.12s ease;
+}
+.he-card-toggle:hover { background: var(--color-bg-hover); }
+.he-step {
+  font-size: 12px; font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-fg-secondary);
+  flex-shrink: 0;
+}
+.he-card-summary-text {
+  flex: 1; min-width: 0;
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  color: var(--color-fg-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.he-card[data-expanded='true'] .he-card-summary-text { display: none; }
+.he-card-chevron {
+  width: 14px; height: 14px;
+  color: var(--color-fg-quaternary);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.he-card[data-expanded='true'] .he-card-chevron { transform: rotate(180deg); }
+.he-card-body {
+  display: flex; flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+.he-card-body.hidden { display: none; }
+
+/* Hop actions menu */
+.he-node-menu-wrap { position: relative; }
+.he-menu {
+  position: absolute; right: 0; top: 28px; z-index: 20;
+  min-width: 132px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-pop);
+  padding: 4px;
+  display: flex; flex-direction: column;
+}
+.he-menu button {
+  display: block; width: 100%;
+  border: 0; background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--color-fg-secondary);
+  text-align: left; cursor: pointer;
+}
+.he-menu button:hover { background: var(--color-bg-hover); color: var(--color-fg-primary); }
+.he-menu button.is-danger { color: var(--color-error-strong); }
+.he-menu button.is-danger:hover { background: var(--color-error-bg); color: var(--color-error-strong); }
+.he-menu-sep { height: 1px; margin: 4px; background: var(--color-border-subtle); }
+
+.he-node-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) 72px minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.he-node-grid .input.mono { font-family: var(--font-family-mono); }
+
+/* Auth row: label + segmented control */
+.he-auth-row {
+  display: flex; align-items: center;
+  gap: 10px;
+}
+.he-auth-label {
+  font-size: 12.5px; font-weight: 500;
+  color: var(--color-fg-secondary);
+}
+.he-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-subtle);
+}
+.he-seg-btn {
+  height: 24px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: calc(var(--seed-radius) - 2px);
+  background: transparent;
+  font-size: 12px; font-weight: 500;
+  color: var(--color-fg-tertiary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.he-seg-btn:hover { color: var(--color-fg-secondary); }
+.he-seg-btn.is-active {
+  border-color: var(--color-border);
+  background: var(--color-bg-surface);
+  color: var(--color-fg-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* Credential areas */
+.he-cred { display: flex; flex-direction: column; gap: var(--space-2); }
+
+/* Private key editor */
+.he-key-editor {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-surface);
+  overflow: hidden;
+}
+.he-key-summary {
+  display: flex; align-items: center;
+  gap: var(--space-2);
+  padding-right: 6px;
+}
+.he-key-toggle {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-2);
+  padding: 7px 10px;
+  border: 0; background: transparent;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px; font-weight: 500;
+  color: var(--color-fg-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.he-key-toggle:hover { background: var(--color-bg-hover); }
+.he-key-summary-left {
+  display: inline-flex; align-items: center;
+  gap: 6px; min-width: 0;
+}
+.he-key-summary-left > svg { width: 14px; height: 14px; color: var(--color-fg-tertiary); flex-shrink: 0; }
+.he-key-path {
+  font-family: var(--font-family-mono);
+  font-size: 11.5px; font-weight: 400;
+  color: var(--color-fg-quaternary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.he-key-chevron { width: 14px; height: 14px; color: var(--color-fg-quaternary); flex-shrink: 0; transition: transform 0.15s ease; }
+.he-key-toggle[aria-expanded='true'] .he-key-chevron { transform: rotate(180deg); }
+.he-key-details {
+  border-top: 1px solid var(--color-border);
+  padding: 10px;
+  display: flex; flex-direction: column;
+  gap: var(--space-2);
+  background: color-mix(in srgb, var(--seed-fg) 1.5%, var(--seed-surface));
+}
+.he-key-details textarea.input {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.he-key-details-row {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+.he-key-details-row .field { flex: 1; min-width: 200px; max-width: 340px; }
+.he-key-actions { display: flex; gap: var(--space-2); padding-bottom: 1px; }
+
+/* ------------------------------------------------------------
+   Table tabs (Forwarding Rules / Services)
+   ------------------------------------------------------------ */
+.he-panel-actionbar {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--seed-fg) 2%, var(--seed-surface));
+  padding: 6px var(--space-3);
+  flex-shrink: 0;
+}
+.he-panel-title {
+  font-size: 13px; font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--color-fg-primary);
+}
+.he-table-scroll { flex: 1; min-height: 0; overflow: auto; }
+.he-table { min-width: 100%; }
+.he-grid-forward {
+  grid-template-columns: minmax(120px, 0.9fr) minmax(190px, 1.2fr) 22px minmax(190px, 1.2fr) 72px 32px;
+}
+.he-grid-service {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(170px, 0.6fr) minmax(0, 1.5fr) 32px;
+}
+.he-grid-service .he-cell-input[data-field='name'] { font-weight: 500; }
+.he-portmap {
+  display: flex; align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.he-portmap .he-cell-input { width: 76px; flex-shrink: 0; }
+.he-portmap .he-fwd-arrow svg { width: 12px; height: 12px; }
+.he-table-row .he-node-menu-wrap { display: flex; justify-content: center; }
+/* Two-tier header for Services (Port Mapping group) */
+.he-svc-head {
+  grid-template-rows: 15px 15px;
+  row-gap: 3px;
+  padding-top: 8px; padding-bottom: 7px;
+}
+.he-sh-name { grid-column: 1; grid-row: 1 / 3; align-self: center; }
+.he-sh-group { grid-column: 2 / 5; grid-row: 1; }
+.he-sh-sub-local { grid-column: 2; grid-row: 2; align-self: center; padding-left: 8px; font-size: 11px; font-weight: 400; color: var(--color-fg-quaternary); }
+.he-sh-arrow { grid-column: 3; grid-row: 2; display: flex; align-items: center; justify-content: center; color: var(--color-fg-quaternary); }
+.he-sh-arrow svg { width: 10px; height: 10px; }
+.he-sh-sub-service { grid-column: 4; grid-row: 2; align-self: center; padding-left: 8px; font-size: 11px; font-weight: 400; color: var(--color-fg-quaternary); }
+.he-sh-cmd { grid-column: 5; grid-row: 1 / 3; align-self: center; }
+.he-sh-actions { grid-column: 6; grid-row: 1 / 3; }
+/* Start Command: compact preview + expandable bash editor */
+.he-cmd { min-width: 0; }
+.he-cmd-preview {
+  display: flex; align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.he-cmd-text {
+  flex: 1; min-width: 0;
+  padding: 5px 0;
+  font-family: var(--font-family-mono);
+  font-size: 12px; line-height: 1.5;
+  color: var(--color-fg-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.he-cmd-text:hover { color: var(--color-fg-primary); }
+.he-cmd-text.is-empty { color: var(--color-fg-quaternary); }
+.he-cmd-expand {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-quaternary);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.he-cmd-expand svg { width: 13px; height: 13px; }
+.he-cmd-expand:hover { background: var(--color-bg-hover); color: var(--color-fg-secondary); }
+.he-cmd-editor {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--seed-fg) 2%, var(--seed-surface));
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.he-cmd-editor:focus-within {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+.he-cmd-textarea {
+  display: block;
+  width: 100%;
+  min-height: 116px; max-height: 220px;
+  border: 0; outline: none;
+  background: transparent;
+  padding: 8px 10px;
+  font-family: var(--font-family-mono);
+  font-size: 12px; line-height: 1.6;
+  color: var(--color-fg-primary);
+  white-space: pre;
+  overflow: auto;
+  resize: none;
+}
+.he-cmd-editor-actions {
+  display: flex; justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 5px 8px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+}
+.he-table-head {
+  position: sticky; top: 0; z-index: 2;
+  display: grid; align-items: center;
+  column-gap: 10px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--seed-fg) 5%, var(--seed-surface));
+  backdrop-filter: blur(4px);
+  font-size: 11px; font-weight: 500;
+  color: var(--color-fg-tertiary);
+}
+/* Two-tier header for Forwarding Rules (Local / Remote groups) */
+.he-fwd-head {
+  grid-template-rows: 15px 15px;
+  row-gap: 3px;
+  padding-top: 8px; padding-bottom: 7px;
+}
+.he-fh-name { grid-column: 1; grid-row: 1 / 3; align-self: center; }
+.he-fh-group-local { grid-column: 2; grid-row: 1; }
+.he-fh-sub-local { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: minmax(0, 1fr) 1px 64px; column-gap: 6px; }
+.he-fh-gap { grid-column: 3; grid-row: 1 / 3; }
+.he-fh-group-remote { grid-column: 4; grid-row: 1; }
+.he-fh-sub-remote { grid-column: 4; grid-row: 2; display: grid; grid-template-columns: minmax(0, 1fr) 1px 64px; column-gap: 6px; }
+.he-fh-auto { grid-column: 5; grid-row: 1 / 3; align-self: center; text-align: center; }
+.he-fh-actions { grid-column: 6; grid-row: 1 / 3; }
+.he-fh-group { font-weight: 500; }
+.he-fh-sub span {
+  padding-left: 8px;
+  font-size: 11px; font-weight: 400;
+  color: var(--color-fg-quaternary);
+}
+.he-fh-sub span:nth-child(2) { padding-left: 0; }
+.he-table-body { display: block; }
+.he-table-body:empty::before {
+  content: attr(data-empty);
+  display: block;
+  padding: 12px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 12px;
+  color: var(--color-fg-quaternary);
+}
+.he-table-row {
+  display: grid; align-items: center;
+  column-gap: 10px;
+  padding: 6px 12px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background-color 0.1s ease;
+}
+.he-table-row:hover { background: var(--color-bg-hover); }
+.he-table-row:has(.he-cmd-editor:not(.hidden)) {
+  min-height: 0;
+  align-items: start;
+  padding: 8px 12px;
+}
+/* Cell inputs: quiet by default, border appears on hover / focus */
+.he-cell-input {
+  width: 100%; height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--color-fg-primary);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.he-cell-input::placeholder { color: var(--color-fg-quaternary); }
+.he-cell-input:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-surface);
+}
+.he-cell-input:focus {
+  border-color: var(--color-focus);
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+.he-cell-input.is-invalid { border-color: var(--color-error); }
+.he-cell-mono { font-family: var(--font-family-mono); }
+.he-cell-center { display: flex; justify-content: center; }
+/* Endpoint pair: host + port combined into one quiet control */
+.he-endpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px 64px;
+  column-gap: 6px;
+  align-items: center;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.he-endpoint:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-surface);
+}
+.he-endpoint:focus-within {
+  border-color: var(--color-focus);
+  background: var(--color-bg-surface);
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+}
+.he-endpoint-input {
+  width: 100%; min-width: 0; height: 28px;
+  border: 0; background: transparent;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--color-fg-primary);
+  outline: none;
+}
+.he-endpoint-input::placeholder { color: var(--color-fg-quaternary); }
+.he-endpoint-sep {
+  width: 1px; height: 14px;
+  background: var(--color-border);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.he-endpoint:hover .he-endpoint-sep,
+.he-endpoint:focus-within .he-endpoint-sep { opacity: 1; }
+.he-fwd-arrow {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-fg-quaternary);
+}
+.he-fwd-arrow svg { width: 13px; height: 13px; }
+/* Row remove: hidden until the row is hovered */
+.he-row-remove {
+  width: 24px; height: 24px;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent;
+  color: color-mix(in srgb, var(--color-error) 70%, transparent);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+.he-row-remove svg { width: 14px; height: 14px; }
+.he-row-remove:hover { background: var(--color-error-bg); color: var(--color-error-strong); }
+.he-table-row:hover .he-row-remove,
+.he-row-remove:focus-visible { opacity: 1; }
+
+/* ------------------------------------------------------------
+   Footer actions (replicates .form-actions)
+   ------------------------------------------------------------ */
+.form-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) calc(var(--space-4) * -1) calc(var(--space-4) * -1);
+  padding: 10px var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--seed-surface) 95%, transparent);
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+.form-actions-end { display: flex; gap: var(--space-2); }
+</style>
+</head>
+<body>
+
+<!-- Fake app surface behind the modal scrim, for dialog context -->
+<div class="app-mock" aria-hidden="true">
+  <div class="app-mock-sidebar">
+    <div class="app-mock-bar is-brand"></div>
+    <div style="height:8px"></div>
+    <div class="app-mock-bar is-nav-active"></div>
+    <div class="app-mock-bar is-nav"></div>
+    <div class="app-mock-bar is-nav"></div>
+    <div class="app-mock-bar is-nav"></div>
+    <div class="app-mock-bar is-nav" style="width:52%"></div>
+  </div>
+  <div class="app-mock-main">
+    <div class="app-mock-topbar">
+      <div class="app-mock-bar" style="width:140px"></div>
+      <div style="flex:1"></div>
+      <div class="app-mock-bar" style="width:220px"></div>
+    </div>
+    <div class="app-mock-content">
+      <div class="app-mock-bar"></div>
+      <div class="app-mock-bar"></div>
+      <div class="app-mock-bar"></div>
+      <div class="app-mock-bar"></div>
+    </div>
+  </div>
+</div>
+<div class="scrim" aria-hidden="true"></div>
+
+<main class="stage">
+  <section class="host-dialog" role="dialog" aria-modal="true" aria-labelledby="host-dialog-title" data-component="Host Edit Dialog">
+    <div class="dialog-panel">
+
+      <div class="dialog-head" data-component="Dialog Head">
+        <h2 id="host-dialog-title" class="section-title">Edit Host</h2>
+        <div class="dialog-head-actions">
+          <button id="paste-host-config-btn" type="button" class="btn btn-ghost btn-sm">
+            <span class="btn-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg></span>
+            Paste Config
+          </button>
+          <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="host-dialog-message" class="message-banner message-default hidden" role="status" aria-live="polite" data-component="Message Banner">
+        <span id="host-dialog-message-text" class="message-text"></span>
+        <button id="host-dialog-message-close-btn" type="button" class="message-close" aria-label="Dismiss message">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+        </button>
+      </div>
+
+      <form id="host-form" class="host-edit-form" novalidate>
+
+        <div class="host-edit-tabs" role="tablist" aria-label="Host configuration" data-component="Edit Tabs">
+          <button id="host-edit-path-tab" type="button" class="host-edit-tab" role="tab" aria-selected="true" aria-controls="host-edit-path-panel" data-host-edit-tab="path">
+            Connection Path <span id="host-edit-path-count" class="host-edit-tab-count">1 hop</span>
+          </button>
+          <button id="host-edit-forwards-tab" type="button" class="host-edit-tab" role="tab" aria-selected="false" aria-controls="host-edit-forwards-panel" data-host-edit-tab="forwards">
+            Forwarding Rules <span id="host-edit-forwards-count" class="host-edit-tab-count">2</span>
+          </button>
+          <button id="host-edit-services-tab" type="button" class="host-edit-tab" role="tab" aria-selected="false" aria-controls="host-edit-services-panel" data-host-edit-tab="services">
+            Services <span id="host-edit-services-count" class="host-edit-tab-count">2</span>
+          </button>
+        </div>
+
+        <!-- ============ Tab 1 · Connection Path ============ -->
+        <section id="host-edit-path-panel" class="host-edit-panel" role="tabpanel" aria-labelledby="host-edit-path-tab" data-host-edit-panel="path" data-component="Connection Path Panel">
+
+          <div class="he-toolbar" data-component="Path Toolbar">
+            <label class="field field-xs he-name-field">
+              Connection Name
+              <input id="name" type="text" required class="input" value="prod-db-01" />
+            </label>
+            <div id="host-edit-route" class="he-route" aria-label="Connection route"></div>
+          </div>
+
+          <div class="he-path-scroll">
+            <div class="he-rail" data-component="Path Rail">
+
+              <!-- Local endpoint (read-only) -->
+              <div class="he-node">
+                <div class="he-marker"><span class="he-dot is-local"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg></span></div>
+                <div>
+                  <span class="he-local-chip">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg>
+                    Local <span class="he-local-sub">this machine</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- Hop list (dynamic) -->
+              <div id="jump-host-editor-list" data-component="Hop List">
+                <div class="he-hop-item">
+                  <div class="he-node">
+                    <div class="he-marker"><span class="he-dot he-hop-num">1</span></div>
+                    <div>
+                      <div class="he-card" data-node-auth="password" data-expanded="false" data-component="Node Card">
+                        <div class="he-card-summary">
+                          <button type="button" class="he-card-toggle" aria-expanded="false">
+                            <span class="he-step he-step-label">Hop 1</span>
+                            <span class="he-card-summary-text">bastion.internal:22 · deploy · Password</span>
+                            <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+                          </button>
+                          <div class="he-node-menu-wrap">
+                            <button type="button" class="icon-btn he-node-menu" aria-label="Hop actions" aria-haspopup="true">
+                              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="12.5" r="1.2"/></svg>
+                            </button>
+                            <div class="he-menu hidden" role="menu">
+                              <button type="button" role="menuitem" data-menu-action="up">Move Up</button>
+                              <button type="button" role="menuitem" data-menu-action="down">Move Down</button>
+                              <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
+                              <div class="he-menu-sep" role="separator"></div>
+                              <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Hop</button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="he-card-body hidden">
+                          <div class="he-node-grid">
+                            <label class="field field-xs">
+                              SSH Host
+                              <input type="text" required class="input mono" data-role="sshHost" value="bastion.internal" />
+                            </label>
+                            <label class="field field-xs">
+                              Port
+                              <input type="text" inputmode="numeric" maxlength="5" required class="input mono" data-role="sshPort" value="22" />
+                            </label>
+                            <label class="field field-xs">
+                              Username
+                              <input type="text" required class="input mono" data-role="username" value="deploy" />
+                            </label>
+                          </div>
+                          <div class="he-auth-row">
+                            <span class="he-auth-label">Authentication</span>
+                            <div class="he-seg" role="group">
+                              <button type="button" class="he-seg-btn" data-auth="privateKey" aria-pressed="false">Private Key</button>
+                              <button type="button" class="he-seg-btn is-active" data-auth="password" aria-pressed="true">Password</button>
+                            </div>
+                          </div>
+                          <div class="he-cred">
+                            <div class="he-cred-password">
+                              <label class="field field-xs">
+                                Password
+                                <span class="he-password-wrap">
+                                  <input type="password" class="input" data-role="password" value="falcon-9-ridge" autocomplete="new-password" />
+                                  <button type="button" class="he-password-toggle" aria-pressed="false" aria-label="Show password">
+                                    <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg>
+                                    <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"/></svg>
+                                  </button>
+                                </span>
+                              </label>
+                            </div>
+                            <div class="he-cred-key hidden" data-component="Key Editor">
+                              <div class="he-key-editor">
+                                <div class="he-key-summary">
+                                  <button type="button" class="he-key-toggle" aria-expanded="false">
+                                    <span class="he-key-summary-left">
+                                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="8" r="3"/><path d="M8 8h6M11.5 8v2.5M14 8v1.5"/></svg>
+                                      <span class="he-key-status-text">No key configured</span>
+                                    </span>
+                                    <svg class="he-key-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+                                  </button>
+                                  <button type="button" class="btn btn-ghost btn-sm he-key-replace">Replace</button>
+                                </div>
+                                <div class="he-key-details hidden">
+                                  <label class="field field-xs">
+                                    Key Content
+                                    <textarea rows="3" class="input" data-role="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false"></textarea>
+                                  </label>
+                                  <div class="he-key-details-row">
+                                    <label class="field field-xs">
+                                      Passphrase (Optional)
+                                      <input type="password" class="input mono" data-role="passphrase" autocomplete="new-password" />
+                                    </label>
+                                    <div class="he-key-actions">
+                                      <button type="button" class="btn btn-secondary btn-sm">Import</button>
+                                      <button type="button" class="btn btn-secondary btn-sm">Paste Key</button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Inline Add Hop on the rail -->
+              <button type="button" class="he-add-row" id="add-jump-host-btn">
+                <span class="he-add-dot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span>
+                <span class="he-add-label">Add Hop</span>
+              </button>
+
+              <!-- Target endpoint -->
+              <div class="he-node">
+                <div class="he-marker"><span class="he-dot is-target"></span></div>
+                <div>
+                  <div class="he-card is-target" data-node-auth="privateKey" data-expanded="true" data-component="Node Card">
+                    <div class="he-card-summary">
+                      <button type="button" class="he-card-toggle" aria-expanded="true">
+                        <span class="he-step">Target</span>
+                        <span class="he-card-summary-text">prod-db-01.internal:22 · admin · Private Key</span>
+                        <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+                      </button>
+                    </div>
+                    <div class="he-card-body">
+                      <div class="he-node-grid">
+                        <label class="field field-xs">
+                          SSH Host
+                          <input id="ssh-host" type="text" required class="input mono" data-role="sshHost" value="prod-db-01.internal" />
+                        </label>
+                        <label class="field field-xs">
+                          Port
+                          <input id="ssh-port" type="text" inputmode="numeric" maxlength="5" required class="input mono" data-role="sshPort" value="22" />
+                        </label>
+                        <label class="field field-xs">
+                          Username
+                          <input id="username" type="text" required class="input mono" data-role="username" value="admin" />
+                        </label>
+                      </div>
+                      <div class="he-auth-row">
+                        <span class="he-auth-label">Authentication</span>
+                        <div class="he-seg" role="group">
+                          <button type="button" class="he-seg-btn is-active" data-auth="privateKey" aria-pressed="true">Private Key</button>
+                          <button type="button" class="he-seg-btn" data-auth="password" aria-pressed="false">Password</button>
+                        </div>
+                      </div>
+                      <div class="he-cred">
+                        <div class="he-cred-password hidden">
+                          <label class="field field-xs">
+                            Password
+                            <span class="he-password-wrap">
+                              <input id="password" type="password" class="input" data-role="password" autocomplete="new-password" />
+                              <button type="button" class="he-password-toggle" aria-pressed="false" aria-label="Show password">
+                                <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg>
+                                <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"/></svg>
+                              </button>
+                            </span>
+                          </label>
+                        </div>
+                        <div class="he-cred-key" data-component="Key Editor">
+                          <div class="he-key-editor">
+                            <div class="he-key-summary">
+                              <button type="button" class="he-key-toggle" aria-expanded="false">
+                                <span class="he-key-summary-left">
+                                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="8" r="3"/><path d="M8 8h6M11.5 8v2.5M14 8v1.5"/></svg>
+                                  <span class="he-key-status-text">Private key configured</span>
+                                  <span class="he-key-path">~/.ssh/id_ed25519</span>
+                                </span>
+                                <svg class="he-key-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+                              </button>
+                              <button type="button" class="btn btn-ghost btn-sm he-key-replace">Replace</button>
+                            </div>
+                            <div class="he-key-details hidden">
+                              <label class="field field-xs">
+                                Key Content
+                                <textarea id="private-key" rows="3" class="input" data-role="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false">-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCp
+9kM2vhXz0vFyHqAGj1c6AAAAEAAAAAEAAAIXAAAABXNzaC1yc2EAAAADAQABAAAC
+-----END OPENSSH PRIVATE KEY-----</textarea>
+                              </label>
+                              <div class="he-key-details-row">
+                                <label class="field field-xs">
+                                  Passphrase (Optional)
+                                  <input id="passphrase" type="password" class="input mono" data-role="passphrase" autocomplete="new-password" />
+                                </label>
+                                <div class="he-key-actions">
+                                  <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm">Import</button>
+                                  <button id="toggle-private-key-btn" type="button" class="btn btn-secondary btn-sm">Paste Key</button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ Tab 2 · Forwarding Rules ============ -->
+        <section id="host-edit-forwards-panel" class="host-edit-panel" role="tabpanel" aria-labelledby="host-edit-forwards-tab" data-host-edit-panel="forwards" hidden data-component="Forwards Panel">
+          <div class="he-panel-actionbar">
+            <button id="add-forward-btn" type="button" class="btn btn-secondary btn-sm">
+              <span class="btn-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span>
+              Add Rule
+            </button>
+          </div>
+          <div class="he-table-scroll">
+            <div class="he-table" role="table" aria-label="Forwarding rules">
+              <div class="he-table-head he-grid-forward he-fwd-head" role="row">
+                <span class="he-fh-name" role="columnheader">Name</span>
+                <span class="he-fh-group he-fh-group-local" role="columnheader">Local</span>
+                <span class="he-fh-sub he-fh-sub-local" aria-hidden="true"><span>Host</span><span></span><span>Port</span></span>
+                <span class="he-fh-gap" aria-hidden="true"></span>
+                <span class="he-fh-group he-fh-group-remote" role="columnheader">Remote</span>
+                <span class="he-fh-sub he-fh-sub-remote" aria-hidden="true"><span>Host</span><span></span><span>Port</span></span>
+                <span class="he-fh-auto" role="columnheader" title="Automatically start this forwarding rule when the host connects.">Auto Start</span>
+                <span class="he-fh-actions sr-only" role="columnheader">Actions</span>
+              </div>
+              <div id="forward-editor-list" class="he-table-body" role="rowgroup" data-empty="No forwarding rules"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ Tab 3 · Services ============ -->
+        <section id="host-edit-services-panel" class="host-edit-panel" role="tabpanel" aria-labelledby="host-edit-services-tab" data-host-edit-panel="services" hidden data-component="Services Panel">
+          <div class="he-panel-actionbar">
+            <button id="add-service-btn" type="button" class="btn btn-secondary btn-sm">
+              <span class="btn-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span>
+              Add Service
+            </button>
+          </div>
+          <div class="he-table-scroll">
+            <div class="he-table" role="table" aria-label="Services">
+              <div class="he-table-head he-grid-service" role="row">
+                <span role="columnheader">Name</span>
+                <span role="columnheader">Port Mapping</span>
+                <span role="columnheader">Start Command</span>
+                <span role="columnheader" class="sr-only">Actions</span>
+              </div>
+              <div id="service-editor-list" class="he-table-body" role="rowgroup" data-empty="No services"></div>
+            </div>
+          </div>
+        </section>
+
+        <div class="form-actions" data-component="Footer Actions">
+          <button id="reset-btn" type="button" class="btn btn-ghost">Reset Changes</button>
+          <div class="form-actions-end">
+            <button id="cancel-host-dialog-btn" type="button" class="btn btn-secondary">Cancel</button>
+            <button id="save-host-btn" type="submit" class="btn btn-primary">Save Host</button>
+          </div>
+        </div>
+
+      </form>
+    </div>
+  </section>
+</main>
+
+<!-- ============ Templates ============ -->
+<template id="hop-card-template">
+  <div class="he-hop-item">
+    <div class="he-node">
+      <div class="he-marker"><span class="he-dot he-hop-num"></span></div>
+      <div>
+        <div class="he-card" data-node-auth="password" data-expanded="false" data-component="Node Card">
+          <div class="he-card-summary">
+            <button type="button" class="he-card-toggle" aria-expanded="false">
+              <span class="he-step he-step-label">Hop</span>
+              <span class="he-card-summary-text"></span>
+              <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+            </button>
+            <div class="he-node-menu-wrap">
+              <button type="button" class="icon-btn he-node-menu" aria-label="Hop actions" aria-haspopup="true">
+                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="12.5" r="1.2"/></svg>
+              </button>
+              <div class="he-menu hidden" role="menu">
+                <button type="button" role="menuitem" data-menu-action="up">Move Up</button>
+                <button type="button" role="menuitem" data-menu-action="down">Move Down</button>
+                <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
+                <div class="he-menu-sep" role="separator"></div>
+                <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Hop</button>
+              </div>
+            </div>
+          </div>
+          <div class="he-card-body hidden">
+            <div class="he-node-grid">
+              <label class="field field-xs">
+                SSH Host
+                <input type="text" required class="input mono" data-role="sshHost" placeholder="bastion.example.com" />
+              </label>
+              <label class="field field-xs">
+                Port
+                <input type="text" inputmode="numeric" maxlength="5" required class="input mono" data-role="sshPort" value="22" />
+              </label>
+              <label class="field field-xs">
+                Username
+                <input type="text" required class="input mono" data-role="username" placeholder="deploy" />
+              </label>
+            </div>
+            <div class="he-auth-row">
+              <span class="he-auth-label">Authentication</span>
+              <div class="he-seg" role="group">
+                <button type="button" class="he-seg-btn" data-auth="privateKey" aria-pressed="false">Private Key</button>
+                <button type="button" class="he-seg-btn is-active" data-auth="password" aria-pressed="true">Password</button>
+              </div>
+            </div>
+            <div class="he-cred">
+              <div class="he-cred-password">
+                <label class="field field-xs">
+                  Password
+                  <span class="he-password-wrap">
+                    <input type="password" class="input" data-role="password" autocomplete="new-password" />
+                    <button type="button" class="he-password-toggle" aria-pressed="false" aria-label="Show password">
+                      <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg>
+                      <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"/></svg>
+                    </button>
+                  </span>
+                </label>
+              </div>
+              <div class="he-cred-key hidden" data-component="Key Editor">
+                <div class="he-key-editor">
+                  <div class="he-key-summary">
+                    <button type="button" class="he-key-toggle" aria-expanded="false">
+                      <span class="he-key-summary-left">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="8" r="3"/><path d="M8 8h6M11.5 8v2.5M14 8v1.5"/></svg>
+                        <span class="he-key-status-text">No key configured</span>
+                      </span>
+                      <svg class="he-key-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m4 6 4 4 4-4"/></svg>
+                    </button>
+                    <button type="button" class="btn btn-ghost btn-sm he-key-replace">Replace</button>
+                  </div>
+                  <div class="he-key-details hidden">
+                    <label class="field field-xs">
+                      Key Content
+                      <textarea rows="3" class="input" data-role="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false"></textarea>
+                    </label>
+                    <div class="he-key-details-row">
+                      <label class="field field-xs">
+                        Passphrase (Optional)
+                        <input type="password" class="input mono" data-role="passphrase" autocomplete="new-password" />
+                      </label>
+                      <div class="he-key-actions">
+                        <button type="button" class="btn btn-secondary btn-sm">Import</button>
+                        <button type="button" class="btn btn-secondary btn-sm">Paste Key</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="forward-row-template">
+  <div class="he-table-row he-grid-forward" role="row">
+    <input type="text" class="he-cell-input" data-field="name" placeholder="optional" role="cell" aria-label="Rule name" />
+    <div class="he-endpoint" role="cell">
+      <input type="text" class="he-endpoint-input he-cell-mono" data-field="localHost" value="127.0.0.1" aria-label="Local host" />
+      <span class="he-endpoint-sep" aria-hidden="true"></span>
+      <input type="text" class="he-endpoint-input he-cell-mono" data-field="localPort" inputmode="numeric" maxlength="5" placeholder="0" aria-label="Local port" />
+    </div>
+    <span class="he-fwd-arrow" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8h11M9.5 4.5 13 8l-3.5 3.5"/></svg>
+    </span>
+    <div class="he-endpoint" role="cell">
+      <input type="text" class="he-endpoint-input he-cell-mono" data-field="remoteHost" value="127.0.0.1" aria-label="Remote host" />
+      <span class="he-endpoint-sep" aria-hidden="true"></span>
+      <input type="text" class="he-endpoint-input he-cell-mono" data-field="remotePort" inputmode="numeric" maxlength="5" placeholder="0" aria-label="Remote port" />
+    </div>
+    <span class="he-cell-center" role="cell">
+      <input type="checkbox" class="checkbox" data-field="autoStart" aria-label="Auto start" title="Automatically start this forwarding rule when the host connects." />
+    </span>
+    <button type="button" class="he-row-remove" aria-label="Remove rule">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M4 4l.7 8.4a1.5 1.5 0 0 0 1.5 1.35h3.6a1.5 1.5 0 0 0 1.5-1.35L12 4M6.5 7v3.5M9.5 7v3.5"/></svg>
+    </button>
+  </div>
+</template>
+
+<template id="service-row-template">
+  <div class="he-table-row he-grid-service" role="row">
+    <input type="text" class="he-cell-input" data-field="name" placeholder="service name" role="cell" aria-label="Service name" />
+    <div class="he-portmap" role="cell">
+      <input type="text" class="he-cell-input he-cell-mono" data-field="forwardLocalPort" inputmode="numeric" maxlength="5" placeholder="optional" aria-label="Local port" title="Optional local forwarded port" />
+      <span class="he-fwd-arrow" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8h11M9.5 4.5 13 8l-3.5 3.5"/></svg>
+      </span>
+      <input type="text" class="he-cell-input he-cell-mono" data-field="port" inputmode="numeric" maxlength="5" value="0" aria-label="Service port" title="Port 0 disables remote exposure" />
+    </div>
+    <div class="he-cmd" role="cell">
+      <div class="he-cmd-preview">
+        <span class="he-cmd-text is-empty">No start command</span>
+        <button type="button" class="he-cmd-expand" aria-label="Expand command editor" title="Expand command editor">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5H3.5V6M10 3.5h2.5V6M6 12.5H3.5V10M10 12.5h2.5V10"/></svg>
+        </button>
+      </div>
+      <div class="he-cmd-editor hidden">
+        <textarea class="he-cmd-textarea" data-field="startCommand" rows="5" spellcheck="false" placeholder="systemctl --user start app.service" aria-label="Start command"></textarea>
+        <div class="he-cmd-editor-actions">
+          <button type="button" class="btn btn-ghost btn-sm he-cmd-copy">Copy</button>
+          <button type="button" class="btn btn-secondary btn-sm he-cmd-collapse">Collapse</button>
+        </div>
+      </div>
+    </div>
+    <div class="he-node-menu-wrap">
+      <button type="button" class="icon-btn he-node-menu" aria-label="Service actions" aria-haspopup="true">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="8" cy="12.5" r="1.2"/></svg>
+      </button>
+      <div class="he-menu hidden" role="menu">
+        <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
+        <div class="he-menu-sep" role="separator"></div>
+        <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Service</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+(function () {
+  'use strict';
+
+  var form = document.getElementById('host-form');
+  var routeEl = document.getElementById('host-edit-route');
+  var hopList = document.getElementById('jump-host-editor-list');
+  var forwardList = document.getElementById('forward-editor-list');
+  var serviceList = document.getElementById('service-editor-list');
+  var banner = document.getElementById('host-dialog-message');
+  var bannerText = document.getElementById('host-dialog-message-text');
+
+  /* ---------- helpers ---------- */
+  function nodeCards() {
+    return Array.prototype.slice.call(form.querySelectorAll('.he-card'));
+  }
+  function hopItems() {
+    return Array.prototype.slice.call(hopList.querySelectorAll('.he-hop-item'));
+  }
+  function segmentValue(card, role) {
+    var input = card.querySelector('[data-role="' + role + '"]');
+    return input && input.value.trim();
+  }
+  function routePart(card) {
+    var user = segmentValue(card, 'username');
+    var host = segmentValue(card, 'sshHost');
+    var port = segmentValue(card, 'sshPort') || '22';
+    if (!host) return '…';
+    return (user ? user + '@' : '') + host + ':' + port;
+  }
+
+  function setCmdExpanded(cmd, expanded) {
+    if (!cmd) return;
+    var preview = cmd.querySelector('.he-cmd-preview');
+    var editor = cmd.querySelector('.he-cmd-editor');
+    var text = cmd.querySelector('.he-cmd-text');
+    var textarea = cmd.querySelector('textarea');
+    if (expanded) {
+      textarea.value = text.classList.contains('is-empty') ? '' : text.textContent;
+      preview.classList.add('hidden');
+      editor.classList.remove('hidden');
+      textarea.focus();
+    } else {
+      var value = textarea.value.replace(/\s+$/, '');
+      text.textContent = value || 'No start command';
+      text.title = value;
+      text.classList.toggle('is-empty', !value);
+      editor.classList.add('hidden');
+      preview.classList.remove('hidden');
+    }
+  }
+
+  /* ---------- route summary + tab counts ---------- */
+  var routeArrow =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg>';
+
+  function authLabel(card) {
+    return card.getAttribute('data-node-auth') === 'password' ? 'Password' : 'Private Key';
+  }
+
+  function updateNodeSummary(card) {
+    if (!card) return;
+    var text = card.querySelector('.he-card-summary-text');
+    if (text) text.textContent = routePart(card) + ' · ' + authLabel(card);
+  }
+
+  function applyExpanded(card, expanded) {
+    card.setAttribute('data-expanded', expanded ? 'true' : 'false');
+    var toggle = card.querySelector('.he-card-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    var body = card.querySelector('.he-card-body');
+    if (body) body.classList.toggle('hidden', !expanded);
+  }
+
+  function setCardExpanded(card, expanded) {
+    if (!card) return;
+    if (expanded) {
+      nodeCards().forEach(function (other) {
+        if (other !== card) applyExpanded(other, false);
+      });
+    }
+    applyExpanded(card, expanded);
+    updateRoute();
+  }
+
+  function updateRoute() {
+    var expanded = form.querySelector('.he-card[data-expanded="true"]');
+    var chip = function (label, modifier) {
+      return '<span class="he-route-chip' + (modifier ? ' ' + modifier : '') + '">' + label + '</span>';
+    };
+    var parts = [chip('local', 'is-local')];
+    hopItems().forEach(function (item) {
+      var card = item.querySelector('.he-card');
+      if (card) parts.push(chip(routePart(card), card === expanded ? 'is-active' : ''));
+    });
+    var target = form.querySelector('.he-card.is-target');
+    parts.push(chip(target ? routePart(target) : '…', target === expanded ? 'is-active' : ''));
+    routeEl.innerHTML = parts.join('<span class="he-route-sep" aria-hidden="true">' + routeArrow + '</span>');
+    var hops = hopItems().length;
+    document.getElementById('host-edit-path-count').textContent = hops + (hops === 1 ? ' hop' : ' hops');
+  }
+
+  function updateCounts() {
+    document.getElementById('host-edit-forwards-count').textContent =
+      String(forwardList.querySelectorAll('.he-table-row').length);
+    document.getElementById('host-edit-services-count').textContent =
+      String(serviceList.querySelectorAll('.he-table-row').length);
+  }
+
+  function renumberHops() {
+    hopItems().forEach(function (item, index) {
+      var num = item.querySelector('.he-hop-num');
+      var label = item.querySelector('.he-step-label');
+      if (num) num.textContent = String(index + 1);
+      if (label) label.textContent = 'Hop ' + (index + 1);
+      updateNodeSummary(item.querySelector('.he-card'));
+    });
+  }
+
+  /* ---------- tabs ---------- */
+  var tabs = Array.prototype.slice.call(form.querySelectorAll('.host-edit-tab'));
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      selectTab(tab.getAttribute('data-host-edit-tab'));
+    });
+  });
+  function selectTab(name) {
+    tabs.forEach(function (tab) {
+      var active = tab.getAttribute('data-host-edit-tab') === name;
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    form.querySelectorAll('.host-edit-panel').forEach(function (panel) {
+      var active = panel.getAttribute('data-host-edit-panel') === name;
+      if (active) panel.removeAttribute('hidden');
+      else panel.setAttribute('hidden', '');
+    });
+  }
+
+  /* ---------- auth segmented control / node interactions ---------- */
+  function closeMenus() {
+    form.querySelectorAll('.he-menu').forEach(function (m) { m.classList.add('hidden'); });
+  }
+  document.addEventListener('click', function (event) {
+    if (!event.target.closest('.he-node-menu-wrap')) closeMenus();
+  });
+
+  function handleMenuAction(menuItem) {
+    var action = menuItem.getAttribute('data-menu-action');
+    var item = menuItem.closest('.he-hop-item');
+    if (item) {
+      if (action === 'delete') {
+        item.remove();
+      } else if (action === 'duplicate') {
+        var copy = item.cloneNode(true);
+        copy.querySelectorAll('.he-menu').forEach(function (m) { m.classList.add('hidden'); });
+        item.after(copy);
+      } else if (action === 'up') {
+        var prev = item.previousElementSibling;
+        if (prev && prev.classList.contains('he-hop-item')) prev.before(item);
+      } else if (action === 'down') {
+        var next = item.nextElementSibling;
+        if (next && next.classList.contains('he-hop-item')) next.after(item);
+      }
+      renumberHops();
+      updateRoute();
+      return;
+    }
+    var row = menuItem.closest('.he-table-row');
+    if (!row) return;
+    if (action === 'delete') {
+      row.remove();
+    } else if (action === 'duplicate') {
+      var rowCopy = row.cloneNode(true);
+      rowCopy.querySelectorAll('.he-menu').forEach(function (m) { m.classList.add('hidden'); });
+      var cmd = rowCopy.querySelector('.he-cmd');
+      if (cmd) setCmdExpanded(cmd, false);
+      row.after(rowCopy);
+    }
+    updateCounts();
+  }
+
+  form.addEventListener('click', function (event) {
+    var cardToggle = event.target.closest('.he-card-toggle');
+    if (cardToggle) {
+      var nodeCard = cardToggle.closest('.he-card');
+      setCardExpanded(nodeCard, nodeCard.getAttribute('data-expanded') !== 'true');
+      return;
+    }
+
+    var menuBtn = event.target.closest('.he-node-menu');
+    if (menuBtn) {
+      var menu = menuBtn.parentElement.querySelector('.he-menu');
+      var wasHidden = menu.classList.contains('hidden');
+      closeMenus();
+      if (wasHidden) menu.classList.remove('hidden');
+      return;
+    }
+
+    var menuItem = event.target.closest('.he-menu button');
+    if (menuItem) {
+      handleMenuAction(menuItem);
+      closeMenus();
+      return;
+    }
+
+    var segBtn = event.target.closest('.he-seg-btn');
+    if (segBtn) {
+      var card = segBtn.closest('.he-card');
+      var auth = segBtn.getAttribute('data-auth');
+      card.setAttribute('data-node-auth', auth);
+      card.querySelectorAll('.he-seg-btn').forEach(function (btn) {
+        var active = btn === segBtn;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+      var passwordArea = card.querySelector('.he-cred-password');
+      var keyArea = card.querySelector('.he-cred-key');
+      if (passwordArea) passwordArea.classList.toggle('hidden', auth !== 'password');
+      if (keyArea) keyArea.classList.toggle('hidden', auth !== 'privateKey');
+      updateNodeSummary(card);
+      return;
+    }
+
+    var keyToggle = event.target.closest('.he-key-toggle');
+    if (keyToggle) {
+      var expanded = keyToggle.getAttribute('aria-expanded') === 'true';
+      keyToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+      var details = keyToggle.closest('.he-key-editor').querySelector('.he-key-details');
+      if (details) details.classList.toggle('hidden', expanded);
+      return;
+    }
+
+    var keyReplace = event.target.closest('.he-key-replace');
+    if (keyReplace) {
+      var editor = keyReplace.closest('.he-key-editor');
+      var toggle = editor.querySelector('.he-key-toggle');
+      toggle.setAttribute('aria-expanded', 'true');
+      editor.querySelector('.he-key-details').classList.remove('hidden');
+      return;
+    }
+
+    var pwdToggle = event.target.closest('.he-password-toggle');
+    if (pwdToggle) {
+      var show = pwdToggle.getAttribute('aria-pressed') !== 'true';
+      pwdToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+      pwdToggle.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      var pwdInput = pwdToggle.parentElement.querySelector('input');
+      if (pwdInput) pwdInput.type = show ? 'text' : 'password';
+      return;
+    }
+
+    var cmdOpen = event.target.closest('.he-cmd-expand, .he-cmd-text');
+    if (cmdOpen) {
+      setCmdExpanded(cmdOpen.closest('.he-cmd'), true);
+      return;
+    }
+
+    var cmdCollapse = event.target.closest('.he-cmd-collapse');
+    if (cmdCollapse) {
+      setCmdExpanded(cmdCollapse.closest('.he-cmd'), false);
+      return;
+    }
+
+    var cmdCopy = event.target.closest('.he-cmd-copy');
+    if (cmdCopy) {
+      var cmdBox = cmdCopy.closest('.he-cmd');
+      var cmdTextarea = cmdBox.querySelector('textarea');
+      var flashCopied = function () {
+        var original = cmdCopy.textContent;
+        cmdCopy.textContent = 'Copied';
+        setTimeout(function () { cmdCopy.textContent = original; }, 1200);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmdTextarea.value).then(flashCopied, flashCopied);
+      } else {
+        cmdTextarea.select();
+        try { document.execCommand('copy'); } catch (err) {}
+        flashCopied();
+      }
+      return;
+    }
+
+    var removeRow = event.target.closest('.he-row-remove');
+    if (removeRow) {
+      removeRow.closest('.he-table-row').remove();
+      updateCounts();
+      return;
+    }
+  });
+
+  /* ---------- add hop / rule / service ---------- */
+  document.getElementById('add-jump-host-btn').addEventListener('click', function () {
+    var template = document.getElementById('hop-card-template');
+    var clone = template.content.cloneNode(true);
+    hopList.appendChild(clone);
+    renumberHops();
+    var items = hopItems();
+    var last = items[items.length - 1];
+    var lastCard = last.querySelector('.he-card');
+    updateNodeSummary(lastCard);
+    setCardExpanded(lastCard, true);
+    var firstInput = last.querySelector('[data-role="sshHost"]');
+    if (firstInput) firstInput.focus();
+  });
+
+  document.getElementById('add-forward-btn').addEventListener('click', function () {
+    forwardList.appendChild(document.getElementById('forward-row-template').content.cloneNode(true));
+    updateCounts();
+  });
+
+  document.getElementById('add-service-btn').addEventListener('click', function () {
+    serviceList.appendChild(document.getElementById('service-row-template').content.cloneNode(true));
+    updateCounts();
+  });
+
+  /* ---------- banner ---------- */
+  function showBanner(kind, text) {
+    banner.classList.remove('hidden', 'message-default', 'message-success', 'message-error');
+    banner.classList.add('message-' + kind);
+    bannerText.textContent = text;
+  }
+  function hideBanner() {
+    banner.classList.add('hidden');
+  }
+  document.getElementById('host-dialog-message-close-btn').addEventListener('click', hideBanner);
+  document.getElementById('paste-host-config-btn').addEventListener('click', function () {
+    showBanner('default', 'Paste a host config block here to auto-fill this form.');
+  });
+
+  /* ---------- validation on save (demo) ---------- */
+  function setFieldError(input, message) {
+    input.classList.add('is-invalid');
+    var field = input.closest('.field');
+    if (field && message) {
+      var hint = document.createElement('span');
+      hint.className = 'he-field-error';
+      hint.textContent = message;
+      field.appendChild(hint);
+    }
+  }
+  function clearErrors() {
+    form.querySelectorAll('.is-invalid').forEach(function (el) {
+      el.classList.remove('is-invalid');
+    });
+    form.querySelectorAll('.he-field-error').forEach(function (el) {
+      el.remove();
+    });
+  }
+  form.addEventListener('input', function (event) {
+    var el = event.target;
+    if (el.classList && el.classList.contains('is-invalid')) {
+      el.classList.remove('is-invalid');
+      var field = el.closest('.field');
+      if (field) {
+        var hint = field.querySelector('.he-field-error');
+        if (hint) hint.remove();
+      }
+    }
+    if (el.closest && (el.closest('.he-card') || el.id === 'name')) {
+      updateNodeSummary(el.closest('.he-card'));
+      updateRoute();
+    }
+  });
+
+  function validatePort(input) {
+    var value = input.value.trim();
+    if (!value) return 'Required';
+    if (!/^[0-9]+$/.test(value)) return 'Digits only';
+    var port = Number(value);
+    if (port < 1 || port > 65535) return 'Must be 1–65535';
+    return null;
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearErrors();
+    var issues = 0;
+    var firstInvalid = null;
+
+    var nameInput = document.getElementById('name');
+    if (!nameInput.value.trim()) {
+      setFieldError(nameInput, 'Connection name is required');
+      issues += 1;
+      firstInvalid = firstInvalid || nameInput;
+    }
+
+    nodeCards().forEach(function (card) {
+      var label = card.querySelector('.he-step') ? card.querySelector('.he-step').textContent : 'Node';
+      ['sshHost', 'username'].forEach(function (role) {
+        var input = card.querySelector('[data-role="' + role + '"]');
+        if (input && !input.value.trim()) {
+          setFieldError(input, role === 'sshHost' ? label + ': host is required' : label + ': username is required');
+          issues += 1;
+          firstInvalid = firstInvalid || input;
+        }
+      });
+      var portInput = card.querySelector('[data-role="sshPort"]');
+      if (portInput) {
+        var portError = validatePort(portInput);
+        if (portError) {
+          setFieldError(portInput, label + ': ' + portError.toLowerCase());
+          issues += 1;
+          firstInvalid = firstInvalid || portInput;
+        }
+      }
+    });
+
+    if (issues > 0) {
+      selectTab('path');
+      showBanner('error', 'Fix ' + issues + (issues === 1 ? ' issue' : ' issues') + ' before saving this connection.');
+      if (firstInvalid) {
+        var invalidCard = firstInvalid.closest('.he-card');
+        if (invalidCard && invalidCard.getAttribute('data-expanded') !== 'true') {
+          setCardExpanded(invalidCard, true);
+        }
+        firstInvalid.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        firstInvalid.focus({ preventScroll: true });
+      }
+      return;
+    }
+
+    showBanner('success', 'Host "' + nameInput.value.trim() + '" saved.');
+  });
+
+  /* ---------- init ---------- */
+  function instantiateRow(templateId) {
+    var wrap = document.createElement('div');
+    wrap.appendChild(document.getElementById(templateId).content.cloneNode(true));
+    return wrap.querySelector('.he-table-row');
+  }
+  function seedForward(name, localPort, remotePort, auto) {
+    var row = instantiateRow('forward-row-template');
+    row.querySelector('[data-field="name"]').value = name;
+    row.querySelector('[data-field="localPort"]').value = localPort;
+    row.querySelector('[data-field="remotePort"]').value = remotePort;
+    row.querySelector('[data-field="autoStart"]').checked = auto;
+    forwardList.appendChild(row);
+  }
+  function seedService(name, localPort, servicePort, command) {
+    var row = instantiateRow('service-row-template');
+    row.querySelector('[data-field="name"]').value = name;
+    row.querySelector('[data-field="forwardLocalPort"]').value = localPort;
+    row.querySelector('[data-field="port"]').value = servicePort;
+    row.querySelector('textarea[data-field="startCommand"]').value = command;
+    var previewText = row.querySelector('.he-cmd-text');
+    previewText.textContent = command;
+    previewText.title = command;
+    previewText.classList.remove('is-empty');
+    serviceList.appendChild(row);
+  }
+
+  seedForward('postgres', '5432', '5432', true);
+  seedForward('redis', '6379', '6379', false);
+  seedService('app-api', '18080', '8080', 'systemctl --user start app-api');
+  seedService('postgresql', '15432', '5432', 'cd /opt/postgres\nsource ./env.sh\nsystemctl --user start postgresql');
+
+  renumberHops();
+  updateRoute();
+  updateCounts();
+})();
+</script>
+</body>
+</html>

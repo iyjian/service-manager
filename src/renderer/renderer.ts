@@ -45,21 +45,21 @@ const nameInput = requireElement<HTMLInputElement>('#name');
 const sshHostInput = requireElement<HTMLInputElement>('#ssh-host');
 const sshPortInput = requireElement<HTMLInputElement>('#ssh-port');
 const usernameInput = requireElement<HTMLInputElement>('#username');
-const authTypeSelect = requireElement<HTMLSelectElement>('#auth-type');
 const passwordInput = requireElement<HTMLInputElement>('#password');
 const privateKeyInput = requireElement<HTMLTextAreaElement>('#private-key');
 const passphraseInput = requireElement<HTMLInputElement>('#passphrase');
 const passwordRow = requireElement<HTMLElement>('#password-row');
 const privateKeyRow = requireElement<HTMLElement>('#private-key-row');
-const passphraseRow = requireElement<HTMLElement>('#passphrase-row');
 const importPrivateKeyButton = requireElement<HTMLButtonElement>('#import-private-key-btn');
 const togglePrivateKeyButton = requireElement<HTMLButtonElement>('#toggle-private-key-btn');
-const privateKeyContent = requireElement<HTMLElement>('#private-key-content');
 const privateKeySourceStatus = requireElement<HTMLElement>('#private-key-source-status');
+const privateKeySourcePath = requireElement<HTMLElement>('#private-key-source-path');
 const privateKeySummaryToggle = requireElement<HTMLButtonElement>('#private-key-summary-toggle');
 const targetPrivateKeyDetails = requireElement<HTMLElement>('#target-private-key-details');
-const useJumpHostInput = requireElement<HTMLInputElement>('#use-jump-host');
-const jumpHostSection = requireElement<HTMLElement>('#jump-host-section');
+const targetNodeCard = requireElement<HTMLElement>('#target-node-card');
+const targetCardToggle = requireElement<HTMLButtonElement>('#target-card-toggle');
+const targetKeyReplaceButton = requireElement<HTMLButtonElement>('#target-key-replace');
+const targetPasswordVisibilityToggle = requireElement<HTMLButtonElement>('#password-row .he-password-toggle');
 const jumpHostEditorList = requireElement<HTMLDivElement>('#jump-host-editor-list');
 const addJumpHostButton = requireElement<HTMLButtonElement>('#add-jump-host-btn');
 const forwardEditorList = requireElement<HTMLDivElement>('#forward-editor-list');
@@ -399,87 +399,128 @@ function clearHostDialogMessage(): void {
 }
 
 function setPrivateKeyExpanded(expanded: boolean): void {
-  privateKeyContent.classList.toggle('hidden', !expanded);
-  togglePrivateKeyButton.innerHTML = renderButtonContent('key', expanded ? 'Hide Key' : 'Paste Key');
+  targetPrivateKeyDetails.classList.toggle('hidden', !expanded);
   privateKeySummaryToggle.setAttribute('aria-expanded', String(expanded));
 }
 
 function updatePrivateKeySourceStatus(): void {
   const hasKeyContent = privateKeyInput.value.trim().length > 0;
   if (editingPrivateKeyPath) {
-    const source = getFileName(editingPrivateKeyPath);
-    privateKeySourceStatus.textContent = hasKeyContent ? `Imported: ${source}` : `Key file: ${source}`;
+    privateKeySourceStatus.textContent = hasKeyContent ? 'Private key configured' : 'Key file selected';
+    privateKeySourcePath.textContent = getFileName(editingPrivateKeyPath);
     return;
   }
 
-  privateKeySourceStatus.textContent = hasKeyContent ? 'Pasted key content' : 'No key configured';
+  privateKeySourceStatus.textContent = hasKeyContent ? 'Private key configured' : 'No key configured';
+  privateKeySourcePath.textContent = hasKeyContent ? 'pasted key content' : '';
+}
+
+function nodeFieldValue(card: HTMLElement, field: string): string {
+  return card.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.value.trim() ?? '';
+}
+
+function nodeRoutePart(card: HTMLElement): string {
+  const host = nodeFieldValue(card, 'sshHost');
+  if (!host) return '…';
+  const username = nodeFieldValue(card, 'username');
+  const port = nodeFieldValue(card, 'sshPort') || '22';
+  return `${username ? `${username}@` : ''}${host}:${port}`;
+}
+
+function nodeAuthLabel(card: HTMLElement): string {
+  return card.dataset.nodeAuth === 'password' ? 'Password' : 'Private Key';
+}
+
+function updateNodeSummary(card: HTMLElement): void {
+  const text = card.querySelector<HTMLElement>('.he-card-summary-text');
+  if (text) text.textContent = `${nodeRoutePart(card)} · ${nodeAuthLabel(card)}`;
+}
+
+function applyCardExpanded(card: HTMLElement, expanded: boolean): void {
+  card.dataset.expanded = String(expanded);
+  card.querySelector('.he-card-toggle')?.setAttribute('aria-expanded', String(expanded));
+  card.querySelector<HTMLElement>('.he-card-body')?.classList.toggle('hidden', !expanded);
+}
+
+function setCardExpanded(card: HTMLElement, expanded: boolean): void {
+  if (expanded) {
+    form.querySelectorAll<HTMLElement>('.he-card').forEach((other) => {
+      if (other !== card) applyCardExpanded(other, false);
+    });
+  }
+  applyCardExpanded(card, expanded);
+  renderHostEditRoute();
 }
 
 function toggleAuthFields(): void {
-  if (authTypeSelect.value === 'password') {
-    passwordRow.classList.remove('hidden');
-    privateKeyRow.classList.add('hidden');
-    passphraseRow.classList.add('hidden');
-    targetPrivateKeyDetails.classList.add('hidden');
-  } else {
-    passwordRow.classList.add('hidden');
-    privateKeyRow.classList.remove('hidden');
-    passphraseRow.classList.remove('hidden');
-    targetPrivateKeyDetails.classList.remove('hidden');
+  const authType = targetNodeCard.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
+  passwordRow.classList.toggle('hidden', authType !== 'password');
+  privateKeyRow.classList.toggle('hidden', authType !== 'privateKey');
+  if (authType !== 'privateKey') {
+    setPrivateKeyExpanded(false);
   }
+  targetNodeCard.querySelectorAll<HTMLButtonElement>('.he-seg-btn').forEach((button) => {
+    const active = button.dataset.auth === authType;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   updatePrivateKeySourceStatus();
+  updateNodeSummary(targetNodeCard);
+  renderHostEditRoute();
 }
 
-function renderHostEditRoute(hopCount: number): void {
+function bindPasswordVisibilityToggle(button: HTMLButtonElement): void {
+  button.addEventListener('click', () => {
+    const show = button.getAttribute('aria-pressed') !== 'true';
+    button.setAttribute('aria-pressed', String(show));
+    button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    const input = button.parentElement?.querySelector<HTMLInputElement>('input');
+    if (input) input.type = show ? 'text' : 'password';
+  });
+}
+
+function closeHostMenus(): void {
+  form.querySelectorAll<HTMLElement>('.he-menu').forEach((menu) => menu.classList.add('hidden'));
+}
+
+function renderHostEditRoute(): void {
+  const expanded = form.querySelector<HTMLElement>('.he-card[data-expanded="true"]');
   const arrow = `
-    <svg class="host-edit-route-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-      <path d="m6 3.5 4.5 4.5L6 12.5"></path>
-    </svg>
-  `;
-  const hops = Array.from({ length: hopCount }, (_, index) => `
-    ${arrow}
-    <span class="host-edit-route-hop">Hop ${index + 1}</span>
-  `).join('');
-  hostEditRoute.innerHTML = `
-    <span class="host-edit-route-endpoint">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"></rect><path d="M5.5 13.5h5M8 10.5v3"></path></svg>
-      Local
-    </span>
-    ${hops}
-    ${arrow}
-    <span class="host-edit-route-endpoint host-edit-route-target">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.5" y="2" width="11" height="5" rx="1"></rect><rect x="2.5" y="9" width="11" height="5" rx="1"></rect><path d="M5 4.5h.01M5 11.5h.01"></path></svg>
-      Target
+    <span class="he-route-sep" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 3.5 4.5 4.5L6 12.5"></path></svg>
     </span>
   `;
-  const path = ['Local', ...Array.from({ length: hopCount }, (_, index) => `Hop ${index + 1}`), 'Target'];
+  const chip = (label: string, modifier: string): string =>
+    `<span class="he-route-chip${modifier ? ` ${modifier}` : ''}">${escapeHtml(label)}</span>`;
+
+  const parts = [chip('local', 'is-local')];
+  jumpHostEditorList.querySelectorAll<HTMLElement>('.he-hop-item .he-card').forEach((card) => {
+    parts.push(chip(nodeRoutePart(card), card === expanded ? 'is-active' : ''));
+  });
+  parts.push(chip(nodeRoutePart(targetNodeCard), targetNodeCard === expanded ? 'is-active' : ''));
+  hostEditRoute.innerHTML = parts.join(arrow);
+
+  const path = ['Local', ...Array.from(jumpHostEditorList.querySelectorAll('.he-hop-item')).map((_, index) => `Hop ${index + 1}`), 'Target'];
   hostEditRoute.setAttribute('aria-label', path.join(' connects to '));
 }
 
 function updateHostEditCounts(): void {
-  const hopCount = jumpHostEditorList.querySelectorAll('.jump-host-editor-row').length;
+  const hopCount = jumpHostEditorList.querySelectorAll('.he-hop-item').length;
   const forwardCount = forwardEditorList.querySelectorAll('.forward-editor-row').length;
   const serviceCount = serviceEditorList.querySelectorAll('.service-editor-row').length;
   hostEditPathCount.textContent = `${hopCount} ${hopCount === 1 ? 'hop' : 'hops'}`;
   hostEditForwardsCount.textContent = String(forwardCount);
   hostEditServicesCount.textContent = String(serviceCount);
-  renderHostEditRoute(hopCount);
+  renderHostEditRoute();
+}
+
+function syncJumpSection(): void {
+  refreshJumpHostEditorTitles();
+  updateHostEditCounts();
 }
 
 function setActiveHostEditSection(section: HostEditSection, focusTab = false): void {
   activateTabSet(hostEditTabItems, section, { focus: focusTab, hiddenClass: 'hidden' });
-}
-
-function syncJumpSection(): void {
-  const hasJumpHosts = jumpHostEditorList.children.length > 0;
-  useJumpHostInput.checked = hasJumpHosts;
-  if (!hasJumpHosts) {
-    jumpHostSection.classList.add('hidden');
-  } else {
-    jumpHostSection.classList.remove('hidden');
-    refreshJumpHostEditorTitles();
-  }
-  updateHostEditCounts();
 }
 
 function isNumericPortText(value: string): boolean {
@@ -742,7 +783,7 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   sshHostInput.value = draft.sshHost ?? '';
   sshPortInput.value = String(draft.sshPort ?? 22);
   usernameInput.value = draft.username ?? '';
-  authTypeSelect.value = draft.authType === 'password' ? 'password' : 'privateKey';
+  targetNodeCard.dataset.nodeAuth = draft.authType === 'password' ? 'password' : 'privateKey';
   passwordInput.value = draft.password ?? '';
   privateKeyInput.value = draft.privateKey ?? '';
   passphraseInput.value = draft.passphrase ?? '';
@@ -767,7 +808,9 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   toggleAuthFields();
   setPrivateKeyExpanded(Boolean(privateKeyInput.value && !editingPrivateKeyPath));
   updatePrivateKeySourceStatus();
-  syncJumpSection();
+  refreshJumpHostEditorTitles();
+  updateNodeSummary(targetNodeCard);
+  applyCardExpanded(targetNodeCard, true);
   updateHostEditCounts();
   syncNumericPortBaselines(form);
 }
@@ -1000,12 +1043,11 @@ function applyStaticButtonIcons(): void {
   exportConfigButton.innerHTML = renderButtonContent('exportConfig', 'Export Config');
   pasteHostConfigButton.innerHTML = renderButtonContent('pasteConfig', 'Paste Config');
   importPrivateKeyButton.innerHTML = renderButtonContent('key', 'Import');
-  addJumpHostButton.innerHTML = renderButtonContent('addHop', 'Add Hop');
   addForwardButton.innerHTML = renderButtonContent('addRule', 'Add Rule');
   addServiceButton.innerHTML = renderButtonContent('addService', 'Add Service');
-  saveHostButton.innerHTML = renderButtonContent('save', 'Save Host');
-  resetButton.innerHTML = renderButtonContent('reset', 'Reset');
-  cancelHostDialogButton.innerHTML = renderButtonContent('cancel', 'Cancel');
+  saveHostButton.textContent = 'Save Host';
+  resetButton.textContent = 'Reset Changes';
+  cancelHostDialogButton.textContent = 'Cancel';
   serviceLogPrevButton.innerHTML = renderButtonContent('prev', 'Prev');
   serviceLogNextButton.innerHTML = renderButtonContent('next', 'Next');
 }
@@ -1060,126 +1102,205 @@ function getEditorValue(row: HTMLElement, field: string): string {
 }
 
 function updateJumpPrivateKeyStatus(row: HTMLElement): void {
-  const privateKey = getEditorValue(row, 'privateKey');
   const status = row.querySelector<HTMLElement>('.jump-private-key-status');
   if (status) {
-    status.textContent = privateKey ? 'Private key configured' : 'Private Key';
+    status.textContent = getEditorValue(row, 'privateKey') ? 'Private key configured' : 'No key configured';
   }
 }
 
 function setJumpPrivateKeyExpanded(row: HTMLElement, expanded: boolean): void {
-  const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
-  const toggle = row.querySelector<HTMLButtonElement>('.jump-private-key-row');
-  const details = row.querySelector<HTMLElement>('.jump-private-key-details');
-  const nextExpanded = authType !== 'password' && expanded;
-  toggle?.setAttribute('aria-expanded', String(nextExpanded));
-  details?.classList.toggle('hidden', !nextExpanded);
+  row.querySelector<HTMLButtonElement>('.jump-key-toggle')?.setAttribute('aria-expanded', String(expanded));
+  row.querySelector<HTMLElement>('.jump-key-details')?.classList.toggle('hidden', !expanded);
 }
 
 function toggleJumpHostEditorAuthFields(row: HTMLElement): void {
-  const authType = row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.value ?? 'privateKey';
-  const passwordRow = row.querySelector<HTMLElement>('.jump-password-row');
-  const privateKeyRow = row.querySelector<HTMLElement>('.jump-private-key-row');
-
-  if (authType === 'password') {
-    passwordRow?.classList.remove('hidden');
-    privateKeyRow?.classList.add('hidden');
-    setJumpPrivateKeyExpanded(row, false);
-    return;
-  }
-
-  passwordRow?.classList.add('hidden');
-  privateKeyRow?.classList.remove('hidden');
-  const expanded = privateKeyRow?.getAttribute('aria-expanded') === 'true';
-  setJumpPrivateKeyExpanded(row, expanded);
+  const card = row.querySelector<HTMLElement>('.he-card');
+  const authType = card?.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
+  row.querySelector<HTMLElement>('.jump-password-row')?.classList.toggle('hidden', authType !== 'password');
+  row.querySelector<HTMLElement>('.jump-key-row')?.classList.toggle('hidden', authType !== 'privateKey');
+  setJumpPrivateKeyExpanded(row, false);
+  row.querySelectorAll<HTMLButtonElement>('.he-seg-btn').forEach((button) => {
+    const active = button.dataset.auth === authType;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   updateJumpPrivateKeyStatus(row);
+  if (card) {
+    updateNodeSummary(card);
+    renderHostEditRoute();
+  }
 }
 
 function refreshJumpHostEditorTitles(): void {
-  Array.from(jumpHostEditorList.querySelectorAll<HTMLElement>('.jump-host-editor-row')).forEach((row, index) => {
-    const title = row.querySelector<HTMLElement>('.jump-host-editor-title');
-    if (title) {
-      title.textContent = `Hop ${index + 1}`;
-    }
-    row.querySelector<HTMLElement>('.host-edit-step-number')!.textContent = String(index + 1);
-    row.querySelector<HTMLButtonElement>('.jump-host-remove')?.setAttribute('aria-label', `Remove Hop ${index + 1}`);
+  Array.from(jumpHostEditorList.querySelectorAll<HTMLElement>('.he-hop-item')).forEach((item, index) => {
+    const num = item.querySelector<HTMLElement>('.he-hop-num');
+    if (num) num.textContent = String(index + 1);
+    const label = item.querySelector<HTMLElement>('.he-step-label');
+    if (label) label.textContent = `Hop ${index + 1}`;
+    const menuButton = item.querySelector<HTMLButtonElement>('.he-node-menu');
+    menuButton?.setAttribute('aria-label', `Hop ${index + 1} actions`);
+    const card = item.querySelector<HTMLElement>('.he-card');
+    if (card) updateNodeSummary(card);
   });
-  updateHostEditCounts();
 }
+
+function readJumpDraftFromRow(row: HTMLElement): JumpHostConfig {
+  const card = row.querySelector<HTMLElement>('.he-card');
+  return {
+    sshHost: getEditorValue(row, 'sshHost'),
+    sshPort: Number(getEditorValue(row, 'sshPort') || '22'),
+    username: getEditorValue(row, 'username'),
+    authType: card?.dataset.nodeAuth === 'password' ? 'password' : 'privateKey',
+    password: getEditorValue(row, 'password') || undefined,
+    privateKey: row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]')?.value || undefined,
+    passphrase: getEditorValue(row, 'passphrase') || undefined,
+  };
+}
+
+function handleHopMenuAction(item: HTMLButtonElement, row: HTMLElement): void {
+  const action = item.dataset.menuAction;
+  const list = row.parentElement;
+  if (action === 'delete') {
+    row.remove();
+  } else if (action === 'duplicate') {
+    row.after(createJumpHostEditorRow(readJumpDraftFromRow(row)));
+  } else if (action === 'up') {
+    const prev = row.previousElementSibling;
+    if (prev && prev.classList.contains('he-hop-item') && list) {
+      list.insertBefore(row, prev);
+    }
+  } else if (action === 'down') {
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('he-hop-item') && list) {
+      list.insertBefore(next, row);
+    }
+  } else {
+    return;
+  }
+  syncJumpSection();
+}
+
+const EYE_ICON = `
+  <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"></path><circle cx="8" cy="8" r="2"></circle></svg>
+  <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"></path></svg>
+`;
+const KEY_ICON = `
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="8" r="3"></circle><path d="M8 8h6M11.5 8v2.5M14 8v1.5"></path></svg>
+`;
+const CHEVRON_ICON = `
+  <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
+`;
+const MENU_DOTS_ICON = `
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.2"></circle><circle cx="8" cy="8" r="1.2"></circle><circle cx="8" cy="12.5" r="1.2"></circle></svg>
+`;
+const ARROW_RIGHT_ICON = `
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8h11M9.5 4.5 13 8l-3.5 3.5"></path></svg>
+`;
 
 function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row jump-host-editor-row host-edit-path-row host-edit-path-grid';
-  row.setAttribute('role', 'row');
+  row.className = 'he-hop-item jump-host-editor-row';
+  const authType = draft?.authType === 'password' ? 'password' : 'privateKey';
   row.innerHTML = `
-    <div class="host-edit-step-cell" role="cell">
-      <span class="host-edit-step-number"></span>
-      <span class="jump-host-editor-title">Hop</span>
-    </div>
-    <label class="host-edit-cell-label" role="cell">
-      <span class="sr-only">Hop SSH Host</span>
-      <input class="input" data-field="sshHost" value="${safeValue(draft?.sshHost)}" aria-label="Hop SSH Host" />
-    </label>
-    <label class="host-edit-cell-label" role="cell">
-      <span class="sr-only">Hop SSH Port</span>
-      <input class="input" data-field="sshPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.sshPort ?? 22)}" data-port-input aria-label="Hop SSH Port" />
-    </label>
-    <label class="host-edit-cell-label" role="cell">
-      <span class="sr-only">Hop Username</span>
-      <input class="input" data-field="username" value="${safeValue(draft?.username)}" aria-label="Hop Username" />
-    </label>
-    <label class="host-edit-cell-label" role="cell">
-      <span class="sr-only">Hop Auth Type</span>
-      <select class="input" data-field="authType" aria-label="Hop Auth Type">
-        <option value="privateKey" ${draft?.authType !== 'password' ? 'selected' : ''}>Private Key</option>
-        <option value="password" ${draft?.authType === 'password' ? 'selected' : ''}>Password</option>
-      </select>
-    </label>
-    <div class="host-edit-credential-cell" role="cell">
-      <label class="host-edit-cell-label jump-password-row hidden">
-        <span class="sr-only">Hop Password</span>
-        <input class="input" data-field="password" type="password" value="${safeValue(draft?.password)}" aria-label="Hop Password" />
-      </label>
-      <button type="button" class="host-edit-credential-toggle jump-private-key-row" aria-expanded="false">
-        <span class="jump-private-key-status">Private Key</span>
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
-      </button>
-    </div>
-    <button type="button" class="host-edit-row-remove jump-host-remove" aria-label="Remove Hop">${renderButtonIcon('delete')}</button>
-    <div class="host-edit-path-details jump-private-key-details hidden" role="cell">
-      <label class="field field-privatekey field-xs">
-        Private Key
-        <textarea class="input" data-field="privateKey" rows="2" spellcheck="false">${escapeHtml(draft?.privateKey ?? '')}</textarea>
-      </label>
-      <label class="field field-xs jump-passphrase-row">
-        Passphrase (Optional)
-        <input class="input" data-field="passphrase" type="password" value="${safeValue(draft?.passphrase)}" />
-      </label>
-      <div class="host-edit-key-actions">
-        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">${renderButtonContent('key', 'Import')}</button>
+    <div class="he-node">
+      <div class="he-marker"><span class="he-dot he-hop-num"></span></div>
+      <div>
+        <div class="he-card" data-node-auth="${authType}" data-expanded="false">
+          <div class="he-card-summary">
+            <button type="button" class="he-card-toggle" aria-expanded="false">
+              <span class="he-step he-step-label">Hop</span>
+              <span class="he-card-summary-text"></span>
+              ${CHEVRON_ICON}
+            </button>
+            <div class="he-node-menu-wrap">
+              <button type="button" class="icon-btn he-node-menu" aria-label="Hop actions" aria-haspopup="true">${MENU_DOTS_ICON}</button>
+              <div class="he-menu hidden" role="menu">
+                <button type="button" role="menuitem" data-menu-action="up">Move Up</button>
+                <button type="button" role="menuitem" data-menu-action="down">Move Down</button>
+                <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
+                <div class="he-menu-sep" role="separator"></div>
+                <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Hop</button>
+              </div>
+            </div>
+          </div>
+          <div class="he-card-body hidden">
+            <div class="he-node-grid">
+              <label class="field field-xs">SSH Host<input class="input he-mono" data-field="sshHost" value="${safeValue(draft?.sshHost)}" aria-label="Hop SSH Host" /></label>
+              <label class="field field-xs">Port<input class="input he-mono" data-field="sshPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.sshPort ?? 22)}" data-port-input aria-label="Hop SSH Port" /></label>
+              <label class="field field-xs">Username<input class="input he-mono" data-field="username" value="${safeValue(draft?.username)}" aria-label="Hop Username" /></label>
+            </div>
+            <div class="he-auth-row">
+              <span class="he-auth-label">Authentication</span>
+              <div class="he-seg" role="group">
+                <button type="button" class="he-seg-btn" data-auth="privateKey" aria-pressed="false">Private Key</button>
+                <button type="button" class="he-seg-btn" data-auth="password" aria-pressed="false">Password</button>
+              </div>
+            </div>
+            <div class="he-cred">
+              <div class="jump-password-row">
+                <label class="field field-xs">Password
+                  <span class="he-password-wrap">
+                    <input class="input he-mono" data-field="password" type="password" value="${safeValue(draft?.password)}" aria-label="Hop Password" />
+                    <button type="button" class="he-password-toggle" aria-pressed="false" aria-label="Show password">${EYE_ICON}</button>
+                  </span>
+                </label>
+              </div>
+              <div class="jump-key-row hidden">
+                <div class="he-key-editor">
+                  <div class="he-key-summary">
+                    <button type="button" class="he-key-toggle jump-key-toggle" aria-expanded="false">
+                      <span class="he-key-summary-left">${KEY_ICON}<span class="he-key-status-text jump-private-key-status">No key configured</span></span>
+                      ${CHEVRON_ICON}
+                    </button>
+                    <button type="button" class="btn btn-ghost btn-sm jump-key-replace">Replace</button>
+                  </div>
+                  <div class="he-key-details jump-key-details hidden">
+                    <label class="field field-xs">Key Content
+                      <textarea class="input he-mono" data-field="privateKey" rows="3" spellcheck="false" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----">${escapeHtml(draft?.privateKey ?? '')}</textarea>
+                    </label>
+                    <div class="he-key-details-row">
+                      <label class="field field-xs">Passphrase (Optional)<input class="input he-mono" data-field="passphrase" type="password" value="${safeValue(draft?.passphrase)}" /></label>
+                      <div class="he-key-actions">
+                        <button type="button" class="btn btn-secondary btn-sm btn-nowrap jump-import-private-key">${renderButtonContent('key', 'Import')}</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   `;
 
-  row.querySelector<HTMLButtonElement>('.jump-host-remove')?.addEventListener('click', () => {
-    row.remove();
-    syncJumpSection();
+  const card = row.querySelector<HTMLElement>('.he-card')!;
+
+  row.querySelector('.he-card-toggle')?.addEventListener('click', () => {
+    setCardExpanded(card, card.dataset.expanded !== 'true');
   });
 
-  row.querySelector<HTMLSelectElement>('[data-field="authType"]')?.addEventListener('change', () => {
-    toggleJumpHostEditorAuthFields(row);
+  row.querySelectorAll<HTMLButtonElement>('.he-seg-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      card.dataset.nodeAuth = button.dataset.auth === 'password' ? 'password' : 'privateKey';
+      toggleJumpHostEditorAuthFields(row);
+    });
   });
 
-  row.querySelector<HTMLButtonElement>('.jump-private-key-row')?.addEventListener('click', () => {
-    const expanded = row.querySelector<HTMLButtonElement>('.jump-private-key-row')?.getAttribute('aria-expanded') === 'true';
+  row.querySelector('.jump-key-toggle')?.addEventListener('click', () => {
+    const expanded = row.querySelector('.jump-key-toggle')?.getAttribute('aria-expanded') === 'true';
     setJumpPrivateKeyExpanded(row, !expanded);
   });
 
-  row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]')?.addEventListener('input', () => {
+  row.querySelector('.jump-key-replace')?.addEventListener('click', () => {
+    setJumpPrivateKeyExpanded(row, true);
+  });
+
+  row.querySelector('[data-field="privateKey"]')?.addEventListener('input', () => {
     updateJumpPrivateKeyStatus(row);
   });
 
-  row.querySelector<HTMLButtonElement>('.jump-import-private-key')?.addEventListener('click', async () => {
+  row.querySelector('.jump-import-private-key')?.addEventListener('click', async () => {
     try {
       const field = row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]');
       if (!field) {
@@ -1192,25 +1313,56 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
     }
   });
 
+  row.querySelector('.he-node-menu')?.addEventListener('click', () => {
+    const menu = row.querySelector<HTMLElement>('.he-menu');
+    const wasHidden = menu?.classList.contains('hidden');
+    closeHostMenus();
+    if (menu && wasHidden) menu.classList.remove('hidden');
+  });
+
+  row.querySelectorAll<HTMLButtonElement>('.he-menu button').forEach((menuItem) => {
+    menuItem.addEventListener('click', () => {
+      handleHopMenuAction(menuItem, row);
+      closeHostMenus();
+    });
+  });
+
+  const passwordToggle = row.querySelector<HTMLButtonElement>('.he-password-toggle');
+  if (passwordToggle) bindPasswordVisibilityToggle(passwordToggle);
+
+  row.addEventListener('input', () => {
+    updateNodeSummary(card);
+    renderHostEditRoute();
+  });
+
   bindNumericPortInputs(row);
   toggleJumpHostEditorAuthFields(row);
-  updateJumpPrivateKeyStatus(row);
+  updateNodeSummary(card);
   return row;
 }
 
 function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row forward-editor-row host-edit-resource-row host-edit-forward-grid';
+  row.className = 'he-table-row he-grid-forward forward-row forward-editor-row';
   row.setAttribute('role', 'row');
   row.innerHTML = `
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Rule Name</span><input class="input" data-field="name" value="${safeValue(draft?.name)}" aria-label="Rule Name" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Local Host</span><input class="input" data-field="localHost" value="${safeValue(draft?.localHost)}" aria-label="Local Host" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Local Port</span><input class="input" data-field="localPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.localPort)}" data-port-input aria-label="Local Port" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Remote Host</span><input class="input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" aria-label="Remote Host" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Remote Port</span><input class="input" data-field="remotePort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.remotePort)}" data-port-input aria-label="Remote Port" /></label>
-    <label class="host-edit-auto-cell" role="cell"><input class="checkbox" data-field="autoStart" type="checkbox" ${draft?.autoStart ? 'checked' : ''} /><span class="sr-only">Auto Start</span></label>
-    <button type="button" class="host-edit-row-remove forward-remove" aria-label="Remove forwarding rule">${renderButtonIcon('delete')}</button>
+    <input type="text" class="he-cell-input" data-field="name" value="${safeValue(draft?.name)}" placeholder="optional" role="cell" aria-label="Rule Name" />
+    <div class="he-endpoint" role="cell">
+      <input type="text" class="he-endpoint-input" data-field="localHost" value="${safeValue(draft?.localHost)}" aria-label="Local Host" />
+      <span class="he-endpoint-sep" aria-hidden="true"></span>
+      <input type="text" class="he-endpoint-input" data-field="localPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.localPort)}" data-port-input aria-label="Local Port" />
+    </div>
+    <span class="he-fwd-arrow" aria-hidden="true">${ARROW_RIGHT_ICON}</span>
+    <div class="he-endpoint" role="cell">
+      <input type="text" class="he-endpoint-input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" aria-label="Remote Host" />
+      <span class="he-endpoint-sep" aria-hidden="true"></span>
+      <input type="text" class="he-endpoint-input" data-field="remotePort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.remotePort)}" data-port-input aria-label="Remote Port" />
+    </div>
+    <span class="he-cell-center" role="cell">
+      <input type="checkbox" class="checkbox" data-field="autoStart" ${draft?.autoStart ? 'checked' : ''} aria-label="Auto Start" title="Automatically start this forwarding rule when the host connects." />
+    </span>
+    <button type="button" class="icon-btn he-row-remove forward-remove" aria-label="Remove forwarding rule">${renderButtonIcon('delete')}</button>
   `;
 
   row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
@@ -1222,22 +1374,101 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   return row;
 }
 
+function readServiceDraftFromRow(row: HTMLElement): ServiceDraft {
+  return {
+    id: getEditorValue(row, 'id') || undefined,
+    name: getEditorValue(row, 'name'),
+    startCommand: row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.value ?? '',
+    port: Number(getEditorValue(row, 'port') || '0'),
+    forwardLocalPort: getEditorValue(row, 'forwardLocalPort') ? Number(getEditorValue(row, 'forwardLocalPort')) : undefined,
+  };
+}
+
 function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'forward-row service-editor-row host-edit-resource-row host-edit-service-grid';
+  row.className = 'he-table-row he-grid-service service-editor-row';
   row.setAttribute('role', 'row');
+  const command = draft?.startCommand ?? '';
   row.innerHTML = `
     <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Service Name</span><input class="input" data-field="name" value="${safeValue(draft?.name)}" aria-label="Service Name" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Exposed Port (0 = disabled)</span><input class="input" data-field="port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.port)}" data-port-input aria-label="Exposed Port (0 = disabled)" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Forward Local Port (Optional)</span><input class="input" data-field="forwardLocalPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.forwardLocalPort)}" data-port-input aria-label="Forward Local Port (Optional)" /></label>
-    <label class="host-edit-cell-label" role="cell"><span class="sr-only">Start Command</span><textarea class="input service-command-input" data-field="startCommand" rows="1" spellcheck="false" aria-label="Start Command">${escapeHtml(draft?.startCommand ?? '')}</textarea></label>
-    <button type="button" class="host-edit-row-remove forward-remove" aria-label="Remove service">${renderButtonIcon('delete')}</button>
+    <input type="text" class="he-cell-input" data-field="name" value="${safeValue(draft?.name)}" placeholder="service name" role="cell" aria-label="Service Name" />
+    <div class="he-portmap" role="cell">
+      <input type="text" class="he-cell-input he-cell-mono" data-field="forwardLocalPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.forwardLocalPort)}" data-port-input aria-label="Local Port (Optional)" title="Optional local forwarded port" />
+      <span class="he-fwd-arrow" aria-hidden="true">${ARROW_RIGHT_ICON}</span>
+      <input type="text" class="he-cell-input he-cell-mono" data-field="port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.port)}" data-port-input aria-label="Service Port" title="Port 0 disables remote exposure" />
+    </div>
+    <div class="he-cmd" role="cell">
+      <div class="he-cmd-preview">
+        <span class="he-cmd-text${command ? '' : ' is-empty'}" title="${escapeAttribute(command)}">${command ? escapeHtml(command) : 'No start command'}</span>
+        <button type="button" class="he-cmd-expand" aria-label="Expand command editor" title="Expand command editor">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5H3.5V6M10 3.5h2.5V6M6 12.5H3.5V10M10 12.5h2.5V10"></path></svg>
+        </button>
+      </div>
+      <div class="he-cmd-editor hidden">
+        <textarea class="he-cmd-textarea" data-field="startCommand" rows="5" spellcheck="false" placeholder="systemctl --user start app.service" aria-label="Start Command">${escapeHtml(command)}</textarea>
+        <div class="he-cmd-editor-actions">
+          <button type="button" class="btn btn-ghost btn-sm he-cmd-copy">${renderButtonContent('copy', 'Copy')}</button>
+          <button type="button" class="btn btn-secondary btn-sm he-cmd-collapse">Collapse</button>
+        </div>
+      </div>
+    </div>
+    <div class="he-node-menu-wrap">
+      <button type="button" class="icon-btn he-node-menu" aria-label="Service actions" aria-haspopup="true">${MENU_DOTS_ICON}</button>
+      <div class="he-menu hidden" role="menu">
+        <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
+        <div class="he-menu-sep" role="separator"></div>
+        <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Service</button>
+      </div>
+    </div>
   `;
 
-  row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
-    row.remove();
-    updateHostEditCounts();
+  const expandEditor = (): void => {
+    row.querySelector<HTMLElement>('.he-cmd-editor')?.classList.remove('hidden');
+    row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.focus();
+  };
+  const syncPreview = (): void => {
+    const textarea = row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]');
+    const text = row.querySelector<HTMLElement>('.he-cmd-text');
+    if (!textarea || !text) return;
+    const value = textarea.value.replace(/\s+$/, '');
+    text.textContent = value || 'No start command';
+    text.title = value;
+    text.classList.toggle('is-empty', !value);
+  };
+
+  row.querySelector('.he-cmd-expand')?.addEventListener('click', expandEditor);
+  row.querySelector('.he-cmd-text')?.addEventListener('click', expandEditor);
+  row.querySelector('.he-cmd-collapse')?.addEventListener('click', () => {
+    row.querySelector<HTMLElement>('.he-cmd-editor')?.classList.add('hidden');
+    syncPreview();
+  });
+  row.querySelector('.he-cmd-copy')?.addEventListener('click', async () => {
+    const value = row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.value ?? '';
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      // clipboard unavailable: ignore
+    }
+  });
+
+  row.querySelector('.he-node-menu')?.addEventListener('click', () => {
+    const menu = row.querySelector<HTMLElement>('.he-menu');
+    const wasHidden = menu?.classList.contains('hidden');
+    closeHostMenus();
+    if (menu && wasHidden) menu.classList.remove('hidden');
+  });
+
+  row.querySelectorAll<HTMLButtonElement>('.he-menu button').forEach((menuItem) => {
+    menuItem.addEventListener('click', () => {
+      const action = menuItem.dataset.menuAction;
+      if (action === 'delete') {
+        row.remove();
+      } else if (action === 'duplicate') {
+        row.after(createServiceEditorRow(readServiceDraftFromRow(row)));
+      }
+      updateHostEditCounts();
+      closeHostMenus();
+    });
   });
 
   bindNumericPortInputs(row);
@@ -1292,7 +1523,7 @@ function collectJumpHostsDraft(): JumpHostConfig[] {
     const sshHost = get('sshHost');
     const sshPortRaw = get('sshPort');
     const username = get('username');
-    const authType = get('authType') === 'password' ? 'password' : 'privateKey';
+    const authType = row.querySelector<HTMLElement>('.he-card')?.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
     const password = get('password');
     const privateKey = get('privateKey');
     const passphrase = get('passphrase');
@@ -1368,11 +1599,13 @@ function resetForm(): void {
   jumpHostEditorList.innerHTML = '';
   forwardEditorList.innerHTML = '';
   serviceEditorList.innerHTML = '';
+  targetNodeCard.dataset.nodeAuth = 'privateKey';
   setPrivateKeyExpanded(false);
   updatePrivateKeySourceStatus();
   clearHostDialogMessage();
   toggleAuthFields();
-  syncJumpSection();
+  applyCardExpanded(targetNodeCard, true);
+  updateNodeSummary(targetNodeCard);
   updateHostEditCounts();
   syncNumericPortBaselines(form);
   setActiveHostEditSection('path');
@@ -1389,7 +1622,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     sshHostInput.value = host.sshHost;
     sshPortInput.value = String(host.sshPort);
     usernameInput.value = host.username;
-    authTypeSelect.value = host.authType;
+    targetNodeCard.dataset.nodeAuth = host.authType;
     passwordInput.value = host.password ?? '';
     privateKeyInput.value = host.privateKey ?? '';
     passphraseInput.value = host.passphrase ?? '';
@@ -1425,7 +1658,9 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   toggleAuthFields();
   setPrivateKeyExpanded(false);
   updatePrivateKeySourceStatus();
-  syncJumpSection();
+  refreshJumpHostEditorTitles();
+  updateNodeSummary(targetNodeCard);
+  applyCardExpanded(targetNodeCard, true);
   updateHostEditCounts();
   syncNumericPortBaselines(form);
   showDialog(hostDialog, 'host');
@@ -2415,8 +2650,13 @@ addForwardButton.addEventListener('click', () => {
 });
 
 addJumpHostButton.addEventListener('click', () => {
-  jumpHostEditorList.appendChild(createJumpHostEditorRow());
-  syncJumpSection();
+  const row = createJumpHostEditorRow();
+  jumpHostEditorList.appendChild(row);
+  refreshJumpHostEditorTitles();
+  updateHostEditCounts();
+  const card = row.querySelector<HTMLElement>('.he-card');
+  if (card) setCardExpanded(card, true);
+  row.querySelector<HTMLInputElement>('[data-field="sshHost"]')?.focus();
 });
 
 addServiceButton.addEventListener('click', () => {
@@ -2471,7 +2711,28 @@ hostDialogMessageCloseButton.addEventListener('click', clearHostDialogMessage);
 closeHostDialogButton.addEventListener('click', closeHostDialog);
 cancelHostDialogButton.addEventListener('click', closeHostDialog);
 resetButton.addEventListener('click', () => resetForm());
-authTypeSelect.addEventListener('change', toggleAuthFields);
+targetCardToggle.addEventListener('click', () => {
+  setCardExpanded(targetNodeCard, targetNodeCard.dataset.expanded !== 'true');
+});
+targetNodeCard.querySelectorAll<HTMLButtonElement>('.he-seg-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    targetNodeCard.dataset.nodeAuth = button.dataset.auth === 'password' ? 'password' : 'privateKey';
+    toggleAuthFields();
+  });
+});
+targetNodeCard.addEventListener('input', () => {
+  updateNodeSummary(targetNodeCard);
+  renderHostEditRoute();
+});
+targetKeyReplaceButton.addEventListener('click', () => {
+  setPrivateKeyExpanded(true);
+});
+bindPasswordVisibilityToggle(targetPasswordVisibilityToggle);
+document.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.closest('.he-node-menu-wrap')) closeHostMenus();
+});
 privateKeyInput.addEventListener('input', () => {
   if (editingPrivateKeyPath && privateKeyInput.value.trim() === '') {
     editingPrivateKeyPath = undefined;
@@ -2479,12 +2740,11 @@ privateKeyInput.addEventListener('input', () => {
   updatePrivateKeySourceStatus();
 });
 togglePrivateKeyButton.addEventListener('click', () => {
-  setPrivateKeyExpanded(privateKeyContent.classList.contains('hidden'));
+  privateKeyInput.focus();
 });
 privateKeySummaryToggle.addEventListener('click', () => {
-  setPrivateKeyExpanded(privateKeyContent.classList.contains('hidden'));
+  setPrivateKeyExpanded(targetPrivateKeyDetails.classList.contains('hidden'));
 });
-useJumpHostInput.addEventListener('change', syncJumpSection);
 serviceLogSearchInput.addEventListener('input', () => {
   renderServiceLogView({ preserveScroll: true, focusActiveMatch: true });
 });
@@ -2614,7 +2874,7 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
-    const authType = authTypeSelect.value === 'password' ? 'password' : 'privateKey';
+    const authType = targetNodeCard.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
     const draft: HostDraft = {
       id: hostIdInput.value.trim() || undefined,
       name: nameInput.value.trim(),

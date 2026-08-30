@@ -1048,7 +1048,7 @@
         <div class="dialog-head">
           <h2 id="host-dialog-title" class="section-title">Add Host</h2>
           <div class="dialog-head-actions">
-            <button id="paste-host-config-btn" type="button" class="btn btn-secondary btn-sm">Paste Config</button>
+            <button id="paste-host-config-btn" type="button" class="btn btn-ghost btn-sm">Paste Config</button>
             <button id="close-host-dialog-btn" type="button" class="icon-btn" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg></button>
           </div>
         </div>
@@ -1105,107 +1105,129 @@
             aria-labelledby="host-edit-path-tab"
             data-host-edit-panel="path"
           >
-            <div class="host-edit-path-toolbar">
-              <label class="field field-xs host-edit-name-field">
-                Host Name
+            <div class="he-toolbar">
+              <label class="field field-xs he-name-field">
+                Connection Name
                 <input id="name" type="text" required class="input" />
               </label>
-              <div id="host-edit-route" class="host-edit-route" aria-label="Local connects directly to Target">
-                <span class="host-edit-route-endpoint">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg>
-                  Local
-                </span>
-                <svg class="host-edit-route-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg>
-                <span class="host-edit-route-endpoint host-edit-route-target">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.5" y="2" width="11" height="5" rx="1"/><rect x="2.5" y="9" width="11" height="5" rx="1"/><path d="M5 4.5h.01M5 11.5h.01"/></svg>
-                  Target
-                </span>
-              </div>
-              <div class="host-edit-panel-actions">
-                <button id="add-jump-host-btn" type="button" class="btn btn-secondary btn-sm">Add Hop</button>
-                <input id="use-jump-host" type="checkbox" class="hidden" aria-hidden="true" />
-              </div>
+              <div id="host-edit-route" class="he-route" aria-label="Connection route"></div>
             </div>
 
-            <div class="host-edit-table-scroll">
-              <div class="host-edit-table host-edit-path-table" role="table" aria-label="Connection path">
-                <div class="host-edit-table-head host-edit-path-grid" role="row">
-                  <span role="columnheader">Step</span>
-                  <span role="columnheader">SSH Host</span>
-                  <span role="columnheader">Port</span>
-                  <span role="columnheader">Username</span>
-                  <span role="columnheader">Auth Type</span>
-                  <span role="columnheader">Credential</span>
-                  <span role="columnheader" class="sr-only">Actions</span>
-                </div>
-                <div id="jump-host-section" class="hidden">
-                  <div id="jump-host-editor-list" class="host-edit-table-body" role="rowgroup" data-empty="No jump servers"></div>
+            <div class="he-path-scroll">
+              <div class="he-rail">
+
+                <div class="he-node">
+                  <div class="he-marker"><span class="he-dot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg></span></div>
+                  <div>
+                    <span class="he-local-chip">
+                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg>
+                      Local <span class="he-local-sub">this machine</span>
+                    </span>
+                  </div>
                 </div>
 
-                <div class="host-edit-path-row host-edit-path-grid host-edit-target-row" role="row">
-                  <div class="host-edit-step-cell" role="cell">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.5" y="2" width="11" height="5" rx="1"/><rect x="2.5" y="9" width="11" height="5" rx="1"/><path d="M5 4.5h.01M5 11.5h.01"/></svg>
-                    <span>Target</span>
-                  </div>
-                  <label class="host-edit-cell-label" role="cell">
-                    <span class="sr-only">Target SSH Host</span>
-                    <input id="ssh-host" type="text" required class="input" aria-label="Target SSH Host" />
-                  </label>
-                  <label class="host-edit-cell-label" role="cell">
-                    <span class="sr-only">Target SSH Port</span>
-                    <input id="ssh-port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="22" required class="input" data-port-input aria-label="Target SSH Port" />
-                  </label>
-                  <label class="host-edit-cell-label" role="cell">
-                    <span class="sr-only">Target Username</span>
-                    <input id="username" type="text" required class="input" aria-label="Target Username" />
-                  </label>
-                  <label class="host-edit-cell-label" role="cell">
-                    <span class="sr-only">Target Auth Type</span>
-                    <select id="auth-type" class="input" aria-label="Target Auth Type">
-                      <option value="privateKey">Private Key</option>
-                      <option value="password">Password</option>
-                    </select>
-                  </label>
-                  <div id="private-key-row" class="host-edit-credential-cell" role="cell">
-                    <button
-                      id="private-key-summary-toggle"
-                      type="button"
-                      class="host-edit-credential-toggle"
-                      aria-controls="target-private-key-details"
-                      aria-expanded="true"
-                    >
-                      <span id="private-key-source-status">No key configured</span>
-                      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
-                    </button>
-                  </div>
-                  <label id="password-row" class="host-edit-cell-label hidden" role="cell">
-                    <span class="sr-only">Target Password</span>
-                    <input id="password" type="password" class="input" aria-label="Target Password" />
-                  </label>
-                  <span class="host-edit-target-marker" role="cell" aria-label="Target endpoint">
-                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 14V2.5M4 3h7l-1.5 2L11 7H4"/></svg>
-                  </span>
-                  <div id="target-private-key-details" class="host-edit-path-details" role="cell">
-                    <label id="private-key-content" class="field field-privatekey field-xs hidden">
-                      Key Content
-                      <textarea
-                        id="private-key"
-                        rows="2"
-                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                        class="input"
-                        spellcheck="false"
-                      ></textarea>
-                    </label>
-                    <label id="passphrase-row" class="field field-xs">
-                      Passphrase (Optional)
-                      <input id="passphrase" type="password" class="input" />
-                    </label>
-                    <div class="host-edit-key-actions">
-                      <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">Import</button>
-                      <button id="toggle-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">Paste Key</button>
+                <div id="jump-host-editor-list"></div>
+
+                <button type="button" class="he-add-row" id="add-jump-host-btn">
+                  <span class="he-add-dot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></span>
+                  <span class="he-add-label">Add Hop</span>
+                </button>
+
+                <div class="he-node">
+                  <div class="he-marker"><span class="he-dot is-target"></span></div>
+                  <div>
+                    <div class="he-card is-target" id="target-node-card" data-node-auth="privateKey" data-expanded="true">
+                      <div class="he-card-summary">
+                        <button type="button" class="he-card-toggle" id="target-card-toggle" aria-expanded="true">
+                          <span class="he-step">Target</span>
+                          <span class="he-card-summary-text" id="target-summary-text"></span>
+                          <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                        </button>
+                      </div>
+                      <div class="he-card-body">
+                        <div class="he-node-grid">
+                          <label class="field field-xs">
+                            SSH Host
+                            <input id="ssh-host" type="text" required class="input he-mono" data-field="sshHost" aria-label="Target SSH Host" />
+                          </label>
+                          <label class="field field-xs">
+                            Port
+                            <input id="ssh-port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="22" required class="input he-mono" data-field="sshPort" data-port-input aria-label="Target SSH Port" />
+                          </label>
+                          <label class="field field-xs">
+                            Username
+                            <input id="username" type="text" required class="input he-mono" data-field="username" aria-label="Target Username" />
+                          </label>
+                        </div>
+                        <div class="he-auth-row">
+                          <span class="he-auth-label" id="target-auth-label">Authentication</span>
+                          <div class="he-seg" role="group" aria-labelledby="target-auth-label">
+                            <button type="button" class="he-seg-btn is-active" data-auth="privateKey" aria-pressed="true">Private Key</button>
+                            <button type="button" class="he-seg-btn" data-auth="password" aria-pressed="false">Password</button>
+                          </div>
+                        </div>
+                        <div class="he-cred">
+                          <div class="he-cred-password hidden" id="password-row">
+                            <label class="field field-xs">
+                              Password
+                              <span class="he-password-wrap">
+                                <input id="password" type="password" class="input he-mono" aria-label="Target Password" />
+                                <button type="button" class="he-password-toggle" aria-pressed="false" aria-label="Show password">
+                                  <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/></svg>
+                                  <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"/></svg>
+                                </button>
+                              </span>
+                            </label>
+                          </div>
+                          <div class="he-cred-key" id="private-key-row">
+                            <div class="he-key-editor">
+                              <div class="he-key-summary">
+                                <button
+                                  type="button"
+                                  class="he-key-toggle"
+                                  id="private-key-summary-toggle"
+                                  aria-controls="target-private-key-details"
+                                  aria-expanded="false"
+                                >
+                                  <span class="he-key-summary-left">
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="8" r="3"/><path d="M8 8h6M11.5 8v2.5M14 8v1.5"/></svg>
+                                    <span id="private-key-source-status" class="he-key-status-text">No key configured</span>
+                                    <span id="private-key-source-path" class="he-key-path"></span>
+                                  </span>
+                                  <svg class="he-key-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm" id="target-key-replace">Replace</button>
+                              </div>
+                              <div id="target-private-key-details" class="he-key-details hidden">
+                                <label id="private-key-content" class="field field-xs">
+                                  Key Content
+                                  <textarea
+                                    id="private-key"
+                                    rows="3"
+                                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                                    class="input he-mono"
+                                    spellcheck="false"
+                                  ></textarea>
+                                </label>
+                                <div class="he-key-details-row">
+                                  <label class="field field-xs">
+                                    Passphrase (Optional)
+                                    <input id="passphrase" type="password" class="input he-mono" />
+                                  </label>
+                                  <div class="he-key-actions">
+                                    <button id="import-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">Import</button>
+                                    <button id="toggle-private-key-btn" type="button" class="btn btn-secondary btn-sm btn-nowrap">Paste Key</button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
+
               </div>
             </div>
           </section>
@@ -1217,21 +1239,22 @@
             aria-labelledby="host-edit-forwards-tab"
             data-host-edit-panel="forwards"
           >
-            <div class="host-edit-panel-actionbar">
+            <div class="he-panel-actionbar">
               <button id="add-forward-btn" type="button" class="btn btn-secondary btn-sm">Add Rule</button>
             </div>
-            <div class="host-edit-table-scroll">
-              <div class="host-edit-table host-edit-forward-table" role="table" aria-label="Forwarding rules">
-                <div class="host-edit-table-head host-edit-forward-grid" role="row">
-                  <span role="columnheader">Name</span>
-                  <span role="columnheader">Local Host</span>
-                  <span role="columnheader">Local Port</span>
-                  <span role="columnheader">Remote Host</span>
-                  <span role="columnheader">Remote Port</span>
-                  <span role="columnheader" class="host-edit-center">Auto</span>
-                  <span role="columnheader" class="sr-only">Actions</span>
+            <div class="he-table-scroll">
+              <div class="he-table" role="table" aria-label="Forwarding rules">
+                <div class="he-table-head he-grid-forward he-fwd-head" role="row">
+                  <span class="he-fh-name" role="columnheader">Name</span>
+                  <span class="he-fh-group he-fh-group-local" role="columnheader">Local</span>
+                  <span class="he-fh-sub he-fh-sub-local" aria-hidden="true"><span>Host</span><span></span><span>Port</span></span>
+                  <span class="he-fh-gap" aria-hidden="true"></span>
+                  <span class="he-fh-group he-fh-group-remote" role="columnheader">Remote</span>
+                  <span class="he-fh-sub he-fh-sub-remote" aria-hidden="true"><span>Host</span><span></span><span>Port</span></span>
+                  <span class="he-fh-auto" role="columnheader" title="Automatically start this forwarding rule when the host connects.">Auto Start</span>
+                  <span class="he-fh-actions sr-only" role="columnheader">Actions</span>
                 </div>
-                <div id="forward-editor-list" class="host-edit-table-body" role="rowgroup" data-empty="No forwarding rules"></div>
+                <div id="forward-editor-list" class="he-table-body" role="rowgroup" data-empty="No forwarding rules"></div>
               </div>
             </div>
           </section>
@@ -1243,25 +1266,24 @@
             aria-labelledby="host-edit-services-tab"
             data-host-edit-panel="services"
           >
-            <div class="host-edit-panel-actionbar">
+            <div class="he-panel-actionbar">
               <button id="add-service-btn" type="button" class="btn btn-secondary btn-sm">Add Service</button>
             </div>
-            <div class="host-edit-table-scroll">
-              <div class="host-edit-table host-edit-service-table" role="table" aria-label="Services">
-                <div class="host-edit-table-head host-edit-service-grid" role="row">
+            <div class="he-table-scroll">
+              <div class="he-table" role="table" aria-label="Services">
+                <div class="he-table-head he-grid-service" role="row">
                   <span role="columnheader">Name</span>
-                  <span role="columnheader">Exposed Port (0 = disabled)</span>
-                  <span role="columnheader">Forward Local Port (Optional)</span>
+                  <span role="columnheader">Port Mapping</span>
                   <span role="columnheader">Start Command</span>
                   <span role="columnheader" class="sr-only">Actions</span>
                 </div>
-                <div id="service-editor-list" class="host-edit-table-body" role="rowgroup" data-empty="No services"></div>
+                <div id="service-editor-list" class="he-table-body" role="rowgroup" data-empty="No services"></div>
               </div>
             </div>
           </section>
 
           <div class="form-actions host-edit-actions">
-            <button id="reset-btn" type="button" class="btn btn-secondary">Reset</button>
+            <button id="reset-btn" type="button" class="btn btn-ghost">Reset Changes</button>
             <div class="host-edit-actions-end">
               <button id="cancel-host-dialog-btn" type="button" class="btn btn-secondary">Cancel</button>
               <button id="save-host-btn" type="submit" class="btn btn-primary">Save Host</button>
