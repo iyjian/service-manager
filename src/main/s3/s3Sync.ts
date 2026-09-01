@@ -2631,6 +2631,7 @@ export class S3SyncRuntime {
       signal,
     });
     let recoveredLocal: S3SharedAppData | undefined;
+    let ownPublishedRevision: string | undefined;
     const retainedUploadReferences = new Map<string, S3V4NoteReference>();
     const retainedUploadTreeReferences = new Map<string, S3V4NotesTreeReference>();
     const retainUploadedReferences = (references: readonly S3V4NoteReference[]): void => {
@@ -2669,6 +2670,7 @@ export class S3SyncRuntime {
           retainUploadedTreeReference(published.notesTreeReference);
           continue;
         }
+        ownPublishedRevision = published.manifest.revision;
         reportProgress('finishing');
         const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
         this.updateIncrementalBaseline(
@@ -2707,6 +2709,18 @@ export class S3SyncRuntime {
       let baseReferencesUseCurrentEncryption = true;
       let baseEncryptionKeyId: string | undefined;
       if (settings.lastRevision === headResult.head.revision) {
+        baseManifest = remoteResult.manifest;
+        baseEncryptionKeyId = remoteResult.encryptionKeyId;
+      } else if (remoteResult.manifest.clientId === settings.clientId
+        && remoteResult.manifest.revision !== ownPublishedRevision) {
+        // The head was published by this client but never committed locally
+        // (for example, the app exited between the publish and the commit).
+        // That revision already embeds this client's own merge outcome, so it
+        // is the correct merge base; falling back to the older committed
+        // revision would merge this client's own consecutive snapshots against
+        // each other and fabricate conflict Notes. A revision published by
+        // this very reconcile attempt is excluded: conflict merges must keep
+        // re-litigating against the frozen pre-conflict base on retry.
         baseManifest = remoteResult.manifest;
         baseEncryptionKeyId = remoteResult.encryptionKeyId;
       } else if (settings.lastRevision) {
@@ -2824,12 +2838,29 @@ export class S3SyncRuntime {
         retainUploadedTreeReference(published.notesTreeReference);
         continue;
       }
+      ownPublishedRevision = published.manifest.revision;
+      let committed: { settings: PersistedS3SyncSettings; syncedAt: string } | undefined;
+      if (conflictCount === 0) {
+        // The cloud already owns this conflict-free revision, so advance the
+        // merge base before the local apply. When the apply is skipped because
+        // local data changed mid-sync (for example, while the user keeps
+        // typing), the next attempt must merge against the just-published
+        // revision; a stale base would merge this client's own consecutive
+        // snapshots against each other and spawn a false conflict Note per
+        // captured keystroke state. Conflict merges keep the conservative
+        // commit-after-apply order so their resolution stays enforceable
+        // while fenced applies retry.
+        committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+        settings.lastRevision = published.manifest.revision;
+      }
       if (applyRequired) {
         reportProgress('applying');
         if (!await this.applyDataIfLocalUnchanged(local, localGeneration, mergedData)) continue;
       }
       reportProgress('finishing');
-      const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+      if (!committed) {
+        committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+      }
       this.updateIncrementalBaseline(
         published.manifest,
         published.etag,

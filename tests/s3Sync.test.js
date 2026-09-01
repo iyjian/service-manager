@@ -1959,6 +1959,73 @@ test('a second loser Note version during fenced apply keeps one Conflict for eac
   );
 });
 
+test('typing through fenced applies after an uncommitted self-publish spawns no conflict Notes', async (t) => {
+  const s3 = new MemoryS3();
+  const first = await createRuntime(t, {
+    clientId: 'typing-client',
+    data: sharedData([
+      note('typed-note', 'a'),
+      note('other-note', 'other body'),
+    ]),
+    fetchImpl: s3.fetch,
+  });
+  await first.runtime.syncAllDataToS3();
+
+  // Same installation identity, but the committed revision marker is missing
+  // (for example, the app exited between the publish and the commit). The
+  // local data keeps editing the first Note while still missing the second.
+  const userDataPath = await temporaryDirectory(t);
+  await writeConfiguredSettings(userDataPath, 'typing-client');
+  const state = {
+    data: sharedData([note('typed-note', 'ab', T1)]),
+    applyAttempts: 0,
+  };
+  const runtime = new S3SyncRuntime({
+    userDataPath,
+    appVersion: '0.3.19',
+    credentialProtector: fakeProtector(),
+    snapshotProvider: async () => clone(state.data),
+    snapshotApplier: async (data, expectedLocal) => {
+      state.applyAttempts += 1;
+      if (state.applyAttempts === 1) {
+        assert.equal(
+          expectedLocal.notes.notes.find((item) => item.id === 'typed-note').content,
+          'ab',
+        );
+        // The user keeps typing while the apply is fenced.
+        state.data = sharedData([
+          note('typed-note', 'abc', T1),
+          note('other-note', 'other body'),
+        ]);
+        return false;
+      }
+      state.data = clone(data);
+      return true;
+    },
+    fetchImpl: s3.fetch,
+    now: () => new Date(T2),
+    createRevision: createRevisionFactory('typing-resumed'),
+    createObjectId: createObjectIdFactory('typing-resumed'),
+    createClientId: () => 'typing-client',
+    createRandomBytes: (size) => Buffer.alloc(size, size),
+  });
+  t.after(() => runtime.shutdown());
+
+  const result = await runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pushed');
+  assert.equal(state.applyAttempts, 1);
+  assert.equal(
+    state.data.notes.notes.filter((item) => item.tags.includes('Conflict')).length,
+    0,
+    'keystroke snapshots must not become conflict Notes',
+  );
+  assert.deepEqual(
+    state.data.notes.notes.map((item) => [item.id, item.content]).sort(),
+    [['other-note', 'other body'], ['typed-note', 'abc']],
+  );
+  assert.equal(runtime.getSyncState().lastRevision, result.revision);
+});
+
 test('v4 reconcile automatically merges edits to different Notes from two clients', async (t) => {
   const s3 = new MemoryS3();
   const base = sharedData([

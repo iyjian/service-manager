@@ -2,6 +2,14 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.79] - 2026-08-30
+
+### Changed
+- Redesigned the host edit dialog: the connection path is now a vertical stepper with collapsible per-hop cards (summary row plus on-demand editor and a ••• menu for move, duplicate, and delete), forwarding rules use compact Local → Remote endpoint groups under a two-tier header, and Services show fixed-height rows whose Start Command renders as a single-line preview that expands into a multiline Bash editor. The dialog also introduces a Connection Name field, ghost-style Paste Config and Reset Changes actions, and a stable height when switching tabs.
+
+### Fixed
+- Fixed cloud sync creating a series of "(Conflict)" Note copies that capture intermediate typing states when you keep typing in Notes while a sync round is running.
+
 ## [0.3.78] - 2026-08-28
 
 ### Added
@@ -12,7 +20,6 @@ All notable changes to Service Manager are documented in this file. The newest r
 - SQL result cell value popups now use one Raw-first dialog for viewing and updating values, with formatted JSON, HTML previews, Markdown, SQL, and other detected views still available.
 - SQL cell value Raw editors now use the same compact font size as the result table, while the generated Update SQL panel keeps its smaller fixed size.
 - SQL mutation result summaries now use a compact success panel with matched rows, changed rows, warnings, and duration, while omitting raw MySQL text and copy-summary controls.
-- Redesigned the host edit dialog: the connection path is now a vertical stepper with collapsible per-hop cards (summary row plus on-demand editor and a ••• menu for move, duplicate, and delete), forwarding rules use compact Local → Remote endpoint groups under a two-tier header, and Services show fixed-height rows whose Start Command renders as a single-line preview that expands into a multiline Bash editor. The dialog also introduces a Connection Name field, ghost-style Paste Config and Reset Changes actions, and a stable height when switching tabs.
 
 ### Fixed
 - Fixed SQL result cell edits so a successful generated UPDATE immediately refreshes the visible table value and the cached result.
