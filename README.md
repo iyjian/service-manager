@@ -374,6 +374,8 @@ pnpm run package:linux
 
 - Workflow: `.github/workflows/release.yml`
 - Windows builds use `windows-2022` (Visual Studio 2022) so the native-module toolchain bundled with pnpm 9 can compile SQLite and other native dependencies. Keep this runner pinned until that toolchain supports newer Visual Studio versions.
+- Release preparation pushes the version commit and tag atomically, with up to three attempts. Retries reuse an existing version-bump commit and matching tag; conflicting tags and unrelated branch advances are rejected without overwriting remote history.
+- To recover an older partial release after this workflow is on `main`, manually run the workflow with `recovery_commit` set to the full SHA of its existing version-bump commit. The workflow verifies that the commit belongs to the remote branch, restores a missing tag, and builds that exact commit without incrementing the version. Rerunning an old workflow run still uses its old workflow definition.
 - Behavior:
   - auto bump patch version
   - create git tag

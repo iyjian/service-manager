@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      recovery_commit:
+        description: 'Optional full version-bump commit SHA to resume without incrementing the version'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -18,9 +23,9 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release]') }}
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
-      commit_sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      commit_sha: ${{ steps.release.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,35 +37,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump patch version
-        id: bump
-        run: |
-          NEXT_VERSION=$(node - <<'NODE'
-          const fs = require('fs');
-          const pkgPath = 'package.json';
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-          const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(pkg.version);
-          if (!match) {
-            throw new Error(`Unsupported version format: ${pkg.version}`);
-          }
-          const next = `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
-          pkg.version = next;
-          fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-          process.stdout.write(next);
-          NODE
-          )
-          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit, tag and push
-        id: commit
-        run: |
-          git add package.json
-          git commit -m "chore(release): bump version to ${{ steps.bump.outputs.version }} [skip release]"
-          git tag "${{ steps.bump.outputs.tag }}"
-          git push origin "HEAD:${{ github.ref_name }}"
-          git push origin "${{ steps.bump.outputs.tag }}"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Prepare or resume release
+        id: release
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RECOVERY_COMMIT: ${{ inputs.recovery_commit }}
+        run: node scripts/prepare-release.cjs
 
   build_mac:
     needs: bump_version
