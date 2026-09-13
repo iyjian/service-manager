@@ -111,7 +111,9 @@ jobs:
 
   build_win:
     needs: bump_version
-    runs-on: windows-latest
+    # pnpm 9 bundles node-gyp 10, which cannot discover Visual Studio 18.
+    # Keep VS 2022 available for SQLite and other native-module rebuilds.
+    runs-on: windows-2022
     steps:
       - name: Checkout tagged commit
         uses: actions/checkout@v4

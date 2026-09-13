@@ -373,6 +373,7 @@ pnpm run package:linux
 ## CI/CD Release Workflow
 
 - Workflow: `.github/workflows/release.yml`
+- Windows builds use `windows-2022` (Visual Studio 2022) so the native-module toolchain bundled with pnpm 9 can compile SQLite and other native dependencies. Keep this runner pinned until that toolchain supports newer Visual Studio versions.
 - Behavior:
   - auto bump patch version
   - create git tag
