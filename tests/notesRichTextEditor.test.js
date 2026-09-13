@@ -290,10 +290,8 @@ test('six-dot block handle follows hovered blocks, opens commands, and owns nati
   assert.match(handle, /this\.element\.draggable = true/);
   assert.match(handle, /setAttribute\('aria-label', 'Drag block or open block commands'\)/);
   assert.match(handle, /setAttribute\('aria-haspopup', 'listbox'\)/);
-  assert.match(handle, /createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)/);
-  assert.match(handle, /icon\.setAttribute\('viewBox', '0 0 20 20'\)/);
-  assert.match(handle, /M5 3\.25a1\.5 1\.5[\s\S]*?m7 0a1\.5 1\.5/);
-  assert.match(handle, /iconPath\.setAttribute\('fill', 'currentColor'\)/);
+  assert.match(handle, /this\.element\.append\(createIcon\('grip-vertical'\)\)/);
+  assert.doesNotMatch(handle, /createElementNS|iconPath|M5 3\.25/);
   assert.doesNotMatch(handle, /grid-cols-2|createElement\('span'\)/);
   assert.match(handle, /const target = this\.selectActiveBlock\(\);[\s\S]*?if \(!target\) return;[\s\S]*?this\.menu\.isOpenForCurrentBlock\(\)[\s\S]*?this\.menu\.closeCurrentBlock\(\)[\s\S]*?this\.menu\.openForCurrentBlock\(this\.element, target\.node\)[\s\S]*?this\.editor\.commands\.focus\(\)/);
   assert.match(handle, /this\.element\.addEventListener\('keydown',[\s\S]*?this\.menu\.handleKeyDown\(event\)[\s\S]*?event\.preventDefault\(\)[\s\S]*?event\.stopPropagation\(\)/);
@@ -577,10 +575,11 @@ test('selected S3 images expose a single icon-only alignment bubble menu', async
   const menu = source.slice(menuStart, menuEnd);
 
   assert.match(source, /const NOTE_IMAGE_ALIGNMENTS:[^=]+= \['left', 'center', 'right'\]/);
+  assert.match(source, /left: 'align-left',[\s\S]*?center: 'align-center',[\s\S]*?right: 'align-right'/);
   assert.match(menu, /className = 'notes-richtext-image-toolbar hidden'/);
   assert.match(menu, /setAttribute\('role', 'toolbar'\)/);
   assert.match(menu, /setAttribute\('aria-label', 'Image alignment'\)/);
-  assert.match(menu, /button\.append\(createStrokeIcon\(NOTE_IMAGE_ALIGNMENT_ICONS\[alignment\]\)\)/);
+  assert.match(menu, /button\.append\(createIcon\(NOTE_IMAGE_ALIGNMENT_ICONS\[alignment\]\)\)/);
   assert.match(menu, /button\.setAttribute\('aria-pressed', String\(active\)\)/);
   assert.match(menu, /node\?\.type\.name !== 's3Image'/);
   assert.match(menu, /this\.editor\.view\.nodeDOM\(selection\.from\)/);

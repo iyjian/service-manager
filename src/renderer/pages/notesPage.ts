@@ -12,6 +12,8 @@ import type {
   NotesTreeNode,
   NotesWorkspaceDelta,
   NotesWorkspaceSnapshot,
+  NotesSyncGuardState,
+  S3SyncState,
 } from '../../shared/types';
 import { basicSetup, EditorView } from 'codemirror';
 import { javascript, javascriptLanguage, typescriptLanguage } from '@codemirror/lang-javascript';
@@ -53,7 +55,7 @@ import {
   type MarkdownFormatCommand,
 } from '../notesMarkdown.js';
 import { toast } from '../components/toast.js';
-import { createIcon } from '../components/icon.js';
+import { createIcon, renderIcon } from '../components/icon.js';
 import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
 import { requireElement } from '../utils/dom.js';
 import { toCleanErrorMessage as toErrorMessage } from '../utils/error.js';
@@ -273,13 +275,7 @@ export function noteLanguageExtension(language: NoteLanguage): Extension {
   return noteLanguageExtensions[language];
 }
 
-const NOTES_NAV_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M4 2.5h6l2 2v9H4z"></path>
-    <path d="M10 2.5v2h2"></path>
-    <path d="M6 7h4M6 9.5h4M6 12h2.5"></path>
-  </svg>
-`;
+const NOTES_NAV_ICON = renderIcon('notebook-pen');
 
 
 /** Converts plain note text into safe, canonical Tiptap JSON. */
@@ -509,6 +505,7 @@ class NotesPage {
   private readonly searchInput = requireElement<HTMLInputElement>('#notes-search');
   private readonly list = requireElement<HTMLElement>('#notes-list');
   private readonly emptyState = requireElement<HTMLElement>('#notes-empty');
+  private emptyCreateButton?: HTMLButtonElement;
   private readonly editor = requireElement<HTMLElement>('#notes-editor');
   private readonly tabList = requireElement<HTMLElement>('#notes-tabs');
   private readonly nameInput = requireElement<HTMLInputElement>('#note-name');
@@ -582,6 +579,7 @@ class NotesPage {
   private expandedNoteIds = new Set<string>();
   private selectedId: string | undefined;
   private openNoteIds: string[] = [];
+  private tabsInitialized = false;
   private noteTabsVersion = 0;
   private loaded = false;
   private loadPromise: Promise<void> | undefined;
@@ -644,6 +642,17 @@ class NotesPage {
   private readonly sidebarWidthSaveTasks = new Set<Promise<void>>();
   private readonly persistentApplyIds = new Set<string>();
   private active = false;
+  private syncGuard: NotesSyncGuardState = { status: 'checking', editable: false };
+  private syncCheckTimer: number | undefined;
+  private syncCheckPending = false;
+  private syncActionPending = false;
+  private hasRemoteNotes = false;
+  private cloudSyncState?: S3SyncState;
+  private readonly cloudStatus = requireElement<HTMLElement>('#notes-cloud-status');
+  private readonly syncBanner = requireElement<HTMLElement>('#notes-sync-banner');
+  private readonly syncMessage = requireElement<HTMLElement>('#notes-sync-message');
+  private readonly syncButton = requireElement<HTMLButtonElement>('#notes-sync-button');
+  private readonly offlineEditButton = requireElement<HTMLButtonElement>('#notes-offline-edit-button');
   private findOpen = false;
   private findMatches: readonly NotesFindMatch[] = [];
   private findActiveIndex = -1;
@@ -652,6 +661,17 @@ class NotesPage {
   private editorReleaseGeneration = 0;
 
   constructor() {
+    window.settingsApi.onNotesSyncGuardChanged((state) => this.applySyncGuard(state));
+    window.settingsApi.onS3SyncStateChanged((state) => {
+      this.cloudSyncState = state;
+      this.updateCloudStatus();
+    });
+    void window.settingsApi.getS3SyncSettings().then((settings) => {
+      this.cloudSyncState ??= settings.syncState;
+      this.updateCloudStatus();
+    }).catch(() => undefined);
+    this.syncButton.addEventListener('click', () => void this.runSyncAction(false));
+    this.offlineEditButton.addEventListener('click', () => void this.runSyncAction(true));
     this.contentHost.dataset.theme = this.editorTheme;
     this.setSidebarWidth(this.sidebarWidth);
     this.updateEditorEmptyState();
@@ -740,10 +760,14 @@ class NotesPage {
   }
 
   private async handleCloseShortcut(): Promise<boolean> {
-    if (!this.active || this.openNoteIds.length <= 1) return false;
+    if (!this.active) return false;
     const id = this.selectedId;
-    if (!id) return false;
-    return this.closeNoteTab(id);
+    if (!id || this.persistentApplyIds.size > 0) return true;
+    try { return await this.closeNoteTab(id); }
+    catch (error) {
+      toast(`Unable to close Note: ${toErrorMessage(error)}`, 'error');
+      return true;
+    }
   }
 
   show(): void {
@@ -751,10 +775,17 @@ class NotesPage {
     this.editorReleaseGeneration += 1;
     this.mountEditors();
     void this.ensureLoaded();
+    this.applySyncGuard({ status: 'checking', editable: false });
+    void this.checkRemoteNotes();
+    if (this.syncCheckTimer === undefined) {
+      this.syncCheckTimer = window.setInterval(() => void this.checkRemoteNotes(), 5_000);
+    }
   }
 
   hide(): void {
     this.active = false;
+    if (this.syncCheckTimer !== undefined) window.clearInterval(this.syncCheckTimer);
+    this.syncCheckTimer = undefined;
     const releaseGeneration = ++this.editorReleaseGeneration;
     this.searchRequestGeneration += 1;
     this.cancelSearchRender();
@@ -770,6 +801,7 @@ class NotesPage {
     this.tabList.replaceChildren();
     this.renderedTabButtonsById.clear();
     void this.flush().then(() => {
+      void window.settingsApi.uploadNotesOnLeave().catch(() => undefined);
       if (this.active || releaseGeneration !== this.editorReleaseGeneration) return;
       this.releaseEditorResources();
     }).catch(() => {
@@ -787,6 +819,82 @@ class NotesPage {
       await Promise.all([this.flushAllPendingSaves(), this.waitForSidebarWidthSaves()]);
     } finally {
       this.flushSearchRender();
+    }
+  }
+
+  private applySyncGuard(state: NotesSyncGuardState): void {
+    this.syncGuard = state;
+    if (state.status !== 'checking') this.hasRemoteNotes = state.status !== 'not-configured';
+    const messages: Record<NotesSyncGuardState['status'], string> = {
+      'not-configured': '', ready: '', checking: this.hasRemoteNotes ? 'Checking remote Notes before editing…' : '',
+      'remote-updated': 'Remote Notes have changed. Sync before editing.',
+      offline: state.editable
+        ? 'Editing offline at your own risk. If another device changes Notes, sync will be blocked.'
+        : 'Cannot verify remote Notes. Editing offline may cause changes that cannot be synced.',
+      diverged: 'Cannot sync: local and remote Notes have both changed. Both copies are preserved. Editing is locked.',
+    };
+    this.syncMessage.textContent = messages[state.status];
+    this.syncBanner.classList.toggle('hidden', !messages[state.status]);
+    this.syncButton.classList.toggle('hidden', state.status !== 'remote-updated' && state.status !== 'offline');
+    this.syncButton.textContent = state.status === 'offline' ? 'Retry check' : 'Sync';
+    this.syncButton.disabled = this.syncActionPending;
+    this.offlineEditButton.classList.toggle('hidden', state.status !== 'offline' || state.editable);
+    this.offlineEditButton.disabled = this.syncActionPending;
+    this.contentHost.inert = !state.editable;
+    this.languageControl.inert = !state.editable;
+    this.nameInput.readOnly = !state.editable;
+    this.newButton.inert = !state.editable;
+    if (this.emptyCreateButton) this.emptyCreateButton.disabled = !state.editable;
+    this.pageRoot.dataset.syncLocked = String(!state.editable);
+    if (!state.editable) this.closeLanguageMenu();
+    this.updateCloudStatus();
+  }
+
+  private updateCloudStatus(): void {
+    const cloud = this.cloudSyncState;
+    this.cloudStatus.classList.toggle('hidden', !this.hasRemoteNotes);
+    if (!this.hasRemoteNotes) return;
+    const local = this.saveErrorNoteIds.size > 0 ? 'Local save failed'
+      : this.notes.some((note) => this.isDirty(note.id)) ? 'Saving locally…' : 'Saved locally';
+    const status = this.syncGuard.status === 'diverged' ? 'Cloud sync blocked'
+      : this.syncGuard.status === 'remote-updated' ? 'Remote update available'
+        : cloud?.status === 'syncing' ? (cloud.phase === 'uploading' ? 'Uploading…' : 'Checking cloud…')
+          : cloud?.pending ? 'Cloud sync pending' : cloud?.status === 'synced' ? 'Cloud synced' : 'Cloud not yet verified';
+    this.cloudStatus.textContent = `${local} · ${status}`;
+    this.cloudStatus.title = this.cloudStatus.textContent
+      + (cloud?.lastSyncedAt ? `\nLast sync: ${new Date(cloud.lastSyncedAt).toLocaleString()}` : '');
+  }
+
+  private async checkRemoteNotes(): Promise<void> {
+    if (!this.active || this.syncCheckPending || this.syncActionPending) return;
+    this.syncCheckPending = true;
+    try {
+      // Flush drafts while still permitted, so hash comparisons include recent typing.
+      if (this.syncGuard.editable) await this.flush();
+      this.applySyncGuard(await window.settingsApi.checkNotesSync());
+    } catch (error) {
+      // A failed IPC/save is not evidence that S3 is offline: never offer a bypass.
+      this.syncMessage.textContent = error instanceof Error ? error.message : 'Unable to check Notes. Retry by reopening Notes.';
+      this.syncBanner.classList.remove('hidden');
+    } finally { this.syncCheckPending = false; }
+  }
+
+  private async runSyncAction(offline: boolean): Promise<void> {
+    if (this.syncActionPending) return;
+    this.syncActionPending = true;
+    this.applySyncGuard(this.syncGuard);
+    try {
+      if (offline) {
+        this.applySyncGuard(await window.settingsApi.allowOfflineNotesEditing());
+      } else {
+        if (this.syncGuard.status === 'remote-updated') await window.settingsApi.syncAllDataToS3();
+        this.applySyncGuard(await window.settingsApi.checkNotesSync());
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Notes sync failed.', 'error');
+    } finally {
+      this.syncActionPending = false;
+      this.applySyncGuard(this.syncGuard);
     }
   }
 
@@ -1504,7 +1612,8 @@ class NotesPage {
       }
       this.selectedId = this.notes.some((note) => note.id === this.selectedId)
         ? this.selectedId
-        : this.treeNodes[0]?.noteId;
+        : this.tabsInitialized ? this.openNoteIds.find((id) => this.notesById.has(id)) : this.treeNodes[0]?.noteId;
+      this.tabsInitialized = true;
       this.reconcileOpenNoteTabs();
       this.loaded = true;
       this.render();
@@ -1736,7 +1845,7 @@ class NotesPage {
       close.className = 'icon-btn notes-tab-close';
       close.setAttribute('aria-label', `Close ${label}`);
       close.title = `Close ${label}`;
-      close.appendChild(createIcon('M4 4l8 8M12 4l-8 8'));
+      close.appendChild(createIcon('x'));
       close.addEventListener('click', () => void this.closeNoteTab(id));
 
       item.append(select, close);
@@ -1782,9 +1891,11 @@ class NotesPage {
       if (selectionVersion !== this.selectionVersion || this.selectedId !== id) return true;
     }
 
-    this.openNoteIds.splice(index, 1);
+    const currentIndex = this.openNoteIds.indexOf(id);
+    if (currentIndex < 0) return true;
+    this.openNoteIds.splice(currentIndex, 1);
     this.noteTabsVersion += 1;
-    const focusId = this.openNoteIds[Math.min(index, this.openNoteIds.length - 1)];
+    const focusId = this.openNoteIds[Math.min(currentIndex, this.openNoteIds.length - 1)];
     if (!active) {
       this.renderTabs();
       if (focusId) {
@@ -1800,7 +1911,8 @@ class NotesPage {
     this.renderList();
     this.renderEditor();
     if (focusId) this.focusNoteTab(focusId);
-    else this.newButton.focus();
+    else if (this.emptyCreateButton && !this.emptyCreateButton.disabled) this.emptyCreateButton.focus();
+    else this.searchInput.focus();
     this.updateSelectedSaveStatus();
     return true;
   }
@@ -1890,7 +2002,7 @@ class NotesPage {
         toggleButton.dataset.expanded = String(this.expandedNoteIds.has(note.id));
         toggleButton.setAttribute('aria-label', `${this.expandedNoteIds.has(note.id) ? 'Collapse' : 'Expand'} ${note.name}`);
         toggleButton.setAttribute('aria-expanded', String(this.expandedNoteIds.has(note.id)));
-        toggleButton.appendChild(createIcon('m6 3 5 5-5 5'));
+        toggleButton.appendChild(createIcon('chevron-right'));
         toggleButton.addEventListener('click', (event) => {
           event.stopPropagation();
           void this.toggleTreeExpanded(note.id);
@@ -1919,10 +2031,8 @@ class NotesPage {
       typeIcon.dataset.type = hasChildren ? 'folder' : 'note';
       typeIcon.setAttribute('aria-hidden', 'true');
       typeIcon.appendChild(createIcon(hasChildren
-        ? (this.expandedNoteIds.has(note.id)
-          ? 'M2.25 4.75h4l1.25 1.5h6.25v6.5H2.25z M2.25 4.75V3.25h4l1.25 1.5h4.25'
-          : 'M2.25 3.25h4l1.25 1.5h6.25v8H2.25z')
-        : 'M4 2.5h5l3 3v8H4z M9 2.5v3h3 M6 8h4 M6 10.5h4'));
+        ? (this.expandedNoteIds.has(note.id) ? 'folder-open' : 'folder')
+        : 'file-text'));
 
       const name = document.createElement('span');
       name.className = 'notes-list-item-name';
@@ -1964,7 +2074,7 @@ class NotesPage {
       add.className = 'notes-tree-add';
       add.setAttribute('aria-label', `New child Note under ${note.name || 'Untitled'}`);
       add.title = 'New child Note';
-      add.appendChild(createIcon('M8 3v10M3 8h10'));
+      add.appendChild(createIcon('plus'));
       add.addEventListener('click', (event) => {
         event.stopPropagation();
         void this.createNote(note.id);
@@ -1977,7 +2087,7 @@ class NotesPage {
       remove.disabled = this.deletingNoteIds.has(note.id);
       remove.setAttribute('aria-label', `Remove ${note.name || 'Untitled'}`);
       remove.title = `Remove ${note.name || 'Untitled'}`;
-      remove.appendChild(createIcon('M3.25 4.5h9.5M6 2.75h4M5 4.5l.5 8.25h5l.5-8.25'));
+      remove.appendChild(createIcon('trash-2'));
       remove.addEventListener('click', (event) => {
         event.stopPropagation();
         void this.deleteNote(note.id);
@@ -2084,7 +2194,26 @@ class NotesPage {
       this.editorNoteId = undefined;
       this.showEditorMode('markdown');
       this.replaceRichTextDocument(EMPTY_RICH_TEXT_CONTENT);
-      this.emptyState.textContent = this.loadError ?? (this.loaded ? 'Create or select a note.' : 'Loading notes…');
+      this.emptyCreateButton = undefined;
+      if (this.loadError || !this.loaded) {
+        this.emptyState.textContent = this.loadError ?? 'Loading notes…';
+      } else {
+        const content = document.createElement('div');
+        content.className = 'notes-empty-content';
+        const title = document.createElement('h2');
+        title.textContent = 'No open notes';
+        const hint = document.createElement('p');
+        hint.textContent = 'Open a note from the sidebar or create a new one.';
+        const create = document.createElement('button');
+        create.type = 'button';
+        create.className = 'btn btn-secondary btn-sm';
+        create.textContent = 'New note';
+        create.disabled = !this.syncGuard.editable;
+        create.addEventListener('click', () => void this.createNote(null));
+        this.emptyCreateButton = create;
+        content.append(title, hint, create);
+        this.emptyState.replaceChildren(content);
+      }
       this.emptyState.dataset.state = this.loadError ? 'error' : this.loaded ? 'empty' : 'loading';
       return;
     }
@@ -2591,7 +2720,7 @@ class NotesPage {
       option.title = item.label;
       const label = document.createElement('span');
       label.textContent = item.label;
-      const check = createIcon('m3.5 8.25 2.5 2.5 6.5-6.5');
+      const check = createIcon('check');
       check.classList.add('notes-language-option-check');
       option.append(label, check);
       return option;
@@ -3222,6 +3351,7 @@ class NotesPage {
   }
 
   private async moveNote(noteId: string, parentId: string | null, beforeNoteId?: string): Promise<void> {
+    if (!this.syncGuard.editable) return;
     if (!isValidNoteTreeParent(this.treeNodes, noteId, parentId)) {
       toast('A Note cannot be moved into its own subtree.', 'error');
       this.renderList(noteId);
@@ -3246,6 +3376,7 @@ class NotesPage {
   }
 
   private async createNote(parentId: string | null): Promise<void> {
+    if (!this.syncGuard.editable) return;
     if (this.creating) return;
     await this.ensureLoaded();
     if (!this.loaded) return;
@@ -3757,6 +3888,7 @@ class NotesPage {
   }
 
   private async deleteNote(id: string): Promise<void> {
+    if (!this.syncGuard.editable) return;
     if (this.deletingNoteIds.has(id)) return;
     this.deletingNoteIds.add(id);
     this.renderList(id);
@@ -4064,6 +4196,7 @@ class NotesPage {
   }
 
   private setSaveStatus(text: string, state: 'saving' | 'saved' | 'error'): void {
+    this.updateCloudStatus();
     if (this.saveStatus.textContent === text && this.saveStatus.dataset.state === state) return;
     this.saveStatus.textContent = text;
     this.saveStatus.dataset.state = state;
@@ -4071,6 +4204,7 @@ class NotesPage {
   }
 
   private updateSelectedSaveStatus(): void {
+    this.updateCloudStatus();
     const id = this.selectedId;
     if (!id) {
       this.setSaveStatus('', 'saved');

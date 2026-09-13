@@ -150,6 +150,8 @@ Placeholder / Disabled / 很弱的信息
 
 主操作使用黑色。
 
+本项目不是蓝色品牌 UI。
+
 蓝色只用于：
 
 * Focus
@@ -158,9 +160,39 @@ Placeholder / Disabled / 很弱的信息
 
 不要把蓝色当成页面主要装饰色。
 
+尤其不要把蓝色用于：
+
+* Primary Button
+* Add / Create 类按钮
+* 普通 Tab 选中态
+* 普通表格行高亮
+* 普通 Chip / Badge
+* 大面积背景
+
+如果某个组件已经存在黑 / 白 / 灰的交互语义，新设计必须复用，不要为了“更像现代 SaaS”而引入新的蓝色视觉重心。
+
 ---
 
 # 3. Typography
+
+实际产品字体以代码中的 Token 为准：
+
+```css
+--font-family-base: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', Inter, 'PingFang SC', sans-serif;
+--font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace;
+```
+
+设计稿、HTML Mockup、原型预览都必须优先使用这套字体栈。
+
+不要单独使用：
+
+```text
+Inter
+SF Pro
+System UI
+```
+
+作为看起来更“高级”的替代方案。
 
 基础字号：
 
@@ -218,6 +250,35 @@ font-variant-numeric: tabular-nums;
 ```
 
 保证数字纵向排列整齐。
+
+---
+
+# 3.1 Iconography
+
+UI 图标优先从 Iconify 选择成套图标，不要自己生成或临时手绘。
+
+默认使用：
+
+```text
+Iconify / Lucide
+```
+
+原因：
+
+* 与当前应用已有的线性 SVG 风格接近
+* 线宽、圆角、端点风格统一
+* 可以复制为本地 inline SVG，不需要新增运行时依赖
+
+规则：
+
+* 同一功能区域只使用同一套 Iconify 图标
+* 图标默认 14～16px
+* 使用 `currentColor`
+* 不混用填充图标、彩色图标和不同线宽图标
+* 不用 AI 生成图标
+* 不新增远程运行时图标依赖
+
+如果 Iconify 图标不能直接表达语义，优先换同套里的相近图标，而不是自己画一个新风格图标。
 
 ---
 
@@ -339,6 +400,10 @@ Shadow 的作用是表达：
 * Connect
 
 一个区域通常只保留一个最重要的 Primary Action。
+
+在 Dialog 中，如果底部已经存在 `Save` / `Save Host` 这样的 Primary Action，局部的 `Add Rule` / `Add Service` 不应该再做成 Primary。
+
+它们属于当前列表的局部新增入口，默认使用 Secondary 或更低权重的 inline action。
 
 ---
 
@@ -529,6 +594,27 @@ Table Header 不需要很深。
 
 真正重要的是下面的数据。
 
+避免多层表头。
+
+尤其不要为了表达分组而做成：
+
+```text
+LOCAL
+Host      Port
+
+REMOTE
+Host      Port
+```
+
+这会让表头变成两行，降低列表扫描效率。
+
+如果字段天然成组，优先把组合作为单个语义列，例如：
+
+```text
+LOCAL ENDPOINT        REMOTE ENDPOINT
+127.0.0.1:3389   →   192.168.122.91:3389
+```
+
 ---
 
 ## Table Row
@@ -633,6 +719,17 @@ xsy-k8s           127.0.0.1:6445    →   192.168.122.87:6443       —
 
 IP + Port 使用 Mono。
 
+Name 列默认只显示名称，不要在每个名称下面加描述性副标题。
+
+避免：
+
+```text
+rabbitmq
+local admin console
+```
+
+如果确实有必须展示的状态，优先放到明确的状态列或运行态列表，不要塞进编辑页 Name 单元格。
+
 ---
 
 ## 11.4 编辑状态
@@ -699,6 +796,110 @@ Delete 只有菜单展开后才使用红色。
 
 ---
 
+## 11.7 Add Rule 的位置和权重
+
+`Add Rule` 是 Forwarding Rules 列表的局部操作，不是整个 Host Dialog 的最终提交操作。
+
+推荐：
+
+```text
+FORWARDING RULES                         Add Rule
+────────────────────────────────────────────────
+NAME              LOCAL          REMOTE    AUTO
+```
+
+其中：
+
+* `Add Rule` 使用 Secondary Small Button 或 inline action
+* 不使用蓝色按钮
+* 不抢 `Save Host` 的主操作层级
+* 与当前列表标题 / 表头保持同一语义区域
+
+不要把 `Add Rule` 做成远离列表的孤立按钮，也不要为了突出新增而破坏整体黑白灰体系。
+
+---
+
+## 11.8 新增 / 编辑状态
+
+新增和编辑应该清楚，但不要像创建全新页面。
+
+推荐：
+
+```text
+阅读态 Row
+  ↓
+单行进入编辑态
+  ↓
+局部 Save / Cancel
+```
+
+编辑状态可以通过：
+
+* Input 边框
+* 局部 actions
+* 行内展开区域
+* 很轻的 border / background 层级
+
+表达。
+
+不推荐：
+
+* 蓝色左边框
+* 蓝色背景
+* 大面积高亮
+* 把整张表变成表单
+
+---
+
+## 11.9 Services
+
+Services 与 Forwarding Rules 一样，本质是：
+
+> **可扫描的服务列表**
+
+而不是：
+
+> **大型命令表单**
+
+默认阅读态建议：
+
+```text
+NAME          PORTS             START COMMAND
+app-api       18080 → 8080      systemctl --user start app-api
+postgresql    15432 → 5432      cd /opt/postgres && ...
+```
+
+规则：
+
+* `Name` 使用普通 UI 字体
+* `Name` 列默认只显示名称
+* Port / Command 使用 Mono
+* Start Command 默认单行预览
+* 只有编辑时展开多行命令输入区
+* `Add Service` 使用局部 Secondary / inline action
+* 不使用蓝色按钮或蓝色编辑态
+* 不默认给 `Services` 标题增加解释性副标题
+
+Services 的 Port Mapping 是一个业务组合，不要拆成过多视觉列。
+
+推荐：
+
+```text
+PORTS
+18080 → 8080
+```
+
+不要：
+
+```text
+LOCAL PORT          SERVICE PORT
+18080               8080
+```
+
+除非该页面正在进入明确的编辑状态。
+
+---
+
 # 12. Group / Section
 
 Host Group 使用简单的结构划分。
@@ -740,6 +941,53 @@ Tertiary
 ```
 
 不要做成一堆 Chip。
+
+---
+
+## 12.1 Section Title
+
+内部工具页面的 Section Title 默认只放标题本身。
+
+推荐：
+
+```text
+Forwarding Rules          Add Rule
+
+Services                  Add Service
+```
+
+可以附带：
+
+* Count
+* 小型 action
+* 必要状态
+
+但不要默认在每个标题下添加解释性副标题。
+
+避免：
+
+```text
+Forwarding Rules
+Each row reads left to right: local listener → remote target. Host and port stay inside one route cell.
+```
+
+原因：
+
+* 这类说明会制造视觉噪音
+* 它会降低开发者工具的信息密度
+* 大多数用户只需要直接扫描数据
+
+只有在说明能避免误操作、解释不可见规则或替代错误提示时，才可以出现辅助文案。
+
+这类文案优先放在：
+
+* Empty State
+* Tooltip
+* Help Popover
+* Form field hint
+* Error / Warning message
+
+而不是常驻在每个 Section Title 下。
 
 ---
 
@@ -1056,6 +1304,7 @@ Dangerous Action 应该处于最低视觉层级之一。
 禁止自行引入：
 
 * 新的主色
+* 蓝色 Primary / Add / Create 按钮
 * 大圆角
 * 渐变
 * Glassmorphism
@@ -1063,6 +1312,7 @@ Dangerous Action 应该处于最低视觉层级之一。
 * 不必要的 Card
 * 不必要的 Badge
 * 不必要的 Icon
+* 标题下常驻的解释性副标题
 * 超大字号
 * 大面积低信息密度布局
 * 与现有组件重复的新 Button / Input / Dialog
@@ -1071,6 +1321,7 @@ Dangerous Action 应该处于最低视觉层级之一。
 
 * 使用现有组件
 * 使用现有 Token
+* 使用现有字体栈
 * 延续已有信息架构
 * 保持较高信息密度
 * 保持开发者工具风格
@@ -1080,6 +1331,17 @@ Dangerous Action 应该处于最低视觉层级之一。
 # 25. 修改已有页面时
 
 如果页面业务逻辑已经正确，不要因为“重新设计”而重新发明页面。
+
+开始设计前必须先确认当前页面和全局样式：
+
+* 当前页面实际使用的颜色 Token
+* 当前页面实际使用的字体栈
+* 现有 Button / Input / Table / Dialog 组件样式
+* 当前模块附近的视觉密度和交互习惯
+
+设计稿和预览文件也要服从这些结论。
+
+不要先画一个脱离产品系统的“新风格”，再尝试把它塞回应用里。
 
 默认只允许优化：
 
@@ -1123,6 +1385,9 @@ Interaction State
 13. 页面是否出现过多颜色？
 14. 页面在连续使用 1～2 小时后是否仍然容易阅读？
 15. 整体是否仍然像一个专业的开发者工具，而不是营销页面？
+16. 是否误把蓝色用于 Primary、Add、选中态或普通高亮？
+17. Section Title 下是否出现了不必要的常驻解释文案？
+18. 新设计是否复用了 `STM UI` / Mono 字体栈，而不是另起一套字体？
 
 ---
 

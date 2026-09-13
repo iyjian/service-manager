@@ -3,7 +3,9 @@ import type {
   HostDraft,
   Note,
   NoteDraft,
+  NoteShareSettingsDraft,
   NotesApi,
+  NotesSyncGuardState,
   NotesFlushRequest,
   KubernetesApi,
   KubernetesListSnapshot,
@@ -217,12 +219,25 @@ const settingsApi: SettingsApi = {
     ipcRenderer.invoke('settings:notes:trilium-import:apply', input),
   cancelTriliumImport: (requestId: string) =>
     ipcRenderer.invoke('settings:notes:trilium-import:cancel', requestId),
+  getNoteShareSettings: () => ipcRenderer.invoke('settings:notes:share:get'),
+  saveNoteShareSettings: (draft: NoteShareSettingsDraft) =>
+    ipcRenderer.invoke('settings:notes:share:save', draft),
+  revealNoteShareShortenerCredentials: () =>
+    ipcRenderer.invoke('settings:notes:share:reveal-shortener'),
   onTriliumImportProgress: (listener: (progress: TriliumImportProgress) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, progress: TriliumImportProgress): void => listener(progress);
     ipcRenderer.on('settings:notes:trilium-import:progress', wrapped);
     return () => ipcRenderer.removeListener('settings:notes:trilium-import:progress', wrapped);
   },
   getS3SyncSettings: () => ipcRenderer.invoke('settings:s3:get'),
+  checkNotesSync: () => ipcRenderer.invoke('notes:sync-check'),
+  uploadNotesOnLeave: () => ipcRenderer.invoke('notes:upload-on-leave'),
+  allowOfflineNotesEditing: () => ipcRenderer.invoke('notes:sync-allow-offline'),
+  onNotesSyncGuardChanged: (listener: (state: NotesSyncGuardState) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: NotesSyncGuardState): void => listener(state);
+    ipcRenderer.on('notes:sync-guard-state', wrapped);
+    return () => ipcRenderer.removeListener('notes:sync-guard-state', wrapped);
+  },
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => ipcRenderer.invoke('settings:s3:save', draft),
   testS3Connection: (draft: S3ConnectionTestDraft) => ipcRenderer.invoke('settings:s3:test', draft),
   revealS3SyncCredentials: () => ipcRenderer.invoke('settings:s3:reveal-credentials'),

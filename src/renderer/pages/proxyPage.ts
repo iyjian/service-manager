@@ -15,14 +15,9 @@ import { haveSameProxyCustomRules, haveSameProxyGroupStructure } from '../models
 import { setMessage } from '../renderer.js';
 import { requireElement } from '../utils/dom.js';
 import { toErrorMessage } from '../utils/error.js';
+import { renderIcon } from '../components/icon.js';
 
-const PROXY_NAV_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <circle cx="8" cy="8" r="5.5"></circle>
-    <path d="M2.5 8h11"></path>
-    <path d="M8 2.5c1.8 1.5 2.7 3.3 2.7 5.5S9.8 12 8 13.5C6.2 12 5.3 10.2 5.3 8S6.2 4 8 2.5z"></path>
-  </svg>
-`;
+const PROXY_NAV_ICON = renderIcon('globe');
 
 const coreBadge = requireElement<HTMLElement>('#proxy-core-badge');
 const statusBadge = requireElement<HTMLElement>('#proxy-status-badge');

@@ -73,6 +73,11 @@ import {
   NotesAttachmentS3Store,
 } from '../notes/notesAttachmentS3';
 import { NotesShareS3Store } from '../notes/notesShareS3';
+import type { NotesDatabaseSync, LegacyNotesSource } from './notesDatabaseSync';
+import type { NotesDatabaseS3Options } from './notesDatabaseS3';
+import { NotesUploadSchedule } from './notesUploadSchedule';
+import type { NotesQuitState } from '../core/quitConfirmation';
+import type { NotesSyncGuardState } from '../../shared/types';
 
 const SETTINGS_SCHEMA_VERSION = 6;
 const DEFAULT_REGION = 'us-east-1';
@@ -135,6 +140,10 @@ export interface S3SyncRuntimeOptions {
   snapshotProvider: S3SnapshotProvider;
   notesIncrementalProvider?: S3NotesIncrementalProvider;
   snapshotApplier?: S3SnapshotApplier;
+  /** When present, snapshotProvider/applier handle hosts/proxy only. */
+  notesDatabase?: NotesDatabaseSync;
+  onNotesSyncGuardChanged?: (state: NotesSyncGuardState) => void;
+  freezeNotesForGuard?: () => Promise<() => void>;
   onStateChanged?: (state: S3SyncState) => void;
   onStartupStateChanged?: (state: StartupS3SyncState) => void;
   onDataApplied?: () => void;
@@ -942,6 +951,15 @@ function canonicalizeSharedNotes(data: S3SharedAppData): S3SharedAppData {
   });
 }
 
+function settingsOnlyData(data: { hosts: unknown; proxy: unknown }): S3SharedAppData {
+  return parseS3SharedAppData({
+    schemaVersion: 2,
+    hosts: data.hosts,
+    proxy: data.proxy,
+    notes: { schemaVersion: 2, notes: [], tombstones: [], tree: { schemaVersion: 1, nodes: [] } },
+  });
+}
+
 export class S3SyncRuntime {
   private readonly settingsPath: string;
   private readonly recoveryDirectory: string;
@@ -968,6 +986,8 @@ export class S3SyncRuntime {
   >>();
   private activeNotesAttachmentTransfers = 0;
   private debounceTimer?: NodeJS.Timeout;
+  private databasePollTimer?: NodeJS.Timeout;
+  private settingsDebounceTimer?: NodeJS.Timeout;
   private dirtyGeneration = 0;
   private pendingFullGeneration?: number;
   private readonly pendingNoteUpserts = new Map<string, number>();
@@ -983,6 +1003,107 @@ export class S3SyncRuntime {
   private startupStatus: StartupS3SyncState['status'] = 'checking';
   private shuttingDown = false;
   private state: S3SyncState = { status: 'not-configured', pending: false };
+  private notesGuard: NotesSyncGuardState = { status: 'checking', editable: false };
+  private offlineNotesAllowed = false;
+  private manualDatabaseSync?: Promise<S3SyncResult>;
+  private notesCheckPromise?: Promise<NotesSyncGuardState>;
+  private readonly notesUploadSchedule = new NotesUploadSchedule();
+
+  private scheduleDatabaseUpload(): void {
+    const delay = this.notesUploadSchedule.delay(this.now().getTime());
+    if (delay !== undefined) this.scheduleSync(delay, true, false);
+  }
+
+  public async hasPendingNotesUpload(): Promise<boolean> {
+    const settings = await this.ensureSettings();
+    return Boolean(isConfigured(settings) && this.options.notesDatabase
+      && await this.options.notesDatabase.hasPendingChanges(settings));
+  }
+
+  public async uploadPendingNotes(waitForSync = false): Promise<void> {
+    if (waitForSync) {
+      if (this.manualDatabaseSync) await this.manualDatabaseSync;
+      if (this.syncPromise) await this.syncPromise;
+    }
+    if (!await this.hasPendingNotesUpload()) return;
+    if (!waitForSync && !this.notesUploadSchedule.canExpedite(this.now().getTime())) return;
+    // This is an upload opportunity, not permission to pull a newer cloud database.
+    if (this.syncPromise) await this.syncPromise;
+    if (await this.hasPendingNotesUpload()) await this.requestSync(false, true);
+  }
+
+  public async getNotesQuitState(): Promise<NotesQuitState> {
+    try {
+      const settings = await this.ensureSettings();
+      if (!isConfigured(settings) || !this.options.notesDatabase) return { status: 'not-configured', pending: false };
+      const pending = await this.hasPendingNotesUpload();
+      const guard = this.notesGuard.status;
+      if (guard === 'diverged' || guard === 'remote-updated' || guard === 'offline') return { status: guard, pending };
+      if (this.state.status === 'syncing') return { status: 'syncing', pending };
+      if (guard !== 'ready') return { status: 'unverified', pending };
+      return { status: pending ? 'pending' : 'synced', pending };
+    } catch { return { status: 'unverified', pending: true }; }
+  }
+
+  private setNotesGuard(status: NotesSyncGuardState['status']): NotesSyncGuardState {
+    if (status !== 'offline') this.offlineNotesAllowed = false;
+    this.notesGuard = { status, editable: status === 'ready' || status === 'not-configured'
+      || (status === 'offline' && this.offlineNotesAllowed) };
+    this.options.onNotesSyncGuardChanged?.({ ...this.notesGuard });
+    return { ...this.notesGuard };
+  }
+
+  public assertNotesEditable(): void {
+    if (this.options.notesDatabase && this.settings && isConfigured(this.settings) && !this.notesGuard.editable) {
+      throw new Error('Notes are read-only. Check the Notes sync warning before editing.');
+    }
+  }
+
+  private async publishNotesGuard(status: NotesSyncGuardState['status']): Promise<NotesSyncGuardState> {
+    if (!this.notesGuard.editable || status === this.notesGuard.status
+      || status === 'ready' || status === 'not-configured') return this.setNotesGuard(status);
+    const release = await this.options.freezeNotesForGuard?.();
+    try {
+      if (status === 'remote-updated' || status === 'diverged') {
+        const latest = await this.options.notesDatabase?.classifyObserved();
+        status = latest === 'remote-updated' || latest === 'diverged' ? latest : 'ready';
+      }
+      return this.setNotesGuard(status);
+    } finally { release?.(); }
+  }
+
+  public allowOfflineNotesEditing(): NotesSyncGuardState {
+    if (this.notesGuard.status !== 'offline') throw new Error('Offline editing is not available.');
+    this.offlineNotesAllowed = true;
+    return this.setNotesGuard('offline');
+  }
+
+  public checkNotesSync(): Promise<NotesSyncGuardState> {
+    if (this.notesCheckPromise) return this.notesCheckPromise;
+    const promise = this.enqueue(async () => {
+      if (this.shuttingDown) throw new Error('Notes database check was cancelled.');
+      const settings = await this.ensureSettings();
+      if (!isConfigured(settings) || !this.options.notesDatabase) return this.setNotesGuard('not-configured');
+      const controller = new AbortController();
+      this.activeAbortController = controller;
+      try {
+        const action = await this.options.notesDatabase.sync(this.databaseConnection(settings, controller.signal),
+          async () => undefined, 'check');
+        return await this.publishNotesGuard(action === 'remote-updated' || action === 'diverged' ? action : 'ready');
+      } catch {
+        if (this.shuttingDown) throw new Error('Notes database check was cancelled.');
+        return this.publishNotesGuard(this.notesGuard.status === 'diverged' || this.notesGuard.status === 'remote-updated'
+          ? this.notesGuard.status : 'offline');
+      } finally {
+        if (this.activeAbortController === controller) this.activeAbortController = undefined;
+      }
+    });
+    this.notesCheckPromise = promise;
+    void promise.finally(() => {
+      if (this.notesCheckPromise === promise) this.notesCheckPromise = undefined;
+    }).catch(() => undefined);
+    return promise;
+  }
 
   public constructor(private readonly options: S3SyncRuntimeOptions) {
     this.settingsPath = path.join(options.userDataPath, 's3-sync.json');
@@ -1019,6 +1140,14 @@ export class S3SyncRuntime {
   public async startAutoSync(): Promise<void> {
     if (this.shuttingDown || this.autoStarted) return;
     this.autoStarted = true;
+    if (this.options.notesDatabase) {
+      this.databasePollTimer = setInterval(() => {
+        if (!this.shuttingDown && this.settings && isConfigured(this.settings)) {
+          void this.enqueue(() => this.performSync(true, false, true)).catch(() => undefined);
+        }
+      }, 60_000);
+      this.databasePollTimer.unref?.();
+    }
     const settings = await this.ensureSettings();
     if (this.shuttingDown || !isConfigured(settings)) {
       this.updateStartupStatus('ready');
@@ -1034,6 +1163,7 @@ export class S3SyncRuntime {
 
   public markLocalChange(change: S3LocalChange = { kind: 'full' }): void {
     if (this.shuttingDown) return;
+    if (this.options.notesDatabase) this.notesUploadSchedule.changed(this.now().getTime());
     this.dirtyGeneration += 1;
     this.recordLocalChange(change, this.dirtyGeneration);
     const pendingSince = this.state.pendingSince ?? this.now().toISOString();
@@ -1069,7 +1199,21 @@ export class S3SyncRuntime {
       });
       return true;
     }).then((configured) => {
-      if (configured) this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
+      if (configured) {
+        if (this.options.notesDatabase) {
+          this.scheduleDatabaseUpload();
+          if (change.kind === 'full' && !this.shuttingDown) {
+            // Preserve the existing settings cadence without publishing pending Notes early.
+            if (this.settingsDebounceTimer) clearTimeout(this.settingsDebounceTimer);
+            this.settingsDebounceTimer = setTimeout(() => {
+              this.settingsDebounceTimer = undefined;
+              if (!this.shuttingDown) void this.enqueue(() => this.performSync(true, false, true)).catch(() => undefined);
+            }, 5_000);
+            this.settingsDebounceTimer.unref?.();
+          }
+        }
+        else this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
+      }
     }).catch(() => undefined);
   }
 
@@ -1093,6 +1237,7 @@ export class S3SyncRuntime {
     return this.enqueue(async () => {
       if (this.shuttingDown) throw new Error('S3 sync is shutting down.');
       const draft = validateS3SyncSettingsDraft(value);
+      const release = this.notesGuard.editable ? await this.options.freezeNotesForGuard?.() : undefined;
       return this.enqueueSettingsMutation(async () => {
         const current = await this.ensureSettings();
         let encryptedAccessKeyId = current.encryptedAccessKeyId;
@@ -1208,6 +1353,7 @@ export class S3SyncRuntime {
         };
         await this.persist(next);
         this.settings = next;
+        if (this.options.notesDatabase) this.setNotesGuard(configured ? 'checking' : 'not-configured');
         this.clearIncrementalBaseline();
         this.pendingFullGeneration = this.dirtyGeneration;
         if (isConfigured(next)) {
@@ -1223,7 +1369,7 @@ export class S3SyncRuntime {
           this.updateState({ status: 'not-configured', pending: false });
         }
         return settingsView(next, this.state);
-      });
+      }).finally(() => release?.());
     });
   }
 
@@ -1251,7 +1397,14 @@ export class S3SyncRuntime {
   }
 
   public syncAllDataToS3(): Promise<S3SyncResult> {
-    return this.requestSync(true, true);
+    if (!this.options.notesDatabase) return this.requestSync(true, true);
+    if (this.manualDatabaseSync) return this.manualDatabaseSync;
+    const promise = this.enqueue(() => this.performSync(true, true));
+    this.manualDatabaseSync = promise;
+    void promise.finally(() => {
+      if (this.manualDatabaseSync === promise) this.manualDatabaseSync = undefined;
+    }).catch(() => undefined);
+    return promise;
   }
 
   public listNoteShares(noteId: string): Promise<NoteShareView[]> {
@@ -1423,6 +1576,8 @@ export class S3SyncRuntime {
 
   public async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    if (this.databasePollTimer) clearInterval(this.databasePollTimer);
+    if (this.settingsDebounceTimer) clearTimeout(this.settingsDebounceTimer);
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = undefined;
     this.activeAbortController?.abort();
@@ -1782,7 +1937,8 @@ export class S3SyncRuntime {
         const rerunFull = this.syncFullAgain;
         this.syncAgain = false;
         this.syncFullAgain = false;
-        this.scheduleSync(0, false, rerunFull);
+        if (this.options.notesDatabase) this.scheduleDatabaseUpload();
+        else this.scheduleSync(0, false, rerunFull);
       }
     }).catch(() => undefined);
     return promise;
@@ -1999,7 +2155,12 @@ export class S3SyncRuntime {
         encryptedPreviousSyncEncryptionKey: _previousKey,
         ...retained
       } = current;
-      const next: PersistedS3SyncSettings = { ...retained, lastSyncedAt: syncedAt, lastRevision: revision };
+      const next: PersistedS3SyncSettings = {
+        ...retained,
+        ...(this.options.notesDatabase && current.encryptedPreviousSyncEncryptionKey
+          ? { encryptedPreviousSyncEncryptionKey: current.encryptedPreviousSyncEncryptionKey } : {}),
+        lastSyncedAt: syncedAt, lastRevision: revision,
+      };
       await this.persist(next);
       this.settings = next;
       return { settings: next, syncedAt };
@@ -2878,7 +3039,199 @@ export class S3SyncRuntime {
     throw new Error('S3 sync changed concurrently too many times. Try again.');
   }
 
-  private async performSync(forceFull: boolean): Promise<S3SyncResult> {
+  private databaseConnection(
+    settings: PersistedS3SyncSettings,
+    signal?: AbortSignal,
+  ): NotesDatabaseS3Options {
+    const previousSyncEncryptionKey = this.optionalProtectedValue(
+      settings.encryptedPreviousSyncEncryptionKey,
+      'The previous Sync Encryption Key',
+    );
+    return {
+      endpoint: settings.endpoint,
+      bucket: settings.bucket,
+      region: settings.region,
+      ...this.credentials(settings),
+      syncEncryptionKey: this.syncEncryptionKey(settings) as string,
+      ...(previousSyncEncryptionKey
+        ? { previousSyncEncryptionKey: normalizeS3SyncEncryptionKey(previousSyncEncryptionKey) } : {}),
+      fetchImpl: this.fetchImpl,
+      now: this.now,
+      timeoutMs: this.timeoutMs,
+      signal,
+    };
+  }
+
+  private async loadLegacyNotes(
+    settings: PersistedS3SyncSettings,
+    signal: AbortSignal,
+  ): Promise<LegacyNotesSource | undefined> {
+    const objectStore = new S3V4ObjectStore(this.databaseConnection(settings, signal));
+    const head = await objectStore.getHead();
+    if (head.status === 'missing') return undefined;
+    const remote = await objectStore.getManifest(head.head.revision, head.head.manifestSha256);
+    if (remote.status === 'missing') throw new Error('The S3 sync head points to a missing manifest.');
+    assertS3SyncHeadMatchesManifestV4(head.head, remote.manifest, remote.manifestSha256);
+    if (head.head.encryptionKeyId !== remote.encryptionKeyId) {
+      throw new Error('The S3 sync head has an invalid Sync Encryption Key identity.');
+    }
+    let base = settings.lastRevision === remote.manifest.revision
+      || remote.manifest.clientId === settings.clientId ? remote : undefined;
+    if (!base && settings.lastRevision) {
+      const previous = await objectStore.getManifest(settings.lastRevision);
+      if (previous.status === 'missing') {
+        throw new Error('The previous S3 sync manifest is missing. Local changes were not merged.');
+      }
+      base = previous;
+    }
+    const knownNotes = new Map<string, Note>();
+    const objectCache = new Map<string, Note>();
+    const knownTrees = new Map<string, NotesTreeSnapshot>();
+    const treeCache = new Map<string, NotesTreeSnapshot>();
+    const materialize = (source: typeof remote): Promise<S3SharedAppData> => this.materializeManifest(
+      objectStore, source.manifest, source.encryptionKeyId,
+      knownNotes, objectCache, knownTrees, treeCache,
+    );
+    const cloud = (await materialize(remote)).notes;
+    return { cloud, ...(base ? { base: base === remote ? cloud : (await materialize(base)).notes } : {}) };
+  }
+
+  private async reconcileSettings(
+    settings: PersistedS3SyncSettings,
+    signal: AbortSignal,
+    report: S3SyncProgressReporter,
+  ): Promise<S3SyncResult> {
+    const connection = this.databaseConnection(settings, signal);
+    const objectStore = new S3V4ObjectStore({ ...connection, createRandomBytes: this.createRandomBytes });
+    const encryptionKeyId = getS3SyncEncryptionKeyId(connection.syncEncryptionKey);
+    let ownPublishedRevision: string | undefined;
+    let recoveredLocal: S3SharedAppData | undefined;
+    for (let attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt += 1) {
+      if (signal.aborted || this.shuttingDown) throw new Error('S3 sync was cancelled.');
+      report('checking');
+      const head = await objectStore.getHead();
+      if (head.status === 'missing') {
+        report('reading-local');
+        const local = settingsOnlyData(await this.collectLocalData());
+        const published = await this.publishRevision(objectStore, settings, local, undefined, undefined, [], [], report);
+        if (published.status === 'conflict') continue;
+        report('finishing');
+        const committed = await this.commitSuccessfulRevision(settings, published.manifest.revision);
+        return {
+          action: 'pushed', syncedAt: committed.syncedAt, revision: published.manifest.revision,
+          byteLength: published.byteLength, ...(published.etag ? { etag: published.etag } : {}),
+        };
+      }
+      const remote = await objectStore.getManifest(head.head.revision, head.head.manifestSha256);
+      if (remote.status === 'missing') throw new Error('The S3 sync head points to a missing manifest.');
+      assertS3SyncHeadMatchesManifestV4(head.head, remote.manifest, remote.manifestSha256);
+      if (head.head.encryptionKeyId !== remote.encryptionKeyId) {
+        throw new Error('The S3 sync head has an invalid Sync Encryption Key identity.');
+      }
+      // Preserve v4 key invariants even when no legacy Note bodies are downloaded.
+      if (remote.manifest.data.notes.items.some((reference) => reference.encryptionKeyId !== remote.encryptionKeyId)) {
+        throw new Error('The S3 manifest mixes Note objects encrypted with a different key.');
+      }
+      if (remote.manifest.data.notes.tree.encryptionKeyId !== remote.encryptionKeyId) {
+        throw new Error('The S3 manifest references a Notes tree encrypted with a different key.');
+      }
+      let base: S3SharedAppData | undefined;
+      if (settings.lastRevision === remote.manifest.revision
+        || (remote.manifest.clientId === settings.clientId && remote.manifest.revision !== ownPublishedRevision)) {
+        base = settingsOnlyData(remote.manifest.data);
+      } else if (settings.lastRevision) {
+        const previous = await objectStore.getManifest(settings.lastRevision);
+        if (previous.status === 'missing') {
+          throw new Error('The previous S3 sync manifest is missing. Local changes were not merged.');
+        }
+        base = settingsOnlyData(previous.manifest.data);
+      }
+      report('reading-local');
+      const local = settingsOnlyData(await this.collectLocalData());
+      const cloud = settingsOnlyData(remote.manifest.data);
+      report('merging');
+      const merged = mergeS3SharedAppData({ base, local, cloud, now: this.now().toISOString() });
+      const data = settingsOnlyData(merged.data);
+      measureBoundedJsonBytes(data);
+      if (merged.discardedLocalSections.length > 0 && !isDeepStrictEqual(recoveredLocal, local)) {
+        await this.persistLocalRecovery(settings, local, connection.syncEncryptionKey);
+        recoveredLocal = local;
+      }
+      const conflictCount = merged.conflictCount + merged.discardedLocalSections.length;
+      const applyRequired = !isDeepStrictEqual(local, data);
+      const rotation = remote.encryptionKeyId !== encryptionKeyId;
+      let revision = remote.manifest.revision;
+      let byteLength: number | undefined;
+      let etag: string | undefined = head.etag;
+      let committed: { settings: PersistedS3SyncSettings; syncedAt: string } | undefined;
+      const publishRequired = rotation || !isDeepStrictEqual(data, cloud);
+      if (publishRequired) {
+        if (rotation) {
+          // Re-encrypt the exact legacy cloud workspace, leaving its originals intact.
+          const legacy = await this.materializeManifest(
+            objectStore, remote.manifest, remote.encryptionKeyId,
+            new Map(), new Map(), new Map(), new Map(),
+          );
+          const published = await this.publishRevision(
+            objectStore, settings, { ...data, notes: legacy.notes },
+            remote.manifest.revision, head.etag, [], [], report,
+          );
+          if (published.status === 'conflict') continue;
+          revision = published.manifest.revision;
+          byteLength = published.byteLength;
+          etag = published.etag;
+        } else {
+          // Always take Notes references from this attempt's head, including after CAS loss.
+          const manifest = createServiceManagerSyncManifestV4({
+            ...remote.manifest.data, hosts: data.hosts, proxy: data.proxy,
+          }, {
+            appVersion: this.options.appVersion,
+            revision: normalizedRevision(this.createRevision()),
+            parentRevision: remote.manifest.revision,
+            clientId: settings.clientId,
+            createdAt: this.now().toISOString(),
+          });
+          report('uploading', 0, 2);
+          const written = await objectStore.putManifest(manifest);
+          if (written.status === 'conflict') continue;
+          report('uploading', 1, 2);
+          const published = await objectStore.putHead(
+            createS3SyncHeadV4(manifest, written.manifestSha256, encryptionKeyId), head.etag,
+          );
+          if (published.status === 'conflict') continue;
+          report('uploading', 2, 2);
+          revision = manifest.revision;
+          byteLength = written.byteLength;
+          etag = published.etag;
+        }
+        ownPublishedRevision = revision;
+        // Avoid treating a conflict-free self-publish as a competing settings edit on retry.
+        if (conflictCount === 0) {
+          committed = await this.commitSuccessfulRevision(settings, revision);
+          settings.lastRevision = revision;
+        }
+      }
+      if (applyRequired) {
+        report('applying');
+        // The applier checks expectedLocal inside its mutation queue. Notes typing
+        // may change dirtyGeneration, but must never fence a settings-only apply.
+        if (!isDeepStrictEqual(settingsOnlyData(await this.collectLocalData()), local)
+          || !await this.applyData(data, local)) continue;
+      }
+      report('finishing');
+      committed ??= await this.commitSuccessfulRevision(settings, revision);
+      return {
+        action: conflictCount > 0 ? 'conflict' : publishRequired ? 'pushed' : applyRequired ? 'pulled' : 'up-to-date',
+        syncedAt: committed.syncedAt, revision,
+        ...(conflictCount > 0 ? { conflictCount } : {}),
+        ...(byteLength !== undefined ? { byteLength } : {}),
+        ...(etag ? { etag } : {}),
+      };
+    }
+    throw new Error('S3 sync changed concurrently too many times. Try again.');
+  }
+
+  private async performSync(forceFull: boolean, manual = false, checkOnly = false): Promise<S3SyncResult> {
     if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
     const settings = { ...(await this.ensureSettings()) };
     if (!isConfigured(settings)) {
@@ -2908,7 +3261,43 @@ export class S3SyncRuntime {
       const reportProgress = (phase: S3SyncProgressPhase, completedItems?: number, totalItems?: number): void =>
         this.reportSyncProgress(phase, completedItems, totalItems);
       let result: S3SyncResult;
-      if (!performedFull && notesIntent) {
+      if (this.options.notesDatabase) {
+        performedFull = true;
+        const notesAction = await this.options.notesDatabase.sync(
+          this.databaseConnection(settings, controller.signal),
+          () => this.loadLegacyNotes(settings, controller.signal),
+          checkOnly ? 'check' : manual ? 'manual' : 'auto',
+          () => reportProgress('uploading'),
+        ).catch(async (error: unknown) => {
+          await this.publishNotesGuard(this.notesGuard.status === 'diverged' || this.notesGuard.status === 'remote-updated'
+            ? this.notesGuard.status : 'offline');
+          throw error;
+        });
+        await this.publishNotesGuard(notesAction === 'remote-updated' || notesAction === 'diverged' ? notesAction : 'ready');
+        result = await this.reconcileSettings(settings, controller.signal, reportProgress);
+        if (notesAction === 'remote-updated' || notesAction === 'diverged') {
+          throw new Error(notesAction === 'diverged'
+            ? 'Notes cannot sync: local and remote databases have diverged. Both copies were preserved.'
+            : 'Remote Notes have changed. Open Notes and click Sync to continue editing.');
+        }
+        result = {
+          ...result,
+          action: result.action === 'conflict' ? 'conflict'
+            : result.action === 'pushed' || notesAction === 'pushed' ? 'pushed'
+              : result.action === 'pulled' || notesAction === 'pulled' ? 'pulled' : 'up-to-date',
+        };
+        // Both formats now use the current key. Retain the fallback on every failure.
+        if (!checkOnly) await this.enqueueSettingsMutation(async () => {
+          const current = await this.ensureSettings();
+          if (!current.encryptedPreviousSyncEncryptionKey
+            || current.encryptedPreviousSyncEncryptionKey !== settings.encryptedPreviousSyncEncryptionKey
+            || current.encryptedSyncEncryptionKey !== settings.encryptedSyncEncryptionKey
+            || current.endpoint !== settings.endpoint || current.bucket !== settings.bucket) return;
+          const { encryptedPreviousSyncEncryptionKey: _previousKey, ...next } = current;
+          await this.persist(next);
+          this.settings = next;
+        });
+      } else if (!performedFull && notesIntent) {
         const incremental = await this.publishIncrementalNotes(
           settings,
           notesIntent,
@@ -2926,7 +3315,17 @@ export class S3SyncRuntime {
       } else {
         result = await this.reconcile(settings, controller.signal, reportProgress);
       }
+      if (checkOnly) {
+        this.updateState({ ...this.state, status: this.state.pending ? 'pending' : 'synced', phase: undefined });
+        if (!this.debounceTimer) this.scheduleDatabaseUpload();
+        return result;
+      }
       this.clearLocalChangesThrough(startingGeneration);
+      if (this.options.notesDatabase) {
+        this.notesUploadSchedule.succeeded(this.now().getTime(), this.dirtyGeneration !== startingGeneration);
+        if (this.debounceTimer) clearTimeout(this.debounceTimer);
+        this.debounceTimer = undefined;
+      }
       if (this.dirtyGeneration !== startingGeneration) {
         this.updateState({
           status: 'pending',
@@ -2935,7 +3334,8 @@ export class S3SyncRuntime {
           lastSyncedAt: result.syncedAt,
           ...(result.revision ? { lastRevision: result.revision } : {}),
         });
-        this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
+        if (this.options.notesDatabase) this.scheduleDatabaseUpload();
+        else this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
       } else {
         await this.clearPendingIntent(startingGeneration);
         if (this.dirtyGeneration !== startingGeneration) {
@@ -2946,7 +3346,10 @@ export class S3SyncRuntime {
             lastSyncedAt: result.syncedAt,
             ...(result.revision ? { lastRevision: result.revision } : {}),
           });
-          this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
+          if (this.options.notesDatabase) {
+            this.notesUploadSchedule.changed(this.now().getTime());
+            this.scheduleDatabaseUpload();
+          } else this.scheduleSync(AUTO_SYNC_DEBOUNCE_MS, true, false);
         } else {
           this.updateState({
             status: result.action === 'conflict' ? 'conflict' : 'synced',
@@ -2960,6 +3363,10 @@ export class S3SyncRuntime {
       return result;
     } catch (error) {
       if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
+      if (this.options.notesDatabase && !checkOnly) {
+        this.notesUploadSchedule.failed(this.now().getTime());
+        if (this.notesGuard.status !== 'remote-updated' && this.notesGuard.status !== 'diverged') this.scheduleDatabaseUpload();
+      }
       if (performedFull) this.clearIncrementalBaseline();
       const message = error instanceof Error ? error.message : 'S3 sync failed.';
       this.updateState({

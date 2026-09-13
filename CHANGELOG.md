@@ -2,6 +2,24 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.80] - 2026-09-13
+
+### Added
+- Notes share links can now be shortened through a configurable Shlink service in Settings > Notes.
+
+### Changed
+- Closing the last Notes tab now shows an empty workspace instead of closing the window. Quitting always asks for confirmation and shows Notes cloud sync status when S3 is configured, including when already synced.
+- Moved Notes save/sync status to the top of the sidebar, using a single truncated line with the full status on hover to free editor space.
+- Notes uploads now wait for 30 seconds of inactivity, with a five-minute maximum wait during continuous editing. Leaving Notes triggers an upload; failures back off automatically. Notes shows local/cloud save status, and quitting with unsynced changes offers a choice to wait, quit with local changes, or cancel.
+- Notes now save locally in SQLite and automatically migrate existing local and legacy cloud data. S3 sync transfers one encrypted Notes database, including hierarchy, with recovery backups.
+- Notes checks remote versions every five seconds while open. Remote updates require manual Sync before editing; offline editing requires risk confirmation. Divergent local and remote changes block synchronization and preserve both copies. Without S3 configured, Notes remains unrestricted.
+- Refined the Host edit Forwarding Rules and Services tabs with single-line table headers, row-level add/edit flows, interactive action menus, and compact spacing that matches the existing neutral app palette.
+- Services start commands now open in a polished Bash code editor when adding or editing services.
+- Unified renderer UI control icons and packaged Note attachment icons on local Iconify/Lucide or Iconify-sourced artwork.
+
+### Fixed
+- Fixed Forwarding Rules and Services action menus showing text and buttons from the rows underneath.
+
 ## [0.3.79] - 2026-08-30
 
 ### Changed

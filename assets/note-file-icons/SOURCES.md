@@ -14,8 +14,8 @@ the application does not fetch icon assets at runtime.
 | `code.svg` | `vscode-icons:file-type-json` | VSCode Icons | Normalized to the shared 32px view box. |
 | `audio.svg` | `material-icon-theme:audio` | Material Icon Theme | Normalized to the shared 32px view box. |
 | `video.svg` | `material-icon-theme:video` | Material Icon Theme | Normalized to the shared 32px view box. |
-| `archive.svg` | Local generic archive drawing | Service Manager | Drawn locally to match the compact attachment-card set. |
-| `file.svg` | Local generic file drawing | Service Manager | Drawn locally to match the compact attachment-card set. |
+| `archive.svg` | `vscode-icons:file-type-zip` | VSCode Icons | Normalized to the shared 32px view box. |
+| `file.svg` | `vscode-icons:default-file` | VSCode Icons | Normalized to the shared 32px view box. |
 
 VSCode Icons and Material Icon Theme are distributed under the MIT License.
 Their license texts are preserved in this directory.

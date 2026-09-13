@@ -22,7 +22,8 @@ test('rich text registers the official resizable TableKit and a 3 by 3 header sl
     editor,
     /deleteRange\(range\)\.insertTable\(\{\s*rows: 3,\s*cols: 3,\s*withHeaderRow: true,\s*\}\)\.run\(\)/,
   );
-  assert.match(editor, /'M8 2\.5v11'/, 'slash command uses the local Lucide Table geometry');
+  assert.match(editor, /table: 'table'/, 'slash command maps to the local Lucide Table icon');
+  assert.match(editor, /createIcon\(EDITOR_ICON_NAMES\[name as Exclude<EditorIconName,[\s\S]*?\]\)/);
 });
 
 test('Notion-style table controls remain a DOM adapter around official Tiptap commands', async () => {

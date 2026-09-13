@@ -17,6 +17,40 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test('quit preparation can cancel without cleanup and a later request can proceed normally', async () => {
+  const events = [];
+  let allowed = false;
+  const coordinator = new AppQuitCoordinator({
+    prepareQuit: async () => allowed,
+    abortAutoStart: () => events.push('abort'), cleanup: async () => events.push('cleanup'),
+    reportCleanupError: () => {}, quit: () => events.push('quit'),
+    installUpdate: () => events.push('install'), exit: () => events.push('exit'),
+  });
+  await coordinator.request('install-update');
+  assert.deepEqual(events, []);
+  assert.equal(coordinator.canQuitImmediately(), false);
+  allowed = true;
+  await coordinator.request('normal');
+  assert.deepEqual(events, ['abort', 'cleanup', 'quit']);
+});
+
+test('waiting for Notes sync precedes the cleanup timeout and system signals bypass the prompt', async () => {
+  const preparation = deferred();
+  const events = [];
+  const coordinator = new AppQuitCoordinator({
+    prepareQuit: () => preparation.promise,
+    abortAutoStart: () => events.push('abort'), cleanup: async () => events.push('cleanup'),
+    reportCleanupError: () => {}, quit: () => events.push('quit'),
+    installUpdate: () => events.push('install'), exit: () => events.push('exit'),
+  });
+  const pending = coordinator.request('normal');
+  assert.deepEqual(events, []);
+  assert.equal(coordinator.request('signal'), pending);
+  await pending;
+  assert.deepEqual(events, ['abort', 'cleanup', 'exit']);
+  preparation.resolve(false);
+});
+
 function fakeTimer() {
   const scheduled = [];
   const timer = {

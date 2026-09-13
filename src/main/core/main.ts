@@ -28,6 +28,7 @@ import type {
   NoteShareCreateInput,
   NoteShareDurationHours,
   NoteShareResignInput,
+  NoteShareView,
   NoteSummary,
   NoteTreeExpansionRequest,
   NotesWorkspaceSnapshot,
@@ -98,9 +99,9 @@ import { KubernetesRuntime } from '../kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from '../kubernetes/contextPreference';
 import { registerKubernetesIpcHandlers } from '../kubernetes/ipcHandlers';
 import { AppQuitCoordinator } from './quitCoordinator';
+import { confirmApplicationQuit } from './quitConfirmation';
 import {
   NOTE_LIMITS,
-  NotesStore,
   classifyNoteDraftRecovery,
   normalizeNoteDraft,
   normalizeNoteSnapshot,
@@ -111,7 +112,13 @@ import {
 import { NotesTreeStore } from '../notes/notesTreeStore';
 import { NotesTreeViewStore } from '../notes/notesTreeViewStore';
 import { NotesWorkspaceApplyCoordinator } from '../notes/notesWorkspaceApply';
+import { SqliteNotesStore } from '../notes/sqliteNotesStore';
+import { NotesDatabaseSync, hashNotesDatabaseState, type SharedNotes } from '../s3/notesDatabaseSync';
 import { UiPreferencesStore } from './uiPreferencesStore';
+import {
+  NotesShareSettingsStore,
+  shortenNoteShareViewUrls,
+} from '../notes/notesShareSettingsStore';
 import { LlmSettingsStore } from '../llm/llmSettingsStore';
 import { fetchLlmModels } from '../llm/llmModels';
 import { SqlCredentialsStore } from '../sql/sqlCredentialsStore';
@@ -120,8 +127,6 @@ import { exportSqlResult, parseSqlExportInput } from '../sql/sqlExport';
 import {
   S3SyncRuntime,
   type S3LocalChange,
-  type S3NotesIncrementalIntent,
-  type S3NotesIncrementalSnapshot,
 } from '../s3/s3Sync';
 import {
   createNotesAttachmentPreview,
@@ -161,11 +166,12 @@ import {
 
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
-let notesStore: NotesStore | null = null;
+let notesStore: SqliteNotesStore | null = null;
 let notesTreeStore: NotesTreeStore | null = null;
 let notesTreeViewStore: NotesTreeViewStore | null = null;
 let notesWorkspaceApplyCoordinator: NotesWorkspaceApplyCoordinator | null = null;
 let uiPreferencesStore: UiPreferencesStore | null = null;
+let notesShareSettingsStore: NotesShareSettingsStore | null = null;
 let llmSettingsStore: LlmSettingsStore | null = null;
 let changelogSeenStore: ChangelogSeenStore | null = null;
 let sqlRuntime: SqlRuntime | null = null;
@@ -397,7 +403,7 @@ async function renderNotePdf(documentHtml: string): Promise<Buffer> {
   }
 }
 
-function getNotesStore(): NotesStore {
+function getNotesStore(): SqliteNotesStore {
   if (!notesStore) {
     throw new Error('Notes store is not initialized.');
   }
@@ -436,6 +442,21 @@ function getChangelogSeenStore(): ChangelogSeenStore {
 function getLlmSettingsStore(): LlmSettingsStore {
   if (!llmSettingsStore) throw new Error('LLM settings are not initialized.');
   return llmSettingsStore;
+}
+
+function getNotesShareSettingsStore(): NotesShareSettingsStore {
+  if (!notesShareSettingsStore) throw new Error('Note share settings are not initialized.');
+  return notesShareSettingsStore;
+}
+
+async function shortenNoteShareViews(shares: readonly NoteShareView[]): Promise<NoteShareView[]> {
+  let config: Awaited<ReturnType<NotesShareSettingsStore['getShortenerConfig']>>;
+  try {
+    config = await getNotesShareSettingsStore().getShortenerConfig();
+  } catch {
+    return shares.map((share) => ({ ...share }));
+  }
+  return shortenNoteShareViewUrls(shares, config);
 }
 
 function getSqlRuntime(): SqlRuntime {
@@ -481,6 +502,7 @@ function mutateNotesSharedData<T>(
 ): Promise<T> {
   return runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
+    s3SyncRuntime?.assertNotesEditable();
     const result = await operation();
     s3SyncRuntime?.markLocalChange(typeof change === 'function' ? change(result) : change);
     return result;
@@ -1399,6 +1421,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     Promise.resolve().then(() => notesTreeStore?.flush()),
     Promise.resolve().then(() => notesTreeViewStore?.flush()),
     Promise.resolve().then(() => uiPreferencesStore?.flush()),
+    Promise.resolve().then(() => notesShareSettingsStore?.flush()),
     Promise.resolve().then(() => llmSettingsStore?.flush()),
     Promise.resolve().then(() => sqlRuntime?.shutdown()),
     Promise.resolve().then(() => s3SharedDataMutationQueue),
@@ -1414,12 +1437,35 @@ async function shutdownRuntimesForQuit(): Promise<void> {
     }
   }
 
+  await notesStore?.close().catch((error) => logRuntimeError('app:shutdown', error, { operation: 'notes-close' }));
+
   await flushSentry();
   await flushRuntimeLog();
 }
 
 function requestQuitAfterRuntimeShutdown(signal = false): void {
   void quitCoordinator.request(signal ? 'signal' : 'normal');
+}
+
+async function prepareNotesForQuit(): Promise<boolean> {
+  const apply = notesStore ? await prepareRendererNotesPersistentApply() : undefined;
+  let quitting = false;
+  try {
+    quitting = await confirmApplicationQuit({
+      state: async () => s3SyncRuntime ? s3SyncRuntime.getNotesQuitState() : { status: 'not-configured', pending: false },
+      choose: async (options) => {
+        const parent = primaryRendererWindow();
+        return (await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options))).response;
+      },
+      sync: async () => {
+        if (!s3SyncRuntime) throw new Error('Notes sync is unavailable.');
+        await s3SyncRuntime.uploadPendingNotes(true);
+      },
+    });
+    return quitting;
+  } finally {
+    if (!quitting && apply) releaseRendererNotesPersistentApply(apply);
+  }
 }
 
 function runFinalExitAction(action: () => void): void {
@@ -1433,6 +1479,7 @@ updater = new AppUpdater(
   () => { void quitCoordinator.request('install-update'); },
 );
 quitCoordinator = new AppQuitCoordinator({
+  prepareQuit: prepareNotesForQuit,
   abortAutoStart: () => autoStartAbortController.abort(),
   cleanup: shutdownRuntimesForQuit,
   reportCleanupError: async (error) => {
@@ -1567,54 +1614,72 @@ async function hostsForS3Snapshot(hosts: HostConfig[]): Promise<HostConfig[]> {
   }));
 }
 
-async function collectS3SharedAppDataUnlocked(): Promise<S3SharedAppData> {
-  assertNotesWorkspaceSafe();
+async function collectS3SharedAppDataUnlocked(includeNotes = true): Promise<S3SharedAppData> {
+  if (includeNotes) assertNotesWorkspaceSafe();
   const activeNotesStore = getNotesStore();
-  await activeNotesStore.flush();
+  if (includeNotes) await activeNotesStore.flush();
   const [proxy, snapshotHosts] = await Promise.all([
     getProxyRuntime().exportPersistentSnapshot(),
     hostsForS3Snapshot(getStore().listHosts()),
   ]);
   return createS3SharedAppData({
     hosts: snapshotHosts,
-    notes: activeNotesStore.exportSnapshot(),
-    notesTree: getNotesTreeStore().snapshot(),
-    noteTombstones: activeNotesStore.exportTombstones(),
+    notes: includeNotes ? activeNotesStore.exportSnapshot() : { schemaVersion: 1, notes: [] },
+    notesTree: includeNotes ? getNotesTreeStore().snapshot() : { schemaVersion: 1, nodes: [] },
+    noteTombstones: includeNotes ? activeNotesStore.exportTombstones() : [],
     proxy,
   });
 }
 
-async function collectS3SharedAppData(): Promise<S3SharedAppData> {
-  await flushRendererNotes();
-  return runS3SharedDataMutation(collectS3SharedAppDataUnlocked);
+function localSharedNotes(): SharedNotes {
+  return {
+    schemaVersion: 2,
+    notes: getNotesStore().list(),
+    tombstones: getNotesStore().exportTombstones(),
+    tree: getNotesTreeStore().snapshot(),
+  };
 }
 
-async function collectS3ChangedNotes(
-  intent: S3NotesIncrementalIntent,
-): Promise<S3NotesIncrementalSnapshot> {
+async function captureNotesDatabase(): Promise<{ bytes: Buffer; hash: string }> {
+  await flushRendererNotes();
   return runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
-    const store = getNotesStore();
-    await store.flush();
-    const notes: Note[] = [];
-    const tombstones: NoteTombstone[] = [];
-    const tombstonesById = new Map(store.exportTombstones().map((tombstone) => [tombstone.id, tombstone]));
-    for (const id of new Set([...intent.upsertIds, ...intent.deleteIds])) {
-      const note = store.get(id);
-      if (note) {
-        notes.push(note);
-        continue;
-      }
-      const tombstone = tombstonesById.get(id);
-      if (!tombstone) throw new Error('A changed Note is no longer available.');
-      tombstones.push(tombstone);
-    }
-    return {
-      notes,
-      tombstones,
-      ...(intent.includeTree ? { notesTree: getNotesTreeStore().snapshot() } : {}),
-    };
+    await getNotesStore().flush();
+    await getNotesTreeStore().flush();
+    return { bytes: await getNotesStore().snapshotBytes(), hash: hashNotesDatabaseState(localSharedNotes()) };
   });
+}
+
+async function decodeNotesDatabase(bytes: Buffer): Promise<SharedNotes> {
+  const snapshot = await SqliteNotesStore.decodeSnapshot(bytes, app.getPath('userData'));
+  return { schemaVersion: 2, notes: snapshot.notes.notes, tombstones: snapshot.tombstones, tree: snapshot.tree };
+}
+
+async function applyNotesDatabase(next: SharedNotes, expectedHash: string): Promise<boolean> {
+  const rendererApply = await prepareRendererNotesPersistentApply();
+  let releasedByReload = false;
+  try {
+    const delta = await runS3SharedDataMutation(async () => {
+      assertNotesWorkspaceSafe();
+      const previous = localSharedNotes();
+      if (hashNotesDatabaseState(previous) !== expectedHash) return undefined;
+      const previousView = getNotesTreeViewStore().snapshot().expandedNoteIds;
+      try {
+        return await getNotesWorkspaceApplyCoordinator().replace({
+          notes: { schemaVersion: 1, notes: next.notes }, tombstones: next.tombstones, tree: next.tree,
+        });
+      } catch (error) {
+        await restoreNotesWorkspace({ schemaVersion: 1, notes: previous.notes }, previous.tombstones,
+          previous.tree, previousView).catch(() => { notesWorkspaceUnsafe = true; });
+        throw error;
+      }
+    });
+    if (!delta) return false;
+    releasedByReload = publishPersistentDataReload('s3', rendererApply, { notesDelta: delta });
+    return true;
+  } finally {
+    if (!releasedByReload) releaseRendererNotesPersistentApply(rendererApply);
+  }
 }
 
 function validateS3AppliedHosts(hosts: HostConfig[], currentHosts: HostConfig[]): HostConfig[] {
@@ -1655,10 +1720,13 @@ async function stopAndClearHostRuntime(hosts: HostConfig[]): Promise<void> {
 async function applyS3SharedAppData(
   data: S3SharedAppData,
   expectedLocal?: S3SharedAppData,
+  preserveNotes = false,
 ): Promise<boolean> {
   // Freeze before flushing so a keystroke cannot land between the final
   // expected-local check and the whole-workspace replacement.
-  const rendererApply = await prepareRendererNotesPersistentApply();
+  const rendererApply = preserveNotes
+    ? { id: randomUUID(), windows: [] }
+    : await prepareRendererNotesPersistentApply();
   let reloadOwnsRelease = false;
   let changed = false;
   let appliedHostsChanged = false;
@@ -1666,7 +1734,7 @@ async function applyS3SharedAppData(
   try {
     const applied = await runS3SharedDataMutation(async () => {
       if (expectedLocal) {
-        const currentShared = await collectS3SharedAppDataUnlocked();
+        const currentShared = await collectS3SharedAppDataUnlocked(!preserveNotes);
         if (!isDeepStrictEqual(currentShared, expectedLocal)) return false;
       }
 
@@ -1676,7 +1744,7 @@ async function applyS3SharedAppData(
       const currentNotesTree = getNotesTreeStore().snapshot();
       const currentExpandedNoteIds = getNotesTreeViewStore().snapshot().expandedNoteIds;
       const currentProxy = await getProxyRuntime().exportPersistentSnapshot();
-      const staged = stageS3SharedAppDataForLocalApply(data, {
+      const staged = stageS3SharedAppDataForLocalApply(preserveNotes ? { ...data, notes: localSharedNotes() } : data, {
         hosts: currentHosts,
         proxy: currentProxy,
       });
@@ -1888,6 +1956,7 @@ function registerIpcHandlers(): void {
     const input = validateNoteDelete(inputValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
+      s3SyncRuntime?.assertNotesEditable();
       const deletedIds = noteSubtreeIds(input.id);
       if (!sameNoteIds(deletedIds, input.expectedIds)) {
         return { status: 'changed' as const, preview: noteDeletePreview(input.id) };
@@ -2064,20 +2133,22 @@ function registerIpcHandlers(): void {
     const noteId = validateNoteId(noteIdValue);
     assertNotesWorkspaceSafe();
     if (!getNotesStore().get(noteId)) throw new Error('Note not found.');
-    return getS3SyncRuntime().listNoteShares(noteId);
+    return shortenNoteShareViews(await getS3SyncRuntime().listNoteShares(noteId));
   });
   ipcMain.handle(IPC_CHANNELS.notesSharesCreate, async (_event, inputValue: unknown) => {
     const input = validateNoteShareCreateInput(inputValue);
     assertNotesWorkspaceSafe();
     const note = getNotesStore().get(input.noteId);
     if (!note) throw new Error('Note not found.');
-    return getS3SyncRuntime().createNoteShare(note, input.expiresInHours);
+    const share = await getS3SyncRuntime().createNoteShare(note, input.expiresInHours);
+    return (await shortenNoteShareViews([share]))[0];
   });
   ipcMain.handle(IPC_CHANNELS.notesSharesResign, async (_event, inputValue: unknown) => {
     const input = validateNoteShareResignInput(inputValue);
     assertNotesWorkspaceSafe();
     if (!getNotesStore().get(input.noteId)) throw new Error('Note not found.');
-    return getS3SyncRuntime().resignNoteShare(input.noteId, input.shareId, input.expiresInHours);
+    const share = await getS3SyncRuntime().resignNoteShare(input.noteId, input.shareId, input.expiresInHours);
+    return (await shortenNoteShareViews([share]))[0];
   });
   ipcMain.handle(IPC_CHANNELS.notesSharesDelete, async (_event, inputValue: unknown) => {
     const input = validateNoteShareDeleteInput(inputValue);
@@ -2293,6 +2364,7 @@ function registerIpcHandlers(): void {
         }
         const applied = await runS3SharedDataMutation(async () => {
           assertNotesWorkspaceSafe();
+          s3SyncRuntime?.assertNotesEditable();
           const previousNotes = getNotesStore().exportSnapshot();
           const previousTombstones = getNotesStore().exportTombstones();
           const previousTree = getNotesTreeStore().snapshot();
@@ -2388,6 +2460,13 @@ function registerIpcHandlers(): void {
     }
   });
   ipcMain.handle(IPC_CHANNELS.llmSettingsGet, async () => getLlmSettingsStore().get());
+  ipcMain.handle(IPC_CHANNELS.noteShareSettingsGet, async () => getNotesShareSettingsStore().get());
+  ipcMain.handle(IPC_CHANNELS.noteShareSettingsSave, async (_event, draft: unknown) =>
+    getNotesShareSettingsStore().save(draft)
+  );
+  ipcMain.handle(IPC_CHANNELS.noteShareSettingsReveal, async () =>
+    getNotesShareSettingsStore().revealShortenerCredentials()
+  );
   ipcMain.handle(IPC_CHANNELS.llmSettingsSave, async (_event, draft: unknown) =>
     getLlmSettingsStore().save(draft)
   );
@@ -2484,6 +2563,9 @@ function registerIpcHandlers(): void {
     getS3SyncRuntime().revealS3SyncCredentials()
   );
   ipcMain.handle(IPC_CHANNELS.s3Sync, async () => getS3SyncRuntime().syncAllDataToS3());
+  ipcMain.handle(IPC_CHANNELS.notesSyncCheck, async () => getS3SyncRuntime().checkNotesSync());
+  ipcMain.handle(IPC_CHANNELS.notesUploadOnLeave, async () => getS3SyncRuntime().uploadPendingNotes());
+  ipcMain.handle(IPC_CHANNELS.notesSyncAllowOffline, async () => getS3SyncRuntime().allowOfflineNotesEditing());
 
   ipcMain.handle(IPC_CHANNELS.exportConfig, async (): Promise<ConfigTransferResult | null> => {
     const hosts = getStore().listHosts();
@@ -3126,10 +3208,10 @@ app.whenReady()
     const hosts = store.listHosts();
     syncKnownForwards(hosts);
 
-    notesStore = new NotesStore(path.join(app.getPath('userData'), 'notes-v4'));
+    notesStore = new SqliteNotesStore(app.getPath('userData'));
     await notesStore.load();
 
-    notesTreeStore = new NotesTreeStore(path.join(app.getPath('userData'), 'notes-tree.json'));
+    notesTreeStore = notesStore.createTreeStore();
     await notesTreeStore.load(notesStore.list().map((note) => note.id));
     notesTreeViewStore = new NotesTreeViewStore(path.join(app.getPath('userData'), 'notes-tree-view.json'));
     await notesTreeViewStore.load(notesStore.list().map((note) => note.id));
@@ -3162,6 +3244,12 @@ app.whenReady()
     });
     await llmSettingsStore.load();
 
+    notesShareSettingsStore = new NotesShareSettingsStore({
+      filePath: path.join(app.getPath('userData'), 'notes-share-settings.json'),
+      credentialProtector,
+    });
+    await notesShareSettingsStore.load();
+
     const sqlCredentialsStore = new SqlCredentialsStore({
       filePath: path.join(app.getPath('userData'), 'sql-login.json'),
       credentialProtector,
@@ -3186,13 +3274,30 @@ app.whenReady()
     kubernetesRuntime = initializedKubernetesRuntime;
     await initializedKubernetesRuntime.init();
 
+    const notesDatabase = new NotesDatabaseSync({
+      userDataPath,
+      currentHash: () => runS3SharedDataMutation(async () => {
+        assertNotesWorkspaceSafe();
+        return hashNotesDatabaseState(localSharedNotes());
+      }),
+      capture: captureNotesDatabase,
+      inspect: async (bytes) => hashNotesDatabaseState(await decodeNotesDatabase(bytes)),
+      apply: async (bytes, expectedHash) => applyNotesDatabase(await decodeNotesDatabase(bytes), expectedHash),
+      importLegacy: applyNotesDatabase,
+    });
+    await notesDatabase.initialize();
     s3SyncRuntime = new S3SyncRuntime({
       userDataPath,
       appVersion: app.getVersion(),
       credentialProtector,
-      snapshotProvider: collectS3SharedAppData,
-      notesIncrementalProvider: collectS3ChangedNotes,
-      snapshotApplier: applyS3SharedAppData,
+      snapshotProvider: () => runS3SharedDataMutation(() => collectS3SharedAppDataUnlocked(false)),
+      snapshotApplier: (data, expected) => applyS3SharedAppData(data, expected, true),
+      notesDatabase,
+      onNotesSyncGuardChanged: (state) => broadcast(IPC_CHANNELS.notesSyncGuardState, state),
+      freezeNotesForGuard: async () => {
+        const apply = await prepareRendererNotesPersistentApply();
+        return () => releaseRendererNotesPersistentApply(apply);
+      },
       onStateChanged: (state) => broadcast(IPC_CHANNELS.s3SyncState, state),
       onStartupStateChanged: (state) => broadcast(IPC_CHANNELS.startupS3SyncState, state),
     });

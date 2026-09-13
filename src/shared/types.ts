@@ -717,6 +717,11 @@ export interface NotesTreeSnapshot {
   nodes: NotesTreeNode[];
 }
 
+export interface NotesSyncGuardState {
+  status: 'not-configured' | 'checking' | 'ready' | 'remote-updated' | 'offline' | 'diverged';
+  editable: boolean;
+}
+
 export interface NotesWorkspaceSnapshot {
   notes: NoteSummary[];
   tree: NotesTreeSnapshot;
@@ -890,6 +895,21 @@ export interface NoteShareCreateInput {
 
 export interface NoteShareResignInput extends NoteShareCreateInput {
   shareId: string;
+}
+
+export interface NoteShareSettingsView {
+  shortenerBaseUrl: string;
+  hasShortenerApiKey: boolean;
+}
+
+export interface NoteShareSettingsDraft {
+  shortenerBaseUrl: string;
+  shortenerApiKey?: string;
+  clearShortenerApiKey?: boolean;
+}
+
+export interface NoteShareShortenerCredentialValues {
+  shortenerApiKey?: string;
 }
 
 export interface NotesFlushRequest {
@@ -1273,7 +1293,14 @@ export interface SettingsApi {
   applyTriliumImport: (input: TriliumImportApplyInput) => Promise<TriliumImportResult>;
   cancelTriliumImport: (requestId: string) => Promise<void>;
   onTriliumImportProgress: (listener: (progress: TriliumImportProgress) => void) => () => void;
+  getNoteShareSettings: () => Promise<NoteShareSettingsView>;
+  saveNoteShareSettings: (draft: NoteShareSettingsDraft) => Promise<NoteShareSettingsView>;
+  revealNoteShareShortenerCredentials: () => Promise<NoteShareShortenerCredentialValues>;
   getS3SyncSettings: () => Promise<S3SyncSettingsView>;
+  checkNotesSync: () => Promise<NotesSyncGuardState>;
+  uploadNotesOnLeave: () => Promise<void>;
+  allowOfflineNotesEditing: () => Promise<NotesSyncGuardState>;
+  onNotesSyncGuardChanged: (listener: (state: NotesSyncGuardState) => void) => () => void;
   saveS3SyncSettings: (draft: S3SyncSettingsDraft) => Promise<S3SyncSettingsView>;
   testS3Connection: (draft: S3ConnectionTestDraft) => Promise<void>;
   revealS3SyncCredentials: () => Promise<S3CredentialValues>;

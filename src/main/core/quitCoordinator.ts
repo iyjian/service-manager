@@ -8,6 +8,7 @@ export interface AppQuitCoordinatorTimer {
 }
 
 export interface AppQuitCoordinatorOptions {
+  prepareQuit?(): Promise<boolean>;
   abortAutoStart(): void;
   cleanup(): Promise<void>;
   reportCleanupError(error: unknown): void | Promise<void>;
@@ -50,6 +51,7 @@ export class AppQuitCoordinator {
   private intent: AppQuitIntent = 'normal';
   private cleanupPromise?: Promise<void>;
   private quitAllowed = false;
+  private interruptPreparation?: () => void;
   private readonly cleanupTimeoutMs: number;
   private readonly timer: AppQuitCoordinatorTimer;
 
@@ -66,13 +68,26 @@ export class AppQuitCoordinator {
     if (this.quitAllowed) return Promise.resolve();
 
     this.intent = mergeQuitIntent(this.intent, intent);
+    if (intent === 'signal') this.interruptPreparation?.();
     if (!this.cleanupPromise) {
       this.cleanupPromise = this.run();
+      void this.cleanupPromise.finally(() => {
+        if (!this.quitAllowed) { this.cleanupPromise = undefined; this.intent = 'normal'; }
+      }).catch(() => undefined);
     }
     return this.cleanupPromise;
   }
 
   private async run(): Promise<void> {
+    if (this.options.prepareQuit && this.intent !== 'signal') {
+      try {
+        const interrupted = new Promise<boolean>((resolve) => { this.interruptPreparation = () => resolve(true); });
+        if (!await Promise.race([this.options.prepareQuit(), interrupted])) return;
+      } catch (error) {
+        this.reportCleanupError(error);
+        return;
+      } finally { this.interruptPreparation = undefined; }
+    }
     try {
       this.options.abortAutoStart();
     } catch (error) {

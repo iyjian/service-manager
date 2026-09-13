@@ -1,4 +1,8 @@
 import { captureRendererException } from './utils/sentry.js';
+import { basicSetup, EditorView } from 'codemirror';
+import { defaultHighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { EditorState } from '@codemirror/state';
 import type {
   AppMemoryUsage,
   ConfigTransferResult,
@@ -24,6 +28,7 @@ import { registerSettingsDialog } from './pages/settingsDialog.js';
 import { maybeShowChangelog } from './pages/changelog.js';
 import { trackStartupS3SyncWork, waitForStartupS3Sync } from './utils/startupS3SyncGate.js';
 import { activateTabSet, bindTabButtons } from './components/tabs.js';
+import { hydrateLucideIcons, renderIcon, type LucideIconName } from './components/icon.js';
 import {
   canStartForward,
   canStartService,
@@ -72,6 +77,8 @@ const hostEditRoute = requireElement<HTMLElement>('#host-edit-route');
 const hostEditPathCount = requireElement<HTMLElement>('#host-edit-path-count');
 const hostEditForwardsCount = requireElement<HTMLElement>('#host-edit-forwards-count');
 const hostEditServicesCount = requireElement<HTMLElement>('#host-edit-services-count');
+const hostEditForwardsPanelCount = requireElement<HTMLElement>('#host-edit-forwards-panel-count');
+const hostEditServicesPanelCount = requireElement<HTMLElement>('#host-edit-services-panel-count');
 const hostEditTabButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-host-edit-tab]'));
 const hostEditPanels = Array.from(document.querySelectorAll<HTMLElement>('[data-host-edit-panel]'));
 const pageMessageElement = requireElement<HTMLDivElement>('#page-message');
@@ -137,6 +144,47 @@ let pageMessageGeneration = 0;
 let isHostsPageActive = false;
 const collapsedHostIds = new Set<string>();
 const PAGE_TOAST_DURATION_MS = 10_000;
+const bashLanguage = StreamLanguage.define(shell);
+
+const serviceCommandEditorTheme = EditorView.theme({
+  '&': {
+    minHeight: '112px',
+    backgroundColor: 'var(--color-bg-surface)',
+    color: 'var(--color-fg-primary)',
+    fontSize: '12px',
+  },
+  '&.cm-focused': {
+    outline: 'none',
+  },
+  '.cm-scroller': {
+    fontFamily: 'var(--font-family-mono)',
+    lineHeight: '1.58',
+  },
+  '.cm-content': {
+    minHeight: '112px',
+    padding: '8px 0',
+  },
+  '.cm-line': {
+    padding: '0 10px',
+  },
+  '.cm-gutters': {
+    backgroundColor: 'var(--color-bg-page)',
+    borderRight: '1px solid var(--color-border-subtle)',
+    color: 'var(--color-fg-quaternary)',
+    fontSize: '11px',
+  },
+  '.cm-activeLine': {
+    backgroundColor: 'var(--color-bg-subtle)',
+  },
+  '.cm-activeLineGutter': {
+    backgroundColor: 'var(--color-bg-subtle)',
+  },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
+    backgroundColor: 'var(--color-focus-ring)',
+  },
+}, { dark: false });
+
+const serviceCommandEditors = new WeakMap<HTMLElement, EditorView>();
 
 type RuntimeStatusDomTarget =
   | { kind: 'service'; hostId: string; itemId: string }
@@ -485,11 +533,7 @@ function closeHostMenus(): void {
 
 function renderHostEditRoute(): void {
   const expanded = form.querySelector<HTMLElement>('.he-card[data-expanded="true"]');
-  const arrow = `
-    <span class="he-route-sep" aria-hidden="true">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 3.5 4.5 4.5L6 12.5"></path></svg>
-    </span>
-  `;
+  const arrow = '<span class="he-route-sep" aria-hidden="true">' + renderIcon('chevron-right', { size: 12 }) + '</span>';
   const chip = (label: string, modifier: string): string =>
     `<span class="he-route-chip${modifier ? ` ${modifier}` : ''}">${escapeHtml(label)}</span>`;
 
@@ -511,6 +555,10 @@ function updateHostEditCounts(): void {
   hostEditPathCount.textContent = `${hopCount} ${hopCount === 1 ? 'hop' : 'hops'}`;
   hostEditForwardsCount.textContent = String(forwardCount);
   hostEditServicesCount.textContent = String(serviceCount);
+  hostEditForwardsPanelCount.textContent = String(forwardCount);
+  hostEditServicesPanelCount.textContent = String(serviceCount);
+  addForwardButton.disabled = Boolean(forwardEditorList.querySelector('.forward-editor-row.is-editing, .forward-editor-row.is-new'));
+  addServiceButton.disabled = Boolean(serviceEditorList.querySelector('.service-editor-row.is-editing, .service-editor-row.is-new'));
   renderHostEditRoute();
 }
 
@@ -800,7 +848,7 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
     forwardEditorList.appendChild(createForwardEditorRow(forward));
   }
 
-  serviceEditorList.innerHTML = '';
+  clearServiceEditorRows();
   for (const service of draft.services ?? []) {
     serviceEditorList.appendChild(createServiceEditorRow(service));
   }
@@ -882,155 +930,29 @@ type ButtonIconName =
   | 'prev'
   | 'next';
 
+const BUTTON_ICON_MAP: Record<ButtonIconName, LucideIconName> = {
+  addHost: 'server',
+  importConfig: 'download',
+  exportConfig: 'upload',
+  pasteConfig: 'clipboard-paste',
+  key: 'key-round',
+  addHop: 'plus',
+  addRule: 'route',
+  addService: 'server-cog',
+  save: 'check',
+  reset: 'rotate-ccw',
+  cancel: 'x',
+  copy: 'copy',
+  edit: 'pencil',
+  delete: 'trash-2',
+  start: 'play',
+  stop: 'square',
+  prev: 'chevron-left',
+  next: 'chevron-right',
+};
+
 function renderButtonIcon(icon: ButtonIconName): string {
-  switch (icon) {
-    case 'addHost':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="2.5" y="3" width="7" height="4" rx="1"></rect>
-          <rect x="2.5" y="9" width="7" height="4" rx="1"></rect>
-          <path d="M12 5.25v5.5"></path>
-          <path d="M9.25 8h5.5"></path>
-        </svg>
-      `;
-    case 'importConfig':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M8 2.5v7"></path>
-          <path d="M5.5 7 8 9.5 10.5 7"></path>
-          <path d="M3 11.5h10"></path>
-          <path d="M4.5 11.5v1a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-1"></path>
-        </svg>
-      `;
-    case 'exportConfig':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M8 13.5v-7"></path>
-          <path d="M5.5 6 8 3.5 10.5 6"></path>
-          <path d="M3 11.5h10"></path>
-          <path d="M4.5 11.5v1a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-1"></path>
-        </svg>
-      `;
-    case 'pasteConfig':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="4" y="3.5" width="8" height="10" rx="1.5"></rect>
-          <path d="M6 3.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v.5"></path>
-          <path d="M6.5 7h3"></path>
-          <path d="M6.5 9.5h3"></path>
-        </svg>
-      `;
-    case 'key':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="5" cy="8" r="2.5"></circle>
-          <path d="M7.5 8h5"></path>
-          <path d="M10.5 8v1.75"></path>
-          <path d="M12.5 8v1.25"></path>
-        </svg>
-      `;
-    case 'addHop':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="4" cy="4" r="1.5"></circle>
-          <circle cx="4" cy="12" r="1.5"></circle>
-          <circle cx="10" cy="8" r="1.5"></circle>
-          <path d="M5.5 4h1A2.5 2.5 0 0 1 9 6.5V8"></path>
-          <path d="M5.5 12h1A2.5 2.5 0 0 0 9 9.5V8"></path>
-          <path d="M13 3.75v4.5"></path>
-          <path d="M10.75 6h4.5"></path>
-        </svg>
-      `;
-    case 'addRule':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="4" cy="5" r="1.5"></circle>
-          <circle cx="9" cy="10" r="1.5"></circle>
-          <path d="M5.5 5h1A2.5 2.5 0 0 1 9 7.5V8.5"></path>
-          <path d="M7.5 10h-1A2.5 2.5 0 0 1 4 7.5V6.5"></path>
-          <path d="M13 3.75v4.5"></path>
-          <path d="M10.75 6h4.5"></path>
-        </svg>
-      `;
-    case 'addService':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="2.5" y="3" width="8" height="10" rx="2"></rect>
-          <path d="M5 6.25 7 8 5 9.75"></path>
-          <path d="M8 10h.75"></path>
-          <path d="M13 3.75v4.5"></path>
-          <path d="M10.75 6h4.5"></path>
-        </svg>
-      `;
-    case 'save':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3.5 8.5 6.5 11.5 12.5 4.5"></path>
-        </svg>
-      `;
-    case 'reset':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 8a5 5 0 1 0 1.5-3.56"></path>
-          <path d="M3 3.5v3h3"></path>
-        </svg>
-      `;
-    case 'cancel':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4.5 4.5 11.5 11.5"></path>
-          <path d="M11.5 4.5 4.5 11.5"></path>
-        </svg>
-      `;
-    case 'copy':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="5" y="3" width="7" height="9" rx="1.5"></rect>
-          <path d="M4 5H3.5A1.5 1.5 0 0 0 2 6.5v6A1.5 1.5 0 0 0 3.5 14H8"></path>
-        </svg>
-      `;
-    case 'edit':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 13l2.75-.5L12 6.25 9.75 4 3.5 10.25 3 13z"></path>
-          <path d="M8.75 5 11 7.25"></path>
-        </svg>
-      `;
-    case 'delete':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3.5 4.5h9"></path>
-          <path d="M6 4.5V3.5A1.5 1.5 0 0 1 7.5 2h1A1.5 1.5 0 0 1 10 3.5v1"></path>
-          <path d="M5 6.5V12a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1V6.5"></path>
-          <path d="M6.75 7.25v4"></path>
-          <path d="M9.25 7.25v4"></path>
-        </svg>
-      `;
-    case 'start':
-      return `
-        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true">
-          <path d="M5 3.75v8.5l6.5-4.25L5 3.75z"></path>
-        </svg>
-      `;
-    case 'stop':
-      return `
-        <svg viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true">
-          <rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.25"></rect>
-        </svg>
-      `;
-    case 'prev':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M10 3.5 5.5 8 10 12.5"></path>
-        </svg>
-      `;
-    case 'next':
-      return `
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 3.5 10.5 8 6 12.5"></path>
-        </svg>
-      `;
-  }
+  return renderIcon(BUTTON_ICON_MAP[icon]);
 }
 
 function renderButtonContent(icon: ButtonIconName, label: string): string {
@@ -1038,6 +960,25 @@ function renderButtonContent(icon: ButtonIconName, label: string): string {
 }
 
 function applyStaticButtonIcons(): void {
+  hydrateLucideIcons();
+  const replaceStaticIcon = (selector: string, iconMarkup: string): void => {
+    const icon = document.querySelector<SVGElement>(selector);
+    if (icon) icon.outerHTML = iconMarkup;
+  };
+  replaceStaticIcon('.nav-settings-icon', renderIcon('settings', { className: 'nav-settings-icon', size: 24 }));
+  closeHostDialogButton.innerHTML = renderIcon('x');
+  hostDialogMessageCloseButton.innerHTML = renderIcon('x', { size: 14 });
+  closeServiceLogDialogButton.innerHTML = renderIcon('x');
+  targetPasswordVisibilityToggle.innerHTML = EYE_ICON;
+  replaceStaticIcon('#target-card-toggle .he-card-chevron', CHEVRON_ICON);
+  replaceStaticIcon('#private-key-summary-toggle .he-key-summary-left > svg', KEY_ICON);
+  replaceStaticIcon('#private-key-summary-toggle .he-key-chevron', renderIcon('chevron-down', { className: 'he-key-chevron' }));
+  document.querySelectorAll<SVGElement>('#host-dialog .he-local-chip svg, #host-dialog .he-marker .he-dot svg').forEach((icon) => {
+    icon.outerHTML = renderIcon('monitor');
+  });
+  addJumpHostButton.querySelector<HTMLElement>('.he-add-dot')?.replaceChildren();
+  const addHopDot = addJumpHostButton.querySelector<HTMLElement>('.he-add-dot');
+  if (addHopDot) addHopDot.innerHTML = renderIcon('plus');
   addHostButton.innerHTML = renderButtonContent('addHost', 'Add Host');
   importConfigButton.innerHTML = renderButtonContent('importConfig', 'Import Config');
   exportConfigButton.innerHTML = renderButtonContent('exportConfig', 'Export Config');
@@ -1053,17 +994,7 @@ function applyStaticButtonIcons(): void {
 }
 
 function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
-  const iconMarkup = kind === 'tunnel'
-    ? `
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="currentColor" d="M12 2C6.5 2 2 6.5 2 12v10h20V12c0-5.5-4.5-10-10-10m3.47 5.11A5.95 5.95 0 0 0 13 6.09V4.07c1.46.18 2.79.76 3.9 1.62zm-6.94 0L7.1 5.69A7.94 7.94 0 0 1 11 4.07v2.02c-.91.15-1.75.51-2.47 1.02M5.69 7.1l1.42 1.43A5.95 5.95 0 0 0 6.09 11H4.07c.18-1.46.76-2.79 1.62-3.9M6 13v2.5H4V13zm-2 7v-2.5h2V20zm12 0H8v-8c0-2.21 1.79-4 4-4s4 1.79 4 4zm.89-11.47l1.42-1.43a7.94 7.94 0 0 1 1.62 3.9h-2.02a5.95 5.95 0 0 0-1.02-2.47M18 13h2v2.5h-2zm0 7v-2.5h2V20z"></path>
-      </svg>
-    `
-    : `
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="currentColor" d="M5.126 18.874q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m-12-6q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m-12-6Q4.769 6.517 4.769 6t.357-.874T6 4.769t.874.357t.357.874t-.357.874T6 7.231t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357m6 0q-.357-.357-.357-.874t.357-.874t.874-.357t.874.357t.357.874t-.357.874t-.874.357t-.874-.357"></path>
-      </svg>
-    `;
+  const iconMarkup = renderIcon(kind === 'tunnel' ? 'route' : 'server-cog', { size: 18 });
   return `
     <span class="host-section-label host-section-label-${kind}">
       <span class="host-section-icon">${iconMarkup}</span>
@@ -1073,15 +1004,9 @@ function renderSectionLabel(kind: 'tunnel' | 'service', text: string): string {
 }
 
 function renderHostToggleIcon(isCollapsed: boolean): string {
-  const path = isCollapsed
-    ? 'm4 3.5l5 5l-5 5zM21 20v-2H3v2zm0-7v-2h-9v2zm0-7V4h-9v2z'
-    : 'M2 5h8l-4 5zM21 20v-2H3v2zm0-7v-2h-9v2zm0-7V4h-8v2z';
-  return `
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-      <path fill="currentColor" d="${path}"></path>
-    </svg>
-  `;
+  return renderIcon(isCollapsed ? 'chevron-right' : 'chevron-down', { size: 18 });
 }
+
 
 async function importPrivateKeyIntoField(
   field: HTMLTextAreaElement,
@@ -1180,22 +1105,11 @@ function handleHopMenuAction(item: HTMLButtonElement, row: HTMLElement): void {
   syncJumpSection();
 }
 
-const EYE_ICON = `
-  <svg class="icon-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z"></path><circle cx="8" cy="8" r="2"></circle></svg>
-  <svg class="icon-eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 2.5l11 11M6.6 6.7a2 2 0 0 0 2.8 2.8M4.7 4.9C2.7 6.1 1.5 8 1.5 8s2.5 4.5 6.5 4.5c1.2 0 2.3-.4 3.2-1M8 3.5c4 0 6.5 4.5 6.5 4.5s-.6 1.1-1.8 2.3"></path></svg>
-`;
-const KEY_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="8" r="3"></circle><path d="M8 8h6M11.5 8v2.5M14 8v1.5"></path></svg>
-`;
-const CHEVRON_ICON = `
-  <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"></path></svg>
-`;
-const MENU_DOTS_ICON = `
-  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3.5" r="1.2"></circle><circle cx="8" cy="8" r="1.2"></circle><circle cx="8" cy="12.5" r="1.2"></circle></svg>
-`;
-const ARROW_RIGHT_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8h11M9.5 4.5 13 8l-3.5 3.5"></path></svg>
-`;
+const EYE_ICON = `${renderIcon('eye', { className: 'icon-eye' })}${renderIcon('eye-off', { className: 'icon-eye-off' })}`;
+const KEY_ICON = renderIcon('key-round');
+const CHEVRON_ICON = renderIcon('chevron-down', { className: 'he-card-chevron' });
+const MENU_DOTS_ICON = renderIcon('ellipsis-vertical');
+const ARROW_RIGHT_ICON = renderIcon('arrow-right');
 
 function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   const row = document.createElement('div');
@@ -1341,32 +1255,193 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   return row;
 }
 
-function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'he-table-row he-grid-forward forward-row forward-editor-row';
-  row.setAttribute('role', 'row');
-  row.innerHTML = `
-    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <input type="text" class="he-cell-input" data-field="name" value="${safeValue(draft?.name)}" placeholder="optional" role="cell" aria-label="Rule Name" />
-    <div class="he-endpoint" role="cell">
-      <input type="text" class="he-endpoint-input" data-field="localHost" value="${safeValue(draft?.localHost)}" aria-label="Local Host" />
-      <span class="he-endpoint-sep" aria-hidden="true"></span>
-      <input type="text" class="he-endpoint-input" data-field="localPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.localPort)}" data-port-input aria-label="Local Port" />
-    </div>
-    <span class="he-fwd-arrow" aria-hidden="true">${ARROW_RIGHT_ICON}</span>
-    <div class="he-endpoint" role="cell">
-      <input type="text" class="he-endpoint-input" data-field="remoteHost" value="${safeValue(draft?.remoteHost)}" aria-label="Remote Host" />
-      <span class="he-endpoint-sep" aria-hidden="true"></span>
-      <input type="text" class="he-endpoint-input" data-field="remotePort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.remotePort)}" data-port-input aria-label="Remote Port" />
-    </div>
-    <span class="he-cell-center" role="cell">
-      <input type="checkbox" class="checkbox" data-field="autoStart" ${draft?.autoStart ? 'checked' : ''} aria-label="Auto Start" title="Automatically start this forwarding rule when the host connects." />
-    </span>
-    <button type="button" class="icon-btn he-row-remove forward-remove" aria-label="Remove forwarding rule">${renderButtonIcon('delete')}</button>
-  `;
+type RowEditMode = 'read' | 'edit' | 'new';
 
-  row.querySelector<HTMLButtonElement>('.forward-remove')?.addEventListener('click', () => {
-    row.remove();
+interface ForwardEditorDraft {
+  id?: string;
+  name?: string;
+  localHost?: string;
+  localPort?: number | string;
+  remoteHost?: string;
+  remotePort?: number | string;
+  autoStart?: boolean;
+}
+
+interface ServiceEditorDraft {
+  id?: string;
+  name?: string;
+  startCommand?: string;
+  port?: number | string;
+  forwardLocalPort?: number | string;
+}
+
+function fieldSelector(field: string): string {
+  return '[data-field="' + field + '"]';
+}
+
+function rawEditorValue(row: HTMLElement, field: string): string {
+  return row.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(fieldSelector(field))?.value ?? '';
+}
+
+function focusEditableRow(row: HTMLElement): void {
+  row.querySelector<HTMLElement>('input:not([type="hidden"]), textarea:not([hidden]), .cm-content')?.focus();
+}
+
+function focusActiveEditableRow(list: HTMLElement, currentRow: HTMLElement): boolean {
+  const active = list.querySelector<HTMLElement>('.is-editing, .is-new');
+  if (!active || active === currentRow) return false;
+  focusEditableRow(active);
+  return true;
+}
+
+function readForwardDraftFromRow(row: HTMLElement): ForwardEditorDraft {
+  return {
+    id: getEditorValue(row, 'id') || undefined,
+    name: getEditorValue(row, 'name') || undefined,
+    localHost: getEditorValue(row, 'localHost'),
+    localPort: getEditorValue(row, 'localPort'),
+    remoteHost: getEditorValue(row, 'remoteHost'),
+    remotePort: getEditorValue(row, 'remotePort'),
+    autoStart: row.querySelector<HTMLInputElement>('[data-field="autoStart"]')?.checked ?? false,
+  };
+}
+
+function displayEndpoint(host: string | undefined, port: string | number | undefined): string {
+  const hostText = String(host ?? '').trim();
+  const portText = String(port ?? '').trim();
+  if (!hostText && !portText) return '—';
+  return (hostText || 'host') + ':' + (portText || 'port');
+}
+
+function displayForwardName(draft: ForwardEditorDraft): string {
+  return String(draft.name ?? '').trim() || 'Untitled Rule';
+}
+
+function renderForwardHiddenFields(draft: ForwardEditorDraft): string {
+  return [
+    '<input type="hidden" data-field="id" value="' + safeValue(draft.id) + '" />',
+    '<input type="hidden" data-field="name" value="' + safeValue(draft.name) + '" />',
+    '<input type="hidden" data-field="localHost" value="' + safeValue(draft.localHost) + '" />',
+    '<input type="hidden" data-field="localPort" value="' + safeValue(draft.localPort) + '" />',
+    '<input type="hidden" data-field="remoteHost" value="' + safeValue(draft.remoteHost) + '" />',
+    '<input type="hidden" data-field="remotePort" value="' + safeValue(draft.remotePort) + '" />',
+    '<input type="checkbox" hidden data-field="autoStart" ' + (draft.autoStart ? 'checked' : '') + ' />',
+  ].join('');
+}
+
+function bindForwardReadRow(row: HTMLElement): void {
+  const edit = (): void => {
+    if (focusActiveEditableRow(forwardEditorList, row)) return;
+    const next = createForwardEditorRow(readForwardDraftFromRow(row), 'edit');
+    row.replaceWith(next);
+    updateHostEditCounts();
+    next.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
+  };
+
+  row.querySelector<HTMLButtonElement>('[data-row-action="edit"]')?.addEventListener('click', edit);
+  row.querySelector<HTMLButtonElement>('.he-node-menu')?.addEventListener('click', () => {
+    const menu = row.querySelector<HTMLElement>('.he-menu');
+    const wasHidden = menu?.classList.contains('hidden');
+    closeHostMenus();
+    if (menu && wasHidden) menu.classList.remove('hidden');
+  });
+  row.querySelectorAll<HTMLButtonElement>('.he-menu button').forEach((menuItem) => {
+    menuItem.addEventListener('click', () => {
+      const action = menuItem.dataset.menuAction;
+      if (action === 'edit') {
+        edit();
+      } else if (action === 'duplicate') {
+        if (focusActiveEditableRow(forwardEditorList, row)) {
+          closeHostMenus();
+          return;
+        }
+        const draft = readForwardDraftFromRow(row);
+        const copy = createForwardEditorRow({ ...draft, id: undefined, name: draft.name ? draft.name + '-copy' : undefined }, 'edit');
+        row.after(copy);
+        copy.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
+      } else if (action === 'delete') {
+        row.remove();
+      }
+      updateHostEditCounts();
+      closeHostMenus();
+    });
+  });
+}
+
+function createForwardReadRow(draft: ForwardEditorDraft): HTMLElement {
+  const row = document.createElement('div');
+  const name = displayForwardName(draft);
+  const localEndpoint = displayEndpoint(draft.localHost, draft.localPort);
+  const remoteEndpoint = displayEndpoint(draft.remoteHost, draft.remotePort);
+  row.className = 'he-table-row he-grid-forward forward-row forward-editor-row';
+  row.dataset.rowMode = 'read';
+  row.setAttribute('role', 'row');
+  row.innerHTML = [
+    renderForwardHiddenFields(draft),
+    '<span class="he-name-main" role="cell" title="' + escapeAttribute(name) + '">' + escapeHtml(name) + '</span>',
+    '<span class="he-endpoint-read he-mono" role="cell" title="' + escapeAttribute(localEndpoint) + '">' + escapeHtml(localEndpoint) + '</span>',
+    '<span class="he-fwd-arrow" aria-hidden="true">' + ARROW_RIGHT_ICON + '</span>',
+    '<span class="he-endpoint-read he-mono" role="cell" title="' + escapeAttribute(remoteEndpoint) + '">' + escapeHtml(remoteEndpoint) + '</span>',
+    '<span class="he-cell-center he-auto-read" role="cell">' + (draft.autoStart ? renderIcon('check') : '<span class="he-muted">—</span>') + '</span>',
+    '<span class="he-row-inline-actions he-node-menu-wrap" role="cell">',
+    '<button type="button" class="btn btn-ghost btn-sm" data-row-action="edit">' + renderButtonContent('edit', 'Edit') + '</button>',
+    '<button type="button" class="icon-btn he-node-menu" aria-label="Rule actions" aria-haspopup="true">' + MENU_DOTS_ICON + '</button>',
+    '<span class="he-menu hidden" role="menu">',
+    '<button type="button" role="menuitem" data-menu-action="edit">Edit</button>',
+    '<button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>',
+    '<span class="he-menu-sep" role="separator"></span>',
+    '<button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Rule</button>',
+    '</span>',
+    '</span>',
+  ].join('');
+  bindForwardReadRow(row);
+  return row;
+}
+
+function createForwardEditRow(draft: ForwardEditorDraft, mode: Exclude<RowEditMode, 'read'>): HTMLElement {
+  const row = document.createElement('div');
+  const saveLabel = mode === 'new' ? 'Create Rule' : 'Save Rule';
+  const cancelLabel = mode === 'new' ? 'Cancel new rule' : 'Cancel rule edit';
+  const originalDraft = { ...draft };
+  row.className = 'he-table-row he-grid-forward forward-row forward-editor-row ' + (mode === 'new' ? 'is-new' : 'is-editing');
+  row.dataset.rowMode = mode;
+  row.setAttribute('role', 'row');
+  row.innerHTML = [
+    '<input type="hidden" data-field="id" value="' + safeValue(draft.id) + '" />',
+    '<input type="text" class="he-cell-input" data-field="name" value="' + safeValue(draft.name) + '" placeholder="name" role="cell" aria-label="Rule Name" />',
+    '<div class="he-endpoint-edit" role="cell">',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="localHost" value="' + safeValue(draft.localHost ?? (mode === 'new' ? '127.0.0.1' : '')) + '" placeholder="127.0.0.1" aria-label="Local Host" />',
+    '<span class="he-endpoint-edit-sep" aria-hidden="true">:</span>',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="localPort" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="' + safeValue(draft.localPort) + '" data-port-input aria-label="Local Port" />',
+    '</div>',
+    '<span class="he-fwd-arrow" aria-hidden="true">' + ARROW_RIGHT_ICON + '</span>',
+    '<div class="he-endpoint-edit" role="cell">',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="remoteHost" value="' + safeValue(draft.remoteHost) + '" placeholder="remote host" aria-label="Remote Host" />',
+    '<span class="he-endpoint-edit-sep" aria-hidden="true">:</span>',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="remotePort" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="' + safeValue(draft.remotePort) + '" data-port-input aria-label="Remote Port" />',
+    '</div>',
+    '<span class="he-cell-center he-auto-edit" role="cell">',
+    '<input type="checkbox" class="checkbox" data-field="autoStart" ' + (draft.autoStart ? 'checked' : '') + ' aria-label="Auto Start" title="Automatically start this forwarding rule when the host connects." />',
+    '</span>',
+    '<button type="button" class="icon-btn he-edit-cancel" data-row-action="cancel" aria-label="' + escapeAttribute(cancelLabel) + '">' + renderIcon('x') + '</button>',
+    '<div class="he-row-edit-actions">',
+    '<button type="button" class="btn btn-secondary btn-sm" data-row-action="cancel">Cancel</button>',
+    '<button type="button" class="btn btn-primary btn-sm" data-row-action="save">' + saveLabel + '</button>',
+    '</div>',
+  ].join('');
+
+  row.querySelectorAll<HTMLButtonElement>('[data-row-action="cancel"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (mode === 'new') {
+        row.remove();
+      } else {
+        row.replaceWith(createForwardReadRow(originalDraft));
+      }
+      updateHostEditCounts();
+    });
+  });
+  row.querySelector<HTMLButtonElement>('[data-row-action="save"]')?.addEventListener('click', () => {
+    row.replaceWith(createForwardReadRow(readForwardDraftFromRow(row)));
     updateHostEditCounts();
   });
 
@@ -1374,106 +1449,227 @@ function createForwardEditorRow(draft?: ForwardRuleDraft): HTMLElement {
   return row;
 }
 
-function readServiceDraftFromRow(row: HTMLElement): ServiceDraft {
+function createForwardEditorRow(draft?: ForwardEditorDraft, mode: RowEditMode = draft ? 'read' : 'new'): HTMLElement {
+  return mode === 'read'
+    ? createForwardReadRow(draft ?? {})
+    : createForwardEditRow(draft ?? {}, mode);
+}
+
+function getServiceCommandValue(row: HTMLElement): string {
+  const editor = serviceCommandEditors.get(row);
+  if (editor) return editor.state.doc.toString();
+  return rawEditorValue(row, 'startCommand');
+}
+
+function destroyServiceCommandEditor(row: HTMLElement): void {
+  const editor = serviceCommandEditors.get(row);
+  if (!editor) return;
+  editor.destroy();
+  serviceCommandEditors.delete(row);
+}
+
+function clearServiceEditorRows(): void {
+  serviceEditorList.querySelectorAll<HTMLElement>('.service-editor-row').forEach(destroyServiceCommandEditor);
+  serviceEditorList.replaceChildren();
+}
+
+function readServiceDraftFromRow(row: HTMLElement): ServiceEditorDraft {
   return {
     id: getEditorValue(row, 'id') || undefined,
     name: getEditorValue(row, 'name'),
-    startCommand: row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.value ?? '',
-    port: Number(getEditorValue(row, 'port') || '0'),
-    forwardLocalPort: getEditorValue(row, 'forwardLocalPort') ? Number(getEditorValue(row, 'forwardLocalPort')) : undefined,
+    startCommand: getServiceCommandValue(row),
+    port: getEditorValue(row, 'port'),
+    forwardLocalPort: getEditorValue(row, 'forwardLocalPort') || undefined,
   };
 }
 
-function createServiceEditorRow(draft?: ServiceDraft): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'he-table-row he-grid-service service-editor-row';
-  row.setAttribute('role', 'row');
-  const command = draft?.startCommand ?? '';
-  row.innerHTML = `
-    <input type="hidden" data-field="id" value="${safeValue(draft?.id)}" />
-    <input type="text" class="he-cell-input" data-field="name" value="${safeValue(draft?.name)}" placeholder="service name" role="cell" aria-label="Service Name" />
-    <div class="he-portmap" role="cell">
-      <input type="text" class="he-cell-input he-cell-mono" data-field="forwardLocalPort" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.forwardLocalPort)}" data-port-input aria-label="Local Port (Optional)" title="Optional local forwarded port" />
-      <span class="he-fwd-arrow" aria-hidden="true">${ARROW_RIGHT_ICON}</span>
-      <input type="text" class="he-cell-input he-cell-mono" data-field="port" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="${safeValue(draft?.port)}" data-port-input aria-label="Service Port" title="Port 0 disables remote exposure" />
-    </div>
-    <div class="he-cmd" role="cell">
-      <div class="he-cmd-preview">
-        <span class="he-cmd-text${command ? '' : ' is-empty'}" title="${escapeAttribute(command)}">${command ? escapeHtml(command) : 'No start command'}</span>
-        <button type="button" class="he-cmd-expand" aria-label="Expand command editor" title="Expand command editor">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5H3.5V6M10 3.5h2.5V6M6 12.5H3.5V10M10 12.5h2.5V10"></path></svg>
-        </button>
-      </div>
-      <div class="he-cmd-editor hidden">
-        <textarea class="he-cmd-textarea" data-field="startCommand" rows="5" spellcheck="false" placeholder="systemctl --user start app.service" aria-label="Start Command">${escapeHtml(command)}</textarea>
-        <div class="he-cmd-editor-actions">
-          <button type="button" class="btn btn-ghost btn-sm he-cmd-copy">${renderButtonContent('copy', 'Copy')}</button>
-          <button type="button" class="btn btn-secondary btn-sm he-cmd-collapse">Collapse</button>
-        </div>
-      </div>
-    </div>
-    <div class="he-node-menu-wrap">
-      <button type="button" class="icon-btn he-node-menu" aria-label="Service actions" aria-haspopup="true">${MENU_DOTS_ICON}</button>
-      <div class="he-menu hidden" role="menu">
-        <button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>
-        <div class="he-menu-sep" role="separator"></div>
-        <button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Service</button>
-      </div>
-    </div>
-  `;
+function displayServiceName(draft: ServiceEditorDraft): string {
+  return String(draft.name ?? '').trim() || 'Untitled Service';
+}
 
-  const expandEditor = (): void => {
-    row.querySelector<HTMLElement>('.he-cmd-editor')?.classList.remove('hidden');
-    row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.focus();
-  };
-  const syncPreview = (): void => {
-    const textarea = row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]');
-    const text = row.querySelector<HTMLElement>('.he-cmd-text');
-    if (!textarea || !text) return;
-    const value = textarea.value.replace(/\s+$/, '');
-    text.textContent = value || 'No start command';
-    text.title = value;
-    text.classList.toggle('is-empty', !value);
+function displayServicePorts(draft: ServiceEditorDraft): string {
+  const servicePort = String(draft.port ?? '').trim();
+  if (servicePort === '0') return 'disabled';
+  const localPort = String(draft.forwardLocalPort ?? '').trim() || 'auto';
+  return localPort + ' → ' + (servicePort || 'service');
+}
+
+function displayServiceCommand(draft: ServiceEditorDraft): string {
+  return String(draft.startCommand ?? '').split('\n')[0].trim() || 'No start command';
+}
+
+function renderServiceHiddenFields(draft: ServiceEditorDraft): string {
+  return [
+    '<input type="hidden" data-field="id" value="' + safeValue(draft.id) + '" />',
+    '<input type="hidden" data-field="name" value="' + safeValue(draft.name) + '" />',
+    '<input type="hidden" data-field="forwardLocalPort" value="' + safeValue(draft.forwardLocalPort) + '" />',
+    '<input type="hidden" data-field="port" value="' + safeValue(draft.port) + '" />',
+    '<textarea hidden data-field="startCommand">' + escapeHtml(draft.startCommand ?? '') + '</textarea>',
+  ].join('');
+}
+
+function bindServiceReadRow(row: HTMLElement): void {
+  const edit = (): void => {
+    if (focusActiveEditableRow(serviceEditorList, row)) return;
+    const next = createServiceEditorRow(readServiceDraftFromRow(row), 'edit');
+    row.replaceWith(next);
+    updateHostEditCounts();
+    next.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
   };
 
-  row.querySelector('.he-cmd-expand')?.addEventListener('click', expandEditor);
-  row.querySelector('.he-cmd-text')?.addEventListener('click', expandEditor);
-  row.querySelector('.he-cmd-collapse')?.addEventListener('click', () => {
-    row.querySelector<HTMLElement>('.he-cmd-editor')?.classList.add('hidden');
-    syncPreview();
-  });
-  row.querySelector('.he-cmd-copy')?.addEventListener('click', async () => {
-    const value = row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]')?.value ?? '';
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch {
-      // clipboard unavailable: ignore
-    }
-  });
-
-  row.querySelector('.he-node-menu')?.addEventListener('click', () => {
+  row.querySelector<HTMLButtonElement>('[data-row-action="edit"]')?.addEventListener('click', edit);
+  row.querySelector<HTMLButtonElement>('.he-node-menu')?.addEventListener('click', () => {
     const menu = row.querySelector<HTMLElement>('.he-menu');
     const wasHidden = menu?.classList.contains('hidden');
     closeHostMenus();
     if (menu && wasHidden) menu.classList.remove('hidden');
   });
-
   row.querySelectorAll<HTMLButtonElement>('.he-menu button').forEach((menuItem) => {
     menuItem.addEventListener('click', () => {
       const action = menuItem.dataset.menuAction;
-      if (action === 'delete') {
-        row.remove();
+      if (action === 'edit') {
+        edit();
       } else if (action === 'duplicate') {
-        row.after(createServiceEditorRow(readServiceDraftFromRow(row)));
+        if (focusActiveEditableRow(serviceEditorList, row)) {
+          closeHostMenus();
+          return;
+        }
+        const draft = readServiceDraftFromRow(row);
+        const copy = createServiceEditorRow({ ...draft, id: undefined, name: draft.name ? draft.name + '-copy' : undefined }, 'edit');
+        row.after(copy);
+        copy.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
+      } else if (action === 'delete') {
+        row.remove();
       }
       updateHostEditCounts();
       closeHostMenus();
     });
   });
+}
 
-  bindNumericPortInputs(row);
+function createServiceReadRow(draft: ServiceEditorDraft): HTMLElement {
+  const row = document.createElement('div');
+  const name = displayServiceName(draft);
+  const ports = displayServicePorts(draft);
+  const command = displayServiceCommand(draft);
+  row.className = 'he-table-row he-grid-service service-editor-row';
+  row.dataset.rowMode = 'read';
+  row.setAttribute('role', 'row');
+  row.innerHTML = [
+    renderServiceHiddenFields(draft),
+    '<span class="he-name-main" role="cell" title="' + escapeAttribute(name) + '">' + escapeHtml(name) + '</span>',
+    '<span class="he-port-read he-mono" role="cell" title="' + escapeAttribute(ports) + '">' + escapeHtml(ports) + '</span>',
+    '<span class="he-command-preview' + (command === 'No start command' ? ' is-empty' : '') + '" role="cell" title="' + escapeAttribute(draft.startCommand ?? '') + '">' + escapeHtml(command) + '</span>',
+    '<span class="he-row-inline-actions he-node-menu-wrap" role="cell">',
+    '<button type="button" class="btn btn-ghost btn-sm" data-row-action="edit">' + renderButtonContent('edit', 'Edit') + '</button>',
+    '<button type="button" class="icon-btn he-node-menu" aria-label="Service actions" aria-haspopup="true">' + MENU_DOTS_ICON + '</button>',
+    '<span class="he-menu hidden" role="menu">',
+    '<button type="button" role="menuitem" data-menu-action="edit">Edit</button>',
+    '<button type="button" role="menuitem" data-menu-action="duplicate">Duplicate</button>',
+    '<span class="he-menu-sep" role="separator"></span>',
+    '<button type="button" role="menuitem" class="is-danger" data-menu-action="delete">Delete Service</button>',
+    '</span>',
+    '</span>',
+  ].join('');
+  bindServiceReadRow(row);
   return row;
 }
+
+function createServiceCommandEditor(row: HTMLElement, command: string): void {
+  const field = row.querySelector<HTMLTextAreaElement>('[data-field="startCommand"]');
+  const mount = row.querySelector<HTMLElement>('[data-command-editor]');
+  if (!field || !mount) return;
+  const editor = new EditorView({
+    parent: mount,
+    state: EditorState.create({
+      doc: command,
+      extensions: [
+        basicSetup,
+        bashLanguage,
+        syntaxHighlighting(defaultHighlightStyle),
+        serviceCommandEditorTheme,
+        EditorState.tabSize.of(2),
+        EditorView.lineWrapping,
+        EditorView.contentAttributes.of({
+          'aria-label': 'Start Command Bash editor',
+          'aria-multiline': 'true',
+          spellcheck: 'false',
+        }),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            field.value = update.state.doc.toString();
+          }
+        }),
+      ],
+    }),
+  });
+  serviceCommandEditors.set(row, editor);
+}
+
+function createServiceEditRow(draft: ServiceEditorDraft, mode: Exclude<RowEditMode, 'read'>): HTMLElement {
+  const row = document.createElement('div');
+  const command = draft.startCommand ?? '';
+  const originalDraft = { ...draft };
+  const saveLabel = mode === 'new' ? 'Create Service' : 'Save Service';
+  const cancelLabel = mode === 'new' ? 'Cancel new service' : 'Cancel service edit';
+  row.className = 'he-table-row he-grid-service service-editor-row he-service-edit-row ' + (mode === 'new' ? 'is-new' : 'is-editing');
+  row.dataset.rowMode = mode;
+  row.setAttribute('role', 'row');
+  row.innerHTML = [
+    '<input type="hidden" data-field="id" value="' + safeValue(draft.id) + '" />',
+    '<input type="text" class="he-cell-input" data-field="name" value="' + safeValue(draft.name) + '" placeholder="name" role="cell" aria-label="Service Name" />',
+    '<div class="he-port-edit" role="cell">',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="forwardLocalPort" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="' + safeValue(draft.forwardLocalPort) + '" data-port-input aria-label="Local Port (Optional)" title="Optional local forwarded port" />',
+    '<span class="he-fwd-arrow" aria-hidden="true">' + ARROW_RIGHT_ICON + '</span>',
+    '<input type="text" class="he-cell-input he-cell-mono" data-field="port" inputmode="numeric" pattern="[0-9]*" maxlength="5" value="' + safeValue(draft.port) + '" data-port-input aria-label="Service Port" title="Port 0 disables remote exposure" />',
+    '</div>',
+    '<span class="he-command-edit-spacer" aria-hidden="true"></span>',
+    '<button type="button" class="icon-btn he-edit-cancel" data-row-action="cancel" aria-label="' + escapeAttribute(cancelLabel) + '">' + renderIcon('x') + '</button>',
+    '<div class="he-service-command-cell" role="cell">',
+    '<div class="he-service-code-shell">',
+    '<div class="he-service-code-head">',
+    '<span class="he-service-code-title">' + renderIcon('terminal') + ' Bash</span>',
+    '<span class="he-service-code-hint">Start command</span>',
+    '</div>',
+    '<textarea hidden data-field="startCommand">' + escapeHtml(command) + '</textarea>',
+    '<div class="he-service-code-editor" data-command-editor></div>',
+    '</div>',
+    '</div>',
+    '<div class="he-row-edit-actions">',
+    '<button type="button" class="btn btn-secondary btn-sm" data-row-action="cancel">Cancel</button>',
+    '<button type="button" class="btn btn-primary btn-sm" data-row-action="save">' + saveLabel + '</button>',
+    '</div>',
+  ].join('');
+
+  row.querySelectorAll<HTMLButtonElement>('[data-row-action="cancel"]').forEach((button) => {
+    button.addEventListener('click', () => {
+      destroyServiceCommandEditor(row);
+      if (mode === 'new') {
+        row.remove();
+      } else {
+        row.replaceWith(createServiceReadRow(originalDraft));
+      }
+      updateHostEditCounts();
+    });
+  });
+  row.querySelector<HTMLButtonElement>('[data-row-action="save"]')?.addEventListener('click', () => {
+    const nextDraft = readServiceDraftFromRow(row);
+    destroyServiceCommandEditor(row);
+    row.replaceWith(createServiceReadRow(nextDraft));
+    updateHostEditCounts();
+  });
+
+  bindNumericPortInputs(row);
+  createServiceCommandEditor(row, command);
+  return row;
+}
+
+function createServiceEditorRow(draft?: ServiceEditorDraft, mode: RowEditMode = draft ? 'read' : 'new'): HTMLElement {
+  return mode === 'read'
+    ? createServiceReadRow(draft ?? {})
+    : createServiceEditRow(draft ?? {}, mode);
+}
+
 
 function collectForwardsFromEditor(): ForwardRuleDraft[] {
   const rows = Array.from(forwardEditorList.querySelectorAll<HTMLElement>('.forward-row'));
@@ -1598,7 +1794,7 @@ function resetForm(): void {
   sshPortInput.value = '22';
   jumpHostEditorList.innerHTML = '';
   forwardEditorList.innerHTML = '';
-  serviceEditorList.innerHTML = '';
+  clearServiceEditorRows();
   targetNodeCard.dataset.nodeAuth = 'privateKey';
   setPrivateKeyExpanded(false);
   updatePrivateKeySourceStatus();
@@ -1638,7 +1834,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
       forwardEditorList.appendChild(createForwardEditorRow(forward));
     }
 
-    serviceEditorList.innerHTML = '';
+    clearServiceEditorRows();
     for (const service of host.services) {
       serviceEditorList.appendChild(
         createServiceEditorRow({
@@ -2117,13 +2313,9 @@ function renderSinglePort(port: number): string {
 }
 
 function renderPowerIcon(): string {
-  return `
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M8 2.5v5"></path>
-      <path d="M5.15 4.35a5 5 0 1 0 5.7 0"></path>
-    </svg>
-  `;
+  return renderIcon('power');
 }
+
 
 function renderRuntimeActionButton(
   action: string,
@@ -2577,14 +2769,8 @@ function render(): void {
   hostTableBody.replaceChildren(fragment);
 }
 
-const HOSTS_NAV_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <rect x="2.5" y="2.5" width="11" height="4.5" rx="1"></rect>
-    <rect x="2.5" y="9" width="11" height="4.5" rx="1"></rect>
-    <path d="M5 4.75h.01"></path>
-    <path d="M5 11.25h.01"></path>
-  </svg>
-`;
+const HOSTS_NAV_ICON = renderIcon('server');
+
 
 registerPage({
   id: 'hosts',
@@ -2645,8 +2831,10 @@ hostTableBody.addEventListener('click', (event) => {
 });
 
 addForwardButton.addEventListener('click', () => {
-  forwardEditorList.appendChild(createForwardEditorRow());
+  const row = createForwardEditorRow();
+  forwardEditorList.appendChild(row);
   updateHostEditCounts();
+  row.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
 });
 
 addJumpHostButton.addEventListener('click', () => {
@@ -2660,8 +2848,10 @@ addJumpHostButton.addEventListener('click', () => {
 });
 
 addServiceButton.addEventListener('click', () => {
-  serviceEditorList.appendChild(createServiceEditorRow());
+  const row = createServiceEditorRow();
+  serviceEditorList.appendChild(row);
   updateHostEditCounts();
+  row.querySelector<HTMLInputElement>('[data-field="name"]')?.focus();
 });
 
 importPrivateKeyButton.addEventListener('click', async () => {

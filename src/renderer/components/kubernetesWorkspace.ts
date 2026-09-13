@@ -7,6 +7,7 @@ import type {
   KubernetesTerminalState,
 } from '../../shared/types';
 import { createKubernetesTerminalPane } from './kubernetesTerminal.js';
+import { createIcon } from './icon.js';
 
 export type KubernetesWorkspaceTabType = 'logs' | 'shell';
 
@@ -336,17 +337,11 @@ function tabTargetCaption(tab: Pick<KubernetesWorkspaceTab, 'target'>): string {
 }
 
 function createWorkspaceCloseIcon(): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('stroke', 'currentColor');
-  svg.setAttribute('stroke-width', '1.8');
-  svg.setAttribute('stroke-linecap', 'round');
-  svg.setAttribute('aria-hidden', 'true');
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', 'm5 5 6 6m0-6-6 6');
-  svg.appendChild(path);
-  return svg;
+  return createIcon('x');
+}
+
+function setFollowIcon(button: HTMLButtonElement, following: boolean): void {
+  button.replaceChildren(createIcon(following ? 'pause' : 'play'));
 }
 
 function terminalStateMatchesTarget(state: KubernetesTerminalState, target: KubernetesPodTarget): boolean {
@@ -1292,7 +1287,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
       view.follow.disabled = true;
       view.clear.disabled = true;
       view.follow.setAttribute('aria-label', 'Pause log follow');
-      view.follow.textContent = 'Ⅱ';
+      setFollowIcon(view.follow, true);
       view.stateLabel.textContent = 'Opening';
       view.count.textContent = '0 lines';
       return;
@@ -1329,7 +1324,7 @@ export function createKubernetesWorkspace(options: KubernetesWorkspaceOptions): 
     view.follow.disabled = pendingStartTime;
     view.follow.setAttribute('aria-label', log.following ? 'Pause log follow' : 'Resume log follow');
     view.follow.setAttribute('title', log.following ? 'Pause log follow' : 'Resume log follow');
-    view.follow.textContent = log.following ? 'Ⅱ' : '▶';
+    setFollowIcon(view.follow, log.following);
     view.clear.disabled = pendingStartTime;
     view.stateLabel.textContent = log.following ? 'Live' : 'Paused';
   };

@@ -24,7 +24,7 @@ export interface S3SigningInput {
   /** Query values are signed as part of the canonical request. */
   query?: Readonly<Record<string, string>>;
   ifMatch?: string;
-  ifNoneMatch?: '*';
+  ifNoneMatch?: string;
   now: Date;
 }
 
@@ -229,7 +229,8 @@ export function signS3Request(input: S3SigningInput): S3SignedRequest {
     ...(input.method === 'PUT' ? { 'content-type': input.contentType ?? 'application/json' } : {}),
     host: url.host.toLowerCase(),
     ...(input.ifMatch !== undefined ? { 'if-match': normalizedEtag(input.ifMatch) } : {}),
-    ...(input.ifNoneMatch !== undefined ? { 'if-none-match': '*' } : {}),
+    ...(input.ifNoneMatch !== undefined
+      ? { 'if-none-match': input.ifNoneMatch === '*' ? '*' : normalizedEtag(input.ifNoneMatch) } : {}),
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
   };

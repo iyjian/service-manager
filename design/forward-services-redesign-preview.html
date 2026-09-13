@@ -1,0 +1,1550 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forwarding Rules / Services Interactive Redesign Preview</title>
+  <style>
+    @font-face {
+      font-family: 'STM UI';
+      src: url('../assets/fonts/app-ui-regular.ttf') format('truetype');
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'STM UI';
+      src: url('../assets/fonts/app-ui-medium.ttf') format('truetype');
+      font-style: normal;
+      font-weight: 500;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'STM UI';
+      src: url('../assets/fonts/app-ui-semibold.ttf') format('truetype');
+      font-style: normal;
+      font-weight: 600;
+      font-display: swap;
+    }
+
+    :root {
+      --color-bg-page: #fafafa;
+      --color-bg-surface: #ffffff;
+      --color-bg-subtle: #f4f4f5;
+      --color-bg-hover: #f4f4f5;
+      --color-border: #e4e4e7;
+      --color-border-strong: #d4d4d8;
+      --color-border-subtle: #f4f4f5;
+      --color-fg-primary: #09090b;
+      --color-fg-secondary: #3f3f46;
+      --color-fg-tertiary: #71717a;
+      --color-fg-quaternary: #a1a1aa;
+      --color-fg-inverse: #ffffff;
+      --color-accent: #0a0a0a;
+      --color-accent-hover: #262626;
+      --color-focus: #0070f3;
+      --color-focus-ring: rgba(0, 112, 243, 0.2);
+      --font-family-base: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', Inter, 'PingFang SC', sans-serif;
+      --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --radius-sm: 4px;
+      --radius: 6px;
+      --radius-lg: 8px;
+      --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--color-bg-page);
+      color: var(--color-fg-primary);
+      font-family: var(--font-family-base);
+      font-size: 13px;
+    }
+
+    .preview {
+      min-height: 100vh;
+      padding: 28px;
+      display: grid;
+      align-content: start;
+      gap: 16px;
+    }
+
+    .prototype-note {
+      width: min(1080px, 100%);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      color: var(--color-fg-tertiary);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .prototype-note strong {
+      color: var(--color-fg-secondary);
+      font-weight: 600;
+    }
+
+    .dialog {
+      width: min(1080px, 100%);
+      height: 680px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-bg-surface);
+      box-shadow: var(--shadow-pop);
+    }
+
+    .dialog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      padding: 12px var(--space-4);
+      border-bottom: 1px solid var(--color-border);
+      flex-shrink: 0;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--color-fg-primary);
+    }
+
+    .dialog-head-actions,
+    .panel-title-actions,
+    .form-actions,
+    .row-inline-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-2);
+    }
+
+    .btn {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      padding: 0 12px;
+      font-family: var(--font-family-base);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      outline: none;
+      transition: border-color .15s ease, background-color .15s ease, color .15s ease, opacity .15s ease;
+    }
+
+    .btn-sm {
+      height: 28px;
+      padding: 0 10px;
+      font-size: 12.5px;
+    }
+
+    .btn-primary {
+      border-color: var(--color-accent);
+      background: var(--color-accent);
+      color: var(--color-fg-inverse);
+    }
+
+    .btn-primary:hover { background: var(--color-accent-hover); }
+
+    .btn-secondary {
+      border-color: var(--color-border);
+      background: var(--color-bg-surface);
+      color: var(--color-fg-primary);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--color-border-strong);
+      background: var(--color-bg-subtle);
+    }
+
+    .btn-ghost {
+      border-color: transparent;
+      background: transparent;
+      color: var(--color-fg-tertiary);
+    }
+
+    .btn-ghost:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-fg-secondary);
+    }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+
+    .btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--color-fg-quaternary);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .icon-btn:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-fg-secondary);
+    }
+
+    .host-edit-tabs {
+      height: 40px;
+      display: flex;
+      align-items: stretch;
+      gap: 4px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--color-border);
+      background: var(--color-bg-subtle);
+      padding: 0 var(--space-3);
+      flex-shrink: 0;
+    }
+
+    .host-edit-tab {
+      position: relative;
+      border: 0;
+      background: transparent;
+      padding: 0 10px;
+      color: var(--color-fg-tertiary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .host-edit-tab:hover {
+      color: var(--color-fg-primary);
+    }
+
+    .host-edit-tab[aria-selected='true'] {
+      color: var(--color-fg-primary);
+    }
+
+    .host-edit-tab[aria-selected='true']::after {
+      content: '';
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: -1px;
+      height: 2px;
+      background: var(--color-fg-primary);
+    }
+
+    .host-edit-tab-count {
+      margin-left: 6px;
+      display: inline-flex;
+      align-items: center;
+      height: 16px;
+      border-radius: 999px;
+      background: rgba(9, 9, 11, .05);
+      padding: 0 6px;
+      color: var(--color-fg-quaternary);
+      font-size: 10.5px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .host-edit-tab[aria-selected='true'] .host-edit-tab-count {
+      background: rgba(9, 9, 11, .10);
+      color: var(--color-fg-tertiary);
+    }
+
+    .panel {
+      min-height: 0;
+      flex: 1;
+      display: none;
+      flex-direction: column;
+      background: var(--color-bg-surface);
+    }
+
+    .panel.is-active {
+      display: flex;
+    }
+
+    .panel-titlebar {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      padding: 7px var(--space-3);
+      border-bottom: 1px solid var(--color-border);
+      background: var(--color-bg-surface);
+      flex-shrink: 0;
+    }
+
+    .panel-title {
+      display: inline-flex;
+      align-items: center;
+      min-width: 0;
+      gap: var(--space-2);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-fg-primary);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .panel-count {
+      color: var(--color-fg-quaternary);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .table-scroll {
+      min-height: 0;
+      flex: 1;
+      overflow: auto;
+      background: var(--color-bg-surface);
+    }
+
+    .table { min-width: 100%; }
+
+    .head,
+    .row {
+      display: grid;
+      align-items: center;
+      column-gap: 10px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--color-border-subtle);
+    }
+
+    .head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      min-height: 32px;
+      background: var(--color-bg-subtle);
+      color: var(--color-fg-tertiary);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .row {
+      min-height: 44px;
+      background: var(--color-bg-surface);
+    }
+
+    .row:hover {
+      background: var(--color-bg-hover);
+    }
+
+    .row.is-editing,
+    .row.is-new {
+      align-items: start;
+      min-height: 0;
+      background: var(--color-bg-surface);
+      box-shadow: inset 0 0 0 1px var(--color-border-strong);
+    }
+
+    .row.is-new {
+      background: #fcfcfc;
+    }
+
+    .forward-grid {
+      grid-template-columns: minmax(130px, .85fr) minmax(210px, 1.25fr) 20px minmax(230px, 1.35fr) 74px 86px;
+    }
+
+    .service-grid {
+      grid-template-columns: minmax(140px, .72fr) minmax(150px, .54fr) minmax(360px, 1.75fr) 86px;
+    }
+
+    .name-main {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 500;
+      color: var(--color-fg-primary);
+    }
+
+    .meta {
+      margin-top: 2px;
+      color: var(--color-fg-quaternary);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mono {
+      font-family: var(--font-family-mono);
+      font-size: 12px;
+      color: var(--color-fg-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .endpoint,
+    .command-preview {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-fg-quaternary);
+    }
+
+    .check {
+      text-align: center;
+      color: var(--color-fg-secondary);
+      font-size: 12px;
+    }
+
+    .forward-grid.is-editing > .check,
+    .forward-grid.is-new > .check {
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .muted { color: var(--color-fg-quaternary); }
+
+    .field {
+      width: 100%;
+      height: 28px;
+      min-width: 0;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-surface);
+      padding: 0 8px;
+      color: var(--color-fg-primary);
+      font-family: var(--font-family-base);
+      font-size: 12px;
+      outline: none;
+    }
+
+    .field.mono { font-family: var(--font-family-mono); }
+
+    .field:hover,
+    .textarea:hover {
+      border-color: var(--color-border-strong);
+    }
+
+    .field:focus,
+    .textarea:focus {
+      border-color: var(--color-focus);
+      box-shadow: 0 0 0 2px var(--color-focus-ring);
+    }
+
+    .endpoint-edit {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 8px 68px;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .port-pair-edit {
+      display: grid;
+      grid-template-columns: 66px 16px 66px;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .row-edit-actions {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: flex-end;
+      gap: var(--space-2);
+      padding-top: 6px;
+    }
+
+    .row-inline-actions {
+      opacity: .7;
+      position: relative;
+    }
+
+    .row:hover .row-inline-actions {
+      opacity: 1;
+    }
+
+    .menu-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-2);
+    }
+
+    .inline-menu {
+      position: absolute;
+      right: 0;
+      top: 30px;
+      z-index: 20;
+      min-width: 124px;
+      display: grid;
+      gap: 2px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-bg-surface);
+      box-shadow: var(--shadow-pop);
+      padding: 4px;
+    }
+
+    .inline-menu[hidden] {
+      display: none;
+    }
+
+    .menu-item {
+      height: 26px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      padding: 0 8px;
+      color: var(--color-fg-secondary);
+      font-family: var(--font-family-base);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .menu-item:hover {
+      background: var(--color-bg-hover);
+      color: var(--color-fg-primary);
+    }
+
+    .menu-item.is-danger {
+      color: #ef4444;
+    }
+
+    .menu-item.is-danger:hover {
+      background: #fef2f2;
+      color: #ef4444;
+    }
+
+    .command-preview {
+      color: var(--color-fg-secondary);
+      font-family: var(--font-family-mono);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .textarea {
+      display: block;
+      width: 100%;
+      min-height: 86px;
+      max-height: 180px;
+      resize: vertical;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-surface);
+      padding: 8px 10px;
+      color: var(--color-fg-primary);
+      font-family: var(--font-family-mono);
+      font-size: 12px;
+      line-height: 1.55;
+      outline: none;
+      white-space: pre;
+    }
+
+    .service-edit-row {
+      row-gap: 10px;
+      padding-top: 10px;
+      padding-bottom: 10px;
+    }
+
+    .service-edit-command {
+      grid-column: 1 / -1;
+      min-width: 0;
+    }
+
+    .service-edit-row .textarea {
+      min-height: 104px;
+    }
+
+    .service-edit-row .row-edit-actions {
+      padding-top: 0;
+    }
+
+    .he-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      border-bottom: 1px solid var(--color-border);
+      background: var(--color-bg-subtle);
+      padding: 10px var(--space-3);
+      flex-shrink: 0;
+    }
+
+    .path-field {
+      display: grid;
+      gap: 4px;
+      color: var(--color-fg-secondary);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .field-xs {
+      font-size: 12px;
+    }
+
+    .he-name-field {
+      max-width: 280px;
+    }
+
+    .path-input {
+      width: 100%;
+      height: 28px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-bg-surface);
+      padding: 0 8px;
+      color: var(--color-fg-primary);
+      font-family: var(--font-family-base);
+      font-size: 12.5px;
+      outline: none;
+    }
+
+    .path-input.he-mono,
+    textarea.path-input.he-mono {
+      font-family: var(--font-family-mono);
+      font-size: 12px;
+    }
+
+    textarea.path-input {
+      height: auto;
+      min-height: 64px;
+      padding: 8px 10px;
+      line-height: 1.55;
+      resize: vertical;
+    }
+
+    .path-input:focus {
+      border-color: var(--color-focus);
+      box-shadow: 0 0 0 2px var(--color-focus-ring);
+    }
+
+    .he-route {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow-x: auto;
+      padding: 1px;
+    }
+
+    .he-route-chip {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 10px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      background: var(--color-bg-surface);
+      font-family: var(--font-family-mono);
+      font-size: 11.5px;
+      color: var(--color-fg-secondary);
+      white-space: nowrap;
+    }
+
+    .he-route-chip.is-local {
+      color: var(--color-fg-tertiary);
+    }
+
+    .he-route-chip.is-active {
+      border-color: var(--color-border-strong);
+      background: var(--color-bg-subtle);
+      color: var(--color-fg-primary);
+    }
+
+    .he-route-sep {
+      color: var(--color-fg-quaternary);
+      flex-shrink: 0;
+      display: inline-flex;
+    }
+
+    .he-route-sep svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .he-path-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: var(--space-4);
+    }
+
+    .he-rail {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+      max-width: 880px;
+      padding: 2px 0;
+    }
+
+    .he-rail::before {
+      content: '';
+      position: absolute;
+      left: 12px;
+      top: 14px;
+      bottom: 14px;
+      width: 1px;
+      background: var(--color-border-strong);
+    }
+
+    .he-node {
+      position: relative;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      column-gap: var(--space-3);
+      align-items: start;
+    }
+
+    .he-marker {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      justify-content: center;
+    }
+
+    .he-dot {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg-surface);
+      border: 1px solid var(--color-border-strong);
+      color: var(--color-fg-tertiary);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .he-dot svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .he-dot.is-target {
+      border-color: var(--color-accent);
+    }
+
+    .he-dot.is-target::after {
+      content: '';
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--color-accent);
+    }
+
+    .he-add-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      column-gap: var(--space-3);
+      align-items: center;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .he-add-dot {
+      position: relative;
+      z-index: 1;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg-surface);
+      border: 1px dashed var(--color-border-strong);
+      color: var(--color-fg-tertiary);
+    }
+
+    .he-add-dot svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .he-add-label {
+      font-size: 12px;
+      color: var(--color-fg-tertiary);
+    }
+
+    .he-local-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 10px;
+      margin-top: -2px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      background: var(--color-bg-surface);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-fg-secondary);
+    }
+
+    .he-local-chip svg {
+      width: 13px;
+      height: 13px;
+      color: var(--color-fg-tertiary);
+    }
+
+    .he-local-sub {
+      font-weight: 400;
+      color: var(--color-fg-quaternary);
+    }
+
+    .he-card {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-bg-surface);
+      padding: var(--space-3);
+      box-shadow: var(--shadow-pop);
+    }
+
+    .he-card.is-target {
+      border-color: var(--color-border-strong);
+    }
+
+    .he-card-summary {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      min-height: 32px;
+    }
+
+    .he-card-toggle {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 0;
+      background: transparent;
+      padding: 4px 6px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .he-step {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .01em;
+      color: var(--color-fg-secondary);
+      flex-shrink: 0;
+    }
+
+    .he-card-summary-text {
+      flex: 1;
+      min-width: 0;
+      font-family: var(--font-family-mono);
+      font-size: 12px;
+      color: var(--color-fg-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .he-card-chevron {
+      width: 14px;
+      height: 14px;
+      color: var(--color-fg-quaternary);
+      flex-shrink: 0;
+    }
+
+    .he-card-body {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+      padding-top: var(--space-2);
+    }
+
+    .he-node-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) 72px minmax(0, 1fr);
+      gap: var(--space-2);
+    }
+
+    .he-auth-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .he-auth-label {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--color-fg-secondary);
+    }
+
+    .he-seg {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      background: var(--color-bg-subtle);
+    }
+
+    .he-seg-btn {
+      height: 24px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: calc(var(--radius) - 2px);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-fg-tertiary);
+      cursor: pointer;
+    }
+
+    .he-seg-btn.is-active {
+      border-color: var(--color-border);
+      background: var(--color-bg-surface);
+      color: var(--color-fg-primary);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+    }
+
+    .he-cred {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .he-key-editor {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      background: var(--color-bg-surface);
+      overflow: hidden;
+    }
+
+    .he-key-summary {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding-right: 6px;
+    }
+
+    .he-key-toggle {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      padding: 7px 10px;
+      border: 0;
+      background: transparent;
+      border-radius: var(--radius-sm);
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--color-fg-secondary);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .he-key-summary-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .he-key-summary-left > svg,
+    .he-key-chevron {
+      width: 14px;
+      height: 14px;
+      color: var(--color-fg-tertiary);
+      flex-shrink: 0;
+    }
+
+    .he-key-path {
+      font-family: var(--font-family-mono);
+      font-size: 11.5px;
+      font-weight: 400;
+      color: var(--color-fg-quaternary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .form-actions {
+      padding: 12px var(--space-4);
+      border-top: 1px solid var(--color-border);
+      background: var(--color-bg-surface);
+      flex-shrink: 0;
+    }
+
+    .toast {
+      min-height: 28px;
+      color: var(--color-fg-tertiary);
+      font-size: 12px;
+    }
+
+    @media (max-width: 920px) {
+      .preview { padding: 16px; }
+      .dialog { height: auto; min-height: 620px; }
+      .prototype-note { align-items: flex-start; flex-direction: column; }
+      .forward-grid { grid-template-columns: minmax(120px, .75fr) minmax(200px, 1fr) 20px minmax(210px, 1fr) 68px 74px; }
+      .service-grid { grid-template-columns: minmax(130px, .7fr) minmax(136px, .52fr) minmax(280px, 1.3fr) 74px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="preview">
+    <div class="prototype-note">
+      <span><strong>Interactive prototype.</strong> Try switching tabs, clicking Add Rule / Add Service, editing a row, then Save / Cancel.</span>
+      <span id="prototype-toast" class="toast" aria-live="polite"></span>
+    </div>
+
+    <section class="dialog" aria-label="Host editor interactive prototype">
+      <header class="dialog-head">
+        <h1 class="section-title">Edit Host</h1>
+        <div class="dialog-head-actions">
+          <button class="btn btn-ghost btn-sm" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M11 14h10M16 4h2a2 2 0 0 1 2 2v1.344M17 18l4-4l-4-4"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113"/><rect width="8" height="4" x="8" y="2" rx="1"/></g></svg>Paste Config</button>
+          <button class="icon-btn" type="button" aria-label="Close">×</button>
+        </div>
+      </header>
+
+      <nav class="host-edit-tabs" aria-label="Host configuration">
+        <button class="host-edit-tab" type="button" data-tab="connection">Connection Path <span id="connection-count" class="host-edit-tab-count">1 hop</span></button>
+        <button class="host-edit-tab" type="button" data-tab="forwards">Forwarding Rules <span id="forward-count" class="host-edit-tab-count">0</span></button>
+        <button class="host-edit-tab" type="button" data-tab="services">Services <span id="service-count" class="host-edit-tab-count">0</span></button>
+      </nav>
+
+      <section id="connection-panel" class="panel" data-panel="connection">
+        <div class="he-toolbar">
+          <label class="path-field field-xs he-name-field">
+            Connection Name
+            <input type="text" required class="path-input" value="dev-gateway" />
+          </label>
+          <div class="he-route" aria-label="Connection route">
+            <span class="he-route-chip is-local">local</span>
+            <span class="he-route-sep"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+            <span class="he-route-chip">jump.example.internal</span>
+            <span class="he-route-sep"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+            <span class="he-route-chip is-active">10.12.8.20</span>
+          </div>
+        </div>
+
+        <div class="he-path-scroll">
+          <div class="he-rail">
+            <div class="he-node">
+              <div class="he-marker"><span class="he-dot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg></span></div>
+              <div>
+                <span class="he-local-chip">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5M8 10.5v3"/></svg>
+                  Local <span class="he-local-sub">this machine</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="he-node">
+              <div class="he-marker"><span class="he-dot">1</span></div>
+              <div>
+                <div class="he-card">
+                  <div class="he-card-summary">
+                    <button type="button" class="he-card-toggle" aria-expanded="false">
+                      <span class="he-step">Hop 1</span>
+                      <span class="he-card-summary-text">deploy@jump.example.internal:22</span>
+                      <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                    </button>
+                    <button class="icon-btn" type="button" aria-label="Hop actions">···</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button type="button" class="he-add-row">
+              <span class="he-add-dot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9"/></svg></span>
+              <span class="he-add-label">Add Hop</span>
+            </button>
+
+            <div class="he-node">
+              <div class="he-marker"><span class="he-dot is-target"></span></div>
+              <div>
+                <div class="he-card is-target" data-node-auth="privateKey" data-expanded="true">
+                  <div class="he-card-summary">
+                    <button type="button" class="he-card-toggle" aria-expanded="true">
+                      <span class="he-step">Target</span>
+                      <span class="he-card-summary-text"></span>
+                      <svg class="he-card-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                    </button>
+                  </div>
+                  <div class="he-card-body">
+                    <div class="he-node-grid">
+                      <label class="path-field field-xs">
+                        SSH Host
+                        <input type="text" required class="path-input he-mono" value="10.12.8.20" />
+                      </label>
+                      <label class="path-field field-xs">
+                        Port
+                        <input type="text" inputmode="numeric" maxlength="5" value="22" required class="path-input he-mono" />
+                      </label>
+                      <label class="path-field field-xs">
+                        Username
+                        <input type="text" required class="path-input he-mono" value="deploy" />
+                      </label>
+                    </div>
+                    <div class="he-auth-row">
+                      <span class="he-auth-label">Authentication</span>
+                      <div class="he-seg" role="group" aria-label="Authentication">
+                        <button type="button" class="he-seg-btn is-active" aria-pressed="true">Private Key</button>
+                        <button type="button" class="he-seg-btn" aria-pressed="false">Password</button>
+                      </div>
+                    </div>
+                    <div class="he-cred">
+                      <div class="he-key-editor">
+                        <div class="he-key-summary">
+                          <button type="button" class="he-key-toggle" aria-expanded="false">
+                            <span class="he-key-summary-left">
+                              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="8" r="3"/><path d="M8 8h6M11.5 8v2.5M14 8v1.5"/></svg>
+                              <span class="he-key-status-text">No key configured</span>
+                              <span class="he-key-path"></span>
+                            </span>
+                            <svg class="he-key-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+                          </button>
+                          <button type="button" class="btn btn-ghost btn-sm">Replace</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="forwards-panel" class="panel" data-panel="forwards">
+        <div class="panel-titlebar">
+          <div class="panel-title">Forwarding Rules <span id="forward-panel-count" class="panel-count">0</span></div>
+          <div class="panel-title-actions">
+            <button id="add-forward" class="btn btn-secondary btn-sm" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></g></svg>Add Rule</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <div class="table">
+            <div class="head forward-grid">
+              <div>Name</div>
+              <div>Local</div>
+              <div></div>
+              <div>Remote</div>
+              <div>Auto</div>
+              <div></div>
+            </div>
+            <div id="forward-rows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="services-panel" class="panel" data-panel="services">
+        <div class="panel-titlebar">
+          <div class="panel-title">Services <span id="service-panel-count" class="panel-count">0</span></div>
+          <div class="panel-title-actions">
+            <button id="add-service" class="btn btn-secondary btn-sm" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="m10.852 14.772l-.383.923m2.679-.923a3 3 0 1 0-2.296-5.544l-.383-.923m2.679.923l.383-.923"/><path d="m13.53 15.696l-.382-.924a3 3 0 1 1-2.296-5.544m3.92 1.624l.923-.383m-.923 2.679l.923.383"/><path d="M4.5 10H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5m-15 4H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2h-.5M6 18h.01M6 6h.01m3.218 4.852l-.923-.383m.923 2.679l-.923.383"/></g></svg>Add Service</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <div class="table">
+            <div class="head service-grid">
+              <div>Name</div>
+              <div>Ports</div>
+              <div>Start command</div>
+              <div></div>
+            </div>
+            <div id="service-rows"></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="form-actions">
+        <button class="btn btn-ghost" type="button" data-action="reset">Reset Changes</button>
+        <button class="btn btn-secondary" type="button">Cancel</button>
+        <button class="btn btn-primary" type="button" data-action="save-host">Save Host</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      activeTab: 'forwards',
+      editingForwardId: null,
+      editingServiceId: null,
+      addingForward: false,
+      addingService: false,
+      openMenu: null,
+      forwards: [
+        { id: 'f-rabbitmq', name: 'rabbitmq', localHost: '127.0.0.1', localPort: '15672', remoteHost: '127.0.0.1', remotePort: '15672', autoStart: false },
+        { id: 'f-windows', name: 'windows-wuchong', localHost: '127.0.0.1', localPort: '3389', remoteHost: '192.168.122.91', remotePort: '3389', autoStart: true },
+        { id: 'f-k8s', name: 'xsy-k8s', localHost: '127.0.0.1', localPort: '6445', remoteHost: '192.168.122.87', remotePort: '6443', autoStart: true }
+      ],
+      services: [
+        { id: 's-api', name: 'app-api', localPort: '18080', servicePort: '8080', command: 'systemctl --user start app-api' },
+        { id: 's-postgres', name: 'postgresql', localPort: '15432', servicePort: '5432', command: 'cd /opt/postgres\nsource ./env.sh\nsystemctl --user start postgresql' }
+      ]
+    };
+
+    const draftForward = { id: 'new-forward', name: 'new-admin', localHost: '127.0.0.1', localPort: '', remoteHost: '', remotePort: '', autoStart: false };
+    const draftService = { id: 'new-service', name: 'worker', localPort: '', servicePort: '', command: '' };
+
+    const escapeHtml = (value) => String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    const byId = (id) => document.getElementById(id);
+
+    function setToast(message) {
+      byId('prototype-toast').textContent = message;
+      if (message) {
+        window.clearTimeout(setToast.timer);
+        setToast.timer = window.setTimeout(() => {
+          byId('prototype-toast').textContent = '';
+        }, 2400);
+      }
+    }
+
+    function endpointText(rule, side) {
+      const host = side === 'local' ? rule.localHost : rule.remoteHost;
+      const port = side === 'local' ? rule.localPort : rule.remotePort;
+      return host + ':' + port;
+    }
+
+    function renderForwardReadRow(rule) {
+      const menuKey = 'forward:' + rule.id;
+      return '<div class="row forward-grid" data-forward-id="' + escapeHtml(rule.id) + '">' +
+        '<div class="name-main">' + escapeHtml(rule.name) + '</div>' +
+        '<div class="endpoint mono">' + escapeHtml(endpointText(rule, 'local')) + '</div>' +
+        '<div class="arrow">→</div>' +
+        '<div class="endpoint mono">' + escapeHtml(endpointText(rule, 'remote')) + '</div>' +
+        '<div class="check">' + (rule.autoStart ? '✓' : '<span class="muted">—</span>') + '</div>' +
+        '<div class="row-inline-actions menu-wrap"><button class="btn btn-ghost btn-sm" type="button" data-action="edit-forward" data-id="' + escapeHtml(rule.id) + '">Edit</button><button class="icon-btn" type="button" data-action="toggle-forward-menu" data-id="' + escapeHtml(rule.id) + '" aria-label="Rule actions">···</button><div class="inline-menu" ' + (state.openMenu === menuKey ? '' : 'hidden') + '><button class="menu-item" type="button" data-action="edit-forward" data-id="' + escapeHtml(rule.id) + '">Edit</button><button class="menu-item" type="button" data-action="duplicate-forward" data-id="' + escapeHtml(rule.id) + '">Duplicate</button><button class="menu-item is-danger" type="button" data-action="delete-forward" data-id="' + escapeHtml(rule.id) + '">Delete</button></div></div>' +
+      '</div>';
+    }
+
+    function renderForwardEditRow(rule, mode) {
+      const saveLabel = mode === 'new' ? 'Create Rule' : 'Save Rule';
+      const rowClass = mode === 'new' ? 'row forward-grid is-new' : 'row forward-grid is-editing';
+      const actionName = mode === 'new' ? 'create-forward' : 'save-forward';
+      const cancelName = mode === 'new' ? 'cancel-new-forward' : 'cancel-edit-forward';
+      return '<div class="' + rowClass + '" data-forward-id="' + escapeHtml(rule.id) + '">' +
+        '<input class="field" data-field="name" value="' + escapeHtml(rule.name) + '" placeholder="name" aria-label="Rule name" />' +
+        '<div class="endpoint-edit"><input class="field mono" data-field="localHost" value="' + escapeHtml(rule.localHost) + '" placeholder="127.0.0.1" aria-label="Local host" /><span class="muted">:</span><input class="field mono" data-field="localPort" value="' + escapeHtml(rule.localPort) + '" placeholder="local" aria-label="Local port" /></div>' +
+        '<div class="arrow">→</div>' +
+        '<div class="endpoint-edit"><input class="field mono" data-field="remoteHost" value="' + escapeHtml(rule.remoteHost) + '" placeholder="remote host" aria-label="Remote host" /><span class="muted">:</span><input class="field mono" data-field="remotePort" value="' + escapeHtml(rule.remotePort) + '" placeholder="port" aria-label="Remote port" /></div>' +
+        '<div class="check"><input type="checkbox" data-field="autoStart" ' + (rule.autoStart ? 'checked' : '') + ' aria-label="Auto start" /></div>' +
+        '<button class="icon-btn" type="button" data-action="' + cancelName + '" aria-label="Cancel">×</button>' +
+        '<div class="row-edit-actions"><button class="btn btn-secondary btn-sm" type="button" data-action="' + cancelName + '">Cancel</button><button class="btn btn-primary btn-sm" type="button" data-action="' + actionName + '">' + saveLabel + '</button></div>' +
+      '</div>';
+    }
+
+    function renderForwards() {
+      const rows = state.forwards.map((rule) => {
+        if (state.editingForwardId === rule.id) return renderForwardEditRow(rule, 'edit');
+        return renderForwardReadRow(rule);
+      });
+      if (state.addingForward) rows.push(renderForwardEditRow(draftForward, 'new'));
+      byId('forward-rows').innerHTML = rows.join('');
+      byId('forward-count').textContent = String(state.forwards.length);
+      byId('forward-panel-count').textContent = String(state.forwards.length);
+      byId('add-forward').disabled = state.addingForward || Boolean(state.editingForwardId);
+    }
+
+    function servicePorts(service) {
+      const local = service.localPort || '0';
+      const port = service.servicePort || '0';
+      return local + ' → ' + port;
+    }
+
+    function firstLine(value) {
+      return String(value || '').split('\n')[0] || 'No start command';
+    }
+
+    function renderServiceReadRow(service) {
+      const menuKey = 'service:' + service.id;
+      return '<div class="row service-grid" data-service-id="' + escapeHtml(service.id) + '">' +
+        '<div class="name-main">' + escapeHtml(service.name) + '</div>' +
+        '<div class="mono">' + escapeHtml(servicePorts(service)) + '</div>' +
+        '<div class="command-preview">' + escapeHtml(firstLine(service.command)) + '</div>' +
+        '<div class="row-inline-actions menu-wrap"><button class="btn btn-ghost btn-sm" type="button" data-action="edit-service" data-id="' + escapeHtml(service.id) + '">Edit</button><button class="icon-btn" type="button" data-action="toggle-service-menu" data-id="' + escapeHtml(service.id) + '" aria-label="Service actions">···</button><div class="inline-menu" ' + (state.openMenu === menuKey ? '' : 'hidden') + '><button class="menu-item" type="button" data-action="edit-service" data-id="' + escapeHtml(service.id) + '">Edit</button><button class="menu-item" type="button" data-action="duplicate-service" data-id="' + escapeHtml(service.id) + '">Duplicate</button><button class="menu-item is-danger" type="button" data-action="delete-service" data-id="' + escapeHtml(service.id) + '">Delete</button></div></div>' +
+      '</div>';
+    }
+
+    function renderServiceEditRow(service, mode) {
+      const saveLabel = mode === 'new' ? 'Create Service' : 'Save Service';
+      const rowClass = mode === 'new' ? 'row service-grid is-new service-edit-row' : 'row service-grid is-editing service-edit-row';
+      const actionName = mode === 'new' ? 'create-service' : 'save-service';
+      const cancelName = mode === 'new' ? 'cancel-new-service' : 'cancel-edit-service';
+      return '<div class="' + rowClass + '" data-service-id="' + escapeHtml(service.id) + '">' +
+        '<input class="field" data-field="name" value="' + escapeHtml(service.name) + '" placeholder="name" aria-label="Service name" />' +
+        '<div class="port-pair-edit"><input class="field mono" data-field="localPort" value="' + escapeHtml(service.localPort) + '" placeholder="local" aria-label="Local port" /><span class="muted">→</span><input class="field mono" data-field="servicePort" value="' + escapeHtml(service.servicePort) + '" placeholder="service" aria-label="Service port" /></div>' +
+        '<div></div>' +
+        '<button class="icon-btn" type="button" data-action="' + cancelName + '" aria-label="Cancel">×</button>' +
+        '<div class="service-edit-command"><textarea class="textarea" data-field="command" placeholder="Start command" aria-label="Start command">' + escapeHtml(service.command) + '</textarea></div>' +
+        '<div class="row-edit-actions"><button class="btn btn-secondary btn-sm" type="button" data-action="' + cancelName + '">Cancel</button><button class="btn btn-primary btn-sm" type="button" data-action="' + actionName + '">' + saveLabel + '</button></div>' +
+      '</div>';
+    }
+
+    function renderServices() {
+      const rows = state.services.map((service) => {
+        if (state.editingServiceId === service.id) return renderServiceEditRow(service, 'edit');
+        return renderServiceReadRow(service);
+      });
+      if (state.addingService) rows.push(renderServiceEditRow(draftService, 'new'));
+      byId('service-rows').innerHTML = rows.join('');
+      byId('service-count').textContent = String(state.services.length);
+      byId('service-panel-count').textContent = String(state.services.length);
+      byId('add-service').disabled = state.addingService || Boolean(state.editingServiceId);
+    }
+
+    function renderTabs() {
+      document.querySelectorAll('.host-edit-tab').forEach((tab) => {
+        const selected = tab.dataset.tab === state.activeTab;
+        tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      document.querySelectorAll('.panel').forEach((panel) => {
+        panel.classList.toggle('is-active', panel.dataset.panel === state.activeTab);
+      });
+    }
+
+    function collectForwardFromRow(row) {
+      const existing = state.forwards.find((item) => item.id === row.dataset.forwardId);
+      return {
+        id: row.dataset.forwardId || 'new-forward',
+        name: row.querySelector('[data-field="name"]').value.trim() || 'unnamed-rule',
+        localHost: row.querySelector('[data-field="localHost"]').value.trim() || '127.0.0.1',
+        localPort: row.querySelector('[data-field="localPort"]').value.trim() || '0',
+        remoteHost: row.querySelector('[data-field="remoteHost"]').value.trim() || '127.0.0.1',
+        remotePort: row.querySelector('[data-field="remotePort"]').value.trim() || '0',
+        autoStart: row.querySelector('[data-field="autoStart"]').checked
+      };
+    }
+
+    function collectServiceFromRow(row) {
+      const existing = state.services.find((item) => item.id === row.dataset.serviceId);
+      return {
+        id: row.dataset.serviceId || 'new-service',
+        name: row.querySelector('[data-field="name"]').value.trim() || 'unnamed-service',
+        localPort: row.querySelector('[data-field="localPort"]').value.trim() || '0',
+        servicePort: row.querySelector('[data-field="servicePort"]').value.trim() || '0',
+        command: row.querySelector('[data-field="command"]').value
+      };
+    }
+
+    function renderAll() {
+      renderTabs();
+      renderForwards();
+      renderServices();
+    }
+
+    document.addEventListener('click', (event) => {
+      const tab = event.target.closest('[data-tab]');
+      if (tab) {
+        state.activeTab = tab.dataset.tab;
+        state.openMenu = null;
+        renderAll();
+        return;
+      }
+
+      const actionTarget = event.target.closest('[data-action]');
+      if (!actionTarget && state.openMenu && !event.target.closest('.menu-wrap')) {
+        state.openMenu = null;
+        renderAll();
+        return;
+      }
+      if (!actionTarget) return;
+      const action = actionTarget.dataset.action;
+
+      if (action === 'reset') {
+        state.editingForwardId = null;
+        state.editingServiceId = null;
+        state.addingForward = false;
+        state.addingService = false;
+        state.openMenu = null;
+        Object.assign(draftForward, { id: 'new-forward', name: 'new-admin', localHost: '127.0.0.1', localPort: '', remoteHost: '', remotePort: '', autoStart: false });
+        Object.assign(draftService, { id: 'new-service', name: 'worker', localPort: '', servicePort: '', command: '' });
+        setToast('Prototype state reset.');
+        renderAll();
+      }
+
+      if (action === 'save-host') {
+        state.editingForwardId = null;
+        state.editingServiceId = null;
+        state.addingForward = false;
+        state.addingService = false;
+        state.openMenu = null;
+        setToast('Save Host keeps its final primary action role.');
+        renderAll();
+      }
+    });
+
+    byId('add-forward').addEventListener('click', () => {
+      state.addingForward = true;
+      state.editingForwardId = null;
+      state.openMenu = null;
+      state.activeTab = 'forwards';
+      setToast('Add Rule opens one inline row at the bottom.');
+      renderAll();
+    });
+
+    byId('add-service').addEventListener('click', () => {
+      state.addingService = true;
+      state.editingServiceId = null;
+      state.openMenu = null;
+      state.activeTab = 'services';
+      setToast('Add Service opens one inline row at the bottom.');
+      renderAll();
+    });
+
+    byId('forward-rows').addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      const action = target.dataset.action;
+      const row = target.closest('[data-forward-id]');
+
+      if (action === 'toggle-forward-menu') {
+        const key = 'forward:' + target.dataset.id;
+        state.openMenu = state.openMenu === key ? null : key;
+        renderAll();
+      } else if (action === 'edit-forward') {
+        state.editingForwardId = target.dataset.id;
+        state.addingForward = false;
+        state.openMenu = null;
+        setToast('Only the selected forwarding rule becomes editable.');
+        renderAll();
+      } else if (action === 'duplicate-forward') {
+        const source = state.forwards.find((item) => item.id === target.dataset.id);
+        if (source) {
+          const copy = Object.assign({}, source, { id: 'f-' + Date.now(), name: source.name + '-copy' });
+          state.forwards.push(copy);
+          state.openMenu = null;
+          setToast('Rule duplicated.');
+          renderAll();
+        }
+      } else if (action === 'delete-forward') {
+        state.forwards = state.forwards.filter((item) => item.id !== target.dataset.id);
+        state.openMenu = null;
+        setToast('Rule deleted in prototype.');
+        renderAll();
+      } else if (action === 'cancel-edit-forward') {
+        state.editingForwardId = null;
+        setToast('Edit canceled.');
+        renderAll();
+      } else if (action === 'save-forward') {
+        const next = collectForwardFromRow(row);
+        state.forwards = state.forwards.map((item) => item.id === next.id ? next : item);
+        state.editingForwardId = null;
+        setToast('Rule saved back to reading state.');
+        renderAll();
+      } else if (action === 'cancel-new-forward') {
+        state.addingForward = false;
+        setToast('New rule canceled.');
+        renderAll();
+      } else if (action === 'create-forward') {
+        const next = collectForwardFromRow(row);
+        next.id = 'f-' + Date.now();
+        state.forwards.push(next);
+        state.addingForward = false;
+        setToast('New rule created.');
+        renderAll();
+      }
+    });
+
+    byId('service-rows').addEventListener('click', (event) => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+      const action = target.dataset.action;
+      const row = target.closest('[data-service-id]');
+
+      if (action === 'toggle-service-menu') {
+        const key = 'service:' + target.dataset.id;
+        state.openMenu = state.openMenu === key ? null : key;
+        renderAll();
+      } else if (action === 'edit-service') {
+        state.editingServiceId = target.dataset.id;
+        state.addingService = false;
+        state.openMenu = null;
+        setToast('Only the selected service becomes editable.');
+        renderAll();
+      } else if (action === 'duplicate-service') {
+        const source = state.services.find((item) => item.id === target.dataset.id);
+        if (source) {
+          const copy = Object.assign({}, source, { id: 's-' + Date.now(), name: source.name + '-copy' });
+          state.services.push(copy);
+          state.openMenu = null;
+          setToast('Service duplicated.');
+          renderAll();
+        }
+      } else if (action === 'delete-service') {
+        state.services = state.services.filter((item) => item.id !== target.dataset.id);
+        state.openMenu = null;
+        setToast('Service deleted in prototype.');
+        renderAll();
+      } else if (action === 'cancel-edit-service') {
+        state.editingServiceId = null;
+        setToast('Edit canceled.');
+        renderAll();
+      } else if (action === 'save-service') {
+        const next = collectServiceFromRow(row);
+        state.services = state.services.map((item) => item.id === next.id ? next : item);
+        state.editingServiceId = null;
+        setToast('Service saved back to reading state.');
+        renderAll();
+      } else if (action === 'cancel-new-service') {
+        state.addingService = false;
+        setToast('New service canceled.');
+        renderAll();
+      } else if (action === 'create-service') {
+        const next = collectServiceFromRow(row);
+        next.id = 's-' + Date.now();
+        state.services.push(next);
+        state.addingService = false;
+        setToast('New service created.');
+        renderAll();
+      }
+    });
+
+    renderAll();
+  </script>
+</body>
+</html>

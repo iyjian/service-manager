@@ -23,6 +23,12 @@ export interface NotesTreeSnapshot {
   nodes: NotesTreeNode[];
 }
 
+/** Optional main-process persistence; tree validation and repair remain shared. */
+export interface NotesTreeBackend {
+  read(): Promise<unknown>;
+  write(snapshot: NotesTreeSnapshot): Promise<void>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -327,7 +333,10 @@ export class NotesTreeStore {
   private nodes: NotesTreeNode[] = [];
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly backend?: NotesTreeBackend,
+  ) {}
 
   load(activeNoteIds: readonly string[]): Promise<NotesTreeSnapshot> {
     const normalizedActiveIds = normalizeActiveNoteIds(activeNoteIds);
@@ -497,6 +506,7 @@ export class NotesTreeStore {
   }
 
   private async readSnapshot(): Promise<NotesTreeNode[]> {
+    if (this.backend) return parseSnapshot(await this.backend.read());
     let metadata;
     try {
       metadata = await fs.lstat(this.filePath);
@@ -533,6 +543,7 @@ export class NotesTreeStore {
   }
 
   private async persist(nodes: readonly NotesTreeNode[]): Promise<void> {
+    if (this.backend) return this.backend.write(cloneSnapshot(nodes));
     const directory = path.dirname(this.filePath);
     const temporaryPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
     let handle: FileHandle | undefined;

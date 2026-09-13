@@ -175,6 +175,9 @@ async function createRuntime(t, options) {
       options.onSnapshotProvider?.();
       return clone(state.data);
     },
+    ...(options.notesDatabase ? { notesDatabase: options.notesDatabase } : {}),
+    freezeNotesForGuard: options.freezeNotesForGuard,
+    onNotesSyncGuardChanged: options.onNotesSyncGuardChanged,
     ...(options.notesIncrementalProvider ? {
       notesIncrementalProvider: (intent) => options.notesIncrementalProvider({
         intent: clone(intent),
@@ -2334,12 +2337,69 @@ test('S3SyncRuntime does not schedule its startup sync after shutdown starts', a
   assert.equal(runtime.debounceTimer, undefined);
 });
 
-test('automatic S3 sync has no focus, resume, or recurring full-reconcile trigger', async () => {
+test('background polling does not upload pending Notes or clear their pending status', async (t) => {
+  let pending = false;
+  let now = Date.parse(T0);
+  const modes = [];
+  const client = await createRuntime(t, {
+    clientId: 'adaptive-poll', data: sharedData(), fetchImpl: new MemoryS3().fetch,
+    now: () => new Date(now),
+    notesDatabase: {
+      hasPendingChanges: async () => pending,
+      sync: async (_connection, _legacy, mode, onUpload) => {
+        modes.push(mode);
+        if (mode === 'check' || !pending) return 'up-to-date';
+        onUpload?.(); pending = false; return 'pushed';
+      },
+    },
+  });
+  await client.runtime.syncAllDataToS3();
+  pending = true;
+  client.runtime.markLocalChange({ kind: 'notes', upsertIds: ['n'] });
+  await waitFor(() => client.runtime.getSyncState().pending, 'pending Notes');
+  assert.equal(client.runtime.notesUploadSchedule.delay(now), 30_000);
+  now += 10_000;
+  await client.runtime.performSync(true, false, true);
+  assert.equal(modes.at(-1), 'check');
+  assert.equal(pending, true);
+  assert.equal(client.runtime.getSyncState().pending, true);
+  assert.equal(client.runtime.notesUploadSchedule.delay(now), 20_000);
+  await client.runtime.uploadPendingNotes();
+  assert.equal(modes.at(-1), 'auto');
+  assert.equal(pending, false);
+  assert.ok(client.syncStates.some((state) => state.phase === 'uploading'));
+  const count = modes.length;
+  await client.runtime.uploadPendingNotes();
+  assert.equal(modes.length, count, 'leaving an unchanged page does not request a transfer');
+});
+
+test('page departure respects retry backoff while an explicit quit-sync can retry', async (t) => {
+  let offline = true;
+  let attempts = 0;
+  const client = await createRuntime(t, {
+    clientId: 'adaptive-retry', data: sharedData(), fetchImpl: new MemoryS3().fetch,
+    notesDatabase: {
+      hasPendingChanges: async () => true,
+      sync: async () => { attempts++; if (offline) throw new Error('offline'); return 'pushed'; },
+    },
+  });
+  await assert.rejects(client.runtime.uploadPendingNotes(), /offline/);
+  assert.equal(attempts, 1);
+  await client.runtime.uploadPendingNotes();
+  assert.equal(attempts, 1);
+  offline = false;
+  await client.runtime.uploadPendingNotes(true);
+  assert.equal(attempts, 2);
+});
+
+test('automatic S3 polling is limited to database mode, without focus or resume triggers', async () => {
   const [runtimeSource, mainSource] = await Promise.all([
     readFile(path.join(__dirname, '..', 'src', 'main', 's3', 's3Sync.ts'), 'utf8'),
     readFile(path.join(__dirname, '..', 'src', 'main', 'core', 'main.ts'), 'utf8'),
   ]);
-  assert.doesNotMatch(runtimeSource, /AUTO_SYNC_INTERVAL_MS|setInterval\(|checkForRemoteChanges/);
+  assert.doesNotMatch(runtimeSource, /AUTO_SYNC_INTERVAL_MS|checkForRemoteChanges/);
+  assert.equal((runtimeSource.match(/setInterval\(/g) ?? []).length, 1);
+  assert.match(runtimeSource, /if \(this\.options\.notesDatabase\) \{\s*this\.databasePollTimer = setInterval\([\s\S]*?60_000\)/);
   assert.doesNotMatch(mainSource, /powerMonitor|s3SyncRuntime\?\.checkForRemoteChanges/);
   assert.match(runtimeSource, /startAutoSync\(\)[\s\S]*?await this\.requestSync\(false, true\)/);
   assert.match(runtimeSource, /finally \{\s*this\.updateStartupStatus\('ready'\);/);
@@ -2365,4 +2425,365 @@ test('S3SyncRuntime returns bounded safe errors without leaking endpoint, data, 
   assert.equal(state.status, 'error');
   assert.equal(state.message, 'S3 sync failed (403 AccessDenied).');
   assert.doesNotMatch(JSON.stringify(state), /wJalr|host-password|private-note|s3\.example/);
+});
+
+async function databaseModeManifest(s3, syncEncryptionKey = SYNC_KEY) {
+  const { S3V4ObjectStore } = require('../dist/main/s3/s3SyncV4');
+  const store = new S3V4ObjectStore({ ...settingsDraft(), syncEncryptionKey, fetchImpl: s3.fetch });
+  const head = await store.getHead();
+  assert.equal(head.status, 'found');
+  const remote = await store.getManifest(head.head.revision, head.head.manifestSha256);
+  assert.equal(remote.status, 'found');
+  return { store, manifest: remote.manifest };
+}
+
+test('database mode preserves legacy Notes and tombstones without transferring Note or tree objects', async (t) => {
+  const s3 = new MemoryS3();
+  const legacy = await createRuntime(t, {
+    clientId: 'legacy', fetchImpl: s3.fetch,
+    data: sharedData([note('kept', 'legacy content')], [], [{ id: 'deleted', deletedAt: T1 }]),
+  });
+  const initial = await legacy.runtime.syncAllDataToS3();
+  const before = await databaseModeManifest(s3);
+  const originalObjects = new Map(s3.objects);
+  const client = await createRuntime(t, {
+    clientId: 'database', data: sharedData([], [host('new-host', 'New Host')]), fetchImpl: s3.fetch,
+    persistedSettings: { lastRevision: initial.revision },
+    notesDatabase: { sync: async () => 'up-to-date' },
+    notesIncrementalProvider: () => assert.fail('SQLite mode must not publish incremental Notes'),
+  });
+  s3.calls.length = 0;
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+  assert.ok(s3.calls.every((call) => !/\/notes(?:-trees)?\//.test(call.url)));
+  const after = await databaseModeManifest(s3);
+  assert.deepEqual(after.manifest.data.notes, before.manifest.data.notes);
+  for (const [url, object] of originalObjects) {
+    if (url !== s3.headUrl) assert.deepEqual(s3.objects.get(url), object);
+  }
+  assert.equal((await legacy.runtime.syncAllDataToS3()).action, 'pulled');
+  assert.equal(legacy.state.data.notes.notes[0].content, 'legacy content');
+  assert.equal(legacy.state.data.hosts.items[0].name, 'New Host');
+});
+
+test('database mode retries CAS with the newest legacy references and bounds repeated conflicts', async (t) => {
+  const s3 = new MemoryS3();
+  const legacy = await createRuntime(t, {
+    clientId: 'legacy-cas', data: sharedData([note('kept', 'before')]), fetchImpl: s3.fetch,
+  });
+  const initial = await legacy.runtime.syncAllDataToS3();
+  let raced = false;
+  const client = await createRuntime(t, {
+    clientId: 'database-cas', data: sharedData([], [host('h', 'Host')]),
+    persistedSettings: { lastRevision: initial.revision },
+    notesDatabase: { sync: async () => 'up-to-date' },
+    fetchImpl: async (url, options) => {
+      if (!raced && String(url) === s3.headUrl && options.method === 'PUT') {
+        raced = true;
+        legacy.state.data = sharedData([note('kept', 'after', T1)]);
+        await legacy.runtime.syncAllDataToS3();
+      }
+      return s3.fetch(url, options);
+    },
+  });
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+  const { store, manifest } = await databaseModeManifest(s3);
+  assert.equal((await store.getNote(manifest.data.notes.items[0])).object.note.content, 'after');
+
+  let conditionalWrites = 0;
+  const blocked = await createRuntime(t, {
+    clientId: 'database-bounded', data: sharedData([], [host('h', 'Changed Host')]),
+    persistedSettings: { lastRevision: manifest.revision },
+    notesDatabase: { sync: async () => 'up-to-date' },
+    fetchImpl: async (url, options) => {
+      if (String(url) === s3.headUrl && options.method === 'PUT') {
+        conditionalWrites += 1;
+        return new Response('', { status: 412 });
+      }
+      return s3.fetch(url, options);
+    },
+  });
+  const originalHead = s3.head.body;
+  await assert.rejects(blocked.runtime.syncAllDataToS3(), /concurrently too many times/);
+  assert.equal(conditionalWrites, 4);
+  assert.equal(s3.head.body, originalHead);
+});
+
+test('database migration loads the committed legacy base before settings reconciliation advances it', async (t) => {
+  const s3 = new MemoryS3();
+  const legacy = await createRuntime(t, {
+    clientId: 'migration-source', data: sharedData([note('n', 'base')]), fetchImpl: s3.fetch,
+  });
+  const initial = await legacy.runtime.syncAllDataToS3();
+  legacy.state.data = sharedData([note('n', 'cloud', T1)], [host('h', 'Remote')]);
+  await legacy.runtime.syncAllDataToS3();
+  let loaded;
+  let client;
+  client = await createRuntime(t, {
+    clientId: 'migration-target', data: sharedData(), fetchImpl: s3.fetch,
+    persistedSettings: { lastRevision: initial.revision },
+    notesDatabase: { sync: async (connection, loadLegacy) => {
+      assert.equal(connection.syncEncryptionKey, SYNC_KEY);
+      assert.equal(connection.signal.aborted, false);
+      assert.equal((await client.runtime.getSettings()).lastRevision, initial.revision);
+      loaded = await loadLegacy();
+      return 'pushed';
+    } },
+  });
+  const result = await client.runtime.syncAllDataToS3();
+  assert.equal(result.action, 'pushed');
+  assert.equal(loaded.base.notes[0].content, 'base');
+  assert.equal(loaded.cloud.notes[0].content, 'cloud');
+  assert.deepEqual(client.state.data.notes, sharedData().notes);
+  assert.equal(client.state.data.hosts.items[0].name, 'Remote');
+});
+
+test('database migration uses the current legacy base for same or uncommitted self revisions', async (t) => {
+  for (const sameClient of [false, true]) {
+    const s3 = new MemoryS3();
+    const legacy = await createRuntime(t, {
+      clientId: `self-source-${sameClient}`, data: sharedData([note('n', 'current')]), fetchImpl: s3.fetch,
+    });
+    const initial = await legacy.runtime.syncAllDataToS3();
+    let loaded;
+    const client = await createRuntime(t, {
+      clientId: sameClient ? `self-source-${sameClient}` : 'other-client',
+      data: sharedData(), fetchImpl: s3.fetch,
+      persistedSettings: { lastRevision: sameClient ? 'missing-old-base' : initial.revision },
+      notesDatabase: { sync: async (_connection, loadLegacy) => {
+        loaded = await loadLegacy();
+        return 'up-to-date';
+      } },
+    });
+    await client.runtime.syncAllDataToS3();
+    assert.deepEqual(loaded.base, loaded.cloud);
+  }
+});
+
+test('database migration fails closed on a missing base or offline legacy head', async (t) => {
+  for (const offline of [false, true]) {
+    const s3 = new MemoryS3();
+    const legacy = await createRuntime(t, {
+      clientId: 'fail-source', data: sharedData([note('n', 'preserved')]), fetchImpl: s3.fetch,
+    });
+    await legacy.runtime.syncAllDataToS3();
+    const originalHead = s3.head.body;
+    let databasePublished = false;
+    const client = await createRuntime(t, {
+      clientId: 'fail-migration', data: sharedData(),
+      persistedSettings: { lastRevision: 'missing-base' },
+      fetchImpl: offline ? async () => new Response('', { status: 503 }) : s3.fetch,
+      notesDatabase: { sync: async (_connection, loadLegacy) => {
+        await loadLegacy();
+        databasePublished = true;
+        return 'pushed';
+      } },
+    });
+    await assert.rejects(client.runtime.startAutoSync(), offline ? /S3 sync failed/ : /previous S3 sync manifest is missing/);
+    assert.equal(client.runtime.getStartupSyncState().status, 'ready');
+    assert.equal(databasePublished, false);
+    assert.equal(s3.head.body, originalHead);
+    assert.deepEqual(client.state.data, sharedData());
+  }
+});
+
+test('Notes guard requires offline consent, resets consent on recovery, and locks divergence', async (t) => {
+  let outcome = 'up-to-date';
+  let frozen = 0;
+  let released = 0;
+  const modes = [];
+  const client = await createRuntime(t, {
+    clientId: 'guard', data: sharedData(), fetchImpl: new MemoryS3().fetch,
+    freezeNotesForGuard: async () => { frozen += 1; return () => { released += 1; }; },
+    notesDatabase: {
+      sync: async (_connection, _legacy, mode) => {
+        modes.push(mode);
+        if (outcome === 'offline') throw new Error('unreachable');
+        return outcome;
+      },
+      classifyObserved: async () => outcome,
+    },
+  });
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'ready', editable: true });
+  assert.doesNotThrow(() => client.runtime.assertNotesEditable());
+  outcome = 'offline';
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'offline', editable: false });
+  assert.throws(() => client.runtime.assertNotesEditable(), /read-only/);
+  assert.deepEqual(client.runtime.allowOfflineNotesEditing(), { status: 'offline', editable: true });
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'offline', editable: true });
+  outcome = 'up-to-date';
+  await client.runtime.checkNotesSync();
+  outcome = 'offline';
+  assert.equal((await client.runtime.checkNotesSync()).editable, false);
+  client.runtime.allowOfflineNotesEditing();
+  outcome = 'diverged';
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'diverged', editable: false });
+  assert.throws(() => client.runtime.allowOfflineNotesEditing(), /not available/);
+  await assert.rejects(client.runtime.syncAllDataToS3(), /cannot sync/);
+  assert.equal(modes.at(-1), 'manual');
+  assert.equal(frozen, released);
+  assert.equal(frozen, 3);
+});
+
+test('Notes guard bypasses unconfigured S3 without a remote request or editing restriction', async (t) => {
+  const client = await createRuntime(t, {
+    clientId: 'guard-disabled', data: sharedData(), fetchImpl: async () => { throw new Error('unexpected request'); },
+    notesDatabase: { sync: async () => { throw new Error('unexpected database check'); } },
+    persistedSettings: { encryptedAccessKeyId: undefined, encryptedSecretAccessKey: undefined },
+  });
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'not-configured', editable: true });
+  assert.doesNotThrow(() => client.runtime.assertNotesEditable());
+});
+
+test('Notes guard flushes late drafts before publishing a remote-update lock', async (t) => {
+  let outcome = 'up-to-date';
+  const client = await createRuntime(t, {
+    clientId: 'guard-fence', data: sharedData(), fetchImpl: new MemoryS3().fetch,
+    freezeNotesForGuard: async () => { outcome = 'diverged'; return () => {}; },
+    notesDatabase: { sync: async () => outcome, classifyObserved: async () => outcome },
+  });
+  await client.runtime.checkNotesSync();
+  outcome = 'remote-updated';
+  assert.deepEqual(await client.runtime.checkNotesSync(), { status: 'diverged', editable: false });
+});
+
+test('database mode applies settings during Notes typing and fences actual settings edits', async (t) => {
+  const s3 = new MemoryS3();
+  const legacy = await createRuntime(t, {
+    clientId: 'apply-source', data: sharedData([note('n', 'legacy')], [host('h', 'Cloud')]), fetchImpl: s3.fetch,
+  });
+  await legacy.runtime.syncAllDataToS3();
+  let client;
+  let applies = 0;
+  client = await createRuntime(t, {
+    clientId: 'settings-apply', data: sharedData(), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async () => 'up-to-date' },
+    onSnapshotProvider: () => client.runtime.markLocalChange({ kind: 'notes', upsertIds: ['typing'] }),
+    snapshotApplier: ({ data, expectedLocal, state }) => {
+      applies += 1;
+      assert.deepEqual(data.notes, sharedData().notes);
+      assert.deepEqual(expectedLocal.notes, sharedData().notes);
+      if (applies === 1) {
+        state.data = sharedData([], [host('h', 'Late local edit')]);
+        return false;
+      }
+      assert.deepEqual(state.data, expectedLocal);
+      state.data = clone(data);
+      return true;
+    },
+  });
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'conflict');
+  assert.equal(applies, 2);
+  assert.equal(client.state.data.hosts.items[0].name, 'Cloud');
+  assert.equal(client.runtime.getSyncState().pending, true);
+  const directory = path.join(client.userDataPath, 's3-sync-recovery');
+  const files = await readdir(directory);
+  const recovery = decryptS3LocalRecovery(JSON.parse(await readFile(path.join(directory, files[0]), 'utf8')), SYNC_KEY);
+  assert.equal(recovery.data.hosts.items[0].name, 'Late local edit');
+});
+
+test('database rotation preserves legacy objects and retires the previous key only after both syncs succeed', async (t) => {
+  const s3 = new MemoryS3();
+  const legacy = await createRuntime(t, {
+    clientId: 'rotation-source', data: sharedData([note('n', 'legacy rotation')]), fetchImpl: s3.fetch,
+  });
+  const initial = await legacy.runtime.syncAllDataToS3();
+  const originals = new Map(s3.objects);
+  const rotated = Buffer.alloc(32, 0x62).toString('base64url');
+  let databaseFails = true;
+  let settingsFail = true;
+  let calls = 0;
+  const client = await createRuntime(t, {
+    clientId: 'database-rotation', data: sharedData(),
+    persistedSettings: {
+      lastRevision: initial.revision,
+      encryptedSyncEncryptionKey: fakeProtector().encryptString(rotated).toString('base64'),
+      encryptedPreviousSyncEncryptionKey: fakeProtector().encryptString(SYNC_KEY).toString('base64'),
+    },
+    notesDatabase: { sync: async (connection) => {
+      calls += 1;
+      assert.equal(connection.previousSyncEncryptionKey, SYNC_KEY);
+      assert.equal(connection.syncEncryptionKey, rotated);
+      if (databaseFails) throw new Error('Database rotation failed.');
+      return 'pushed';
+    } },
+    fetchImpl: (url, options) => settingsFail
+      ? Promise.resolve(new Response('', { status: 503 })) : s3.fetch(url, options),
+  });
+  const saved = async () => JSON.parse(await readFile(path.join(client.userDataPath, 's3-sync.json'), 'utf8'));
+  await assert.rejects(client.runtime.syncAllDataToS3(), /Database rotation failed/);
+  assert.ok((await saved()).encryptedPreviousSyncEncryptionKey);
+  databaseFails = false;
+  await assert.rejects(client.runtime.syncAllDataToS3(), /S3 sync failed/);
+  assert.ok((await saved()).encryptedPreviousSyncEncryptionKey);
+  assert.equal(s3.head.body, originals.get(s3.headUrl).body);
+  settingsFail = false;
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+  assert.equal(calls, 3);
+  assert.equal((await saved()).encryptedPreviousSyncEncryptionKey, undefined);
+  const { store, manifest } = await databaseModeManifest(s3, rotated);
+  assert.equal(manifest.data.notes.items[0].encryptionKeyId, getS3SyncEncryptionKeyId(rotated));
+  assert.equal(manifest.data.notes.tree.encryptionKeyId, getS3SyncEncryptionKeyId(rotated));
+  assert.equal((await store.getNote(manifest.data.notes.items[0])).object.note.content, 'legacy rotation');
+  assert.equal((await store.getNotesTree(manifest.data.notes.tree)).status, 'found');
+  for (const [url, object] of originals) {
+    if (url !== s3.headUrl) assert.deepEqual(s3.objects.get(url), object);
+  }
+});
+
+test('database mode initializes a missing v4 head and combines Notes-only sync actions', async (t) => {
+  const s3 = new MemoryS3();
+  let notesAction = 'up-to-date';
+  const client = await createRuntime(t, {
+    clientId: 'database-empty', data: sharedData(), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async (_connection, loadLegacy) => {
+      if (!s3.head) assert.equal(await loadLegacy(), undefined);
+      return notesAction;
+    } },
+  });
+  assert.equal((await client.runtime.syncAllDataToS3()).action, 'pushed');
+  assert.deepEqual((await databaseModeManifest(s3)).manifest.data.notes.items, []);
+  for (const action of ['up-to-date', 'pulled', 'pushed']) {
+    notesAction = action;
+    assert.equal((await client.runtime.syncAllDataToS3()).action, action);
+  }
+});
+
+test('database settings fail closed on a wrong key, missing base, or missing legacy object during rotation', async (t) => {
+  for (const failure of ['wrong-key', 'missing-base', 'missing-note']) {
+    const s3 = new MemoryS3();
+    const legacy = await createRuntime(t, {
+      clientId: `safe-source-${failure}`, data: sharedData([note('n', 'keep me')]), fetchImpl: s3.fetch,
+    });
+    const initial = await legacy.runtime.syncAllDataToS3();
+    const { manifest } = await databaseModeManifest(s3);
+    if (failure === 'missing-note') {
+      s3.objects.delete(buildS3V4NoteObjectUrl(ENDPOINT, BUCKET, manifest.data.notes.items[0].objectId));
+    }
+    const newKey = Buffer.alloc(32, 0x63).toString('base64url');
+    const client = await createRuntime(t, {
+      clientId: `safe-database-${failure}`, data: sharedData(), fetchImpl: s3.fetch,
+      persistedSettings: {
+        lastRevision: failure === 'missing-base' ? 'missing-revision' : initial.revision,
+        ...(failure !== 'missing-base' ? {
+          encryptedSyncEncryptionKey: fakeProtector().encryptString(newKey).toString('base64'),
+        } : {}),
+        ...(failure === 'missing-note' ? {
+          encryptedPreviousSyncEncryptionKey: fakeProtector().encryptString(SYNC_KEY).toString('base64'),
+        } : {}),
+      },
+      notesDatabase: { sync: async () => 'up-to-date' },
+    });
+    const originalHead = s3.head.body;
+    s3.calls.length = 0;
+    const expected = failure === 'wrong-key' ? /Sync Encryption Key does not match/
+      : failure === 'missing-base' ? /previous S3 sync manifest is missing/ : /missing Note object/;
+    await assert.rejects(client.runtime.syncAllDataToS3(), expected);
+    assert.equal(s3.head.body, originalHead);
+    assert.ok(s3.calls.every((call) => call.method === 'GET'));
+    assert.deepEqual(client.state.data, sharedData());
+    if (failure === 'missing-note') {
+      const settings = JSON.parse(await readFile(path.join(client.userDataPath, 's3-sync.json'), 'utf8'));
+      assert.ok(settings.encryptedPreviousSyncEncryptionKey);
+    }
+  }
 });

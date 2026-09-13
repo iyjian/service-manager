@@ -1,4 +1,5 @@
 import type { Editor } from '@tiptap/core';
+import { createIcon } from './icon.js';
 
 type TableMenuKind = 'row' | 'column' | 'table';
 
@@ -46,28 +47,8 @@ const TABLE_HANDLE_CLASSES: Readonly<Record<TableMenuKind, string>> = {
   table: 'notes-richtext-table-table-handle',
 };
 
-const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
-
 function createTableIcon(): SVGSVGElement {
-  const icon = document.createElementNS(SVG_NAMESPACE, 'svg');
-  icon.setAttribute('viewBox', '0 0 16 16');
-  icon.setAttribute('fill', 'none');
-  icon.setAttribute('stroke', 'currentColor');
-  icon.setAttribute('stroke-width', '1.4');
-  icon.setAttribute('stroke-linecap', 'round');
-  icon.setAttribute('stroke-linejoin', 'round');
-  icon.setAttribute('aria-hidden', 'true');
-  for (const pathData of [
-    'M3.75 2.5h8.5c.69 0 1.25.56 1.25 1.25v8.5c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25v-8.5c0-.69.56-1.25 1.25-1.25z',
-    'M8 2.5v11',
-    'M2.5 6.25h11',
-    'M2.5 9.75h11',
-  ]) {
-    const path = document.createElementNS(SVG_NAMESPACE, 'path');
-    path.setAttribute('d', pathData);
-    icon.append(path);
-  }
-  return icon;
+  return createIcon('table');
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -158,15 +139,15 @@ export class NotesRichTextTableControls {
     this.rowHandle.setAttribute('aria-keyshortcuts', 'Alt+F10 Shift+F10');
     const rowGrip = document.createElement('span');
     rowGrip.className = 'notes-richtext-table-row-grip';
-    rowGrip.textContent = '⋮⋮';
     rowGrip.setAttribute('aria-hidden', 'true');
+    rowGrip.append(createIcon('grip-vertical'));
     this.rowHandle.append(rowGrip);
 
     this.configureHandle(this.columnHandle, 'column', 'Column options');
     const columnGrip = document.createElement('span');
     columnGrip.className = 'notes-richtext-table-column-grip';
-    columnGrip.textContent = '⋯';
     columnGrip.setAttribute('aria-hidden', 'true');
+    columnGrip.append(createIcon('grip-horizontal'));
     this.columnHandle.append(columnGrip);
 
     this.configureHandle(this.tableHandle, 'table', 'Table options');

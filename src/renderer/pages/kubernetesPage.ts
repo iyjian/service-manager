@@ -46,6 +46,7 @@ import {
   type KubernetesDrawerContainer,
 } from '../models/kubernetesDrawerModel.js';
 import { createKubernetesWorkspace, type KubernetesWorkspace } from '../components/kubernetesWorkspace.js';
+import { createIcon, renderIcon, type LucideIconName } from '../components/icon.js';
 import {
   buildKubernetesOverviewFields,
   buildKubernetesPortForwardDialogModel,
@@ -69,50 +70,14 @@ const setMessage = (text: string, level: ToastLevel = 'default'): void => {
   window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text, level } }));
 };
 
-const KUBERNETES_NAV_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M8 1.8 13.4 4.9v6.2L8 14.2l-5.4-3.1V4.9L8 1.8Z"></path>
-    <path d="M8 1.8v6.1m5.4-3L8 7.9 2.6 4.9m5.4 3v6.3"></path>
-  </svg>
-`;
+const KUBERNETES_NAV_ICON = renderIcon('boxes');
 
-function createKubernetesDrawerIcon(paths: string[]): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('stroke', 'currentColor');
-  svg.setAttribute('stroke-width', '1.7');
-  svg.setAttribute('stroke-linecap', 'round');
-  svg.setAttribute('stroke-linejoin', 'round');
-  svg.setAttribute('aria-hidden', 'true');
-  for (const value of paths) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', value);
-    svg.appendChild(path);
-  }
-  return svg;
+function createKubernetesDrawerIcon(name: LucideIconName): SVGSVGElement {
+  return createIcon(name);
 }
 
 function createKubernetesSortIcon(): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.classList.add('kubernetes-sort-icon');
-  svg.setAttribute('viewBox', '0 0 12 12');
-  svg.setAttribute('fill', 'none');
-  svg.setAttribute('stroke', 'currentColor');
-  svg.setAttribute('stroke-width', '1.5');
-  svg.setAttribute('stroke-linecap', 'round');
-  svg.setAttribute('stroke-linejoin', 'round');
-  svg.setAttribute('aria-hidden', 'true');
-  for (const [className, pathData] of [
-    ['kubernetes-sort-icon-up', 'm3.5 4.5 2.5-2.5 2.5 2.5'],
-    ['kubernetes-sort-icon-down', 'm3.5 7.5 2.5 2.5 2.5-2.5'],
-  ]) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.classList.add(className);
-    path.setAttribute('d', pathData);
-    svg.appendChild(path);
-  }
-  return svg;
+  return createIcon('chevrons-up-down', { className: 'kubernetes-sort-icon' });
 }
 
 export const RESOURCE_CATEGORIES = {
@@ -3206,10 +3171,7 @@ class KubernetesPage implements KubernetesPageController {
         logs.className = 'icon-btn kubernetes-drawer-container-action-logs';
         logs.setAttribute('aria-label', `View logs for ${container.name}`);
         logs.setAttribute('title', `View logs for ${container.name}`);
-        logs.appendChild(createKubernetesDrawerIcon([
-          'M5 3.5h10v13H5z',
-          'M7.5 7h5M7.5 10h5M7.5 13h3.5',
-        ]));
+        logs.appendChild(createKubernetesDrawerIcon('scroll'));
         logs.addEventListener('click', () => {
           if (!this.workspace) return;
           void this.workspace.openLogs(container.target);
@@ -3220,9 +3182,7 @@ class KubernetesPage implements KubernetesPageController {
         shell.className = 'icon-btn kubernetes-drawer-container-action-shell';
         shell.setAttribute('aria-label', `Open shell for ${container.name}`);
         shell.setAttribute('title', `Open shell for ${container.name}`);
-        shell.appendChild(createKubernetesDrawerIcon([
-          'M4 5.5 8 9l-4 3.5M10.5 13h5',
-        ]));
+        shell.appendChild(createKubernetesDrawerIcon('terminal'));
         shell.addEventListener('click', () => {
           if (!this.workspace) return;
           void this.workspace.openShell(container.target);

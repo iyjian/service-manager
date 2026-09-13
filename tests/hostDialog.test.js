@@ -77,5 +77,10 @@ test('host dialog uses a stepper-based connection path editor with compact rule 
   assert.match(styles, /#host-dialog \.he-grid-forward[^{]*\{[^}]*grid-template-columns/);
   assert.match(styles, /#host-dialog \.he-grid-service[^{]*\{[^}]*grid-template-columns/);
   assert.match(styles, /\.he-card-summary/);
-  assert.match(styles, /\.he-cmd-text[^{]*\{[^}]*text-overflow:\s*ellipsis/);
+  assert.match(styles, /\.he-command-preview[^{]*\{[^}]*text-overflow:\s*ellipsis/);
+  assert.match(dynamicEditors, /new EditorView\(\{[\s\S]*?bashLanguage[\s\S]*?data-command-editor/);
+  assert.match(dynamicEditors, /aria-label': 'Start Command Bash editor'/);
+  assert.match(dynamicEditors, /he-service-code-title/);
+  assert.match(styles, /\.he-service-code-shell[^{]*\{[^}]*border:/);
+  assert.match(styles, /\.he-service-code-editor \.cm-editor[^{]*\{[^}]*min-height:\s*112px/);
 });

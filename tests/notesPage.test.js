@@ -124,7 +124,10 @@ test('Notes tabs remain transient and reconcile through selection, reload, delta
   assert.match(source, /if \(source === 'tab'\) \{\s*void this\.revealTreeNote\(id, false\);\s*this\.focusNoteTab\(id\);\s*\}/);
   assert.match(source, /private async revealTreeNote\(noteId: string, focusTreeRow: boolean\): Promise<void> \{[\s\S]*?this\.renderList\(focusTreeRow \? noteId : undefined\)[\s\S]*?scrollIntoView\(\{ block: 'nearest' \}\)/);
   assert.match(source, /if \(generation !== this\.treeRevealGeneration \|\| this\.selectedId !== noteId\) return;[\s\S]*?this\.expandedNoteIds = new Set\(persistedIds\)/);
-  assert.match(source, /private async closeNoteTab\(id: string\)[\s\S]*?await this\.flushNote\(id\)[\s\S]*?this\.openNoteIds\.splice\(index, 1\)/);
+  assert.match(source, /private async closeNoteTab\(id: string\)[\s\S]*?await this\.flushNote\(id\)[\s\S]*?this\.openNoteIds\.splice\(currentIndex, 1\)/);
+  assert.match(source, /private tabsInitialized = false/);
+  assert.match(source, /this\.tabsInitialized \? this\.openNoteIds\.find/);
+  assert.match(source, /title\.textContent = 'No open notes'/);
   assert.match(source, /recoveredTabs = openTabsBeforeReload\.map\(\(id\) => recoveredByOriginalId\.get\(id\) \?\? id\)/);
   assert.match(source, /async applyPersistentDelta[\s\S]*?noteTabFallbackAfterRemoval\([\s\S]*?this\.reconcileOpenNoteTabs\(\)/);
   assert.match(source, /const openTabsBeforeDelete = \[\.\.\.this\.openNoteIds\][\s\S]*?noteTabFallbackAfterRemoval\(/);
@@ -472,7 +475,7 @@ test('Notes tree distinguishes folders from leaf Notes and the title looks like 
   assert.match(source, /const hasChildren = folderNoteIds\.has\(note\.id\)/);
   assert.match(source, /typeIcon\.className = 'notes-tree-type-icon'/);
   assert.match(source, /typeIcon\.dataset\.type = hasChildren \? 'folder' : 'note'/);
-  assert.match(source, /this\.expandedNoteIds\.has\(note\.id\)[\s\S]*?'M2\.25 4\.75h4l1\.25 1\.5h6\.25v6\.5H2\.25z[\s\S]*?'M4 2\.5h5l3 3v8H4z/);
+  assert.match(source, /typeIcon\.appendChild\(createIcon\(hasChildren[\s\S]*?\? \(this\.expandedNoteIds\.has\(note\.id\) \? 'folder-open' : 'folder'\)[\s\S]*?: 'file-text'\)\)/);
   assert.doesNotMatch(source, /this\.expandedNoteIds\.has\(note\.id\) && !searchActive/);
   assert.match(styles, /\.notes-tree-type-icon\{[^}]*display:inline-flex[^}]*height:1rem[^}]*width:1rem/);
   assert.match(styles, /\.notes-tree-type-icon\[data-type=folder\]\{[^}]*color:/);

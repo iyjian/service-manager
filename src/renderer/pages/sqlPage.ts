@@ -83,17 +83,12 @@ import {
 import { SqlVirtualResultTable } from '../components/sqlVirtualResultTable.js';
 import { toast } from '../components/toast.js';
 import { tabIndexForKey } from '../components/tabs.js';
+import { createIcon, renderIcon } from '../components/icon.js';
 
 export { normalizeSqlEditorSource } from '../models/sqlUntitledDrafts.js';
 export { sqlEditedTextForUpdate } from '../models/sqlCellEdit.js';
 
-const SQL_NAV_ICON = `
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <ellipse cx="8" cy="3.5" rx="5" ry="2"></ellipse>
-    <path d="M3 3.5v4c0 1.1 2.24 2 5 2s5-.9 5-2v-4"></path>
-    <path d="M3 7.5v4c0 1.1 2.24 2 5 2s5-.9 5-2v-4"></path>
-  </svg>
-`;
+const SQL_NAV_ICON = renderIcon('database');
 
 const ACTIVE_ENVIRONMENT_KEY = 'sql:active-environment';
 const SIDEBAR_WIDTH_KEY = 'sql:sidebar-width';
@@ -1889,7 +1884,7 @@ class SqlPage {
       edit.className = 'sql-query-row-action sql-query-row-edit';
       edit.setAttribute('aria-label', `Rename ${record.name}`);
       edit.title = 'Rename saved query';
-      edit.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11.75-.5 2 2-.5L12 5.75 10.25 4z"></path><path d="m9.5 4.75 1.75 1.75"></path></svg>';
+      edit.innerHTML = renderIcon('pencil');
       edit.addEventListener('click', () => void this.renameRecord(record));
 
       const remove = document.createElement('button');
@@ -1897,7 +1892,7 @@ class SqlPage {
       remove.className = 'sql-query-row-action sql-query-row-delete';
       remove.setAttribute('aria-label', `Delete ${record.name}`);
       remove.title = 'Delete saved query';
-      remove.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M6 2.5h4M5 4.5l.5 9h5l.5-9M6.75 7v4M9.25 7v4"></path></svg>';
+      remove.innerHTML = renderIcon('trash-2');
       remove.addEventListener('click', () => void this.deleteRecord(record));
       row.append(main, edit, remove);
       return row;
@@ -2016,17 +2011,7 @@ class SqlPage {
         dot.setAttribute('aria-hidden', 'true');
         close.append(dot);
       }
-      const closeIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      closeIcon.classList.add('sql-query-tab-close-icon');
-      closeIcon.setAttribute('viewBox', '0 0 16 16');
-      closeIcon.setAttribute('fill', 'none');
-      closeIcon.setAttribute('stroke', 'currentColor');
-      closeIcon.setAttribute('stroke-width', '1.5');
-      closeIcon.setAttribute('stroke-linecap', 'round');
-      closeIcon.setAttribute('aria-hidden', 'true');
-      const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      closePath.setAttribute('d', 'm4 4 8 8M12 4l-8 8');
-      closeIcon.append(closePath);
+      const closeIcon = createIcon('x', { className: 'sql-query-tab-close-icon' });
       close.append(closeIcon);
       close.addEventListener('pointerenter', () => { item.dataset.closeHovered = 'true'; });
       close.addEventListener('pointerleave', () => { delete item.dataset.closeHovered; });
@@ -2042,7 +2027,7 @@ class SqlPage {
     add.className = 'sql-query-tab-add';
     add.setAttribute('aria-label', 'New query');
     add.title = 'New query';
-    add.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg>';
+    add.innerHTML = renderIcon('plus');
     add.addEventListener('click', () => this.createNewTab(true));
     nodes.push(add);
     this.queryTabs.replaceChildren(...nodes);
@@ -2620,7 +2605,7 @@ class SqlPage {
           detail.dataset.sqlCellDetail = 'true';
           detail.setAttribute('aria-label', `Open full ${column} value`);
           detail.title = `Open full ${column} value`;
-          detail.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.25" cy="8" r="1.15"></circle><circle cx="8" cy="8" r="1.15"></circle><circle cx="12.75" cy="8" r="1.15"></circle></svg>';
+          detail.innerHTML = renderIcon('ellipsis-vertical');
           detail.addEventListener('click', () => this.openValueDialog(column, presentation, row));
           content.append(text, detail);
           cell.append(content);
@@ -2682,7 +2667,7 @@ class SqlPage {
 
     const icon = document.createElement('div');
     icon.className = 'sql-mutation-success-icon';
-    icon.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 4.25 6.5 11 2.75 7.25"/></svg>';
+    icon.innerHTML = renderIcon('check');
 
     const titleGroup = document.createElement('div');
     titleGroup.className = 'sql-mutation-title-group';
@@ -2921,9 +2906,7 @@ class SqlPage {
   }
 
   private setUpdateSqlCopyIcon(copied: boolean): void {
-    this.valueSqlCopy.innerHTML = copied
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    this.valueSqlCopy.innerHTML = renderIcon(copied ? 'check' : 'copy');
   }
 
   private resetUpdateSqlCopyFeedback(): void {

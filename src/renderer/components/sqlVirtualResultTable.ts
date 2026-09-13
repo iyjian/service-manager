@@ -9,6 +9,7 @@ import {
   SQL_RESULT_ESTIMATED_ROW_HEIGHT,
   SQL_RESULT_HEADER_HEIGHT,
 } from '../models/sqlResultVirtualWindow.js';
+import { renderIcon } from './icon.js';
 
 const SQL_RESULT_COLUMN_MIN_WIDTH = 56;
 const SQL_RESULT_COLUMN_MAX_CONTENT_WIDTH = 320;
@@ -385,7 +386,7 @@ export class SqlVirtualResultTable {
       detail.dataset.sqlColumnIndex = String(columnIndex);
       detail.setAttribute('aria-label', `Open full ${column} value`);
       detail.title = `Open full ${column} value`;
-      detail.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.25" cy="8" r="1.15"></circle><circle cx="8" cy="8" r="1.15"></circle><circle cx="12.75" cy="8" r="1.15"></circle></svg>';
+      detail.innerHTML = renderIcon('ellipsis-vertical');
       content.append(text, detail);
       cell.append(content);
       rowNode.append(cell);

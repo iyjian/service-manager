@@ -8,6 +8,16 @@ const rendererRoot = path.join(distRoot, 'renderer');
 const mainRoot = path.join(distRoot, 'main');
 const projectRoot = path.join(__dirname, '..');
 
+test('Notes cloud status occupies one truncated sidebar header line instead of editor space', async () => {
+  const { html, styles, notesPage } = await readIntegrationFiles();
+  const sidebar = html.match(/<aside id="notes-sidebar"[\s\S]*?<\/aside>/)?.[0] ?? '';
+  assert.match(sidebar, /id="notes-cloud-status"[^>]*class="[^"]*truncate/);
+  assert.ok(sidebar.indexOf('notes-cloud-status') < sidebar.indexOf('notes-sidebar-tools'));
+  assert.equal((html.match(/id="notes-cloud-status"/g) ?? []).length, 1);
+  assert.match(styles, /\.truncate\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);
+  assert.match(notesPage, /this\.cloudStatus\.title = this\.cloudStatus\.textContent/);
+});
+
 function normalizeCompiledMain(source) {
   return source
     .replace(/\belectron_1\.ipcMain\b/g, 'ipcMain')
@@ -63,10 +73,10 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(html, /id="note-save-status"[^>]*class="notes-save-announcement"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
   assert.doesNotMatch(html, /notes-editor-toolbar[\s\S]*?id="note-save-status"[\s\S]*?id="note-copy-btn"/);
   assert.match(html, /id="note-copy-btn"/);
-  assert.match(html, /id="notes-new-root-btn"[^>]*class="notes-tree-root-add"[^>]*aria-label="New root Note"[\s\S]*?<svg/);
+  assert.match(html, /id="notes-new-root-btn"[^>]*class="notes-tree-root-add"[^>]*aria-label="New root Note"[\s\S]*?data-lucide-icon="plus"/);
   assert.match(html, /id="notes-list"[^>]*aria-label="Notes tree"/);
   assert.doesNotMatch(html, /Notes\s+Local snippets\s+New Note/);
-  assert.match(html, /id="note-copy-btn"[\s\S]*?<svg[\s\S]*?id="note-copy-label">Copy<\/span>/);
+  assert.match(html, /id="note-copy-btn"[\s\S]*?data-lucide-icon="copy"[\s\S]*?id="note-copy-label">Copy<\/span>/);
   assert.doesNotMatch(html, /id="note-delete-btn"/);
   assert.match(styles, /\.notes-list-save-indicator[\s\S]*?width:\s*5px/);
   assert.match(styles, /\.notes-list-save-indicator\[data-state=error\]/);
@@ -80,11 +90,11 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(notesPage, /window\.serviceApi\.onCloseShortcutRequested\(\(\) => this\.handleCloseShortcut\(\)\)/);
   assert.match(
     notesPage,
-    /async handleCloseShortcut\(\) \{[\s\S]*?if \(!this\.active \|\| this\.openNoteIds\.length <= 1\)\s*return false;[\s\S]*?return this\.closeNoteTab\(id\);/,
+    /async handleCloseShortcut\(\) \{[\s\S]*?if \(!this\.active\)\s*return false;[\s\S]*?if \(!id \|\| this\.persistentApplyIds\.size > 0\)\s*return true;[\s\S]*?return await this\.closeNoteTab\(id\);/,
   );
   assert.match(
     notesPage,
-    /async closeNoteTab\(id\) \{[\s\S]*?const canClose = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?if \(!canClose\)\s*return true;[\s\S]*?await this\.flushNote\(id\);[\s\S]*?const closeAfterFailedSave = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?this\.openNoteIds\.splice\(index, 1\);/,
+    /async closeNoteTab\(id\) \{[\s\S]*?const canClose = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?if \(!canClose\)\s*return true;[\s\S]*?await this\.flushNote\(id\);[\s\S]*?const closeAfterFailedSave = await this\.confirmCloseDirtyNoteTab\(id\);[\s\S]*?this\.openNoteIds\.splice\(currentIndex, 1\);/,
   );
   assert.match(
     notesPage,
@@ -144,7 +154,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   const instanceLockProbe = main.indexOf('assertUserDataInstanceLockAvailable');
   const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
   const durableInstanceLock = main.indexOf('acquireUserDataInstanceLock');
-  const notesStoreInitialization = main.indexOf('new notesStore_1.NotesStore');
+  const notesStoreInitialization = main.indexOf('new sqliteNotesStore_1.SqliteNotesStore');
   assert.ok(
     instanceLockProbe >= 0
       && singleInstanceLock > instanceLockProbe
@@ -153,11 +163,11 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   );
   assert.match(main, /process\.once\('exit',[\s\S]*releaseUserDataInstanceLock\(\)/);
   assert.match(main, /app\.on\('second-instance'/);
-  assert.match(main, /new notesStore_1\.NotesStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-v4'\)\)/);
-  assert.match(main, /new notesTreeStore_1\.NotesTreeStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-tree\.json'\)\)/);
+  assert.match(main, /new sqliteNotesStore_1\.SqliteNotesStore\(app\.getPath\('userData'\)\)/);
+  assert.match(main, /notesTreeStore = notesStore\.createTreeStore\(\)/);
   assert.match(main, /new notesTreeViewStore_1\.NotesTreeViewStore\([^\n]*join\([^\n]*getPath\('userData'\), 'notes-tree-view\.json'\)\)/);
-  assert.match(main, /noteTombstones: activeNotesStore\.exportTombstones\(\)/);
-  assert.match(main, /notesTree: getNotesTreeStore\(\)\.snapshot\(\)/);
+  assert.match(main, /noteTombstones: includeNotes \? activeNotesStore\.exportTombstones\(\) : \[\]/);
+  assert.match(main, /notesTree: includeNotes \? getNotesTreeStore\(\)\.snapshot\(\)/);
   assert.match(main, /getNotesWorkspaceApplyCoordinator\(\)\.replace\(\{\s*notes: staged\.notes,\s*tombstones: staged\.noteTombstones,\s*tree: staged\.notesTree/);
   assert.match(main, /notesWorkspaceApplyCoordinator = new notesWorkspaceApply_1\.NotesWorkspaceApplyCoordinator/);
   assert.match(main, /await notesWorkspaceApplyCoordinator\.recover\(\)/);
@@ -216,10 +226,15 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(codeMirrorVendor, /const basicSetup/);
 });
 
-test('Notes mutations publish target-only S3 intents while startup retains the full snapshot provider', async () => {
+test('Notes mutations trigger database sync while settings snapshots exclude Notes', async () => {
   const main = await readFile(path.join(projectRoot, 'src', 'main', 'core', 'main.ts'), 'utf8');
-  assert.match(main, /snapshotProvider: collectS3SharedAppData,[\s\S]*?notesIncrementalProvider: collectS3ChangedNotes/);
-  assert.match(main, /async function collectS3ChangedNotes\([\s\S]*?store\.get\(id\)[\s\S]*?tombstonesById\.get\(id\)[\s\S]*?intent\.includeTree/);
+  assert.match(main, /snapshotProvider: \(\) => runS3SharedDataMutation\(\(\) => collectS3SharedAppDataUnlocked\(false\)\)/);
+  assert.match(main, /notesDatabase,[\s\S]*?onStateChanged/);
+  assert.match(main, /onNotesSyncGuardChanged:.*notesSyncGuardState/);
+  assert.match(main, /freezeNotesForGuard: async/);
+  assert.match(main, /s3SyncRuntime\?\.assertNotesEditable\(\)/);
+  assert.match(main, /capture: captureNotesDatabase/);
+  assert.doesNotMatch(main, /notesIncrementalProvider:/);
   assert.match(main, /IPC_CHANNELS\.notesUpdate[\s\S]*?\{ kind: 'notes', upsertIds: \[id\] \}/);
   assert.match(main, /IPC_CHANNELS\.notesMove[\s\S]*?\{ kind: 'notes', treeChanged: true \}/);
   assert.match(main, /IPC_CHANNELS\.notesDelete[\s\S]*?deleteIds: deletedIds,[\s\S]*?treeChanged: true/);
@@ -256,7 +271,7 @@ test('compiled Notes exposes file cards, the six-dot command handle, and PDF or 
   assert.match(styles, /\.message-toast\[data-actionable=true\] \.message-text\{[^}]*cursor:pointer[^}]*text-decoration-line:underline/);
 
   assert.match(richTextEditor, /title: 'File',[\s\S]*?requestAttachment\(undefined, range\.from\)/);
-  assert.match(richTextEditor, /class NotesRichTextBlockHandle[\s\S]*?createElementNS\('http:\/\/www\.w3\.org\/2000\/svg', 'svg'\)[\s\S]*?viewBox', '0 0 20 20'/);
+  assert.match(richTextEditor, /class NotesRichTextBlockHandle[\s\S]*?this\.element\.append\(createIcon\('grip-vertical'\)\)/);
   assert.match(richTextEditor, /writingLeft - buttonBounds\.width - 4/);
   assert.match(richTextEditor, /className = 'notes-richtext-attachment'/);
   assert.match(richTextEditor, /NOTE_ATTACHMENT_ICON_SOURCES = \{[\s\S]*?pdf: '\.\.\/\.\.\/assets\/note-file-icons\/pdf\.svg'[\s\S]*?file: '\.\.\/\.\.\/assets\/note-file-icons\/file\.svg'/);
@@ -567,7 +582,8 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
   assert.match(html, /id="nav-settings-btn"[^>]*aria-label="Settings"/);
-  assert.match(html, /id="nav-settings-btn"[\s\S]*?<svg class="nav-settings-icon"[^>]*viewBox="0 0 24 24"[\s\S]*?<circle cx="12" cy="12" r="3"><\/circle>/);
+  assert.match(html, /id="nav-settings-btn"[\s\S]*?data-lucide-icon="settings"[^>]*class="nav-settings-icon"[^>]*data-lucide-size="24"/);
+  assert.match(renderer, /hydrateLucideIcons\(\)/);
   assert.match(styles, /\.nav-settings-button\{margin-top:auto;order:99\}/);
   assert.match(styles, /\.host-dialog\.settings-dialog\{width:min\(540px,calc\(100vw - 32px\)\)/);
   assert.match(styles, /\.dialog-panel\.settings-panel\{[^}]*height:min\(600px,calc\(100dvh - 32px\)\)[^}]*max-height:min\(600px,calc\(100dvh - 32px\)\)[^}]*grid-template-rows:auto auto minmax\(0,1fr\) auto/);
@@ -601,6 +617,9 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(styles, /\.settings-sync-progress-wrap progress:not\(\[value\]\)\{[^}]*background-image:linear-gradient[^}]*settings-sync-progress-indeterminate/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-font-size"[^>]*type="number"[^>]*min="12"[^>]*max="24"[^>]*value="18"/);
   assert.match(html, /id="settings-notes-panel"[\s\S]*?id="notes-editor-theme"[\s\S]*?<option value="light">Light<\/option>[\s\S]*?<option value="dark">Dark<\/option>/);
+  assert.match(html, /id="settings-notes-panel"[\s\S]*?Share link shortener[\s\S]*?id="note-share-shortener-base-url"[^>]*placeholder="https:\/\/s\.example\.com"/);
+  assert.match(html, /id="settings-notes-panel"[\s\S]*?id="note-share-shortener-api-key"[^>]*type="password"[\s\S]*?id="note-share-shortener-api-key-visibility"[^>]*aria-label="Show Shortener API Key"/);
+  assert.match(html, /id="note-share-shortener-http-warning"[\s\S]*HTTP sends the shortener API Key/);
   assert.doesNotMatch(html, /Adjust the snippet editor text size|Use one theme for code and rich text editors/);
   assert.match(styles, /\.settings-notes-card\{[^}]*display:grid[^}]*grid-template-columns:minmax\(0,1fr\) auto/);
   assert.match(styles, /\.settings-notes-card \.settings-theme-select\{[^}]*width:7rem/);
@@ -613,6 +632,9 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(preload, /getUiPreferences:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:ui:get'\)/);
   assert.match(preload, /saveUiPreferences:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:ui:save', draft\)/);
   assert.match(preload, /saveNotesSidebarWidth:\s*\(width\)\s*=>[\s\S]*?invoke\('settings:ui:notes-sidebar-width:save', width\)/);
+  assert.match(preload, /getNoteShareSettings:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:notes:share:get'\)/);
+  assert.match(preload, /saveNoteShareSettings:\s*\(draft\)\s*=>[\s\S]*?invoke\('settings:notes:share:save', draft\)/);
+  assert.match(preload, /revealNoteShareShortenerCredentials:\s*\(\)\s*=>[\s\S]*?invoke\('settings:notes:share:reveal-shortener'\)/);
   assert.match(preload, /getS3SyncSettings:\s*\(\)\s*=>\s*[^\n]*invoke\('settings:s3:get'\)/);
   assert.match(preload, /saveS3SyncSettings:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:save', draft\)/);
   assert.match(preload, /testS3Connection:\s*\(draft\)\s*=>\s*[^\n]*invoke\('settings:s3:test', draft\)/);
@@ -629,6 +651,9 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
     'uiPreferencesGet',
     'uiPreferencesSave',
     'uiPreferencesNotesSidebarWidthSave',
+    'noteShareSettingsGet',
+    'noteShareSettingsSave',
+    'noteShareSettingsReveal',
     's3SettingsGet',
     's3SettingsSave',
     's3SettingsTest',
@@ -680,18 +705,18 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /\.\.\.\(shouldClearLlmToken\(\) \? \{ clearToken: true \} : \{\}\)/);
   assert.match(settingsDialog, /token && llmTokenEdited \? \{ token \} : \{\}/);
   assert.match(settingsDialog, /renderLlmModelOptions\(models, selectedModel\)/);
-  assert.match(settingsDialog, /const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && llmSettingsLoaded/);
+  assert.match(settingsDialog, /const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && noteShareSettingsLoaded && llmSettingsLoaded/);
   assert.match(settingsDialog, /id="llm-token-remove"|llmTokenRemoveButton/);
   assert.ok(settingsDialog.includes("!hasToken || !/^http:\\/\\//i.test(llmEndpointInput.value.trim())"));
-  assert.match(settingsDialog, /Promise\.allSettled\(\[[\s\S]*?getS3SyncSettings\(\)[\s\S]*?getUiPreferences\(\)[\s\S]*?getLlmSettings\(\)/);
+  assert.match(settingsDialog, /Promise\.allSettled\(\[[\s\S]*?getS3SyncSettings\(\)[\s\S]*?getUiPreferences\(\)[\s\S]*?getNoteShareSettings\(\)[\s\S]*?getLlmSettings\(\)/);
   assert.match(notesPage, /await Promise\.all\([\s\S]*?if \(this\.notes\.some\([\s\S]*?throw new Error\('Some notes could not be saved\./);
   assert.match(settingsDialog, /for \(const input of s3Inputs\)\s*input\.disabled = locked \|\| !s3SettingsLoaded/);
   assert.match(settingsDialog, /\.\.\.\(accessKeyId \? \{ accessKeyId \} : \{\}\)/);
   assert.match(settingsDialog, /\.\.\.\(secretAccessKey \? \{ secretAccessKey \} : \{\}\)/);
 
   assert.match(main, /new llmSettingsStore_1\.LlmSettingsStore\(\{[\s\S]*?join\([^\n]*getPath\('userData'\), 'llm-settings\.json'\)/);
-  const sharedSnapshotStart = main.indexOf('async function collectS3SharedAppDataUnlocked()');
-  const sharedSnapshotEnd = main.indexOf('async function collectS3SharedAppData()', sharedSnapshotStart);
+  const sharedSnapshotStart = main.indexOf('async function collectS3SharedAppDataUnlocked(');
+  const sharedSnapshotEnd = main.indexOf('function localSharedNotes()', sharedSnapshotStart);
   assert.ok(sharedSnapshotStart >= 0 && sharedSnapshotEnd > sharedSnapshotStart);
   const sharedSnapshot = main.slice(sharedSnapshotStart, sharedSnapshotEnd);
   assert.doesNotMatch(sharedSnapshot, /llm|model|token/i);
@@ -733,6 +758,9 @@ test('Settings hydrates saved S3 and LLM credentials masked and reveals only one
   assert.match(settingsDialog, /function prepareSettingsDialogClose\(\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = false/);
   assert.match(settingsDialog, /async function openSettings\(\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = false[\s\S]*?clearCredentialInputs\(\)/);
   assert.match(settingsDialog, /saveLlmSettings\(llmDraft\)[\s\S]*?llmTokenEdited = false[\s\S]*?llmSavedTokenHydrated = Boolean\(savedLlmSettings\.hasToken && llmTokenInput\.value\)[\s\S]*?renderLlmSettings\(savedLlmSettings\)/);
+  assert.match(settingsDialog, /async function revealSavedNoteShareShortenerApiKey\(\)[\s\S]*?revealNoteShareShortenerCredentials\(\)[\s\S]*?noteShareShortenerApiKeyInput\.value = credentials\.shortenerApiKey[\s\S]*?maskCredentials\(\)/);
+  assert.match(settingsDialog, /hasNoteShareShortenerApiKey = settings\.hasShortenerApiKey/);
+  assert.match(settingsDialog, /function currentNoteShareSettingsDraft\(\)[\s\S]*?shortenerBaseUrl: noteShareShortenerBaseUrlInput\.value\.trim\(\)[\s\S]*?shortenerApiKey && noteShareShortenerApiKeyEdited/);
   assert.doesNotMatch(settingsDialog, /llmTokenInput\.value\s*=\s*settings\.(?:token|credentials)/);
   assert.match(settingsDialog, /const syncEncryptionKey = syncEncryptionKeyInput\.value\.trim\(\)[\s\S]*?\{ syncEncryptionKey \}/);
   assert.match(settingsDialog, /writeClipboardText\(syncEncryptionKeyInput\.value\)/);
@@ -744,7 +772,7 @@ test('Settings hydrates saved S3 and LLM credentials masked and reveals only one
   assert.match(settingsDialog, /function closeSettingsDialog\(\)[\s\S]*?prepareSettingsDialogClose\(\)[\s\S]*?dialog\.close\(\)/);
   assert.match(settingsDialog, /async function openSettings\(\)[\s\S]*?clearCredentialInputs\(\)[\s\S]*?getS3SyncSettings\(\)/);
   assert.match(settingsDialog, /getLlmSettings\(\)[\s\S]*?llmResult\.value\.hasToken[\s\S]*?revealSavedLlmToken\(\)/);
-  assert.match(settingsDialog, /control\.source === 'llm' \? await revealSavedLlmToken\(\) : await revealSavedCredentials\(\)/);
+  assert.match(settingsDialog, /control\.source === 'llm'[\s\S]*?await revealSavedLlmToken\(\)[\s\S]*?control\.source === 'note-share-shortener'[\s\S]*?await revealSavedNoteShareShortenerApiKey\(\)[\s\S]*?await revealSavedCredentials\(\)/);
   assert.match(settingsDialog, /if \(!dialog\.open \|\| openGeneration !== settingsOpenGeneration\)\s*return/);
   assert.match(settingsDialog, /dialog\.addEventListener\('cancel',[\s\S]*?prepareSettingsDialogClose\(\)/);
   assert.match(settingsDialog, /dialog\.addEventListener\('close',[\s\S]*?if \(dialog\.open\)\s*return[\s\S]*?clearCredentialInputs\(\)[\s\S]*?maskCredentials\(\)/);

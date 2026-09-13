@@ -378,7 +378,7 @@ test('Kubernetes table sorting is controlled by accessible header icons', async 
     assert.equal(page.getKubernetesListColumns(kind).length, 8);
   }
   assert.doesNotMatch(html, /data-kubernetes-sort=/);
-  assert.match(pageSource, /createElementNS/);
+  assert.match(pageSource, /createIcon\('chevrons-up-down', \{ className: 'kubernetes-sort-icon' \}\)/);
   assert.match(pageSource, /aria-sort/);
   assert.match(pageSource, /nextKubernetesSort/);
   assert.match(styles, /\.kubernetes-table-sort\s*\{/);

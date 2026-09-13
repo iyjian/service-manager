@@ -1,6 +1,8 @@
 import type {
   LlmSettingsDraft,
   LlmSettingsView,
+  NoteShareSettingsDraft,
+  NoteShareSettingsView,
   S3ConnectionTestDraft,
   S3SyncProgressPhase,
   S3SyncSettingsDraft,
@@ -48,6 +50,11 @@ const testButton = requireElement<HTMLButtonElement>('#settings-test-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
 const notesFontSizeInput = requireElement<HTMLInputElement>('#notes-font-size');
 const notesEditorThemeInput = requireElement<HTMLSelectElement>('#notes-editor-theme');
+const noteShareShortenerBaseUrlInput = requireElement<HTMLInputElement>('#note-share-shortener-base-url');
+const noteShareShortenerApiKeyInput = requireElement<HTMLInputElement>('#note-share-shortener-api-key');
+const noteShareShortenerApiKeyVisibilityButton = requireElement<HTMLButtonElement>('#note-share-shortener-api-key-visibility');
+const noteShareShortenerApiKeyRemoveButton = requireElement<HTMLButtonElement>('#note-share-shortener-api-key-remove');
+const noteShareShortenerHttpWarning = requireElement<HTMLElement>('#note-share-shortener-http-warning');
 const triliumEndpointInput = requireElement<HTMLInputElement>('#trilium-endpoint');
 const triliumEtapiTokenInput = requireElement<HTMLInputElement>('#trilium-etapi-token');
 const triliumEtapiTokenVisibilityButton = requireElement<HTMLButtonElement>('#trilium-etapi-token-visibility');
@@ -113,13 +120,18 @@ let activeTab: SettingsTab = 's3';
 let hasCredentials = false;
 let hasSyncEncryptionKey = false;
 let hasLlmToken = false;
+let hasNoteShareShortenerApiKey = false;
 let llmTokenEdited = false;
 let llmSavedTokenHydrated = false;
 let llmTokenClearRequested = false;
+let noteShareShortenerApiKeyEdited = false;
+let noteShareShortenerApiKeyHydrated = false;
+let noteShareShortenerApiKeyClearRequested = false;
 let credentialRevealPending = false;
 let settingsLoading = false;
 let s3SettingsLoaded = false;
 let uiPreferencesLoaded = false;
+let noteShareSettingsLoaded = false;
 let llmSettingsLoaded = false;
 let settingsOpenGeneration = 0;
 let activeTriliumImportRequestId: string | undefined;
@@ -132,7 +144,7 @@ interface CredentialControl {
   input: HTMLInputElement;
   button: HTMLButtonElement;
   label: string;
-  source: 's3' | 'llm';
+  source: 's3' | 'llm' | 'note-share-shortener';
   hasSavedValue: () => boolean;
 }
 
@@ -164,7 +176,20 @@ const llmTokenControl: CredentialControl = {
   source: 'llm',
   hasSavedValue: () => hasLlmToken && !llmTokenClearRequested,
 };
-const credentialControls = [accessKeyControl, secretKeyControl, syncEncryptionKeyControl, llmTokenControl];
+const noteShareShortenerApiKeyControl: CredentialControl = {
+  input: noteShareShortenerApiKeyInput,
+  button: noteShareShortenerApiKeyVisibilityButton,
+  label: 'Shortener API Key',
+  source: 'note-share-shortener',
+  hasSavedValue: () => hasNoteShareShortenerApiKey && !noteShareShortenerApiKeyClearRequested,
+};
+const credentialControls = [
+  accessKeyControl,
+  secretKeyControl,
+  syncEncryptionKeyControl,
+  llmTokenControl,
+  noteShareShortenerApiKeyControl,
+];
 const s3Inputs = [
   endpointInput,
   bucketInput,
@@ -217,9 +242,13 @@ function prepareSettingsDialogClose(): void {
   llmTokenEdited = false;
   llmSavedTokenHydrated = false;
   llmTokenClearRequested = false;
+  noteShareShortenerApiKeyEdited = false;
+  noteShareShortenerApiKeyHydrated = false;
+  noteShareShortenerApiKeyClearRequested = false;
   settingsLoading = false;
   s3SettingsLoaded = false;
   uiPreferencesLoaded = false;
+  noteShareSettingsLoaded = false;
   llmSettingsLoaded = false;
   clearCredentialInputs();
   maskCredentials();
@@ -240,6 +269,15 @@ function updateLlmHttpWarning(): void {
   );
 }
 
+function updateNoteShareShortenerHttpWarning(): void {
+  const hasApiKey = Boolean(noteShareShortenerApiKeyInput.value)
+    || (hasNoteShareShortenerApiKey && !shouldClearNoteShareShortenerApiKey());
+  noteShareShortenerHttpWarning.classList.toggle(
+    'hidden',
+    !hasApiKey || !/^http:\/\//i.test(noteShareShortenerBaseUrlInput.value.trim()),
+  );
+}
+
 function updateTriliumHttpWarning(): void {
   triliumHttpWarning.classList.toggle(
     'hidden',
@@ -250,13 +288,20 @@ function updateTriliumHttpWarning(): void {
 function updateControls(): void {
   const locked = busy || credentialRevealPending || settingsLoading;
   const importingTrilium = busy && busyAction === 'trilium-import';
-  const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && llmSettingsLoaded;
+  const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && noteShareSettingsLoaded && llmSettingsLoaded;
   saveButton.disabled = locked || !settingsReady;
   testButton.disabled = locked || !s3SettingsLoaded;
   syncButton.disabled = locked || !s3SettingsLoaded;
   closeButton.disabled = locked;
   notesFontSizeInput.disabled = locked || !uiPreferencesLoaded;
   notesEditorThemeInput.disabled = locked || !uiPreferencesLoaded;
+  noteShareShortenerBaseUrlInput.disabled = locked || !noteShareSettingsLoaded;
+  noteShareShortenerApiKeyInput.disabled = locked || !noteShareSettingsLoaded;
+  noteShareShortenerApiKeyRemoveButton.classList.toggle('hidden', !hasNoteShareShortenerApiKey);
+  noteShareShortenerApiKeyRemoveButton.disabled = locked || !noteShareSettingsLoaded || !hasNoteShareShortenerApiKey;
+  noteShareShortenerApiKeyRemoveButton.textContent = shouldClearNoteShareShortenerApiKey()
+    ? 'Keep saved API Key'
+    : 'Remove saved API Key';
   triliumEndpointInput.disabled = locked;
   triliumEtapiTokenInput.disabled = locked;
   triliumEtapiTokenVisibilityButton.disabled = locked || !triliumEtapiTokenInput.value;
@@ -283,13 +328,18 @@ function updateControls(): void {
     control.button.disabled = locked || (!control.input.value && !control.hasSavedValue());
   }
   updateLlmHttpWarning();
+  updateNoteShareShortenerHttpWarning();
   updateTriliumHttpWarning();
 }
 
 async function toggleCredentialVisibility(control: CredentialControl): Promise<void> {
   const show = control.input.type === 'password';
   if (show && !control.input.value && control.hasSavedValue()) {
-    const revealed = control.source === 'llm' ? await revealSavedLlmToken() : await revealSavedCredentials();
+    const revealed = control.source === 'llm'
+      ? await revealSavedLlmToken()
+      : control.source === 'note-share-shortener'
+        ? await revealSavedNoteShareShortenerApiKey()
+        : await revealSavedCredentials();
     if (!revealed) return;
   }
   if (!control.input.value) return;
@@ -340,6 +390,26 @@ async function revealSavedLlmToken(): Promise<boolean> {
   } catch (error) {
     llmModelStatus.textContent = `Unable to load saved Token: ${toErrorMessage(error)}`;
     llmModelStatus.classList.add('settings-status-error');
+    return false;
+  } finally {
+    credentialRevealPending = false;
+    updateControls();
+  }
+}
+
+async function revealSavedNoteShareShortenerApiKey(): Promise<boolean> {
+  credentialRevealPending = true;
+  updateControls();
+  try {
+    const credentials = await window.settingsApi.revealNoteShareShortenerCredentials();
+    if (!noteShareShortenerApiKeyInput.value && credentials.shortenerApiKey) {
+      noteShareShortenerApiKeyInput.value = credentials.shortenerApiKey;
+      noteShareShortenerApiKeyHydrated = true;
+    }
+    maskCredentials();
+    return true;
+  } catch (error) {
+    setSaveFeedback(`Unable to load saved shortener API key: ${toErrorMessage(error)}`);
     return false;
   } finally {
     credentialRevealPending = false;
@@ -439,7 +509,7 @@ function renderSyncState(state: S3SyncState): void {
       return;
     case 'conflict': {
       const count = state.conflictCount ?? 1;
-      setStatus(`Synced with ${count} recoverable ${count === 1 ? 'conflict' : 'conflicts'}. Note conflicts are kept as copies.`, 'conflict');
+      setStatus(`Synced with ${count} recoverable settings ${count === 1 ? 'conflict' : 'conflicts'}.`, 'conflict');
       return;
     }
     case 'error':
@@ -479,6 +549,16 @@ function renderUiPreferences(preferences: UiPreferences): void {
   applyNotesFontSize(preferences.notesFontSize);
   applyNotesEditorTheme(preferences.notesEditorTheme);
   applyNotesSidebarWidth(preferences.notesSidebarWidth);
+}
+
+function renderNoteShareSettings(settings: NoteShareSettingsView): void {
+  hasNoteShareShortenerApiKey = settings.hasShortenerApiKey;
+  noteShareShortenerBaseUrlInput.value = settings.shortenerBaseUrl;
+  if (!settings.hasShortenerApiKey && !noteShareShortenerApiKeyEdited) {
+    noteShareShortenerApiKeyInput.value = '';
+    noteShareShortenerApiKeyHydrated = false;
+  }
+  updateControls();
 }
 
 function setLlmStatus(message: string, error = false): void {
@@ -560,6 +640,22 @@ function currentUiPreferences(): UiPreferencesDraft {
   return { notesFontSize, notesEditorTheme };
 }
 
+function shouldClearNoteShareShortenerApiKey(): boolean {
+  return hasNoteShareShortenerApiKey && (
+    noteShareShortenerApiKeyClearRequested
+    || (!noteShareShortenerApiKeyInput.value && noteShareShortenerApiKeyEdited && noteShareShortenerApiKeyHydrated)
+  );
+}
+
+function currentNoteShareSettingsDraft(): NoteShareSettingsDraft {
+  const shortenerApiKey = noteShareShortenerApiKeyInput.value;
+  return {
+    shortenerBaseUrl: noteShareShortenerBaseUrlInput.value.trim(),
+    ...(shortenerApiKey && noteShareShortenerApiKeyEdited ? { shortenerApiKey } : {}),
+    ...(shouldClearNoteShareShortenerApiKey() ? { clearShortenerApiKey: true } : {}),
+  };
+}
+
 function shouldClearLlmToken(): boolean {
   return hasLlmToken && (
     llmTokenClearRequested
@@ -607,6 +703,7 @@ async function saveAllSettings(): Promise<void> {
   }
 
   const s3Draft = currentDraft();
+  const noteShareDraft = currentNoteShareSettingsDraft();
   const llmDraft = currentLlmDraft();
   const saveS3 = shouldSaveS3Draft(s3Draft);
   let stage: SettingsTab = saveS3 ? 's3' : 'notes';
@@ -616,6 +713,11 @@ async function saveAllSettings(): Promise<void> {
     if (saveS3) savedS3Settings = await window.settingsApi.saveS3SyncSettings(s3Draft);
     stage = 'notes';
     renderUiPreferences(await window.settingsApi.saveUiPreferences(preferences));
+    const savedNoteShareSettings = await window.settingsApi.saveNoteShareSettings(noteShareDraft);
+    noteShareShortenerApiKeyEdited = false;
+    noteShareShortenerApiKeyClearRequested = false;
+    noteShareShortenerApiKeyHydrated = Boolean(savedNoteShareSettings.hasShortenerApiKey && noteShareShortenerApiKeyInput.value);
+    renderNoteShareSettings(savedNoteShareSettings);
     stage = 'llm';
     const savedLlmSettings = await window.settingsApi.saveLlmSettings(llmDraft);
     llmTokenEdited = false;
@@ -906,9 +1008,13 @@ async function openSettings(): Promise<void> {
   llmTokenEdited = false;
   llmSavedTokenHydrated = false;
   llmTokenClearRequested = false;
+  noteShareShortenerApiKeyEdited = false;
+  noteShareShortenerApiKeyHydrated = false;
+  noteShareShortenerApiKeyClearRequested = false;
   settingsLoading = true;
   s3SettingsLoaded = false;
   uiPreferencesLoaded = false;
+  noteShareSettingsLoaded = false;
   llmSettingsLoaded = false;
   clearCredentialInputs();
   maskCredentials();
@@ -918,9 +1024,10 @@ async function openSettings(): Promise<void> {
   openDialog(dialog);
   setStatus('Loading S3 settings…');
 
-  const [settingsResult, preferencesResult, llmResult] = await Promise.allSettled([
+  const [settingsResult, preferencesResult, noteShareResult, llmResult] = await Promise.allSettled([
     window.settingsApi.getS3SyncSettings(),
     window.settingsApi.getUiPreferences(),
+    window.settingsApi.getNoteShareSettings(),
     window.settingsApi.getLlmSettings(),
   ]);
 
@@ -946,6 +1053,14 @@ async function openSettings(): Promise<void> {
     applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE);
     applyNotesEditorTheme('light');
     setSaveFeedback(`Unable to load Notes settings: ${toErrorMessage(preferencesResult.reason)}`);
+  }
+
+  if (noteShareResult.status === 'fulfilled') {
+    renderNoteShareSettings(noteShareResult.value);
+    noteShareSettingsLoaded = true;
+  } else {
+    renderNoteShareSettings({ shortenerBaseUrl: '', hasShortenerApiKey: false });
+    setSaveFeedback(`Unable to load Note share settings: ${toErrorMessage(noteShareResult.reason)}`);
   }
 
   if (llmResult.status === 'fulfilled') {
@@ -981,7 +1096,13 @@ export function registerSettingsDialog(): void {
   closeButton.addEventListener('click', () => {
     if (!busy && !credentialRevealPending) closeSettingsDialog();
   });
-  for (const input of [accessKeyInput, secretKeyInput, syncEncryptionKeyInput, llmEndpointInput]) {
+  for (const input of [
+    accessKeyInput,
+    secretKeyInput,
+    syncEncryptionKeyInput,
+    llmEndpointInput,
+    noteShareShortenerBaseUrlInput,
+  ]) {
     input.addEventListener('input', updateControls);
   }
   for (const input of [triliumEndpointInput, triliumEtapiTokenInput]) {
@@ -990,6 +1111,11 @@ export function registerSettingsDialog(): void {
   llmTokenInput.addEventListener('input', () => {
     llmTokenEdited = true;
     llmTokenClearRequested = false;
+    updateControls();
+  });
+  noteShareShortenerApiKeyInput.addEventListener('input', () => {
+    noteShareShortenerApiKeyEdited = true;
+    noteShareShortenerApiKeyClearRequested = false;
     updateControls();
   });
   bindTabButtons(settingsTabItems, activateTab, 'both');
@@ -1007,6 +1133,9 @@ export function registerSettingsDialog(): void {
   });
   llmTokenVisibilityButton.addEventListener('click', () => {
     void toggleCredentialVisibility(llmTokenControl);
+  });
+  noteShareShortenerApiKeyVisibilityButton.addEventListener('click', () => {
+    void toggleCredentialVisibility(noteShareShortenerApiKeyControl);
   });
   triliumEtapiTokenVisibilityButton.addEventListener('click', () => {
     if (!triliumEtapiTokenInput.value || busy || credentialRevealPending || settingsLoading) return;
@@ -1033,6 +1162,24 @@ export function registerSettingsDialog(): void {
       }
       updateControls();
     })().catch((error) => setLlmStatus(`Unable to update saved Token: ${toErrorMessage(error)}`, true));
+  });
+  noteShareShortenerApiKeyRemoveButton.addEventListener('click', () => {
+    if (busy || credentialRevealPending || settingsLoading || !hasNoteShareShortenerApiKey) return;
+    void (async () => {
+      if (shouldClearNoteShareShortenerApiKey()) {
+        noteShareShortenerApiKeyClearRequested = false;
+        noteShareShortenerApiKeyEdited = false;
+        if (noteShareShortenerApiKeyHydrated) await revealSavedNoteShareShortenerApiKey();
+        else setSaveFeedback('The saved shortener API key will be kept.', 'success');
+      } else {
+        noteShareShortenerApiKeyClearRequested = true;
+        noteShareShortenerApiKeyEdited = false;
+        noteShareShortenerApiKeyInput.value = '';
+        setCredentialVisibility(noteShareShortenerApiKeyControl, false);
+        setSaveFeedback('The saved shortener API key will be removed when you Save.', 'success');
+      }
+      updateControls();
+    })().catch((error) => setSaveFeedback(`Unable to update saved shortener API key: ${toErrorMessage(error)}`));
   });
   syncEncryptionKeyCopyButton.addEventListener('click', () => {
     if (busy || credentialRevealPending) return;

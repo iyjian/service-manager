@@ -69,6 +69,7 @@ import {
   triliumTodoChecked,
   type TriliumTableCellSpan,
 } from '../models/triliumRichText.js';
+import { createIcon, type LucideIconName } from './icon.js';
 
 export type RichTextToolbarCommand =
   | 'undo'
@@ -349,12 +350,11 @@ const RICH_TEXT_HIGHLIGHTS: readonly RichTextColorItem[] = [
   { name: 'Gray', color: '#E4E4E7' },
 ] as const;
 
-const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const NOTE_IMAGE_ALIGNMENTS: readonly NoteImageAlignment[] = ['left', 'center', 'right'];
-const NOTE_IMAGE_ALIGNMENT_ICONS: Readonly<Record<NoteImageAlignment, readonly string[]>> = {
-  left: ['M2.5 3.25h11', 'M2.5 6.75h7', 'M2.5 10.25h11', 'M2.5 13.75h7'],
-  center: ['M2.5 3.25h11', 'M4.5 6.75h7', 'M2.5 10.25h11', 'M4.5 13.75h7'],
-  right: ['M2.5 3.25h11', 'M6.5 6.75h7', 'M2.5 10.25h11', 'M6.5 13.75h7'],
+const NOTE_IMAGE_ALIGNMENT_ICONS: Readonly<Record<NoteImageAlignment, LucideIconName>> = {
+  left: 'align-left',
+  center: 'align-center',
+  right: 'align-right',
 };
 
 const notesCodeLowlightBase = createLowlight(common);
@@ -391,21 +391,16 @@ const notesCodeLowlight: NotesCodeLowlight = {
     return [...notesCodeLanguageNames];
   },
 };
-const ICON_PATHS: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>, readonly string[]>> = {
-  text: ['M4 4h8', 'M8 4v8', 'M6 12h4'],
-  todo: ['M2.5 4.25 4 5.75l2.25-3', 'M7.75 4.5h5.75', 'M2.5 10.25 4 11.75l2.25-3', 'M7.75 10.5h5.75'],
-  bulletList: ['M6 4h7.5', 'M6 8h7.5', 'M6 12h7.5', 'M2.75 4h.01', 'M2.75 8h.01', 'M2.75 12h.01'],
-  numberedList: ['M6 4h7.5', 'M6 8h7.5', 'M6 12h7.5', 'M2.25 3.25h1v2', 'M2.25 7.25h1a.75.75 0 0 1 0 1.5h-1l1.25 1.5h-1.5'],
-  quote: ['M3 5.5h3v3H4.25a2 2 0 0 1-2 2', 'M9.5 5.5h3v3h-1.75a2 2 0 0 1-2 2'],
-  code: ['m5.25 4-3.5 4 3.5 4', 'm10.75 4 3.5 4-3.5 4', 'm9.5 2.75-3 10.5'],
-  image: ['M2.5 3.25h11v9.5h-11z', 'm3.5 11 3-3 2.25 2.25L10.5 8.5l2 2', 'M5.25 6.25h.01'],
-  file: ['M4 2.25h5l3 3v8.5H4z', 'M9 2.25v3h3', 'M6 8h4', 'M6 10.5h4'],
-  table: [
-    'M3.75 2.5h8.5c.69 0 1.25.56 1.25 1.25v8.5c0 .69-.56 1.25-1.25 1.25h-8.5c-.69 0-1.25-.56-1.25-1.25v-8.5c0-.69.56-1.25 1.25-1.25z',
-    'M8 2.5v11',
-    'M2.5 6.25h11',
-    'M2.5 9.75h11',
-  ],
+const EDITOR_ICON_NAMES: Readonly<Record<Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>, LucideIconName>> = {
+  text: 'type',
+  todo: 'list-checks',
+  bulletList: 'list',
+  numberedList: 'list-ordered',
+  quote: 'quote',
+  code: 'code',
+  image: 'image',
+  file: 'file',
+  table: 'table',
 };
 
 function createEditorIcon(name: EditorIconName): HTMLElement {
@@ -418,39 +413,9 @@ function createEditorIcon(name: EditorIconName): HTMLElement {
     wrapper.append(label);
     return wrapper;
   }
-  const icon = document.createElementNS(SVG_NAMESPACE, 'svg');
-  icon.setAttribute('viewBox', '0 0 16 16');
-  icon.setAttribute('fill', 'none');
-  icon.setAttribute('stroke', 'currentColor');
-  icon.setAttribute('stroke-width', '1.45');
-  icon.setAttribute('stroke-linecap', 'round');
-  icon.setAttribute('stroke-linejoin', 'round');
-  icon.setAttribute('aria-hidden', 'true');
-  const pathDataItems = ICON_PATHS[name as Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>];
-  for (const pathData of pathDataItems) {
-    const path = document.createElementNS(SVG_NAMESPACE, 'path');
-    path.setAttribute('d', pathData);
-    icon.append(path);
-  }
+  const icon = createIcon(EDITOR_ICON_NAMES[name as Exclude<EditorIconName, 'heading1' | 'heading2' | 'heading3' | 'heading4'>]);
   wrapper.append(icon);
   return wrapper;
-}
-
-function createStrokeIcon(pathDataItems: readonly string[]): SVGSVGElement {
-  const icon = document.createElementNS(SVG_NAMESPACE, 'svg');
-  icon.setAttribute('viewBox', '0 0 16 16');
-  icon.setAttribute('fill', 'none');
-  icon.setAttribute('stroke', 'currentColor');
-  icon.setAttribute('stroke-width', '1.5');
-  icon.setAttribute('stroke-linecap', 'round');
-  icon.setAttribute('stroke-linejoin', 'round');
-  icon.setAttribute('aria-hidden', 'true');
-  for (const pathData of pathDataItems) {
-    const path = document.createElementNS(SVG_NAMESPACE, 'path');
-    path.setAttribute('d', pathData);
-    icon.append(path);
-  }
-  return icon;
 }
 
 function isSupportedImageFile(file: File): boolean {
@@ -1180,18 +1145,7 @@ class NotesRichTextBlockHandle {
     this.element.setAttribute('aria-controls', this.menu.elementId);
     this.element.setAttribute('aria-expanded', 'false');
     this.element.title = 'Drag to move · Click for commands';
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 20 20');
-    icon.setAttribute('aria-hidden', 'true');
-    icon.setAttribute('focusable', 'false');
-    const iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    iconPath.setAttribute(
-      'd',
-      'M5 3.25a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0M5 10a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m-7 6.75a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0m7 0a1.5 1.5 0 1 0 3 0 1.5 1.5 0 1 0-3 0',
-    );
-    iconPath.setAttribute('fill', 'currentColor');
-    icon.append(iconPath);
-    this.element.append(icon);
+    this.element.append(createIcon('grip-vertical'));
     this.element.addEventListener('click', () => {
       if (this.suppressClick) return;
       const target = this.selectActiveBlock();
@@ -1518,7 +1472,7 @@ class NotesRichTextCodeLanguageMenu {
     this.trigger.setAttribute('aria-controls', this.menuId);
     this.trigger.setAttribute('aria-expanded', 'false');
     this.triggerLabel.className = 'notes-richtext-code-language-label';
-    const chevron = createStrokeIcon(['m4.25 6.25 3.75 3.5 3.75-3.5']);
+    const chevron = createIcon('chevron-down');
     chevron.classList.add('notes-richtext-code-language-chevron');
     this.trigger.append(this.triggerLabel, chevron);
 
@@ -1528,10 +1482,7 @@ class NotesRichTextCodeLanguageMenu {
     this.menu.setAttribute('aria-label', 'Code language');
     const searchWrap = document.createElement('label');
     searchWrap.className = 'notes-richtext-code-language-search-wrap';
-    searchWrap.append(createStrokeIcon([
-      'M7 2.75a4.25 4.25 0 1 0 0 8.5 4.25 4.25 0 0 0 0-8.5z',
-      'm10.25 10.25 3 3',
-    ]));
+    searchWrap.append(createIcon('search'));
     this.search.type = 'search';
     this.search.className = 'notes-richtext-code-language-search';
     this.search.placeholder = 'Search languages';
@@ -1979,13 +1930,13 @@ class NotesRichTextBubbleMenu {
     this.applyLinkButton.className = 'notes-richtext-link-action notes-richtext-link-apply';
     this.applyLinkButton.setAttribute('aria-label', 'Apply link');
     this.applyLinkButton.title = 'Apply link';
-    this.applyLinkButton.append(createStrokeIcon(['m3 8 3 3 7-7']));
+    this.applyLinkButton.append(createIcon('check'));
     this.removeLinkButton.type = 'button';
     this.removeLinkButton.className = 'notes-richtext-link-action notes-richtext-link-remove';
     this.removeLinkButton.dataset.richtextLinkRemove = '';
     this.removeLinkButton.setAttribute('aria-label', 'Remove link');
     this.removeLinkButton.title = 'Remove link';
-    this.removeLinkButton.append(createStrokeIcon(['M4.5 5.5v7h7v-7', 'M3.5 3.5h9', 'M6 3.5v-1h4v1', 'M7 7v3.5', 'M9 7v3.5']));
+    this.removeLinkButton.append(createIcon('trash-2'));
     this.linkForm.append(this.linkInput, this.applyLinkButton, this.removeLinkButton);
 
     this.colorMenu.className = 'notes-richtext-color-menu hidden';
@@ -2308,7 +2259,7 @@ class NotesRichTextImageBubbleMenu {
       button.setAttribute('aria-label', label);
       button.setAttribute('aria-pressed', 'false');
       button.title = label;
-      button.append(createStrokeIcon(NOTE_IMAGE_ALIGNMENT_ICONS[alignment]));
+      button.append(createIcon(NOTE_IMAGE_ALIGNMENT_ICONS[alignment]));
       this.element.append(button);
     }
     this.element.addEventListener('mousedown', this.handleMouseDown);
@@ -2873,9 +2824,7 @@ function attachmentSize(bytes: number): string {
 }
 
 function createAttachmentActionIcon(action: 'view' | 'download'): SVGSVGElement {
-  return createStrokeIcon(action === 'view'
-    ? ['M1.75 8s2.25-3.75 6.25-3.75S14.25 8 14.25 8 12 11.75 8 11.75 1.75 8 1.75 8', 'M8 6.25a1.75 1.75 0 1 0 0 3.5 1.75 1.75 0 0 0 0-3.5']
-    : ['M8 2.25v7.25', 'm5.25 7 2.75 2.75L10.75 7', 'M3 12.75h10']);
+  return createIcon(action === 'view' ? 'eye' : 'download');
 }
 
 function createS3AttachmentExtension(
