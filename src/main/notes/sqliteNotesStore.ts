@@ -473,7 +473,9 @@ export class SqliteNotesStore extends NotesStore {
       await readState(db);
       db.close();
       db = undefined;
-      const handle = await fs.open(temporaryPath, 'r');
+      // Windows requires a writable handle for fsync. Keep the flush before
+      // publication so a failed migration never replaces the active database.
+      const handle = await fs.open(temporaryPath, 'r+');
       try { await handle.sync(); } finally { await handle.close(); }
       await fs.rename(temporaryPath, this.databasePath);
       await syncDirectory(this.userDataPath);

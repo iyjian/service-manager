@@ -2,6 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.83] - 2026-09-19
+
+### Fixed
+- Fixed Windows startup failing with an `EPERM: operation not permitted, fsync` error when initializing or migrating the Notes database.
+
 ## [0.3.82] - 2026-09-19
 
 ### Added

@@ -142,6 +142,46 @@ test('migration recovers a legacy directory swap and ignores abandoned SQLite st
   await fs.stat(path.join(directory, 'notes-v4'));
 });
 
+test('migration flushes a writable database before publication and preserves legacy data on flush failure', async (t) => {
+  const { directory, store } = await workspace(t, false);
+  const legacy = await legacyWorkspace(directory);
+  const expected = snapshot([note('legacy')]);
+  await legacy.notes.replaceSnapshot(expected);
+  const open = fs.open;
+  let failFlush = true;
+  let flushes = 0;
+  fs.open = async (file, flags, ...args) => {
+    const handle = await open(file, flags, ...args);
+    if (path.basename(file) === 'notes.sqlite3' && path.basename(path.dirname(file)).startsWith('.notes-migrate-')) {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        // Match Windows FlushFileBuffers: read-only descriptors cannot sync.
+        if (flags === 'r') throw Object.assign(new Error('read-only fsync'), { code: 'EPERM' });
+        flushes++;
+        if (failFlush) throw Object.assign(new Error('simulated disk flush failure'), { code: 'EIO' });
+        return sync();
+      };
+    }
+    return handle;
+  };
+  try {
+    await assert.rejects(store.load(), { code: 'EIO' });
+    await assert.rejects(fs.stat(store.databasePath), { code: 'ENOENT' });
+    assert.equal((await fs.readdir(directory)).some((entry) => entry.startsWith('.notes-migrate-')), false);
+    await legacy.notes.load();
+    assert.deepEqual(legacy.notes.exportSnapshot(), expected);
+    failFlush = false;
+    await store.load();
+    assert.equal(flushes, 2);
+    assert.deepEqual(store.exportSnapshot(), expected);
+    await store.close();
+    await store.load();
+    assert.deepEqual(store.exportSnapshot(), expected);
+  } finally {
+    fs.open = open;
+  }
+});
+
 test('failed migration publication is retryable and an existing database is authoritative', async (t) => {
   const { directory, store } = await workspace(t, false);
   const legacy = await legacyWorkspace(directory);
