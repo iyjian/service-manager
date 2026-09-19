@@ -1,6 +1,6 @@
 {
   "name": "service-manager",
-  "version": "0.3.82",
+  "version": "0.3.83",
   "description": "Desktop service manager built with Electron and TypeScript",
   "main": "dist/main/core/bootstrap.js",
   "packageManager": "pnpm@9.1.2",
@@ -37,7 +37,9 @@
       "assets/**/*",
       "package.json"
     ],
-    "asarUnpack": ["node_modules/node-pty/**/*"],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
     "beforePack": "./scripts/prepare-local-terminal.cjs",
     "directories": {
       "buildResources": "assets",
