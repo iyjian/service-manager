@@ -12,6 +12,7 @@ export interface SshEndpointConfig {
 }
 
 export interface SshConnectOptions {
+  signal?: AbortSignal;
   readyTimeout?: number;
   keepaliveInterval?: number;
   keepaliveCountMax?: number;
@@ -130,9 +131,14 @@ export function closeSshClients(clients: Iterable<Client | undefined>): void {
   }
 }
 
-async function forwardThroughClient(client: Client, targetHost: string, targetPort: number): Promise<ConnectConfig['sock']> {
+async function forwardThroughClient(client: Client, targetHost: string, targetPort: number, signal?: AbortSignal): Promise<ConnectConfig['sock']> {
   return new Promise((resolve, reject) => {
     client.forwardOut('127.0.0.1', 0, targetHost, targetPort, (error, stream) => {
+      if (signal?.aborted) {
+        stream?.destroy();
+        reject(new Error('SSH connection cancelled.'));
+        return;
+      }
       if (error) {
         reject(error);
         return;
@@ -151,56 +157,81 @@ export async function connectSshChain(
   const allClients: Client[] = [];
   let upstreamClient: Client | undefined;
 
+  const abort = (): void => {
+    for (const client of allClients) client.destroy();
+  };
+  const bounded = <T>(operation: () => Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+    const signal = options?.signal;
+    if (signal?.aborted) { reject(new Error('SSH connection cancelled.')); return; }
+    const cancelled = (): void => { cleanup(); reject(new Error('SSH connection cancelled.')); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('SSH connection timed out.')); }, options?.readyTimeout ?? 20_000);
+    const cleanup = (): void => { clearTimeout(timer); signal?.removeEventListener('abort', cancelled); };
+    signal?.addEventListener('abort', cancelled, { once: true });
+    Promise.resolve().then(() => {
+      if (signal?.aborted) throw new Error('SSH connection cancelled.');
+      return operation();
+    }).then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+  });
+  const createClient = (): Client => {
+    const client = new Client();
+    // Upstream hops can fail while the next handshake is in flight.
+    client.on('error', () => undefined);
+    allClients.push(client);
+    return client;
+  };
+  options?.signal?.addEventListener('abort', abort, { once: true });
+
   try {
     for (let index = 0; index < jumpHosts.length; index += 1) {
       const jumpHost = jumpHosts[index];
-      const jumpClient = new Client();
+      const jumpClient = createClient();
       const jumpConfig = buildConnectConfig(jumpHost, options);
 
       if (upstreamClient) {
         try {
-          jumpConfig.sock = await forwardThroughClient(upstreamClient, jumpHost.sshHost, jumpHost.sshPort);
+          jumpConfig.sock = await bounded(() => forwardThroughClient(upstreamClient!, jumpHost.sshHost, jumpHost.sshPort, options?.signal));
         } catch (error) {
           throw new SshChainError('jump-forward', toErrorMessage(error), index);
         }
       }
 
       try {
-        await connectClient(jumpClient, jumpConfig);
+        await bounded(() => connectClient(jumpClient, jumpConfig));
       } catch (error) {
         throw new SshChainError('jump-connect', toErrorMessage(error), index);
       }
 
       jumpClients.push(jumpClient);
-      allClients.push(jumpClient);
       upstreamClient = jumpClient;
     }
 
-    const targetClient = new Client();
+    const targetClient = createClient();
     const targetConfig = buildConnectConfig(target, options);
 
     if (upstreamClient) {
       try {
-        targetConfig.sock = await forwardThroughClient(upstreamClient, target.sshHost, target.sshPort);
+        targetConfig.sock = await bounded(() => forwardThroughClient(upstreamClient!, target.sshHost, target.sshPort, options?.signal));
       } catch (error) {
         throw new SshChainError('jump-forward', toErrorMessage(error), jumpHosts.length);
       }
     }
 
     try {
-      await connectClient(targetClient, targetConfig);
+      await bounded(() => connectClient(targetClient, targetConfig));
     } catch (error) {
       throw new SshChainError('target-connect', toErrorMessage(error), jumpHosts.length);
     }
 
-    allClients.push(targetClient);
     return { targetClient, jumpClients, allClients };
   } catch (error) {
     closeSshClients(allClients);
+    abort();
     if (error instanceof SshChainError) {
       throw error;
     }
 
     throw new SshChainError(jumpHosts.length > 0 ? 'jump-connect' : 'target-connect', toErrorMessage(error));
+  } finally {
+    options?.signal?.removeEventListener('abort', abort);
   }
 }

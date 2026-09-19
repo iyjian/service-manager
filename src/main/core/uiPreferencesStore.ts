@@ -3,8 +3,9 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import type { UiPreferences, UiPreferencesDraft } from '../../shared/types';
+import { DEFAULT_TERMINAL_PREFERENCES, normalizeTerminalPreferences } from '../../shared/terminalPreferences';
 
-export const UI_PREFERENCES_SCHEMA_VERSION = 3 as const;
+export const UI_PREFERENCES_SCHEMA_VERSION = 4 as const;
 export const DEFAULT_NOTES_FONT_SIZE = 18;
 export const MIN_NOTES_FONT_SIZE = 12;
 export const MAX_NOTES_FONT_SIZE = 24;
@@ -16,6 +17,7 @@ const MAX_UI_PREFERENCES_BYTES = 16 * 1024;
 
 interface PersistedUiPreferences {
   schemaVersion: typeof UI_PREFERENCES_SCHEMA_VERSION;
+  terminal: UiPreferences['terminal'];
   notes: {
     fontSize: number;
     editorTheme: 'light' | 'dark';
@@ -32,6 +34,7 @@ function defaultPreferences(): UiPreferences {
     notesFontSize: DEFAULT_NOTES_FONT_SIZE,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   };
 }
 
@@ -44,7 +47,8 @@ export function normalizeUiPreferencesDraft(value: unknown): UiPreferencesDraft 
     || (value.notesEditorTheme !== 'light' && value.notesEditorTheme !== 'dark')) {
     throw new Error('Notes preferences are invalid.');
   }
-  return { notesFontSize: value.notesFontSize, notesEditorTheme: value.notesEditorTheme };
+  return { notesFontSize: value.notesFontSize, notesEditorTheme: value.notesEditorTheme,
+    ...(value.terminal === undefined ? {} : { terminal: normalizeTerminalPreferences(value.terminal) }) };
 }
 
 export function normalizeNotesSidebarWidth(value: unknown): number {
@@ -59,7 +63,7 @@ export function normalizeNotesSidebarWidth(value: unknown): number {
 
 function parsePersistedPreferences(value: unknown): UiPreferences {
   if (!isRecord(value)
-    || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== UI_PREFERENCES_SCHEMA_VERSION)
+    || ![1, 2, 3, UI_PREFERENCES_SCHEMA_VERSION].includes(value.schemaVersion as number)
     || !isRecord(value.notes)) {
     throw new Error('UI preferences are invalid.');
   }
@@ -69,15 +73,18 @@ function parsePersistedPreferences(value: unknown): UiPreferences {
   });
   return {
     ...editorPreferences,
-    notesSidebarWidth: value.schemaVersion === UI_PREFERENCES_SCHEMA_VERSION
+    notesSidebarWidth: Number(value.schemaVersion) >= 3
       ? normalizeNotesSidebarWidth(value.notes.sidebarWidth)
       : DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: value.schemaVersion === UI_PREFERENCES_SCHEMA_VERSION
+      ? normalizeTerminalPreferences(value.terminal) : { ...DEFAULT_TERMINAL_PREFERENCES },
   };
 }
 
 function toPersistedPreferences(value: UiPreferences): PersistedUiPreferences {
   return {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
+    terminal: { ...value.terminal },
     notes: {
       fontSize: value.notesFontSize,
       editorTheme: value.notesEditorTheme,
@@ -124,7 +131,7 @@ export class UiPreferencesStore {
   }
 
   get(): UiPreferences {
-    return { ...this.preferences };
+    return { ...this.preferences, terminal: { ...this.preferences.terminal } };
   }
 
   save(value: unknown): Promise<UiPreferences> {
@@ -134,12 +141,13 @@ export class UiPreferencesStore {
       if (!this.hasPersistedPreferences
         || next.notesFontSize !== this.preferences.notesFontSize
         || next.notesEditorTheme !== this.preferences.notesEditorTheme
+        || JSON.stringify(next.terminal) !== JSON.stringify(this.preferences.terminal)
         || next.notesSidebarWidth !== this.preferences.notesSidebarWidth) {
         await this.persist(next);
         this.preferences = next;
         this.hasPersistedPreferences = true;
       }
-      return { ...this.preferences };
+      return this.get();
     });
   }
 
@@ -152,7 +160,7 @@ export class UiPreferencesStore {
         this.preferences = next;
         this.hasPersistedPreferences = true;
       }
-      return { ...this.preferences };
+      return this.get();
     });
   }
 

@@ -18,6 +18,13 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 ## Core Features
 
 1. Host list with SSH connection settings.
+   - `Local Terminal`, before `Add Host`, opens an independent local shell tab in the same panel (the user's login shell on macOS/Linux, Windows PowerShell on Windows). Sessions start in the user's home directory, survive page changes, and close when the shell exits; closing a tab, reloading/closing its window, or quitting releases its PTY
+   - Settings > Terminal configures the font, size, and theme for Local Terminal, SSH, and Kubernetes shells. Defaults are Monaco with a bundled JetBrains Mono fallback, size 18, and the existing dark palette. Light, Dracula, and Solarized Dark are also available. Saved changes update open terminals without reconnecting; preferences remain device-local
+   - each Host's `SSH` button opens a new independent interactive terminal, named `Host Name #1`, `#2`, and so on; numbering is per Host and resets when the window reloads. SSH and local tabs omit the leading terminal icon and are two character widths narrower, while retaining a fixed 15-character title area. They keep the sequence visible when long names are ellipsized, and show the full title on hover
+   - SSH tabs retain their session and up to 2,000 scrollback lines while switching tabs or navigating to another page; a remote shell ending (including `exit`) automatically closes its exact tab, while connection failures retain a read-only diagnostic tab. Clicking SSH opens a fresh session
+   - the Hosts page fills the window, with an independently scrolling Host list and the same compact bottom-terminal styling as Kubernetes; the first SSH pane uses half the content area, and its 6px separator supports dragging, Arrow Up/Down, Home, and End between 120px and 80% of the content height
+   - closing a tab, deleting its Host, changing connection/authentication settings, reloading/closing its window, or quitting closes the associated SSH resources; renaming a Host updates its tab captions without disconnecting
+   - terminals use the Host's existing password/private-key authentication and ordered jump hosts through `ssh2`; connection/shell startup times out after 30 seconds, connecting tabs can be cancelled, and output is flow-controlled, window-owned, and never persisted or synchronized
    - Add/Edit Host combines the target connection and optional ordered jump chain in one `Connection Path` tab; its single-line route is `Local -> Hop 1 -> ... -> Target`
    - older configs with a single legacy `jumpHost` are still read as a one-hop chain
    - host creation only requires host name and SSH connection info; forwarding rules and services are both optional
@@ -215,6 +222,7 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
 - TypeScript
 - Tailwind CSS renderer component/utilities layer (`tailwind.css`, preflight disabled)
 - `ssh2` (SSH connection and remote command execution)
+- `node-pty` (local interactive shells and Windows ConPTY; native helpers are included outside the application archive)
 - `asn1` (explicit dependency required by ssh2 stack in this project)
 - `@kubernetes/client-node` (main-process Kubernetes REST, Watch, log, exec, port-forward, and authenticated KubeVirt VNC transport)
 - `@sentry/electron` (privacy-minimal main/renderer JavaScript error reporting through Electron IPC)
@@ -332,7 +340,7 @@ Install dependencies manually (as requested):
 1. `pnpm install`
 2. `pnpm dev`
 
-When Kubernetes/xterm dependency versions change, update the manifest and have the user run `pnpm install` before building or running the app. Do not install dependencies automatically.
+When Kubernetes/xterm/node-pty dependency versions change, update the manifest and have the user run `pnpm install` before building or running the app. Do not install dependencies automatically. Allow node-pty's native build scripts; `prepare:electron` verifies that its runtime loads in Electron. Local terminals use Windows PowerShell on Windows 10/11 and the user's login shell on macOS/Linux.
 
 Build & run workflow:
 

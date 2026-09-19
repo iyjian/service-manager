@@ -531,7 +531,8 @@ test('Bundled comic-mono font retains its local license', async () => {
   const declaredFonts = await Promise.all(declaredFontPaths.map((fontPath) => stat(fontPath)));
 
   assert.ok(comicFont.size > 10_000);
-  assert.equal(declaredFonts.length, 4);
+  assert.equal(declaredFonts.length, 6);
+  assert.match(await readFile(path.join(fontRoot, 'LICENSE-JetBrainsMono.txt'), 'utf8'), /SIL OPEN FONT LICENSE/);
   assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
   assert.match(comicLicense, /MIT License[\s\S]*Original work Copyright \(c\) 2018 Shannon Miwa[\s\S]*Modified work Copyright \(c\) 2019 dtinth/);
   assert.ok(packageJson.build.files.includes('assets/**/*'));
@@ -689,7 +690,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /await flushNotesPage\(\);[\s\S]*?saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)/);
   assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?saveLlmSettings\(llmDraft\)[\s\S]*?closeSettingsDialog\(\)/);
   assert.match(settingsDialog, /function shouldSaveS3Draft\(draft\)[\s\S]*?draft\.endpoint[\s\S]*?hasCredentials[\s\S]*?hasSyncEncryptionKey/);
-  assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'llm'\]/);
+  assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'terminal', 'llm'\]/);
   assert.match(settingsDialog, /import \{ activateTabSet, bindTabButtons \} from '\.\.\/components\/tabs\.js'/);
   assert.match(settingsDialog, /const settingsTabItems = settingsTabOrder\.map\(\(id\) => \(\{ id, \.\.\.settingsTabs\[id\] \}\)\)/);
   assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?activateTabSet\(settingsTabItems, tab, \{ focus \}\)/);

@@ -105,6 +105,72 @@
     overflow: hidden;
   }
 
+  .app-shell[data-page='hosts'] {
+    @apply mx-0 h-dvh max-h-dvh min-h-0 max-w-none overflow-hidden p-3;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .app-shell[data-page='hosts'] > .page-head {
+    @apply -mx-3 -mt-3 px-3;
+  }
+
+  .hosts-content {
+    @apply grid min-h-0 min-w-0 gap-2 overflow-hidden;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .hosts-content > .host-list-section {
+    @apply m-0 min-h-0 min-w-0 overflow-auto;
+  }
+
+  .ssh-workspace .ssh-workspace-pane {
+    @apply flex min-h-0 flex-col bg-zinc-950;
+    background: var(--terminal-background, #18181b);
+  }
+
+  .ssh-terminal-pane-host {
+    @apply flex-1;
+  }
+
+  .ssh-terminal-pane-host > .kubernetes-terminal-host {
+    @apply h-full;
+  }
+
+  .ssh-terminal-status {
+    @apply shrink-0 px-2 py-1 font-mono text-xs text-amber-300;
+    color: var(--terminal-status-color, #fcd34d);
+  }
+
+  .ssh-workspace .ssh-workspace-tab-select {
+    @apply inline-flex flex-none max-w-none items-center;
+    width: calc(13ch + 1.875rem);
+  }
+
+  .ssh-workspace-tab-caption {
+    @apply inline-flex min-w-0 flex-none items-center;
+    width: 15ch;
+  }
+
+  .terminal-settings-preview {
+    @apply min-w-0 overflow-x-auto rounded-md border border-zinc-200 p-3;
+    white-space: pre;
+    line-height: 1.4;
+  }
+
+  .terminal-preview-prompt { color: var(--terminal-preview-prompt, #4e9a06); }
+
+  #terminal-reset-btn { @apply justify-self-start; }
+
+  #local-terminal-btn svg { @apply h-3.5 w-3.5 shrink-0; }
+
+  .ssh-workspace-tab-name {
+    @apply min-w-0 truncate;
+  }
+
+  .ssh-workspace-tab-sequence {
+    @apply shrink-0 whitespace-pre;
+  }
+
   .app-shell[data-page='notes'] {
     @apply mx-0 max-w-none px-3 py-3;
     height: 100dvh;
@@ -3305,6 +3371,10 @@
     @apply min-w-0 p-2;
   }
 
+  .kubernetes-terminal-surface {
+    @apply h-full min-h-0 min-w-0;
+  }
+
   .kubernetes-terminal-unavailable {
     @apply m-0 p-2 font-mono text-[12px] text-amber-300;
   }
@@ -3384,6 +3454,7 @@
 
   .kubernetes-shell-panel {
     @apply h-full min-h-0 min-w-0 overflow-hidden bg-zinc-950;
+    background: var(--terminal-background, #18181b);
   }
 
   .kubernetes-shell-pane-host {

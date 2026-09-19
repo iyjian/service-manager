@@ -23,3 +23,11 @@ The shared renderer loads the following Inter-compatible files through the
 Sources:
 
 - Comic Mono: https://github.com/dtinth/comic-mono-font
+
+## Terminal fonts
+
+Terminals prefer the locally installed Monaco font. Monaco is not redistributed.
+`jetbrains-mono-regular.ttf` and `jetbrains-mono-bold.ttf` provide an offline
+JetBrains Mono fallback on every platform. They are from the official
+[JetBrains Mono v2.304 release](https://github.com/JetBrains/JetBrainsMono/tree/v2.304/fonts/ttf),
+under the SIL Open Font License in `LICENSE-JetBrainsMono.txt`.

@@ -98,6 +98,10 @@ import type { ProxyExceptionDraft, ProxyMode, ProxyState, ProxyTraffic } from '.
 import { KubernetesRuntime } from '../kubernetes/kubernetesRuntime';
 import { FileKubernetesContextPreference } from '../kubernetes/contextPreference';
 import { registerKubernetesIpcHandlers } from '../kubernetes/ipcHandlers';
+import { SshTerminalRuntime } from '../ssh/sshTerminalRuntime';
+import { registerSshTerminalIpc } from '../ssh/sshTerminalIpc';
+import { LocalTerminalRuntime } from '../terminal/localTerminalRuntime';
+import { registerLocalTerminalIpc } from '../terminal/localTerminalIpc';
 import { AppQuitCoordinator } from './quitCoordinator';
 import { confirmApplicationQuit } from './quitConfirmation';
 import {
@@ -180,6 +184,15 @@ let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
 const rendererWindows = new Set<BrowserWindow>();
+const localTerminalRuntime = new LocalTerminalRuntime({
+  state: (owner, state) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.localTerminalState, state),
+  output: (owner, output) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.localTerminalOutput, output),
+});
+const sshTerminalRuntime = new SshTerminalRuntime({
+  getHost: (id) => getStore().findHostById(id),
+  state: (owner, state) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.sshTerminalState, state),
+  output: (owner, output) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.sshTerminalOutput, output),
+});
 const NOTES_PDF_RENDER_TIMEOUT_MS = 30_000;
 const NOTES_PDF_MAX_DOCUMENT_BYTES = 6 * 1024 * 1024;
 const NOTES_PDF_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -1209,7 +1222,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function createWindow(): BrowserWindow {
-  return createAppWindow({
+  const window = createAppWindow({
     rendererWindows,
     rendererExportGenerations,
     deleteRecentNoteExport,
@@ -1224,6 +1237,14 @@ function createWindow(): BrowserWindow {
     },
     logRuntimeError,
   });
+  const owner = window.webContents.id;
+  const closeTerminals = (): void => { sshTerminalRuntime.closeOwner(owner); localTerminalRuntime.closeOwner(owner); };
+  window.once('closed', closeTerminals);
+  window.webContents.on('render-process-gone', closeTerminals);
+  window.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) closeTerminals();
+  });
+  return window;
 }
 
 function toView(hosts: HostConfig[]) {
@@ -1397,6 +1418,8 @@ async function flushRuntimeLog(): Promise<void> {
 }
 
 async function shutdownRuntimesForQuit(): Promise<void> {
+  sshTerminalRuntime.shutdown();
+  localTerminalRuntime.shutdown();
   try {
     updater.stop();
   } catch (error) {
@@ -1770,7 +1793,10 @@ async function applyS3SharedAppData(
           });
         }
         if (proxyChanged) await getProxyRuntime().importPersistentSnapshot(staged.proxy);
-        if (hostsChanged) await getStore().replaceHosts(nextHosts);
+        if (hostsChanged) {
+          await getStore().replaceHosts(nextHosts);
+          sshTerminalRuntime.reconcileHosts(nextHosts);
+        }
       } catch (error) {
         const rollbackErrors: unknown[] = [];
         let notesRollbackIncomplete = false;
@@ -2645,6 +2671,7 @@ function registerIpcHandlers(): void {
       }
 
       await getStore().replaceHosts(validatedHosts);
+      sshTerminalRuntime.reconcileHosts(validatedHosts);
       syncKnownForwards(validatedHosts);
       for (const host of validatedHosts) {
         await autoStartHostRules(host);
@@ -2683,6 +2710,7 @@ function registerIpcHandlers(): void {
       }
 
       await getStore().upsertHost(host);
+      sshTerminalRuntime.reconcileHosts(getStore().listHosts());
       await autoStartHostRules(host);
 
       for (const service of host.services) {
@@ -2733,6 +2761,7 @@ function registerIpcHandlers(): void {
       }
 
       await getStore().removeHost(hostId);
+      sshTerminalRuntime.reconcileHosts(getStore().listHosts());
     });
   });
 
@@ -3046,6 +3075,8 @@ function registerIpcHandlers(): void {
   );
   ipcMain.handle(IPC_CHANNELS.proxyGetLogs, async () => getProxyRuntime().getLogs());
 
+  registerSshTerminalIpc(sshTerminalRuntime, (event) => Boolean(rendererWindowForSender(event.sender.id)));
+  registerLocalTerminalIpc(localTerminalRuntime, (event) => Boolean(rendererWindowForSender(event.sender.id)));
   registerKubernetesIpcHandlers({
     getRuntime: getKubernetesRuntime,
     openExternal: (url) => shell.openExternal(url),

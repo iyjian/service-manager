@@ -28,6 +28,7 @@ import { registerSettingsDialog } from './pages/settingsDialog.js';
 import { maybeShowChangelog } from './pages/changelog.js';
 import { trackStartupS3SyncWork, waitForStartupS3Sync } from './utils/startupS3SyncGate.js';
 import { activateTabSet, bindTabButtons } from './components/tabs.js';
+import { createSshWorkspace } from './components/sshWorkspace.js';
 import { hydrateLucideIcons, renderIcon, type LucideIconName } from './components/icon.js';
 import {
   canStartForward,
@@ -94,6 +95,27 @@ const importConfigButton = requireElement<HTMLButtonElement>('#qa-import-config-
 const exportConfigButton = requireElement<HTMLButtonElement>('#qa-export-config-btn');
 const updateStatusHintElement = requireElement<HTMLParagraphElement>('#update-status-hint');
 const hostTableBody = requireElement<HTMLTableSectionElement>('#host-table-body');
+let sshWorkspace: ReturnType<typeof createSshWorkspace> | undefined;
+
+function getSshWorkspace(): ReturnType<typeof createSshWorkspace> {
+  if (!sshWorkspace) {
+    sshWorkspace = createSshWorkspace({
+      root: requireElement('#ssh-workspace'),
+      resizeHandle: requireElement('#ssh-workspace-resize-handle'),
+      tabList: requireElement('#ssh-workspace-tabs'),
+      pane: requireElement('#ssh-workspace-pane'),
+      api: window.serviceApi,
+      reportError: (error) => setMessage(toErrorMessage(error), 'error'),
+    });
+    sshWorkspace.setVisible(isHostsPageActive);
+  }
+  return sshWorkspace;
+}
+
+window.addEventListener('beforeunload', () => sshWorkspace?.dispose());
+requireElement<HTMLButtonElement>('#local-terminal-btn').addEventListener('click', () => {
+  void getSshWorkspace().openLocal();
+});
 
 const serviceLogDialog = requireElement<HTMLDialogElement>('#service-log-dialog');
 const serviceLogTitle = requireElement<HTMLElement>('#service-log-title');
@@ -2255,6 +2277,9 @@ function openServiceLogDialog(host: HostView, serviceId: string): void {
 }
 
 function bindHostActions(root: ParentNode, host: HostView): void {
+  root.querySelector<HTMLButtonElement>('[data-action="ssh-host"]')?.addEventListener('click', () => {
+    void getSshWorkspace().open(host).catch((error) => setMessage(toErrorMessage(error), 'error'));
+  });
   root.querySelector<HTMLButtonElement>('[data-action="copy-host"]')?.addEventListener('click', async () => {
     try {
       const payload = JSON.stringify(buildCopyableHostPayload(host), null, 2);
@@ -2690,6 +2715,7 @@ function setRenderedHostCollapsed(host: HostView, panel: HTMLElement, collapsed:
 }
 
 function render(): void {
+  sshWorkspace?.updateHosts(hosts);
   renderPageStats();
 
   if (hosts.length === 0) {
@@ -2736,6 +2762,7 @@ function render(): void {
           </div>
         </div>
         <div class="host-panel-actions row-actions">
+          <button type="button" class="btn btn-secondary btn-sm" data-action="ssh-host" title="Open SSH session" aria-label="Open SSH session for ${hostName}">${renderIcon('terminal')}<span>SSH</span></button>
           <button class="btn btn-secondary btn-sm btn-icon-only" data-action="copy-host" title="Copy host" aria-label="Copy host">${renderButtonContent('copy', 'Copy')}</button>
           <button class="btn btn-secondary btn-sm btn-icon-only" data-action="edit-host" title="Edit host" aria-label="Edit host">${renderButtonContent('edit', 'Edit Host')}</button>
           <button class="btn btn-danger btn-sm btn-icon-only" data-action="delete-host" title="Delete host" aria-label="Delete host">${renderButtonContent('delete', 'Delete Host')}</button>
@@ -2778,12 +2805,14 @@ registerPage({
   icon: HOSTS_NAV_ICON,
   onShow: () => {
     isHostsPageActive = true;
+    sshWorkspace?.setVisible(true);
     renderSafely('show-hosts');
     startAppMemoryRefresh();
     startStatusAutoRefresh();
   },
   onHide: () => {
     isHostsPageActive = false;
+    sshWorkspace?.setVisible(false);
     stopAppMemoryRefresh();
     stopStatusAutoRefresh();
     stopLogAutoRefresh();

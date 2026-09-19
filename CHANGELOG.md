@@ -2,6 +2,22 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.82] - 2026-09-19
+
+### Added
+- Open local shell tabs with the new Local Terminal button; Windows uses PowerShell.
+- Settings > Terminal now offers font, size, and theme preferences for local, SSH, and Kubernetes terminals, with live updates after saving.
+- Open independent SSH terminal tabs from each Host, with numbered names, retained sessions across page switches, and a draggable bottom panel.
+
+### Changed
+- Terminals default to Monaco with an included JetBrains Mono fallback and a font size of 18, while retaining the existing dark theme.
+- SSH tabs now close automatically when their remote shell exits, including after `exit`; connection failures still retain their diagnostic tab.
+- SSH and local terminal tabs omit the leading icon and are two character widths narrower, retaining a 15-character title area, ellipsis for long names, and the full title on hover.
+- Service Manager now fills the available window width and height, with independently scrolling Hosts and a resizable terminal workspace.
+
+### Fixed
+- SSH and Kubernetes terminals now preserve their inner spacing when resized, keeping the final input line and cursor fully visible.
+
 ## [0.3.80] - 2026-09-13
 
 ### Added

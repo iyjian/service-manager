@@ -17,6 +17,7 @@ declare module 'ssh2' {
 
   export interface ClientChannel extends Duplex {
     stderr: Duplex;
+    setWindow(rows: number, cols: number, height: number, width: number): void;
     on(event: 'close', listener: (code?: number, signal?: string) => void): this;
     on(event: 'data', listener: (data: Buffer | string) => void): this;
   }
@@ -24,6 +25,8 @@ declare module 'ssh2' {
   export class Client extends EventEmitter {
     connect(config: ConnectConfig): this;
     end(): void;
+    destroy(): void;
+    shell(window: { term: string; cols: number; rows: number }, callback: (error: Error | undefined, channel: ClientChannel) => void): void;
     exec(command: string, callback: (error: Error | undefined, channel: ClientChannel) => void): void;
     forwardOut(
       srcIP: string,

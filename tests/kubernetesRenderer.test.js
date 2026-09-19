@@ -1414,10 +1414,12 @@ test('Kubernetes terminal drawer disposes final closed or errored sessions and i
 */
 
 test('Kubernetes workspace terminal pane finalizes exact IDs and never owns a floating drawer', async () => {
-  const terminal = await readFile(path.join(distRenderer, 'components', 'kubernetesTerminal.js'), 'utf8');
+  const terminal = await readFile(path.join(distRenderer, 'components', 'terminalPane.js'), 'utf8');
   const page = await readFile(path.join(distRenderer, 'pages', 'kubernetesPage.js'), 'utf8');
 
-  assert.match(terminal, /createKubernetesTerminalPane/);
+  assert.match(terminal, /createTerminalPane/);
+  const entry = await readFile(path.join(distRenderer, 'components', 'kubernetesTerminal.js'), 'utf8');
+  assert.match(entry, /createTerminalPane as createKubernetesTerminalPane/);
   assert.match(terminal, /finalizedIds\.add\(state\.id\)/);
   assert.match(terminal, /current\.state\.id !== output\.id/);
   assert.match(terminal, /next\.state\.state !== 'open'/);

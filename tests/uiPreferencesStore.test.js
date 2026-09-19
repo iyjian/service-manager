@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { DEFAULT_TERMINAL_PREFERENCES, normalizeTerminalPreferences } = require('../dist/shared/terminalPreferences');
 
 const {
   DEFAULT_NOTES_FONT_SIZE,
@@ -33,6 +34,7 @@ test('UI preferences use stable Notes defaults when the file is missing', async 
     notesFontSize: DEFAULT_NOTES_FONT_SIZE,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
   await assert.rejects(fs.stat(filePath), { code: 'ENOENT' });
 });
@@ -50,12 +52,14 @@ test('UI preferences persist atomically with a versioned private JSON shape', as
       notesFontSize: 17,
       notesEditorTheme: 'dark',
       notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+      terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     },
   );
   await store.flush();
 
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     notes: {
       fontSize: 17,
       editorTheme: 'dark',
@@ -76,6 +80,7 @@ test('UI preferences persist atomically with a versioned private JSON shape', as
     notesFontSize: 17,
     notesEditorTheme: 'dark',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 });
 
@@ -87,11 +92,13 @@ test('damaged UI preferences safely fall back and a default Save repairs the fil
     notesFontSize: DEFAULT_NOTES_FONT_SIZE,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 
   await store.save({ notesFontSize: DEFAULT_NOTES_FONT_SIZE, notesEditorTheme: 'light' });
   assert.deepEqual(JSON.parse(await fs.readFile(filePath, 'utf8')), {
     schemaVersion: UI_PREFERENCES_SCHEMA_VERSION,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     notes: {
       fontSize: DEFAULT_NOTES_FONT_SIZE,
       editorTheme: 'light',
@@ -112,6 +119,7 @@ test('schema 1 UI preferences migrate to the default light Notes editor theme', 
     notesFontSize: 18,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 });
 
@@ -127,6 +135,7 @@ test('schema 2 UI preferences migrate to the default Notes sidebar width', async
     notesFontSize: 16,
     notesEditorTheme: 'dark',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 });
 
@@ -153,6 +162,33 @@ test('Notes font size validation accepts only bounded whole pixels', () => {
     );
   }
   assert.throws(() => normalizeUiPreferencesDraft(null), /Notes preferences/);
+});
+
+test('terminal preferences migrate schema 3 and survive Notes-only saves and reload', async (t) => {
+  const { filePath, store } = await createStore(t);
+  await fs.writeFile(filePath, JSON.stringify({ schemaVersion: 3, notes: { fontSize: 17, editorTheme: 'dark', sidebarWidth: 410 } }));
+  await store.load();
+  assert.equal(store.get().notesSidebarWidth, 410);
+  assert.deepEqual(store.get().terminal, DEFAULT_TERMINAL_PREFERENCES);
+  const terminal = { fontFamily: 'JetBrains Mono', fontSize: 22, theme: 'light' };
+  await store.save({ notesFontSize: 17, notesEditorTheme: 'dark', terminal });
+  await store.save({ notesFontSize: 18, notesEditorTheme: 'light' });
+  await store.saveNotesSidebarWidth(300);
+  const result = store.get(); result.terminal.fontSize = 9;
+  const reloaded = new UiPreferencesStore(filePath); await reloaded.load();
+  assert.deepEqual(store.get().terminal, terminal); assert.deepEqual(reloaded.get().terminal, terminal);
+  assert.equal(reloaded.get().notesSidebarWidth, 300);
+});
+
+test('terminal appearance rejects invalid fonts, sizes and themes at the storage boundary', () => {
+  for (const fontFamily of ['', ' ', 'x;url(a)', 'x"', 'x\\n', 'x'.repeat(101)]) {
+    assert.throws(() => normalizeTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES, fontFamily }), /font name/);
+  }
+  for (const fontSize of [7, 41, 12.5, NaN, '20']) {
+    assert.throws(() => normalizeTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES, fontSize }), /font size/);
+  }
+  assert.throws(() => normalizeTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES, theme: 'unsafe' }), /theme/);
+  assert.deepEqual(normalizeTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES, fontFamily: '  Monaco  ' }), DEFAULT_TERMINAL_PREFERENCES);
 });
 
 test('Notes sidebar width accepts only bounded whole pixels', () => {
@@ -183,6 +219,7 @@ test('sidebar and editor preference saves merge against the latest queued state'
     notesFontSize: 18,
     notesEditorTheme: 'dark',
     notesSidebarWidth: 420,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 
   await Promise.all([
@@ -193,6 +230,7 @@ test('sidebar and editor preference saves merge against the latest queued state'
     notesFontSize: 16,
     notesEditorTheme: 'light',
     notesSidebarWidth: 360,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 
   const reloaded = new UiPreferencesStore(filePath);
@@ -215,22 +253,26 @@ test('concurrent UI preference saves remain serialized in invocation order', asy
       notesFontSize: 16,
       notesEditorTheme: 'light',
       notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+      terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     },
     {
       notesFontSize: 18,
       notesEditorTheme: 'dark',
       notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+      terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     },
     {
       notesFontSize: 20,
       notesEditorTheme: 'light',
       notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+      terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
     },
   ]);
   assert.deepEqual(store.get(), {
     notesFontSize: 20,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
   const reloaded = new UiPreferencesStore(filePath);
   await reloaded.load();
@@ -238,5 +280,6 @@ test('concurrent UI preference saves remain serialized in invocation order', asy
     notesFontSize: 20,
     notesEditorTheme: 'light',
     notesSidebarWidth: DEFAULT_NOTES_SIDEBAR_WIDTH,
+    terminal: { ...DEFAULT_TERMINAL_PREFERENCES },
   });
 });

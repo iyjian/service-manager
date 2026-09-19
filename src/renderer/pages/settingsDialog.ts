@@ -13,6 +13,7 @@ import type {
   TriliumImportResult,
   UiPreferences,
   UiPreferencesDraft,
+  TerminalPreferences,
 } from '../../shared/types';
 import {
   applyNotesEditorTheme,
@@ -25,6 +26,8 @@ import { closeOnBackdropClick, openDialog } from '../components/dialog.js';
 import { activateTabSet, bindTabButtons } from '../components/tabs.js';
 import { requireElement } from '../utils/dom.js';
 import { toCleanErrorMessage as toErrorMessage } from '../utils/error.js';
+import { DEFAULT_TERMINAL_PREFERENCES, normalizeTerminalPreferences } from '../terminalPreferences.js';
+import { applyTerminalPreferences, terminalFontFamily, terminalTheme } from '../components/terminalAppearance.js';
 
 const DEFAULT_NOTES_FONT_SIZE = 14;
 const DEFAULT_NOTES_SIDEBAR_WIDTH = 280;
@@ -50,6 +53,11 @@ const testButton = requireElement<HTMLButtonElement>('#settings-test-btn');
 const syncButton = requireElement<HTMLButtonElement>('#settings-sync-btn');
 const notesFontSizeInput = requireElement<HTMLInputElement>('#notes-font-size');
 const notesEditorThemeInput = requireElement<HTMLSelectElement>('#notes-editor-theme');
+const terminalFontInput = requireElement<HTMLInputElement>('#terminal-font-family');
+const terminalSizeInput = requireElement<HTMLInputElement>('#terminal-font-size');
+const terminalThemeInput = requireElement<HTMLSelectElement>('#terminal-theme');
+const terminalResetButton = requireElement<HTMLButtonElement>('#terminal-reset-btn');
+const terminalPreview = requireElement<HTMLElement>('#terminal-settings-preview');
 const noteShareShortenerBaseUrlInput = requireElement<HTMLInputElement>('#note-share-shortener-base-url');
 const noteShareShortenerApiKeyInput = requireElement<HTMLInputElement>('#note-share-shortener-api-key');
 const noteShareShortenerApiKeyVisibilityButton = requireElement<HTMLButtonElement>('#note-share-shortener-api-key-visibility');
@@ -80,7 +88,7 @@ const syncProgressValue = requireElement<HTMLElement>('#s3-sync-progress-value')
 const saveStatusElement = requireElement<HTMLElement>('#settings-save-status');
 const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
-type SettingsTab = 's3' | 'notes' | 'llm';
+type SettingsTab = 's3' | 'notes' | 'terminal' | 'llm';
 type BusyAction = 'save' | 'test' | 'sync' | 'load-models' | 'trilium-import';
 
 interface SettingsTabElements {
@@ -101,8 +109,12 @@ const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
     button: requireElement<HTMLButtonElement>('#settings-llm-tab'),
     panel: requireElement<HTMLElement>('#settings-llm-panel'),
   },
+  terminal: {
+    button: requireElement<HTMLButtonElement>('#settings-terminal-tab'),
+    panel: requireElement<HTMLElement>('#settings-terminal-panel'),
+  },
 };
-const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'llm'];
+const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'terminal', 'llm'];
 const settingsTabItems = settingsTabOrder.map((id) => ({ id, ...settingsTabs[id] }));
 const syncPhaseLabels: Record<S3SyncProgressPhase, string> = {
   checking: 'Checking cloud',
@@ -295,6 +307,9 @@ function updateControls(): void {
   closeButton.disabled = locked;
   notesFontSizeInput.disabled = locked || !uiPreferencesLoaded;
   notesEditorThemeInput.disabled = locked || !uiPreferencesLoaded;
+  for (const input of [terminalFontInput, terminalSizeInput, terminalThemeInput, terminalResetButton]) {
+    input.disabled = locked || !uiPreferencesLoaded;
+  }
   noteShareShortenerBaseUrlInput.disabled = locked || !noteShareSettingsLoaded;
   noteShareShortenerApiKeyInput.disabled = locked || !noteShareSettingsLoaded;
   noteShareShortenerApiKeyRemoveButton.classList.toggle('hidden', !hasNoteShareShortenerApiKey);
@@ -549,6 +564,32 @@ function renderUiPreferences(preferences: UiPreferences): void {
   applyNotesFontSize(preferences.notesFontSize);
   applyNotesEditorTheme(preferences.notesEditorTheme);
   applyNotesSidebarWidth(preferences.notesSidebarWidth);
+  renderTerminalPreferences(preferences.terminal ?? { ...DEFAULT_TERMINAL_PREFERENCES });
+  applyTerminalPreferences(preferences.terminal);
+}
+
+function currentTerminalPreferences(): TerminalPreferences {
+  return normalizeTerminalPreferences({ fontFamily: terminalFontInput.value,
+    fontSize: terminalSizeInput.valueAsNumber, theme: terminalThemeInput.value });
+}
+
+function renderTerminalPreview(): void {
+  try {
+    const preferences = currentTerminalPreferences();
+    const theme = terminalTheme(preferences.theme);
+    terminalPreview.style.fontFamily = terminalFontFamily(preferences.fontFamily);
+    terminalPreview.style.fontSize = `${preferences.fontSize}px`;
+    terminalPreview.style.backgroundColor = theme.background!;
+    terminalPreview.style.color = theme.foreground!;
+    terminalPreview.style.setProperty('--terminal-preview-prompt', theme.green ?? '#4e9a06');
+  } catch { /* Keep the last valid preview while editing a draft. */ }
+}
+
+function renderTerminalPreferences(preferences: TerminalPreferences): void {
+  terminalFontInput.value = preferences.fontFamily;
+  terminalSizeInput.value = String(preferences.fontSize);
+  terminalThemeInput.value = preferences.theme;
+  renderTerminalPreview();
 }
 
 function renderNoteShareSettings(settings: NoteShareSettingsView): void {
@@ -699,6 +740,15 @@ async function saveAllSettings(): Promise<void> {
     activateTab('notes');
     setSaveFeedback(toErrorMessage(error));
     notesFontSizeInput.focus();
+    return;
+  }
+
+  try {
+    preferences.terminal = currentTerminalPreferences();
+  } catch (error) {
+    activateTab('terminal');
+    setSaveFeedback(toErrorMessage(error));
+    terminalFontInput.focus();
     return;
   }
 
@@ -1052,6 +1102,7 @@ async function openSettings(): Promise<void> {
     notesEditorThemeInput.value = 'light';
     applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE);
     applyNotesEditorTheme('light');
+    renderTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES });
     setSaveFeedback(`Unable to load Notes settings: ${toErrorMessage(preferencesResult.reason)}`);
   }
 
@@ -1075,6 +1126,7 @@ async function openSettings(): Promise<void> {
   settingsLoading = false;
   updateControls();
   if (activeTab === 'notes') notesFontSizeInput.focus();
+  else if (activeTab === 'terminal') terminalFontInput.focus();
   else if (activeTab === 'llm') llmEndpointInput.focus();
   else endpointInput.focus();
 }
@@ -1083,6 +1135,11 @@ export function registerSettingsDialog(): void {
   openButton.parentElement?.append(openButton);
   activateTab(activeTab);
   updateControls();
+  for (const input of [terminalFontInput, terminalSizeInput, terminalThemeInput]) {
+    input.addEventListener('input', renderTerminalPreview);
+    input.addEventListener('change', renderTerminalPreview);
+  }
+  terminalResetButton.addEventListener('click', () => renderTerminalPreferences({ ...DEFAULT_TERMINAL_PREFERENCES }));
 
   void window.settingsApi.getUiPreferences()
     .then(renderUiPreferences)
@@ -1090,6 +1147,7 @@ export function registerSettingsDialog(): void {
       applyNotesFontSize(DEFAULT_NOTES_FONT_SIZE);
       applyNotesEditorTheme('light');
       applyNotesSidebarWidth(DEFAULT_NOTES_SIDEBAR_WIDTH);
+      applyTerminalPreferences();
     });
 
   openButton.addEventListener('click', () => { void openSettings(); });

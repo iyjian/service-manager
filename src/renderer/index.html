@@ -49,6 +49,7 @@
           </div>
 
           <div class="page-actions">
+            <button id="local-terminal-btn" type="button" class="btn btn-secondary btn-sm"><span data-lucide-icon="terminal" aria-hidden="true"></span>Local Terminal</button>
             <button id="qa-add-host-btn" type="button" class="btn btn-primary btn-sm">Add Host</button>
             <button id="qa-import-config-btn" type="button" class="btn btn-secondary btn-sm">Import Config</button>
             <button id="qa-export-config-btn" type="button" class="btn btn-secondary btn-sm">Export Config</button>
@@ -56,6 +57,7 @@
         </div>
       </header>
 
+      <div class="hosts-content">
       <section class="host-list-section" aria-label="Hosts">
         <div class="table-wrap host-list-wrap">
           <table>
@@ -63,6 +65,12 @@
           </table>
         </div>
       </section>
+      <section id="ssh-workspace" class="kubernetes-workspace ssh-workspace hidden" aria-label="Terminals">
+        <div id="ssh-workspace-resize-handle" class="kubernetes-workspace-resize-handle" role="separator" tabindex="0" aria-label="Resize terminal workspace" aria-orientation="horizontal" aria-controls="ssh-workspace"></div>
+        <div id="ssh-workspace-tabs" class="kubernetes-workspace-tabs" role="tablist" aria-label="Terminal sessions"></div>
+        <div id="ssh-workspace-pane" class="kubernetes-workspace-pane ssh-workspace-pane" role="tabpanel"></div>
+      </section>
+      </div>
     </main>
 
     <main class="app-shell hidden" data-page="proxy">
@@ -787,6 +795,7 @@
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button id="settings-s3-tab" type="button" class="settings-tab" role="tab" aria-selected="true" aria-controls="settings-s3-panel" tabindex="0" data-settings-tab="s3">S3</button>
           <button id="settings-notes-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-notes-panel" tabindex="-1" data-settings-tab="notes">Notes</button>
+          <button id="settings-terminal-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-terminal-panel" tabindex="-1" data-settings-tab="terminal">Terminal</button>
           <button id="settings-llm-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-llm-panel" tabindex="-1" data-settings-tab="llm">LLM</button>
         </div>
 
@@ -920,6 +929,29 @@
               <button id="settings-trilium-import-btn" type="button" class="btn btn-primary">Import</button>
             </div>
           </div>
+        </section>
+
+        <section id="settings-terminal-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-terminal-tab" data-settings-panel="terminal" hidden>
+          <p class="settings-subtitle">Applies to Local Terminal, SSH, and Kubernetes shells. Changes take effect when saved.</p>
+          <div class="settings-grid">
+            <label class="field field-xs">Font
+              <input id="terminal-font-family" class="input" type="text" list="terminal-font-options" maxlength="100" spellcheck="false" autocomplete="off" placeholder="Monaco" />
+              <datalist id="terminal-font-options">
+                <option value="Monaco"></option><option value="JetBrains Mono"></option><option value="Menlo"></option><option value="SFMono-Regular"></option><option value="Consolas"></option><option value="Courier New"></option>
+              </datalist>
+            </label>
+            <label class="field field-xs">Font size
+              <span class="settings-number-control"><input id="terminal-font-size" class="input" type="number" min="8" max="40" step="1" value="18" /><span>px</span></span>
+            </label>
+          </div>
+          <p class="settings-subtitle">Use an installed font name. JetBrains Mono is included as the fallback.</p>
+          <label class="field field-xs">Theme
+            <select id="terminal-theme" class="input">
+              <option value="default">Default Dark</option><option value="light">Light</option><option value="dracula">Dracula</option><option value="solarized-dark">Solarized Dark</option>
+            </select>
+          </label>
+          <div id="terminal-settings-preview" class="terminal-settings-preview" aria-label="Terminal appearance preview"><span class="terminal-preview-prompt">user@localhost ~ % </span><span>echo Hello</span><br /><span>Hello</span><br /><span class="terminal-preview-prompt">user@localhost ~ % </span><span>▍</span></div>
+          <button id="terminal-reset-btn" type="button" class="btn btn-secondary btn-sm">Reset to Defaults</button>
         </section>
 
         <section id="settings-llm-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-llm-tab" data-settings-panel="llm" hidden>

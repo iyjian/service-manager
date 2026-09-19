@@ -17,6 +17,7 @@ const root = join(__dirname, '..');
 const outDir = join(root, 'dist', 'renderer');
 const vendorDir = join(outDir, 'vendor');
 const dualTargetRuntimes = Object.freeze([
+  { shared: 'terminalPreferences.js', main: 'terminalPreferences.cjs', renderer: 'terminalPreferences.js', label: 'terminal preferences' },
   { shared: 'codeHighlight.js', main: 'codeHighlight.cjs', renderer: 'codeHighlight.js', label: 'code highlight' },
   { shared: 'noteRichText.js', main: 'noteRichText.cjs', renderer: 'noteRichText.js', label: 'rich text' },
   { shared: 'noteExport.js', main: 'noteExport.cjs', renderer: 'noteExport.js', label: 'Note export' },

@@ -513,25 +513,42 @@ export interface KubernetesVncLaunchResult {
   localPort: number;
 }
 
-/** Display-safe terminal session metadata. */
-export interface KubernetesTerminalState {
+/** Display-safe terminal metadata shared by terminal views. */
+export interface TerminalState {
   id: string;
-  podName: string;
-  namespace: string;
-  container: string;
-  shell: string;
   state: 'connecting' | 'open' | 'closed' | 'error';
   error?: string;
 }
 
+export interface SshTerminalState extends TerminalState {
+  hostId: string;
+  /** A remote shell ended; transport failures keep their diagnostic tab. */
+  closeReason?: 'shell-exit';
+}
+
+export interface LocalTerminalState extends TerminalState {
+  shell: string;
+  closeReason?: 'shell-exit';
+}
+
+/** Display-safe terminal session metadata. */
+export interface KubernetesTerminalState extends TerminalState {
+  podName: string;
+  namespace: string;
+  container: string;
+  shell: string;
+}
+
 /**
  * One bounded terminal-output chunk. It is delivered only while the owning
- * page-scoped terminal session remains active and is never cached.
+ * terminal session remains active and is never cached in main-process state.
  */
-export interface KubernetesTerminalOutput {
+export interface TerminalOutput {
   id: string;
   data: string;
 }
+
+export type KubernetesTerminalOutput = TerminalOutput;
 
 export interface KubernetesPortForwardState {
   id: string;
@@ -948,9 +965,17 @@ export interface UiPreferences {
   notesFontSize: number;
   notesEditorTheme: 'light' | 'dark';
   notesSidebarWidth: number;
+  terminal: TerminalPreferences;
 }
 
-export type UiPreferencesDraft = Pick<UiPreferences, 'notesFontSize' | 'notesEditorTheme'>;
+export interface TerminalPreferences {
+  fontFamily: string;
+  fontSize: number;
+  theme: 'default' | 'light' | 'dracula' | 'solarized-dark';
+}
+
+export type UiPreferencesDraft = Pick<UiPreferences, 'notesFontSize' | 'notesEditorTheme'>
+  & Partial<Pick<UiPreferences, 'terminal'>>;
 
 export type TriliumImportPhase =
   | 'discovering'
@@ -1344,6 +1369,20 @@ export interface ProxyApi {
 }
 
 export interface ServiceApi {
+  openSshTerminal: (hostId: string, id: string) => Promise<SshTerminalState>;
+  openLocalTerminal: (id: string) => Promise<LocalTerminalState>;
+  writeLocalTerminal: (id: string, data: string) => Promise<void>;
+  resizeLocalTerminal: (id: string, cols: number, rows: number) => Promise<void>;
+  closeLocalTerminal: (id: string) => Promise<void>;
+  acknowledgeLocalTerminalOutput: (id: string, characters: number) => Promise<void>;
+  onLocalTerminalChanged: (listener: (state: LocalTerminalState) => void) => () => void;
+  onLocalTerminalOutput: (listener: (output: TerminalOutput) => void) => () => void;
+  writeSshTerminal: (id: string, data: string) => Promise<void>;
+  resizeSshTerminal: (id: string, cols: number, rows: number) => Promise<void>;
+  closeSshTerminal: (id: string) => Promise<void>;
+  acknowledgeSshTerminalOutput: (id: string, characters: number) => Promise<void>;
+  onSshTerminalChanged: (listener: (state: SshTerminalState) => void) => () => void;
+  onSshTerminalOutput: (listener: (output: TerminalOutput) => void) => () => void;
   listHosts: () => Promise<HostView[]>;
   getAppMemoryUsage: () => Promise<AppMemoryUsage>;
   saveHost: (host: HostDraft) => Promise<HostView>;
