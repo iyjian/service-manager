@@ -147,6 +147,10 @@ export function applyAppIcon(): void {
 }
 
 export function applyAppMenu(checkForUpdates: () => void): void {
+  if (process.platform === 'win32') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
   if (process.platform !== 'darwin') {
     return;
   }

@@ -2,6 +2,14 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.84] - 2026-09-19
+
+### Fixed
+- Fixed Windows local terminals leaving background helper processes and output threads behind after the shell exits or its tab closes.
+
+### Changed
+- Removed the unused top menu bar on Windows to give the workspace more room.
+
 ## [0.3.83] - 2026-09-19
 
 ### Fixed

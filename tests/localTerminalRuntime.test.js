@@ -16,7 +16,8 @@ function fixture(extra = {}) {
         emit(value) { for (const fn of data) fn(value); },
         end() { for (const fn of [...exit]) fn({ exitCode: 0 }); },
         write(value) { this.writes.push(value); }, resize(...value) { this.sizes.push(value); },
-        kill() { this.killed = true; this.end(); }, pause() { this.paused = true; }, resume() { this.paused = false; },
+        kill(signal) { this.killed = true; this.signal = signal; this.killCount = (this.killCount || 0) + 1; this.end(); },
+        pause() { this.paused = true; }, resume() { this.paused = false; },
       };
       spawned.push(pty); return pty;
     } }), ...extra,
@@ -73,9 +74,55 @@ test('closing or timing out during startup prevents a late PTY, shell exit repor
   const g = fixture({ timeoutMs: 5, loadPty: () => new Promise(() => {}) }); t.after(() => g.runtime.shutdown());
   g.runtime.open(1, 'timeout'); await new Promise((done) => setTimeout(done, 15));
   assert.equal(g.states.at(-1).state, 'error'); assert.match(g.states.at(-1).error, /timed out/);
-  const h = fixture(); t.after(() => h.runtime.shutdown()); h.runtime.open(1, 'exit'); await tick(); h.spawned[0].end();
+  const h = fixture({ platform: 'linux' }); t.after(() => h.runtime.shutdown()); h.runtime.open(1, 'exit'); await tick(); h.spawned[0].end();
   assert.equal(h.states.at(-1).closeReason, 'shell-exit'); assert.equal(h.spawned[0].killed, false);
   h.runtime.shutdown(); assert.throws(() => h.runtime.open(1, 'late'), /shutting down/);
+});
+
+test('Windows shell exit releases its PTY and WinPTY output worker exactly once without closing another session', async (t) => {
+  const f = fixture({ platform: 'win32' }); t.after(() => f.runtime.shutdown());
+  f.runtime.open(1, 'exited'); f.runtime.open(1, 'still-open'); await tick();
+  const pty = f.spawned[0]; let disposed = 0;
+  pty._agent = { _useConpty: false, _conoutSocketWorker: { dispose() { disposed++; } } };
+  pty.emit('final output'); pty.end();
+  f.runtime.close(1, 'exited'); pty.end(); pty.emit('late output');
+  assert.equal(pty.killCount, 1); assert.equal(pty.signal, undefined); assert.equal(disposed, 1);
+  assert.equal(f.spawned[1].killed, false);
+  assert.deepEqual(f.outputs.map((event) => event.data), ['final output']);
+  assert.deepEqual(f.states.filter((state) => state.id === 'exited').map((state) => [state.state, state.closeReason]),
+    [['open', undefined], ['closed', 'shell-exit']]);
+  f.runtime.write(1, 'still-open', 'echo alive\r');
+  assert.deepEqual(f.spawned[1].writes, ['echo alive\r']);
+});
+
+test('WinPTY cleanup also runs for tab close, window close, shutdown and errors, even when native kill throws', async () => {
+  for (const reason of ['tab', 'window', 'shutdown', 'output-error', 'native-error']) {
+    const f = fixture({ platform: 'win32' }); f.runtime.open(1, reason); await tick();
+    const pty = f.spawned[0]; let disposed = 0;
+    pty._agent = { _useConpty: false, _conoutSocketWorker: { dispose() { disposed++; } } };
+    if (reason === 'native-error') pty.kill = () => { throw new Error('already closed'); };
+    if (reason === 'window') f.runtime.closeOwner(1);
+    else if (reason === 'shutdown') f.runtime.shutdown();
+    else if (reason === 'output-error') pty.emit('x'.repeat(1024 * 1024 + 1));
+    else f.runtime.close(1, reason);
+    f.runtime.shutdown();
+    assert.equal(disposed, 1, reason);
+    assert.equal(f.states.filter((state) => state.state !== 'open').length, 1, reason);
+    assert.equal(f.states.at(-1).closeReason, undefined, reason);
+  }
+});
+
+test('ConPTY uses its own worker cleanup and POSIX only kills shells that have not exited', async () => {
+  const win = fixture({ platform: 'win32' }); win.runtime.open(1, 'conpty'); await tick();
+  win.spawned[0]._agent = { _useConpty: true, _conoutSocketWorker: { dispose() { assert.fail('ConPTY owns its worker disposal'); } } };
+  win.spawned[0].end(); assert.equal(win.spawned[0].killCount, 1); win.runtime.shutdown();
+  for (const platform of ['linux', 'darwin']) {
+    const f = fixture({ platform });
+    f.runtime.open(1, 'exit'); f.runtime.open(1, 'close'); await tick();
+    f.spawned[0].end(); f.runtime.close(1, 'close'); f.runtime.shutdown();
+    assert.equal(f.spawned[0].killed, false);
+    assert.equal(f.spawned[1].killCount, 1); assert.equal(f.spawned[1].signal, 'SIGKILL');
+  }
 });
 
 test('startup failures keep a sanitized diagnostic and shutdown kills all live shells', async () => {

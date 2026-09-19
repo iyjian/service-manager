@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IDisposable, IPty, IPtyForkOptions } from 'node-pty';
 import type { LocalTerminalState, TerminalOutput } from '../../shared/types';
+import { disposeLocalPty } from './localPtyCleanup';
 
 const OUTPUT_CHUNK = 16_384;
 const OUTPUT_HIGH_WATER = 128 * 1024;
@@ -54,12 +55,14 @@ export interface LocalTerminalOptions {
   shell?: { file: string; args: string[]; name: string };
   cwd?: string;
   timeoutMs?: number;
+  platform?: NodeJS.Platform;
 }
 
 /** Window-owned local PTYs. Shell paths, environment and cwd are main-only. */
 export class LocalTerminalRuntime {
   private readonly sessions = new Map<string, Session>();
   private stopped = false;
+  private get platform(): NodeJS.Platform { return this.options.platform ?? process.platform; }
   constructor(private readonly options: LocalTerminalOptions) {}
 
   open(owner: number, id: string): LocalTerminalState {
@@ -69,7 +72,7 @@ export class LocalTerminalRuntime {
     if ([...this.sessions.values()].filter((session) => session.owner === owner).length >= 32) {
       throw new Error('Close a local terminal before opening another.');
     }
-    const shell = this.options.shell ?? localShell(process.platform, process.env, os.userInfo().shell);
+    const shell = this.options.shell ?? localShell(this.platform, process.env, os.userInfo().shell);
     const session: Session = { owner, state: { id, shell: shell.name, state: 'connecting' }, listeners: [],
       cols: 80, rows: 24, outstanding: 0, inputBudget: 256 * 1024, inputAt: Date.now() };
     this.sessions.set(id, session);
@@ -171,9 +174,7 @@ export class LocalTerminalRuntime {
     this.sessions.delete(session.state.id);
     clearTimeout(session.timer);
     for (const listener of session.listeners) listener.dispose();
-    if (!exited) {
-      try { session.pty?.kill(process.platform === 'win32' ? undefined : 'SIGKILL'); } catch { /* Already exited. */ }
-    }
+    if (session.pty) disposeLocalPty(session.pty, exited, this.platform);
     session.state = { ...session.state, state, error, ...(exited ? { closeReason: 'shell-exit' as const } : {}) };
     this.options.state(session.owner, { ...session.state });
   }
