@@ -531,8 +531,9 @@ test('Bundled comic-mono font retains its local license', async () => {
   const declaredFonts = await Promise.all(declaredFontPaths.map((fontPath) => stat(fontPath)));
 
   assert.ok(comicFont.size > 10_000);
-  assert.equal(declaredFonts.length, 6);
+  assert.equal(declaredFonts.length, 9);
   assert.match(await readFile(path.join(fontRoot, 'LICENSE-JetBrainsMono.txt'), 'utf8'), /SIL OPEN FONT LICENSE/);
+  assert.match(await readFile(path.join(fontRoot, 'LICENSE-SourceHanSans.txt'), 'utf8'), /SIL OPEN FONT LICENSE/);
   assert.ok(declaredFonts.every((font) => font.isFile() && font.size > 0));
   assert.match(comicLicense, /MIT License[\s\S]*Original work Copyright \(c\) 2018 Shannon Miwa[\s\S]*Modified work Copyright \(c\) 2019 dtinth/);
   assert.ok(packageJson.build.files.includes('assets/**/*'));

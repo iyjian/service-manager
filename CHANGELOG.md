@@ -2,6 +2,19 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.86] - 2026-09-20
+
+### Changed
+- Windows now uses bundled Inter and Source Han Sans for consistent English and Chinese text, with larger small controls and clearer text weights. macOS keeps its existing typography.
+- Windows addresses, ports, and default code views now use bundled JetBrains Mono, including the SQL editor's default font. Comic mode and saved editor font sizes are preserved.
+
+## [0.3.85] - 2026-09-19
+
+### Changed
+- Shortened the local terminal button and tab titles to Local.
+- SQL Editor now marks the current executable statement with a continuous, full-width light gray background instead of blue highlights behind individual text fragments.
+- Windows now shows the app version and live memory usage in the native window title bar, removing the duplicate title from the Hosts toolbar. macOS keeps its existing layout.
+
 ## [0.3.84] - 2026-09-19
 
 ### Fixed

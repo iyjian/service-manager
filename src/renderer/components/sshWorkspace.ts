@@ -183,7 +183,7 @@ export function createSshWorkspace(options: {
       sequences.set(key, sequence);
       const id = crypto.randomUUID();
       const tab: SshTab = {
-        id, kind: host ? 'ssh' : 'local', hostId: host?.id ?? '', hostName: host?.name ?? 'Local Terminal', sequence,
+        id, kind: host ? 'ssh' : 'local', hostId: host?.id ?? '', hostName: host?.name ?? 'Local', sequence,
         state: host ? { id, hostId: host.id, state: 'connecting' } : { id, shell: 'Local', state: 'connecting' },
       };
       tabs.set(id, tab);

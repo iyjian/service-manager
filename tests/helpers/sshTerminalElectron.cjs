@@ -212,7 +212,7 @@ async function main() {
   await click('[data-page-target="kubernetes"]');
   assert.ok(!localStates.some((state) => state.id === localId && state.state === 'closed'));
   await click('[data-page-target="hosts"]');
-  assert.ok(await evaluate(`document.querySelector('#ssh-workspace [aria-selected="true"]').textContent.includes('Local Terminal')`));
+  assert.ok(await evaluate(`document.querySelector('#ssh-workspace [aria-selected="true"]').textContent.includes('Local')`));
   const terminalCount = await evaluate('window.__qaTerminals.length');
   assert.ok(await evaluate(`window.__qaTerminals.at(-1).options.fontFamily.startsWith('"Monaco"') && window.__qaTerminals.at(-1).options.fontSize===18`));
   await click('#nav-settings-btn');

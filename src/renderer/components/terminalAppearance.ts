@@ -18,7 +18,9 @@ let preferences = { ...DEFAULT_TERMINAL_PREFERENCES };
 const listeners = new Set<() => void>();
 
 export function terminalFontFamily(font: string): string {
-  return `"${font}", "JetBrains Mono", monospace`;
+  const cjkFallback = typeof navigator !== 'undefined' && /^win/i.test(navigator.platform)
+    ? ', "Source Han Sans CN"' : '';
+  return `"${font}", "JetBrains Mono"${cjkFallback}, monospace`;
 }
 export function terminalTheme(theme: TerminalPreferences['theme']): ITheme { return { ...themes[theme] }; }
 export function getTerminalPreferences(): TerminalPreferences { return { ...preferences }; }

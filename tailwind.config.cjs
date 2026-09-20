@@ -18,8 +18,8 @@ module.exports = {
         error: 'var(--color-error-500)',
       },
       fontFamily: {
-        sans: ['STM UI', 'ui-sans-serif', '-apple-system', 'Segoe UI', 'PingFang SC', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'JetBrains Mono', 'Consolas', 'monospace'],
+        sans: ['var(--font-family-ui)'],
+        mono: ['var(--font-family-mono)'],
       },
       borderRadius: {
         sm: 'var(--radius-sm)',

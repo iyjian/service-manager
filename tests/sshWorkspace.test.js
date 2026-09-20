@@ -72,15 +72,15 @@ test('local and SSH tabs share a panel but keep independent numbering, input rou
   await h.workspace.openLocal(); h.localChange(0, 'open');
   await h.workspace.open({ id: 'a', name: 'Alpha' }); h.change(0, 'open');
   await h.workspace.openLocal(); h.localChange(1, 'open'); h.flush();
-  assert.deepEqual(h.captions(), ['Local Terminal #1', 'Alpha #1', 'Local Terminal #2']);
+  assert.deepEqual(h.captions(), ['Local #1', 'Alpha #1', 'Local #2']);
   h.instances[2].input('echo local\r');
   assert.deepEqual(h.localSent, [[h.localOpened[1].id, 'echo local\r']]); assert.deepEqual(h.sent, []);
   h.workspace.setVisible(false); h.localOutput(0, 'background'); h.workspace.setVisible(true);
   assert.deepEqual(h.localClosed, []); assert.deepEqual(h.instances[0].writes, ['background']);
   h.localChange(1, 'closed', 'shell-exit');
-  assert.deepEqual(h.captions(), ['Local Terminal #1', 'Alpha #1']);
+  assert.deepEqual(h.captions(), ['Local #1', 'Alpha #1']);
   h.click(0, true); assert.deepEqual(h.localClosed, [h.localOpened[0].id]); assert.deepEqual(h.closed, []);
-  await h.workspace.openLocal(); assert.deepEqual(h.captions(), ['Alpha #1', 'Local Terminal #3']);
+  await h.workspace.openLocal(); assert.deepEqual(h.captions(), ['Alpha #1', 'Local #3']);
 }));
 
 test('each click creates a distinct SSH tab with independent monotonic host numbering', async () => harness(async (h) => {

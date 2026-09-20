@@ -87,6 +87,10 @@ const pageMessageTextElement = requireElement<HTMLButtonElement>('#page-message-
 const pageMessageCloseButton = requireElement<HTMLButtonElement>('#page-message-close-btn');
 const pageVersionElement = requireElement<HTMLElement>('#page-version');
 const pageStatsElement = requireElement<HTMLElement>('#page-stats');
+const useNativeWindowTitle = /^win/i.test(navigator.platform);
+document.documentElement.classList.toggle('windows-typography', useNativeWindowTitle);
+requireElement<HTMLElement>('.page-title-row').classList.toggle('hidden', useNativeWindowTitle);
+let currentAppVersion = '';
 const hostDialogMessageElement = requireElement<HTMLDivElement>('#host-dialog-message');
 const hostDialogMessageTextElement = requireElement<HTMLElement>('#host-dialog-message-text');
 const hostDialogMessageCloseButton = requireElement<HTMLButtonElement>('#host-dialog-message-close-btn');
@@ -334,8 +338,10 @@ function shouldStopLogRefresh(message: string): boolean {
 }
 
 function renderUpdateState(state: UpdateState): void {
+  currentAppVersion = state.currentVersion;
   pageVersionElement.textContent = `v${state.currentVersion}`;
   pageVersionElement.classList.remove('hidden');
+  renderWindowTitle();
 
   updateStatusHintElement.classList.remove(
     'hidden',
@@ -2607,10 +2613,20 @@ function scheduleRuntimeStatusDomUpdate(target: RuntimeStatusDomTarget): void {
 
 function renderPageStats(): void {
   const bytes = appMemoryUsage?.bytes;
-  pageStatsElement.textContent = typeof bytes === 'number' && bytes >= 0
+  pageStatsElement.textContent = typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0
     ? `Memory ${formatGigabytes(bytes)} GB`
     : 'Memory unavailable';
   pageStatsElement.classList.remove('hidden');
+  renderWindowTitle();
+}
+
+function renderWindowTitle(): void {
+  if (!useNativeWindowTitle) return;
+  document.title = [
+    'Service Manager',
+    currentAppVersion ? `v${currentAppVersion}` : '',
+    pageStatsElement.textContent,
+  ].filter(Boolean).join(' · ');
 }
 
 function formatGigabytes(bytes: number): string {
@@ -2813,7 +2829,7 @@ registerPage({
   onHide: () => {
     isHostsPageActive = false;
     sshWorkspace?.setVisible(false);
-    stopAppMemoryRefresh();
+    if (!useNativeWindowTitle) stopAppMemoryRefresh();
     stopStatusAutoRefresh();
     stopLogAutoRefresh();
     activeLogTarget = null;
@@ -3222,6 +3238,7 @@ window.settingsApi.onPersistentDataReloaded((event) => {
 (async function init() {
   try {
     await startupS3SyncReady;
+    if (useNativeWindowTitle) startAppMemoryRefresh();
     initNav('hosts');
     resetForm();
     await loadHosts();

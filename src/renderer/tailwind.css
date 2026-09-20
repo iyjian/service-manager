@@ -5062,16 +5062,16 @@
     @apply border-r border-zinc-200 bg-zinc-50 text-zinc-400;
   }
 
-  .sql-editor .cm-activeLine,
+  .sql-editor .cm-activeLine {
+    background-color: transparent;
+  }
+
   .sql-editor .cm-activeLineGutter {
-    @apply bg-blue-50/70;
+    @apply bg-zinc-100 text-zinc-600;
   }
 
   .sql-editor .cm-sql-current-statement {
-    background-color: rgb(219 234 254 / 0.58);
-    border-radius: 2px;
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
+    background-color: rgb(0 0 0 / 0.045);
   }
 
   .sql-editor .cm-selectionBackground,

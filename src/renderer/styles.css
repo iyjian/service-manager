@@ -46,6 +46,30 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: 'Source Han Sans CN';
+  src: url('../../assets/fonts/source-han-sans-cn-variable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 250 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/jetbrains-mono-medium.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('../../assets/fonts/jetbrains-mono-semibold.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
 :root {
   --color-bg-page: #fafafa;
   --color-bg-surface: #ffffff;
@@ -86,6 +110,7 @@
   --color-error-500: #ef4444;
   --color-error-bg: #fef2f2;
   --font-family-base: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', Inter, 'PingFang SC', sans-serif;
+  --font-family-ui: 'STM UI', ui-sans-serif, -apple-system, 'Segoe UI', 'PingFang SC', sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'JetBrains Mono', Consolas, monospace;
   --font-family-notes-ui: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
   --font-family-notes-code: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
@@ -116,6 +141,48 @@
   --radius-md: var(--radius-lg);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.08);
   --shadow-sm: none;
+}
+
+/* Keep the existing macOS/Linux stacks and editor size preferences intact. */
+html.windows-typography {
+  --font-family-base: 'STM UI', 'Source Han Sans CN', 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --font-family-ui: var(--font-family-base);
+  --font-family-mono: 'JetBrains Mono', 'Source Han Sans CN', Consolas, monospace;
+  --font-family-notes-ui: var(--font-family-base), 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --font-family-notes-code: var(--font-family-mono);
+  --font-family-notes-code-block: var(--font-family-mono);
+}
+
+html.windows-typography body {
+  font-weight: 400;
+}
+
+html.windows-typography :is(.btn, .input, .runtime-row) {
+  font-size: 14px;
+}
+
+html.windows-typography :is(.host-panel-desc, .runtime-empty, .settings-subtitle, .settings-tab, .sql-session-action) {
+  font-size: 13px;
+}
+
+html.windows-typography .host-panel-name {
+  font-size: 15px;
+}
+
+html.windows-typography .runtime-section-title {
+  font-size: 12px;
+}
+
+html.windows-typography :is(.runtime-auto, .status-retry) {
+  font-size: 10px;
+}
+
+html.windows-typography :is(.btn, .settings-tab, .sql-session-action) {
+  font-weight: 500;
+}
+
+html.windows-typography :is(.page-title, .section-title, .host-panel-name, .runtime-section-title) {
+  font-weight: 600;
 }
 
 * {
@@ -167,6 +234,15 @@ textarea {
 .terminal-log {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.page-brand:has(.page-title-row.hidden):has(.update-status-hint.hidden) {
+  display: none;
+}
+
+.page-head-main:has(.page-title-row.hidden) .page-actions {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .ansi-bold {
