@@ -132,3 +132,51 @@ test('startup failures keep a sanitized diagnostic and shutdown kills all live s
   const g = fixture(); g.runtime.open(1, 'a'); g.runtime.open(2, 'b'); await tick(); g.runtime.shutdown();
   assert.ok(g.spawned.every((pty) => pty.killed));
 });
+
+test('POSIX local shells get a UTF-8 character locale even without a desktop launcher locale', () => {
+  for (const [platform, fallback] of [['darwin', 'en_US.UTF-8'], ['linux', 'C.UTF-8']]) {
+    for (const source of [{}, { LANG: '' }, { LANG: 'C' }, { LANG: 'en_US.UTF-8', LC_CTYPE: 'C' },
+      { LANG: 'zh_CN.UTF-8', LC_CTYPE: 'UTF-8', LC_ALL: 'POSIX' }]) {
+      const original = { ...source };
+      const env = localShellEnvironment(source, platform);
+      assert.equal(env.LC_ALL || env.LC_CTYPE || env.LANG, fallback);
+      assert.deepEqual(source, original);
+    }
+    for (const source of [{ LANG: 'zh_CN.UTF-8' }, { LANG: 'C', LC_CTYPE: 'UTF-8' },
+      { LANG: 'C', LC_ALL: 'ja_JP.utf8' }]) {
+      const env = localShellEnvironment(source, platform);
+      for (const key of ['LANG', 'LC_CTYPE', 'LC_ALL']) assert.equal(env[key], source[key]);
+    }
+    const env = localShellEnvironment({ LANG: 'fr_FR.ISO8859-1', LC_TIME: 'de_DE.UTF-8' }, platform);
+    assert.equal(env.LANG, 'fr_FR.ISO8859-1');
+    assert.equal(env.LC_TIME, 'de_DE.UTF-8');
+    assert.equal(env.LC_CTYPE, fallback);
+  }
+  const windows = localShellEnvironment({ LANG: 'C' }, 'win32');
+  assert.equal(windows.LANG, 'C');
+  assert.equal(windows.LC_CTYPE, undefined);
+});
+
+test('macOS zsh echoes Chinese input intact with a desktop launcher environment', {
+  skip: process.platform !== 'darwin', timeout: 5000,
+}, async (t) => {
+  const pty = require('node-pty').spawn('/bin/zsh', ['-f', '-i'], {
+    name: 'xterm-256color', cols: 80, rows: 24, encoding: 'utf8',
+    env: localShellEnvironment({ PATH: '/usr/bin:/bin', PS1: 'SM_READY> ' }, 'darwin'),
+  });
+  t.after(() => pty.kill());
+  await new Promise((resolve, reject) => {
+    let output = '', sent = false;
+    const listener = pty.onData((data) => {
+      output += data;
+      if (!sent && output.includes('SM_READY> ')) {
+        sent = true; output = ''; pty.write('理论');
+      } else if (sent && output.includes('理论')) {
+        assert.doesNotMatch(output, /�|<0090>|<0086>/);
+        resolve();
+      }
+    });
+    const exit = pty.onExit(() => reject(new Error('Shell exited before echoing Chinese input.')));
+    t.after(() => { listener.dispose(); exit.dispose(); });
+  });
+});

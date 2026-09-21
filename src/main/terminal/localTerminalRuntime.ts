@@ -26,10 +26,22 @@ export function localShell(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, lo
 
 // A local login shell inherits the user's environment, without the launcher
 // switches that can accidentally run Electron/Node children in debug mode.
-export function localShellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function localShellEnvironment(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const result = { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor', TERM_PROGRAM: 'ServiceManager' };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_INSPECT_RESUME_ON_START', 'VSCODE_INSPECTOR_OPTIONS']) {
     delete (result as NodeJS.ProcessEnv)[key];
+  }
+  if (platform !== 'win32') {
+    // Desktop launchers may provide no locale, leaving the shell's line editor
+    // interpreting UTF-8 input as individual bytes. LC_ALL overrides LC_CTYPE.
+    const fallback = platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8';
+    const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
+    const localeEnv: NodeJS.ProcessEnv = result;
+    if (!localeEnv.LANG) localeEnv.LANG = fallback;
+    if (!locale || !/utf-?8(?:@.*)?$/i.test(locale)) {
+      localeEnv.LC_CTYPE = fallback;
+      if (env.LC_ALL) localeEnv.LC_ALL = fallback;
+    }
   }
   return result;
 }
@@ -89,7 +101,7 @@ export class LocalTerminalRuntime {
       if (!this.alive(session)) return;
       const pty = ptyModule.spawn(shell.file, shell.args, {
         name: 'xterm-256color', cols: session.cols, rows: session.rows,
-        cwd: this.options.cwd ?? os.homedir(), env: localShellEnvironment(process.env), encoding: 'utf8',
+        cwd: this.options.cwd ?? os.homedir(), env: localShellEnvironment(process.env, this.platform), encoding: 'utf8',
       });
       session.pty = pty;
       session.listeners.push(pty.onData((data) => this.emit(session, data)));

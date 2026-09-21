@@ -2,7 +2,10 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
-## [0.3.86] - 2026-09-20
+## [0.3.86] - 2026-09-21
+
+### Fixed
+- Fixed garbled Chinese input in Local shell when the app starts without a UTF-8 locale.
 
 ### Changed
 - Windows now uses bundled Inter and Source Han Sans for consistent English and Chinese text, with larger small controls and clearer text weights. macOS keeps its existing typography.
