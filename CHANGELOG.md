@@ -2,6 +2,14 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.87] - 2026-09-21
+
+### Fixed
+- Fixed garbled Chinese input in macOS Local terminals launched with a Linux-style UTF-8 locale.
+
+### Added
+- Windows terminals now copy highlighted text on right-click and paste on the next right-click after the selection clears.
+
 ## [0.3.86] - 2026-09-21
 
 ### Fixed

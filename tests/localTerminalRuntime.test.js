@@ -160,23 +160,39 @@ test('POSIX local shells get a UTF-8 character locale even without a desktop lau
 test('macOS zsh echoes Chinese input intact with a desktop launcher environment', {
   skip: process.platform !== 'darwin', timeout: 5000,
 }, async (t) => {
-  const pty = require('node-pty').spawn('/bin/zsh', ['-f', '-i'], {
-    name: 'xterm-256color', cols: 80, rows: 24, encoding: 'utf8',
-    env: localShellEnvironment({ PATH: '/usr/bin:/bin', PS1: 'SM_READY> ' }, 'darwin'),
-  });
-  t.after(() => pty.kill());
-  await new Promise((resolve, reject) => {
-    let output = '', sent = false;
-    const listener = pty.onData((data) => {
-      output += data;
-      if (!sent && output.includes('SM_READY> ')) {
-        sent = true; output = ''; pty.write('理论');
-      } else if (sent && output.includes('理论')) {
-        assert.doesNotMatch(output, /�|<0090>|<0086>/);
-        resolve();
-      }
+  for (const locale of [{}, { LANG: 'C.UTF-8' }, { LC_CTYPE: 'C.UTF-8' }, { LC_ALL: 'C.UTF-8' }]) {
+    await t.test(JSON.stringify(locale), async (t) => {
+      const pty = require('node-pty').spawn('/bin/zsh', ['-f', '-i'], {
+        name: 'xterm-256color', cols: 80, rows: 24, encoding: 'utf8',
+        env: localShellEnvironment({ PATH: '/usr/bin:/bin', PS1: 'SM_READY> ', ...locale }, 'darwin'),
+      });
+      t.after(() => pty.kill());
+      await new Promise((resolve, reject) => {
+        let output = '', sent = false;
+        const listener = pty.onData((data) => {
+          output += data;
+          if (!sent && output.includes('SM_READY> ')) {
+            sent = true; output = ''; pty.write('理论');
+          } else if (sent && output.includes('理论')) {
+            assert.doesNotMatch(output, /�|<0090>|<0086>/);
+            resolve();
+          }
+        });
+        const exit = pty.onExit(() => reject(new Error('Shell exited before echoing Chinese input.')));
+        t.after(() => { listener.dispose(); exit.dispose(); });
+      });
     });
-    const exit = pty.onExit(() => reject(new Error('Shell exited before echoing Chinese input.')));
-    t.after(() => { listener.dispose(); exit.dispose(); });
-  });
+  }
+});
+
+test('Linux UTF-8 C locales fall back on macOS while remaining intact on Linux', () => {
+  for (const value of ['C.UTF-8', 'C.utf8', 'POSIX.UTF-8']) {
+    for (const key of ['LANG', 'LC_CTYPE', 'LC_ALL']) {
+      const source = { [key]: value };
+      const mac = localShellEnvironment(source, 'darwin');
+      assert.equal(mac.LC_ALL || mac.LC_CTYPE || mac.LANG, 'en_US.UTF-8');
+      const linux = localShellEnvironment(source, 'linux');
+      assert.equal(linux[key], value);
+    }
+  }
 });

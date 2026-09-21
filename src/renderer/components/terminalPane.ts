@@ -1,6 +1,7 @@
 import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
 import type { Terminal as XtermTerminal } from '@xterm/xterm';
 import { getTerminalPreferences, onTerminalAppearanceChanged, terminalFontFamily, terminalTheme } from './terminalAppearance.js';
+import { bindTerminalClipboard } from './terminalClipboard.js';
 import type {
   TerminalOutput,
   TerminalState,
@@ -19,6 +20,7 @@ interface TerminalPaneView {
   host: HTMLElement;
   terminal?: XtermTerminal;
   fit?: XtermFitAddon;
+  disposeClipboard?: () => void;
   resize: () => void;
 }
 
@@ -98,6 +100,7 @@ export function createTerminalPane(options: {
       window.removeEventListener('resize', current.resize);
       current.host.remove();
     }
+    current.disposeClipboard?.();
     current.terminal?.dispose();
     views.delete(id);
     return true;
@@ -162,6 +165,10 @@ export function createTerminalPane(options: {
     terminalSurface.className = 'kubernetes-terminal-surface';
     terminalHost.appendChild(terminalSurface);
     terminal.open(terminalSurface);
+    next.disposeClipboard = bindTerminalClipboard(terminalHost, terminal, window.serviceApi,
+      () => activeId === next.state.id && views.get(next.state.id) === next && !finalizedIds.has(next.state.id),
+      () => next.state.state === 'open',
+      typeof navigator === 'undefined' ? '' : navigator.platform);
     const resize = (): void => {
       if ((!options.retainFinalViews && next.state.state !== 'open')
         || activeId !== next.state.id

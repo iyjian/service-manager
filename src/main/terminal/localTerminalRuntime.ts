@@ -38,7 +38,10 @@ export function localShellEnvironment(env: NodeJS.ProcessEnv, platform: NodeJS.P
     const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
     const localeEnv: NodeJS.ProcessEnv = result;
     if (!localeEnv.LANG) localeEnv.LANG = fallback;
-    if (!locale || !/utf-?8(?:@.*)?$/i.test(locale)) {
+    // C.UTF-8 is common in Linux/developer launchers, but macOS does not
+    // provide it: zsh silently falls back to byte-wise character handling.
+    const unsupportedMacLocale = platform === 'darwin' && /^(?:C|POSIX)\.utf-?8$/i.test(locale ?? '');
+    if (!locale || !/utf-?8(?:@.*)?$/i.test(locale) || unsupportedMacLocale) {
       localeEnv.LC_CTYPE = fallback;
       if (env.LC_ALL) localeEnv.LC_ALL = fallback;
     }
