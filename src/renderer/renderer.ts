@@ -3248,13 +3248,13 @@ window.settingsApi.onPersistentDataReloaded((event) => {
     initNav('hosts');
     resetForm();
     await loadHosts();
-    await refreshAllServices(true);
+    if (!new URLSearchParams(window.location.search).get('panel') || new URLSearchParams(window.location.search).get('panel') === 'hosts') await refreshAllServices(true);
     try {
       renderUpdateState(await window.serviceApi.getUpdateState());
     } catch {
       // no-op
     }
-    void maybeShowChangelog();
+    if (!new URLSearchParams(window.location.search).get('panel') || new URLSearchParams(window.location.search).get('panel') === 'hosts') void maybeShowChangelog();
   } catch (error) {
     reportRendererError('init', error, 'Failed to initialize UI.');
   }

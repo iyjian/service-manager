@@ -590,6 +590,7 @@ function finalizeDualTargetRuntime(runtime) {
 }
 
 mkdirSync(outDir, { recursive: true });
+copyFileSync(join(root, 'src', 'renderer', 'panelShell.html'), join(outDir, 'panelShell.html'));
 copyFileSync(join(root, 'src', 'renderer', 'styles.css'), join(outDir, 'styles.css'));
 copyFileSync(join(root, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'), join(outDir, 'xterm.css'));
 copyFileSync(join(root, 'node_modules', '@xterm', 'xterm', 'lib', 'xterm.js'), join(outDir, 'xterm.js'));

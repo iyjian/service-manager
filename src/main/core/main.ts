@@ -1,3 +1,4 @@
+import { PanelWindowManager, type RendererSurface } from './panelWindows';
 import { flushSentry } from './sentry';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -163,9 +164,7 @@ import {
   APP_DISPLAY_NAME,
   applyAppIcon,
   applyAppMenu,
-  createAppWindow,
   getAppIconImage,
-  primaryRendererWindow as findPrimaryRendererWindow,
 } from './appWindow';
 
 const forwardOwners = new Map<string, string>();
@@ -183,7 +182,8 @@ let s3SyncRuntime: S3SyncRuntime | null = null;
 let proxyRuntime: ProxyRuntime | null = null;
 let kubernetesRuntime: KubernetesRuntime | null = null;
 let runtimeLogWriter: RuntimeLogWriter | null = null;
-const rendererWindows = new Set<BrowserWindow>();
+const rendererWindows = new Set<RendererSurface>();
+let panelWindows: PanelWindowManager | undefined;
 const localTerminalRuntime = new LocalTerminalRuntime({
   state: (owner, state) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.localTerminalState, state),
   output: (owner, output) => rendererWindowForSender(owner)?.webContents.send(IPC_CHANNELS.localTerminalOutput, output),
@@ -917,7 +917,7 @@ async function restoreNotesWorkspace(
   }
 }
 
-function rendererNotesWindows(): BrowserWindow[] {
+function rendererNotesWindows(): RendererSurface[] {
   return [...rendererWindows].filter((window) =>
     !window.isDestroyed()
     && !window.webContents.isDestroyed()
@@ -925,7 +925,7 @@ function rendererNotesWindows(): BrowserWindow[] {
   );
 }
 
-function rendererWindowForSender(senderId: number): BrowserWindow | undefined {
+function rendererWindowForSender(senderId: number): RendererSurface | undefined {
   return [...rendererWindows].find((window) =>
     !window.isDestroyed()
     && !window.webContents.isDestroyed()
@@ -1026,11 +1026,11 @@ async function takeRecentNoteExport(senderId: number): Promise<string | undefine
 }
 
 function primaryRendererWindow(): BrowserWindow | null {
-  return findPrimaryRendererWindow(rendererWindows);
+  return panelWindows && !panelWindows.mainWindow.isDestroyed() ? panelWindows.primaryWindow() : null;
 }
 
 function requestRendererNotesFlush(
-  window: BrowserWindow,
+  window: RendererSurface,
   persistentApplyId?: string,
 ): Promise<void> {
   if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
@@ -1060,7 +1060,7 @@ function requestRendererNotesFlush(
   });
 }
 
-function requestRendererCloseShortcut(window: BrowserWindow): Promise<boolean> {
+function requestRendererCloseShortcut(window: RendererSurface): Promise<boolean> {
   if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve(false);
   const requestId = randomUUID();
   return new Promise<boolean>((resolve) => {
@@ -1099,7 +1099,7 @@ async function flushRendererNotes(): Promise<void> {
 
 interface RendererNotesPersistentApply {
   id: string;
-  windows: BrowserWindow[];
+  windows: RendererSurface[];
 }
 
 function releaseRendererNotesPersistentApply(apply: RendererNotesPersistentApply): void {
@@ -1222,29 +1222,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function createWindow(): BrowserWindow {
-  const window = createAppWindow({
+  if (panelWindows && !panelWindows.mainWindow.isDestroyed()) { panelWindows.show(); return panelWindows.mainWindow; }
+  panelWindows = new PanelWindowManager({
     rendererWindows,
-    rendererExportGenerations,
-    deleteRecentNoteExport,
-    invalidateRendererExportState,
-    isCloseWindowShortcut,
-    requestRendererCloseShortcut,
-    requestRendererNotesFlush,
-    requestQuitAfterRuntimeShutdown,
-    canQuitImmediately: () => quitCoordinator.canQuitImmediately(),
-    startS3AutoSync: () => {
-      void s3SyncRuntime?.startAutoSync().catch((error) => logRuntimeError('s3:auto-start', error));
+    onSurfaceCreated: (surface) => {
+      const owner = surface.webContents.id;
+      rendererExportGenerations.set(owner, 0);
+      const closeTerminals = (): void => { sshTerminalRuntime.closeOwner(owner); localTerminalRuntime.closeOwner(owner); };
+      surface.webContents.on('render-process-gone', () => { closeTerminals(); invalidateRendererExportState(owner); });
+      surface.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+        if (isMainFrame) { closeTerminals(); invalidateRendererExportState(owner); }
+      });
     },
-    logRuntimeError,
+    onSurfaceClosed: (surface) => {
+      const owner = surface.webContents.id;
+      sshTerminalRuntime.closeOwner(owner); localTerminalRuntime.closeOwner(owner);
+      deleteRecentNoteExport(owner); rendererExportGenerations.delete(owner);
+    },
+    canQuitImmediately: () => quitCoordinator.canQuitImmediately(),
+    requestQuit: requestQuitAfterRuntimeShutdown,
+    startSync: () => { void s3SyncRuntime?.startAutoSync().catch(error => logRuntimeError('s3:auto-start', error)); },
+    closeShortcut: isCloseWindowShortcut,
+    requestCloseShortcut: requestRendererCloseShortcut,
+    report: logRuntimeError,
   });
-  const owner = window.webContents.id;
-  const closeTerminals = (): void => { sshTerminalRuntime.closeOwner(owner); localTerminalRuntime.closeOwner(owner); };
-  window.once('closed', closeTerminals);
-  window.webContents.on('render-process-gone', closeTerminals);
-  window.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
-    if (isMainFrame) closeTerminals();
-  });
-  return window;
+  return panelWindows.mainWindow;
 }
 
 function toView(hosts: HostConfig[]) {
@@ -2102,7 +2104,7 @@ function registerIpcHandlers(): void {
     const extension = input.format === 'pdf' ? 'pdf' : 'md';
     const senderId = event.sender.id;
     const rendererGeneration = rendererExportGenerations.get(senderId);
-    const parentWindow = rendererWindowForSender(senderId);
+    const parentWindow = rendererWindowForSender(senderId) ? BrowserWindow.fromWebContents(event.sender) ?? primaryRendererWindow() : null;
     if (rendererGeneration === undefined || !parentWindow) {
       throw new Error('The Note export window is no longer available.');
     }
@@ -3353,11 +3355,7 @@ app.whenReady()
       autoStartAbortController.signal
     );
 
-    app.on('activate', () => {
-      if (!primaryRendererWindow()) {
-        createWindow();
-      }
-    });
+    app.on('activate', () => { createWindow(); });
   })
   .catch((error) => {
     logRuntimeError('app:startup', error);

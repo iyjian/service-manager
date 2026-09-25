@@ -401,3 +401,13 @@ contextBridge.exposeInMainWorld('settingsApi', settingsApi);
 contextBridge.exposeInMainWorld('proxyApi', proxyApi);
 contextBridge.exposeInMainWorld('kubernetesApi', kubernetesApi);
 contextBridge.exposeInMainWorld('sqlApi', sqlApi);
+
+contextBridge.exposeInMainWorld('panelWindowApi', {
+  list: () => ipcRenderer.invoke('panels:list'),
+  getState: () => ipcRenderer.invoke('panels:get-state'),
+  activate: (panel: string) => ipcRenderer.invoke('panels:activate', panel),
+  detach: () => ipcRenderer.invoke('panels:detach'),
+  merge: (panel?: string) => ipcRenderer.invoke('panels:merge', panel),
+  focus: (panel: string) => ipcRenderer.invoke('panels:focus', panel),
+  onStateChanged: (listener: (state: import('../../shared/types').PanelWindowState) => void) => subscribe('panels:state', listener),
+});

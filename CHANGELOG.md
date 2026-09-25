@@ -5,9 +5,11 @@ All notable changes to Service Manager are documented in this file. The newest r
 ## [0.3.89] - 2026-09-25
 
 ### Added
+- All registered main panels (including Hosts, Proxy, Kubernetes, SQL, and Notes) can open in separate windows and merge back without losing terminal sessions, logs, or unsaved editor content. Closing a detached window merges it back.
 - Added a Kubernetes Overview with cluster-wide resource counts, per-node CPU/memory/GPU allocation and usage, and node filesystem and persistent-volume capacity. Missing metrics and permissions are clearly indicated.
 
 ### Fixed
+- Fixed clipped and misaligned main-window navigation after detaching a panel; the sidebar now retains its original icons and spacing.
 - Fixed missing Pod CPU and memory usage when the cluster Metrics API provides data; restored live refresh in Workloads → Pods.
 - Pod lists and details now show Terminating, initialization progress, readiness, image-pull and container failures, and completion instead of relying only on the API phase.
 

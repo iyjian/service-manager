@@ -1445,3 +1445,25 @@ export interface ServiceApi {
   onForwardStatusChanged: (listener: (change: TunnelStatusChange) => void) => () => void;
   onUpdateStateChanged: (listener: (state: UpdateState) => void) => () => void;
 }
+
+export interface PanelDefinition {
+  id: string;
+  title: string;
+  icon?: string;
+}
+
+export interface PanelWindowState {
+  active: string;
+  panel?: string;
+  detached: boolean;
+  detachedPanels: string[];
+}
+export interface PanelWindowApi {
+  list(): Promise<PanelDefinition[]>;
+  getState(): Promise<PanelWindowState>;
+  activate(panel: string): Promise<void>;
+  detach(): Promise<void>;
+  merge(panel?: string): Promise<void>;
+  focus(panel: string): Promise<void>;
+  onStateChanged(listener: (state: PanelWindowState) => void): () => void;
+}

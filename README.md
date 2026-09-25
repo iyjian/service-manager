@@ -15,6 +15,12 @@ Service Manager uses a host-centric Electron UI with a `TypeScript + tsc build +
   - add/remove services inside the host modal
 - App UI language: English labels and actions
 
+## Panel Windows
+
+Hosts, Proxy, Kubernetes, SQL, and Notes each support **Open panel in window** at the top of the navigation rail. The entire panel moves to an independent native window, with its sessions, logs, filters, tabs, and unsaved edits intact. Multiple different panels can be detached at once. Use **Merge into main window**, close the detached window, or select its placeholder in the main window to bring it back. Each panel has one persistent instance; moving it does not reload or duplicate connections. On macOS, closing the main window hides it until reopened; quitting the app saves Notes and shuts down runtime resources.
+
+For new panels, see [the panel-window extension guide](docs/panel-windows.md).
+
 ## Core Features
 
 1. Host list with SSH connection settings.

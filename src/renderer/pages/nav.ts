@@ -7,6 +7,7 @@ export interface AppPage {
 }
 
 const ACTIVE_PAGE_STORAGE_KEY = 'active-page';
+const managedPanel = typeof window !== 'undefined' && window.location ? new URLSearchParams(window.location.search).get('panel') : null;
 
 const pages = new Map<string, AppPage>();
 let activePageId: string | null = null;
@@ -39,6 +40,10 @@ export function registerPage(page: AppPage): void {
 }
 
 export function activatePage(pageId: string): void {
+  if (managedPanel && pageId !== managedPanel) {
+    void window.panelWindowApi.activate(pageId);
+    return;
+  }
   const next = pages.get(pageId);
   if (!next || activePageId === pageId) {
     return;
@@ -76,5 +81,29 @@ export function initNav(defaultPageId: string): void {
   } catch {
     // ignore
   }
-  activatePage(saved && pages.has(saved) ? saved : defaultPageId);
+  activatePage(managedPanel && pages.has(managedPanel) ? managedPanel : saved && pages.has(saved) ? saved : defaultPageId);
+  if (managedPanel) {
+    const rail = getNavRail();
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'nav-item panel-window-toggle';
+    button.textContent = '↗';
+    button.setAttribute('aria-label', 'Open panel in window');
+    rail.insertBefore(button, rail.firstElementChild?.nextSibling ?? null);
+    let detached = false;
+    const apply = (state: import('../../shared/types').PanelWindowState): void => {
+      detached = state.detached;
+      button.textContent = detached ? '⇤' : '↗';
+      button.setAttribute('aria-label', detached ? 'Merge into main window' : 'Open panel in window');
+      button.title = detached ? 'Move this panel back without reloading' : 'Move this panel to a separate window';
+      document.documentElement.classList.toggle('panel-detached', detached);
+    };
+    window.panelWindowApi.onStateChanged(apply);
+    void window.panelWindowApi.getState().then(apply);
+    button.addEventListener('click', () => {
+      button.disabled = true;
+      void (detached ? window.panelWindowApi.merge() : window.panelWindowApi.detach())
+        .catch(error => window.dispatchEvent(new CustomEvent('service-manager:toast', { detail: { text: String(error), level: 'error' } })))
+        .finally(() => { button.disabled = false; });
+    });
+  }
 }

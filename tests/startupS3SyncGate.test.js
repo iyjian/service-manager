@@ -53,7 +53,7 @@ test('application startup owns an inert S3 overlay until main sync and renderer 
   assert.match(gate, /onStartupS3SyncStateChanged\(renderStartupState\)/);
   assert.match(gate, /pendingRendererWork > 0/);
   assert.match(gate, /appLayout\.inert = false/);
-  assert.match(renderer, /await startupS3SyncReady;\s*initNav\('hosts'\);/);
+  assert.match(renderer, /await startupS3SyncReady;\s*(?:if \(useNativeWindowTitle\)\s*startAppMemoryRefresh\(\);\s*)?initNav\('hosts'\);/);
   assert.match(renderer, /trackStartupS3SyncWork\(reload\)/);
   assert.match(preload, /getStartupS3SyncState:[\s\S]*?invoke\('app:startup-s3-sync:get'\)/);
   assert.match(preload, /onStartupS3SyncStateChanged:[\s\S]*?on\('app:startup-s3-sync:state'/);

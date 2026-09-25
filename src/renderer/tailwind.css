@@ -5980,3 +5980,10 @@
 .kubernetes-overview-table td:first-child { font-weight: 500; }
 .kubernetes-overview-note { margin: 7px 0; line-height: 1.6; }
 .kubernetes-overview-issues { margin-top: 12px; color: #a16207; font-size: 11px; line-height: 1.7; }
+
+.panel-window-toggle { font-size: 22px; flex-shrink: 0; }
+.panel-detached .nav-item[data-page-target] { display: none; }
+.panel-shell { height: 100vh; display: flex; background: #fafafa; }
+.panel-shell-placeholder { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-size: 13px; color: #71717a; }
+.panel-shell-placeholder h1 { color: #27272a; font-size: 20px; font-weight: 600; }
+.panel-shell-placeholder button { margin: 0 4px; }

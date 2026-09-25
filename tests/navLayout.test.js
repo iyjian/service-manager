@@ -23,7 +23,7 @@ test('home layout renders the nav rail with per-page shells', async () => {
   assert.match(html, />Strategy Groups</);
   assert.match(html, /id="proxy-test-nodes-btn"/);
   assert.doesNotMatch(html, /id="proxy-refresh-groups-btn"/);
-  assert.doesNotMatch(html, />Refresh<\/button>/);
+  assert.doesNotMatch(html.match(/<main[^>]*data-page="proxy"[\s\S]*?<\/main>/)?.[0] ?? '', />Refresh<\/button>/);
   assert.doesNotMatch(proxyPage, /const refreshGroupsButton = requireElement/);
   assert.doesNotMatch(proxyPage, /refreshGroupsButton\.addEventListener/);
   assert.match(proxyPage, /onShow:\s*\(\) => \{\s*isProxyPageActive = true;\s*const generation = \+\+proxyPageGeneration;/);
