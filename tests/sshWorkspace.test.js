@@ -14,6 +14,7 @@ class Element {
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this); this.parentElement = undefined; }
   setAttribute(k, v) { this.attributes.set(k, v); }
   getAttribute(k) { return this.attributes.get(k); }
+  querySelector() { return null; }
   addEventListener(k, v) { this.listeners.set(k, v); }
   removeEventListener(k) { this.listeners.delete(k); }
   getBoundingClientRect() { return { height: parseFloat(this.style.height) || 300 }; }

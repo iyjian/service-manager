@@ -1,6 +1,7 @@
 import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
 import type { Terminal as XtermTerminal } from '@xterm/xterm';
 import { getTerminalPreferences, onTerminalAppearanceChanged, terminalFontFamily, terminalTheme } from './terminalAppearance.js';
+import { bindTerminalSearch } from './terminalSearch.js';
 import { bindTerminalClipboard } from './terminalClipboard.js';
 import type {
   TerminalOutput,
@@ -21,6 +22,7 @@ interface TerminalPaneView {
   terminal?: XtermTerminal;
   fit?: XtermFitAddon;
   disposeClipboard?: () => void;
+  search?: ReturnType<typeof bindTerminalSearch>;
   resize: () => void;
 }
 
@@ -100,6 +102,7 @@ export function createTerminalPane(options: {
       window.removeEventListener('resize', current.resize);
       current.host.remove();
     }
+    current.search?.dispose();
     current.disposeClipboard?.();
     current.terminal?.dispose();
     views.delete(id);
@@ -165,10 +168,11 @@ export function createTerminalPane(options: {
     terminalSurface.className = 'kubernetes-terminal-surface';
     terminalHost.appendChild(terminalSurface);
     terminal.open(terminalSurface);
-    next.disposeClipboard = bindTerminalClipboard(terminalHost, terminal, window.serviceApi,
+    next.disposeClipboard = bindTerminalClipboard(terminalSurface, terminal, window.serviceApi,
       () => activeId === next.state.id && views.get(next.state.id) === next && !finalizedIds.has(next.state.id),
       () => next.state.state === 'open',
       typeof navigator === 'undefined' ? '' : navigator.platform);
+    next.search = bindTerminalSearch(terminalHost, terminal);
     const resize = (): void => {
       if ((!options.retainFinalViews && next.state.state !== 'open')
         || activeId !== next.state.id
@@ -245,7 +249,8 @@ export function createTerminalPane(options: {
           || finalizedIds.has(id)) return;
         current.resize();
         current.host.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        current.terminal?.focus();
+        if (current.search) current.search.focus();
+        else current.terminal?.focus();
       });
       return true;
     },

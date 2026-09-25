@@ -1,3 +1,4 @@
+import { createForwardedAgent } from './forwardedAgent';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import type { ClientChannel } from 'ssh2';
@@ -39,7 +40,7 @@ export function sshConnectionFingerprint(host: HostConfig): string {
   ];
   return createHash('sha256').update(JSON.stringify([
     endpoint(host), host.authType === 'privateKey' ? host.privateKeyPath : undefined,
-    host.jumpHosts.map(endpoint),
+    host.jumpHosts.map(endpoint), host.forwardAgent !== false,
   ])).digest('hex');
 }
 
@@ -89,7 +90,19 @@ export class SshTerminalRuntime {
     try {
       const connect = this.options.connect ?? (async (target, signal) => {
         const endpoint = await hostToEndpoint(target);
-        return connectSshChain(endpoint, jumpHostsToEndpoints(target), { signal });
+        const agent = await createForwardedAgent(target);
+        const disposeAgent = (): void => agent?.dispose();
+        signal.addEventListener('abort', disposeAgent, { once: true });
+        try {
+          if (signal.aborted) throw new Error('SSH connection cancelled.');
+          const chain = await connectSshChain(endpoint, jumpHostsToEndpoints(target), { signal, agent });
+          chain.targetClient.once('close', () => {
+            disposeAgent(); signal.removeEventListener('abort', disposeAgent);
+          });
+          return chain;
+        } catch (error) {
+          disposeAgent(); signal.removeEventListener('abort', disposeAgent); throw error;
+        }
       });
       const chain = await connect(host, session.abort.signal);
       if (!this.alive(session)) {
@@ -101,7 +114,8 @@ export class SshTerminalRuntime {
         client.on('error', () => this.finish(session, 'error', 'SSH connection interrupted.'));
         client.on('close', () => this.finish(session, 'closed', 'SSH connection closed.'));
       }
-      chain.targetClient.shell({ term: 'xterm-256color', cols: session.cols, rows: session.rows }, (error, channel) => {
+      const size = { term: 'xterm-256color', cols: session.cols, rows: session.rows };
+      const opened = (error: Error | undefined, channel: ClientChannel): void => {
         if (!this.alive(session)) { channel?.destroy(); return; }
         if (error) { this.finish(session, 'error', 'Could not open an interactive SSH shell.'); return; }
         clearTimeout(session.timer);
@@ -119,7 +133,15 @@ export class SshTerminalRuntime {
         channel.once('close', shellExited);
         session.state = { ...session.state, state: 'open' };
         this.options.state(session.owner, { ...session.state });
-      });
+      };
+      if (chain.agentForward) {
+        chain.targetClient.shell(size, { agentForward: true }, (error, channel) => {
+          if (error?.message === 'Unable to request agent forwarding' && this.alive(session)) {
+            this.emit(session, 'SSH agent forwarding is unavailable on this server.\r\n');
+            chain.targetClient.shell(size, opened);
+          } else opened(error, channel);
+        });
+      } else chain.targetClient.shell(size, opened);
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       this.finish(session, 'error', /timed?\s*out|timeout/i.test(message)

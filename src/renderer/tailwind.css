@@ -3368,7 +3368,38 @@
   }
 
   .kubernetes-terminal-host {
-    @apply min-w-0 p-2;
+    @apply relative min-w-0 p-2;
+  }
+
+  .host-agent-forwarding {
+    @apply flex items-center gap-2 px-3 py-2 text-xs text-zinc-700;
+  }
+
+  .terminal-find-bar {
+    width: min(252px, calc(100% - 24px));
+  }
+
+  .terminal-find-launcher {
+    @apply absolute right-3 top-2 z-50 border border-zinc-300 bg-white shadow-sm;
+  }
+
+  .terminal-find-highlights {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .terminal-find-highlight {
+    position: absolute;
+    background: rgba(250, 204, 21, 0.3);
+  }
+
+  .terminal-find-highlight.active {
+    background: rgba(249, 115, 22, 0.45);
+    outline: 1px solid #fbbf24;
+    outline-offset: -1px;
   }
 
   .kubernetes-terminal-surface {

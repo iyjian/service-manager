@@ -108,6 +108,7 @@ export function validateSshEndpoint(
 }
 
 export function validateHostDraft(input: HostDraft): HostConfig {
+  if (input.forwardAgent !== undefined && typeof input.forwardAgent !== 'boolean') throw new Error('Invalid SSH agent forwarding setting.');
   const target = validateSshEndpoint(
     {
       sshHost: input.sshHost,
@@ -139,6 +140,7 @@ export function validateHostDraft(input: HostDraft): HostConfig {
     privateKey: target.privateKey,
     passphrase: target.passphrase,
     privateKeyPath: input.privateKeyPath?.trim() || undefined,
+    forwardAgent: input.forwardAgent !== false,
     jumpHosts: rawJumpHosts.map((jumpHost, index) =>
       validateSshEndpoint(jumpHost, 'jump', { allowMissingPrivateKey: false, label: `Jump server ${index + 1}` })
     ),

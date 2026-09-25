@@ -2,6 +2,18 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.88] - 2026-09-25
+
+### Added
+- Host settings now include Forward SSH agent, enabled by default. SSH terminals forward the first jump server’s key, or the target key for direct connections, without uploading private keys or requiring a local SSH agent.
+- Local, SSH, and Kubernetes terminals now offer a compact search box in the top-right corner, with match highlighting, result counts, and previous/next navigation. Open it with ⌘F on macOS or Ctrl+F on Windows.
+
+### Changed
+- Reduced the terminal search box width by 30% to cover less terminal output.
+
+### Fixed
+- Fixed forwarded-key authentication failing in Git and OpenSSH clients after agent extension requests.
+
 ## [0.3.87] - 2026-09-21
 
 ### Fixed

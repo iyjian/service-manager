@@ -54,6 +54,7 @@ export interface HostConfig {
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
+  forwardAgent?: boolean;
   jumpHosts: JumpHostConfig[];
   forwards: ForwardRule[];
   services: ServiceConfig[];
@@ -97,6 +98,7 @@ export interface HostDraft {
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
+  forwardAgent?: boolean;
   jumpHost?: JumpHostConfig;
   jumpHosts?: JumpHostConfig[];
   forwards: ForwardRuleDraft[];

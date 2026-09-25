@@ -59,6 +59,7 @@ export interface S3SharedServiceConfig {
 }
 
 export interface S3SharedHostConfig {
+  forwardAgent?: boolean;
   id: string;
   name: string;
   sshHost: string;
@@ -264,7 +265,9 @@ function parseSharedHost(value: unknown, index: number): S3SharedHostConfig {
   const password = optionalText(value.password, `Host ${index + 1} password`, MAX_CREDENTIAL_CHARACTERS);
   const privateKey = optionalText(value.privateKey, `Host ${index + 1} private key`, MAX_CREDENTIAL_CHARACTERS);
   const passphrase = optionalText(value.passphrase, `Host ${index + 1} passphrase`, MAX_CREDENTIAL_CHARACTERS);
+  if (value.forwardAgent !== undefined && typeof value.forwardAgent !== 'boolean') throw new Error('Invalid SSH agent forwarding setting.');
   const parsed: S3SharedHostConfig = {
+    ...(value.forwardAgent !== undefined ? { forwardAgent: value.forwardAgent as boolean } : {}),
     id: stableId(value.id, `Host ${index + 1} ID`),
     name: requiredText(value.name, `Host ${index + 1} name`),
     sshHost: requiredText(value.sshHost, `Host ${index + 1} SSH host`),
@@ -600,6 +603,7 @@ export function createS3SharedAppData(source: S3SharedDataSource): S3SharedAppDa
         sshPort: host.sshPort,
         username: host.username,
         authType: host.authType,
+        ...(host.forwardAgent !== undefined ? { forwardAgent: host.forwardAgent } : {}),
         ...(host.password ? { password: host.password } : {}),
         ...(host.privateKey ? { privateKey: host.privateKey } : {}),
         ...(host.passphrase ? { passphrase: host.passphrase } : {}),

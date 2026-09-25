@@ -495,3 +495,13 @@ test('staged local apply overlays device-only values and never accepts them from
   assert.deepEqual(cloud.notes.notes[0].tags, ['shared']);
   assert.equal(cloud.notes.tree.nodes[0].order, 1024);
 });
+
+test('SSH agent forwarding opt-out survives cloud projection, parsing and local restore', () => {
+  const shared = data([], { hosts: [host({ forwardAgent: false })] });
+  assert.equal(shared.hosts.items[0].forwardAgent, false);
+  assert.equal(parseS3SharedAppData(shared).hosts.items[0].forwardAgent, false);
+  const restored = stageS3SharedAppDataForLocalApply(shared, { hosts: [host()], proxy: proxy() });
+  assert.equal(restored.hosts[0].forwardAgent, false);
+  shared.hosts.items[0].forwardAgent = 'false';
+  assert.throws(() => parseS3SharedAppData(shared), /Invalid SSH agent/);
+});

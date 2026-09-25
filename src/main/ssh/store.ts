@@ -121,6 +121,7 @@ export class ServiceStore {
       privateKey: input.privateKey,
       passphrase: input.passphrase,
       privateKeyPath: input.privateKeyPath,
+      forwardAgent: input.forwardAgent !== false,
       jumpHosts: rawJumpHosts
         .map((jumpHost) => this.normalizeJumpHost(jumpHost))
         .filter((jumpHost): jumpHost is JumpHostConfig => jumpHost !== null),

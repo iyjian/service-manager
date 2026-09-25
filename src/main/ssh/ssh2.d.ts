@@ -13,6 +13,29 @@ declare module 'ssh2' {
     keepaliveInterval?: number;
     keepaliveCountMax?: number;
     readyTimeout?: number;
+    authHandler?: Array<'password' | 'publickey'>;
+    agent?: BaseAgent;
+    agentForward?: boolean;
+  }
+
+  export interface ParsedKey {
+    type: string;
+    isPrivateKey(): boolean;
+    getPublicSSH(): Buffer;
+    equals(key: unknown): boolean;
+    sign(data: Buffer, hash?: string): Buffer | Error;
+  }
+  export const utils: { parseKey(data: unknown, passphrase?: string): ParsedKey | ParsedKey[] | Error };
+  export class BaseAgent {
+    getIdentities(callback: (error: Error | null, keys?: ParsedKey[]) => void): void;
+    sign(key: unknown, data: Buffer, options: { hash?: string }, callback: (error: Error | null, signature?: Buffer) => void): void;
+    getStream(callback: (error: Error | null, stream?: Duplex) => void): void;
+  }
+  export class AgentProtocol extends Duplex {
+    constructor(client: boolean);
+    getIdentitiesReply(request: unknown, keys: ParsedKey[]): void;
+    signReply(request: unknown, signature: Buffer): void;
+    failureReply(request: unknown): void;
   }
 
   export interface ClientChannel extends Duplex {
@@ -27,6 +50,7 @@ declare module 'ssh2' {
     end(): void;
     destroy(): void;
     shell(window: { term: string; cols: number; rows: number }, callback: (error: Error | undefined, channel: ClientChannel) => void): void;
+    shell(window: { term: string; cols: number; rows: number }, options: { agentForward?: boolean }, callback: (error: Error | undefined, channel: ClientChannel) => void): void;
     exec(command: string, callback: (error: Error | undefined, channel: ClientChannel) => void): void;
     forwardOut(
       srcIP: string,

@@ -1,4 +1,4 @@
-import { Client, type ConnectConfig } from 'ssh2';
+import { Client, type ConnectConfig, type BaseAgent } from 'ssh2';
 import type { AuthType } from '../../shared/types';
 
 export interface SshEndpointConfig {
@@ -12,6 +12,7 @@ export interface SshEndpointConfig {
 }
 
 export interface SshConnectOptions {
+  agent?: BaseAgent;
   signal?: AbortSignal;
   readyTimeout?: number;
   keepaliveInterval?: number;
@@ -33,6 +34,7 @@ export class SshChainError extends Error {
 }
 
 export interface ConnectedSshChain {
+  agentForward?: boolean;
   targetClient: Client;
   jumpClients: Client[];
   allClients: Client[];
@@ -207,6 +209,11 @@ export async function connectSshChain(
 
     const targetClient = createClient();
     const targetConfig = buildConnectConfig(target, options);
+    if (options?.agent) {
+      targetConfig.agent = options.agent;
+      // The forwarded identity must not become a fallback login credential.
+      targetConfig.authHandler = [target.authType === 'password' ? 'password' : 'publickey'];
+    }
 
     if (upstreamClient) {
       try {
@@ -222,7 +229,7 @@ export async function connectSshChain(
       throw new SshChainError('target-connect', toErrorMessage(error), jumpHosts.length);
     }
 
-    return { targetClient, jumpClients, allClients };
+    return { targetClient, jumpClients, allClients, ...(options?.agent ? { agentForward: true } : {}) };
   } catch (error) {
     closeSshClients(allClients);
     abort();

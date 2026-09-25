@@ -47,6 +47,7 @@ const closeHostDialogButton = requireElement<HTMLButtonElement>('#close-host-dia
 const cancelHostDialogButton = requireElement<HTMLButtonElement>('#cancel-host-dialog-btn');
 const form = requireElement<HTMLFormElement>('#host-form');
 const hostIdInput = requireElement<HTMLInputElement>('#host-id');
+const forwardAgentInput = requireElement<HTMLInputElement>('#forward-agent');
 const nameInput = requireElement<HTMLInputElement>('#name');
 const sshHostInput = requireElement<HTMLInputElement>('#ssh-host');
 const sshPortInput = requireElement<HTMLInputElement>('#ssh-port');
@@ -835,6 +836,7 @@ function parseHostDraftFromClipboard(raw: string): ClipboardHostDraft {
     privateKey: typeof source.privateKey === 'string' ? source.privateKey : undefined,
     passphrase: readString(source.passphrase),
     privateKeyPath: readString(source.privateKeyPath),
+    forwardAgent: source.forwardAgent !== false,
     jumpHosts,
     jumpHost: jumpHosts.length === 1 ? jumpHosts[0] : undefined,
     forwards: Array.isArray(source.forwards)
@@ -864,6 +866,7 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   privateKeyInput.value = draft.privateKey ?? '';
   passphraseInput.value = draft.passphrase ?? '';
   editingPrivateKeyPath = draft.privateKeyPath;
+  forwardAgentInput.checked = draft.forwardAgent !== false;
 
   const jumpHosts = draft.jumpHosts ?? (draft.jumpHost ? [draft.jumpHost] : []);
   jumpHostEditorList.innerHTML = '';
@@ -903,6 +906,7 @@ function buildCopyableHostPayload(host: HostView): Record<string, unknown> {
     password: host.password,
     privateKey: host.privateKey,
     privateKeyPath: host.privateKeyPath,
+    forwardAgent: host.forwardAgent !== false,
     passphrase: host.passphrase,
     jumpHosts,
     jumpHost: jumpHosts.length === 1 ? jumpHosts[0] : undefined,
@@ -1856,6 +1860,7 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
     }
     refreshJumpHostEditorTitles();
     editingPrivateKeyPath = host.privateKeyPath;
+    forwardAgentInput.checked = host.forwardAgent !== false;
 
     forwardEditorList.innerHTML = '';
     for (const forward of host.forwards) {
@@ -3121,6 +3126,7 @@ form.addEventListener('submit', async (event) => {
       privateKey: authType === 'privateKey' ? privateKeyInput.value || undefined : undefined,
       passphrase: authType === 'privateKey' ? passphraseInput.value.trim() || undefined : undefined,
       privateKeyPath: authType === 'privateKey' ? editingPrivateKeyPath : undefined,
+      forwardAgent: forwardAgentInput.checked,
       jumpHosts: collectJumpHostsDraft(),
       forwards: collectForwardsFromEditor(),
       services: collectServicesFromEditor(),
