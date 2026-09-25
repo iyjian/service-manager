@@ -5963,3 +5963,20 @@
     }
   }
 }
+
+.kubernetes-list-page.kubernetes-overview-mode { grid-template-rows: auto minmax(0, 1fr); }
+.kubernetes-overview { min-height: 0; overflow: auto; background: white; border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px; }
+.kubernetes-overview-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.kubernetes-overview-header span { margin-left: 12px; font-size: 11px; color: #71717a; }
+.kubernetes-overview-counts { display: flex; flex-wrap: wrap; border-bottom: 1px solid #e4e4e7; padding-bottom: 10px; gap: 12px 24px; }
+.kubernetes-overview-counts > div { display: flex; align-items: baseline; gap: 6px; }
+.kubernetes-overview-counts strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+.kubernetes-overview-counts span, .kubernetes-overview-note { font-size: 11px; color: #71717a; }
+.kubernetes-overview h3 { font-size: 12px; font-weight: 600; margin: 14px 0 7px; }
+.kubernetes-overview-table-wrap { overflow-x: auto; margin-bottom: 7px; }
+.kubernetes-overview-table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; font-variant-numeric: tabular-nums; }
+.kubernetes-overview-table th { color: #71717a; background: #fafafa; font-weight: 500; }
+.kubernetes-overview-table th, .kubernetes-overview-table td { padding: 7px 10px; border-bottom: 1px solid #f0f0f2; white-space: pre; vertical-align: top; }
+.kubernetes-overview-table td:first-child { font-weight: 500; }
+.kubernetes-overview-note { margin: 7px 0; line-height: 1.6; }
+.kubernetes-overview-issues { margin-top: 12px; color: #a16207; font-size: 11px; line-height: 1.7; }

@@ -1,3 +1,4 @@
+import { kubernetesPodStatus } from '../kubernetesPodStatus.js';
 import type {
   KubernetesPodEnvironment,
   KubernetesPodEnvironmentEntry,
@@ -234,7 +235,7 @@ export function buildKubernetesDrawerModel(
     header: [
       ['Name', name],
       ['Namespace', namespace],
-      ['Status', text(status?.phase) ?? fallback.status ?? '—'],
+      ['Status', kubernetesPodStatus(detail) ?? fallback.status ?? '—'],
       ['Node', text(spec?.nodeName) ?? '—'],
       ['Pod IP', text(status?.podIP) ?? '—'],
       ['Pod IPs', podIPs.length > 0 ? podIPs.join(', ') : '—'],

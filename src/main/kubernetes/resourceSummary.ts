@@ -1,3 +1,4 @@
+import { kubernetesPodStatus } from '../../shared/kubernetesPodStatus';
 import type { KubernetesCustomResourcePrinterColumn, KubernetesResourceKind } from '../../shared/types';
 import {
   customResourcePrinterColumnKey,
@@ -290,7 +291,7 @@ function statusFor(
 ): string | undefined {
   const status = objectValue(value, 'status');
   switch (kind) {
-    case 'pods': return text(status.phase);
+    case 'pods': return kubernetesPodStatus(value);
     case 'deployments':
     case 'statefulsets': return columns.ready === POD_SUMMARY_EMPTY ? undefined : columns.ready;
     case 'services': return columns.type === POD_SUMMARY_EMPTY ? undefined : columns.type;

@@ -1,3 +1,4 @@
+import { renderKubernetesOverview } from '../components/kubernetesOverview.js';
 import type {
   KubernetesContextInfo,
   KubernetesCustomResourceDefinition,
@@ -81,6 +82,7 @@ function createKubernetesSortIcon(): SVGSVGElement {
 }
 
 export const RESOURCE_CATEGORIES = {
+  Overview: [],
   Workloads: ['pods', 'deployments', 'statefulsets'],
   Network: ['services', 'ingresses'],
   Configuration: ['configmaps', 'secrets'],
@@ -547,7 +549,7 @@ export function isCurrentKubernetesEnvironmentRequest(
 }
 
 export function categoryUsesResourceTabs(category: KubernetesCategory): boolean {
-  return category !== 'Custom Resources';
+  return category !== 'Custom Resources' && category !== 'Overview';
 }
 
 function kubernetesSortColumn(
@@ -851,6 +853,11 @@ class KubernetesPage implements KubernetesPageController {
   private readonly portForwardError = requireElement<HTMLElement>('#kubernetes-port-forward-error');
   private readonly portForwardCancel = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel');
   private readonly portForwardCancelSecondary = requireElement<HTMLButtonElement>('#kubernetes-port-forward-cancel-secondary');
+  private readonly overviewRoot = requireElement<HTMLElement>('#kubernetes-overview');
+  private readonly overviewContent = requireElement<HTMLElement>('#kubernetes-overview-content');
+  private readonly overviewStatus = requireElement<HTMLElement>('#kubernetes-overview-status');
+  private readonly overviewRefresh = requireElement<HTMLButtonElement>('#kubernetes-overview-refresh');
+  private overviewGeneration = 0;
   private category: KubernetesCategory = 'Workloads';
   private resourceKind: KubernetesResourceKind = 'pods';
   private sort: KubernetesSortState = { column: 'name', direction: 'asc' };
@@ -942,6 +949,8 @@ class KubernetesPage implements KubernetesPageController {
     this.cancelContextActivation();
     this.clearDrawerEnvironment();
     this.visible = false;
+    this.overviewGeneration++;
+    void window.kubernetesApi.cancelOverview();
     this.stopAgeRefresh();
     this.pageGeneration += 1;
     this.requestGeneration += 1;
@@ -1055,6 +1064,7 @@ class KubernetesPage implements KubernetesPageController {
   private ensureBound(): void {
     if (this.bound) return;
     this.bound = true;
+    this.overviewRefresh.addEventListener('click', () => { void this.loadOverview(); });
 
     this.contextToggle.addEventListener('click', () => {
       const opening = !isDropdownMenuOpen(this.contextMenu);
@@ -1278,6 +1288,11 @@ class KubernetesPage implements KubernetesPageController {
       this.setCustomResourceMenuOpen(false);
     }
     this.state = state;
+    if (contextChanged || connectionChanged) {
+      this.overviewGeneration++;
+      this.overviewContent.replaceChildren();
+      this.overviewStatus.textContent = state.connection === 'connected' ? 'All namespaces · cluster-wide' : 'Connect a Context to load the overview.';
+    }
     if (this.visible && state.connection === 'connected' && !contextChanged && !disconnected) this.ensureWorkspace();
     const scope = state.namespaceScope ?? { mode: 'all', namespaces: [] };
     this.selectedNamespaces = new Set(scope.namespaces);
@@ -1383,7 +1398,7 @@ class KubernetesPage implements KubernetesPageController {
     this.reloadButton.classList.toggle('hidden', !state?.kubeconfigReloadAvailable);
     this.reloadButton.disabled = this.reloadingKubeconfig;
     this.reloadButton.textContent = this.reloadingKubeconfig ? 'Reloading…' : 'Reload kubeconfig';
-    this.namespaceToggle.disabled = state?.connection !== 'connected' || !state?.selectedContext;
+    this.namespaceToggle.disabled = this.category === 'Overview' || state?.connection !== 'connected' || !state?.selectedContext;
     this.namespaceSearch.disabled = this.namespaceToggle.disabled;
     if (this.namespaceToggle.disabled) this.setNamespaceMenuOpen(false);
     this.renderNamespaceMenu();
@@ -1555,6 +1570,14 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private renderResourceTabs(): void {
+    const overview = this.category === 'Overview';
+    this.overviewRoot.classList.toggle('hidden', !overview);
+    this.tableShell.classList.toggle('hidden', overview);
+    this.loadedCount.classList.toggle('hidden', overview);
+    this.resourceTabs.parentElement?.classList.toggle('hidden', overview);
+    this.overviewRoot.parentElement?.classList.toggle('kubernetes-overview-mode', overview);
+    this.overviewRefresh.disabled = this.state?.connection !== 'connected';
+
     const showTabs = categoryUsesResourceTabs(this.category);
     this.resourceTabs.classList.toggle('hidden', !showTabs);
     if (showTabs) {
@@ -1711,12 +1734,13 @@ class KubernetesPage implements KubernetesPageController {
     if (this.category === category) return;
     this.closeDetail();
     this.category = category;
-    this.resourceKind = RESOURCE_CATEGORIES[category][0] as KubernetesResourceKind;
+    this.overviewGeneration++;
+    void window.kubernetesApi.cancelOverview();
+    this.resourceKind = (RESOURCE_CATEGORIES[category][0] ?? 'pods') as KubernetesResourceKind;
     this.sort = { column: 'name', direction: 'asc' };
     this.clearResourceTable();
     this.searchInput.value = '';
-    this.renderCategoryTabs();
-    this.renderResourceTabs();
+    this.renderState();
     this.renderTableHeader();
     if (this.resourceKind === 'custom-resources') void this.loadCustomResourceDefinitions();
     void this.activateCurrentList();
@@ -1840,7 +1864,7 @@ class KubernetesPage implements KubernetesPageController {
   }
 
   private currentQuery(): KubernetesResourceQuery | undefined {
-    if (this.state?.connection !== 'connected') return undefined;
+    if (this.category === 'Overview' || this.state?.connection !== 'connected') return undefined;
     const context = this.state?.selectedContext;
     if (!context) return undefined;
     if (this.resourceKind === 'custom-resources') {
@@ -2020,7 +2044,35 @@ class KubernetesPage implements KubernetesPageController {
     }, SEARCH_DEBOUNCE_MS);
   }
 
+  private async loadOverview(): Promise<void> {
+    const generation = ++this.overviewGeneration, context = this.state?.selectedContext;
+    if (!this.visible || this.category !== 'Overview') return;
+    this.clearTransientStates();
+    if (!context || this.state?.connection !== 'connected') {
+      this.overviewContent.replaceChildren();
+      this.overviewStatus.textContent = 'Connect a Context to load the overview.';
+      return;
+    }
+    this.overviewRefresh.disabled = true;
+    this.overviewStatus.textContent = 'Loading cluster overview…';
+    try {
+      const overview = await window.kubernetesApi.getOverview();
+      if (!this.visible || generation !== this.overviewGeneration || this.state?.selectedContext !== context) return;
+      renderKubernetesOverview(this.overviewContent, overview);
+      this.overviewStatus.textContent = `All namespaces · Updated ${new Date(overview.updatedAt).toLocaleTimeString()}`;
+    } catch (error) {
+      if (this.visible && generation === this.overviewGeneration) {
+        this.overviewContent.replaceChildren();
+        this.overviewStatus.textContent = toErrorMessage(error);
+      }
+    } finally {
+      if (generation === this.overviewGeneration) this.overviewRefresh.disabled = this.state?.connection !== 'connected';
+    }
+  }
+
   private async activateCurrentList(): Promise<void> {
+    if (this.category === 'Overview') { await this.loadOverview(); return; }
+
     const query = this.currentQuery();
     const pageGeneration = this.pageGeneration;
     const generation = ++this.requestGeneration;

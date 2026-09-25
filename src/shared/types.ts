@@ -568,7 +568,38 @@ export interface KubernetesPortForwardState {
  * the main-process IPC handler; this contract intentionally contains no
  * kubeconfig bytes, credentials, raw API transports, or WebSocket handles.
  */
+export interface KubernetesOverviewResource {
+  key: string;
+  capacity: number | null;
+  allocatable: number | null;
+  requested: number | null;
+  available: number | null;
+  used: number | null;
+}
+export interface KubernetesOverviewDisk { capacity: number; used: number; available: number; }
+export interface KubernetesOverviewNode {
+  name: string;
+  ready: boolean;
+  unschedulable: boolean;
+  pods: number | null;
+  podCapacity: number | null;
+  resources: KubernetesOverviewResource[];
+  disk: KubernetesOverviewDisk | null;
+  diskError?: string;
+}
+export interface KubernetesOverview {
+  updatedAt: string;
+  counts: Array<{ label: string; count: number | null }>;
+  nodes: KubernetesOverviewNode[];
+  resources: KubernetesOverviewResource[];
+  disk: KubernetesOverviewDisk | null;
+  volumes: { capacity: number | null; available: number | null; requested: number | null };
+  issues: string[];
+}
+
 export interface KubernetesApi extends KubernetesApiBase, KubernetesLogApi {
+  getOverview(): Promise<KubernetesOverview>;
+  cancelOverview(): Promise<void>;
   setNamespaceScope(scope: KubernetesNamespaceScope): Promise<KubernetesState>;
   listNamespaces(): Promise<string[]>;
   listResources(query: KubernetesResourceQuery): Promise<KubernetesListSnapshot>;

@@ -112,6 +112,7 @@ class FakeElement {
   }
   focus() { global.document.activeElement = this; }
   scrollIntoView() {}
+  querySelector() { return null; }
 }
 
 class FakeTerminal {

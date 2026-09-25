@@ -1,3 +1,4 @@
+import type { KubernetesOverview } from '../../shared/types';
 import { watch as watchPath } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -513,6 +514,37 @@ export class KubernetesRuntime {
     });
   }
 
+  private overviewController?: AbortController;
+  public cancelOverview(): void {
+    this.overviewController?.abort();
+    this.overviewController = undefined;
+  }
+  public async getOverview(): Promise<KubernetesOverview> {
+    this.assertUsable(); this.assertConnected();
+    this.cancelOverview();
+    const controller = new AbortController(); this.overviewController = controller;
+    const context = this.session.getState().selectedContext;
+    const client = this.session.getClient();
+    const timer = setTimeout(() => controller.abort(), 45_000);
+    try {
+      this.queryGeneration++;
+      this.currentQuery = undefined; this.currentSnapshot = undefined;
+      this.pendingListBroadcasts.clear();
+      await this.coordinator?.deactivate();
+      controller.signal.throwIfAborted();
+      if (!client.getOverview) throw new Error('Overview is unavailable.');
+      const overview = await client.getOverview(controller.signal);
+      if (controller.signal.aborted || this.session.getState().selectedContext !== context) throw new Error('Overview request was cancelled.');
+      return overview;
+    } catch {
+      throw new Error(controller.signal.aborted ? 'Overview request was cancelled or timed out.' : 'Unable to load cluster overview.');
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      if (this.overviewController === controller) this.overviewController = undefined;
+    }
+  }
+
   public getState(): KubernetesState {
     const state = copyState(this.session.getState(), this.namespaceScope, this.kubeconfigReloadAvailable);
     return this.localError
@@ -724,6 +756,7 @@ export class KubernetesRuntime {
   }
 
   public listResources(query: RendererKubernetesResourceQuery): Promise<RendererKubernetesListSnapshot> {
+    this.cancelOverview();
     return this.activateResources(query);
   }
 
@@ -1330,6 +1363,7 @@ export class KubernetesRuntime {
     return {
       probeConnection: () => client.probeConnection(),
       list: (query, continueToken) => client.list(query, continueToken),
+      listPodMetrics: client.listPodMetrics ? (query) => client.listPodMetrics!(query) : undefined,
       get: (query, name, namespace) => client.get(query, name, namespace),
       listEvents: (reference) => client.listEvents(reference),
       listCustomResourceDefinitions: () => client.listCustomResourceDefinitions(),
@@ -1581,6 +1615,7 @@ export class KubernetesRuntime {
     query?: KubernetesResourceQuery;
     coordinator?: KubernetesCoordinator;
   } {
+    this.cancelOverview();
     const query = this.currentQuery ? copyQuery(this.currentQuery) : undefined;
     const selectedContext = this.session.getState().selectedContext;
     this.queryGeneration += 1;

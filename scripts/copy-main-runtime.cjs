@@ -4,6 +4,7 @@ const { join } = require('node:path');
 const root = join(__dirname, '..');
 mkdirSync(join(root, 'dist', 'main'), { recursive: true });
 for (const runtime of [
+  { shared: 'kubernetesPodStatus.js', main: 'kubernetesPodStatus.cjs', label: 'Kubernetes Pod status' },
   { shared: 'terminalPreferences.js', main: 'terminalPreferences.cjs', label: 'terminal preferences' },
   { shared: 'codeHighlight.js', main: 'codeHighlight.cjs', label: 'code highlight' },
   { shared: 'noteRichText.js', main: 'noteRichText.cjs', label: 'rich text' },

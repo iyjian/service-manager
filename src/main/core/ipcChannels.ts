@@ -137,6 +137,8 @@ export const IPC_CHANNELS = {
   kubernetesListResources: 'kubernetes:list-resources',
   kubernetesGetResourceWindow: 'kubernetes:get-resource-window',
   kubernetesLoadMoreResources: 'kubernetes:load-more-resources',
+  kubernetesGetOverview: 'kubernetes:get-overview',
+  kubernetesCancelOverview: 'kubernetes:cancel-overview',
   kubernetesListCustomResourceDefinitions: 'kubernetes:list-custom-resource-definitions',
   kubernetesGetResourceDetail: 'kubernetes:get-resource-detail',
   kubernetesGetResourceEvents: 'kubernetes:get-resource-events',

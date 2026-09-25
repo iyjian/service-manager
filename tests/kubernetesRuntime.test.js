@@ -1578,3 +1578,63 @@ test('KubernetesRuntime reports a safe diagnostic when asynchronous connection c
   assert.equal(runtime.getState().connection, 'connected');
   await runtime.shutdown();
 });
+
+test('Overview cancels on Context changes and page deactivation, fencing late snapshots', async () => {
+  for (const action of ['context', 'page', 'list']) {
+    let signal;
+    const pending = deferred();
+    const { runtime } = createRuntime({ client: { getOverview: (value) => { signal = value; return pending.promise; } } });
+    const request = runtime.getOverview();
+    await waitFor(() => signal);
+    if (action === 'context') await runtime.selectContext('other');
+    else if (action === 'page') await runtime.deactivatePage();
+    else await runtime.listResources(POD_QUERY);
+    assert.equal(signal.aborted, true);
+    pending.resolve({ nodes: [] });
+    await assert.rejects(request, /cancelled/);
+    await runtime.shutdown();
+  }
+});
+
+test('Overview deactivates resource watches without closing active pod workspaces', async () => {
+  const snapshot = { nodes: [] };
+  const { runtime, calls } = createRuntime({ client: { getOverview: async () => snapshot } });
+  await runtime.listResources(POD_QUERY);
+  const result = await runtime.getOverview();
+  assert.equal(result, snapshot);
+  assert.ok(calls.includes('deactivate-watches'));
+  assert.ok(!calls.includes('dispose-page-interactions'));
+  await runtime.shutdown();
+});
+
+test('production runtime forwards Pod metrics into coordinator and renderer snapshots', async (t) => {
+  let metricCalls = 0, watched;
+  const summary = (namespace, uid) => ({ uid, name: 'api', namespace, resourceVersion: '1', status: 'Running', columns: { cpu: '—', memory: '—' } });
+  const client = {
+    ...emptyClient(),
+    async list() { return { items: [summary('apps', 'app-pod'), summary('jobs', 'job-pod')], resourceVersion: '1' }; },
+    async listPodMetrics(query) {
+      assert.equal(this, client);
+      assert.equal(query.kind, 'pods');
+      metricCalls++;
+      return [{ namespace: 'apps', name: 'api', cpu: '125m', memory: '128Mi' }, { namespace: 'jobs', name: 'api', cpu: '250m', memory: '256Mi' }];
+    },
+    async watch(_query, _version, callback) { watched = callback; return new AbortController(); },
+  };
+  const { runtime } = createRuntime({ client, createCoordinator: undefined });
+  t.after(() => runtime.shutdown());
+  const updates = [];
+  runtime.onListChanged(snapshot => updates.push(snapshot));
+  const query = { ...POD_QUERY, namespaceScope: { mode: 'all', namespaces: [] } };
+  const initial = await runtime.listResources(query);
+  assert.equal(initial.podMetricsState, 'loading');
+  await waitFor(() => updates.some(snapshot => snapshot.podMetricsState === 'available'), 1000);
+  const latest = updates.at(-1);
+  assert.equal(metricCalls, 1);
+  assert.equal(latest.items.find(pod => pod.namespace === 'apps').columns.cpu, '125m');
+  assert.equal(latest.items.find(pod => pod.namespace === 'jobs').columns.memory, '256Mi');
+  watched({ type: 'MODIFIED', object: { ...summary('apps', 'app-pod'), resourceVersion: '2' }, resourceVersion: '2' });
+  const window = await runtime.getResourceWindow(query, { start: 0, end: 10 });
+  assert.equal(window.items.find(pod => pod.namespace === 'apps').columns.memory, '128Mi');
+  await runtime.deactivatePage();
+});

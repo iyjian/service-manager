@@ -26,6 +26,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function registerKubernetesIpcHandlers(options: KubernetesIpcHandlersOptions): void {
   const getKubernetesRuntime = options.getRuntime;
 
+  ipcMain.handle(IPC_CHANNELS.kubernetesGetOverview, async () => getKubernetesRuntime().getOverview());
+  ipcMain.handle(IPC_CHANNELS.kubernetesCancelOverview, async () => getKubernetesRuntime().cancelOverview());
   ipcMain.handle(IPC_CHANNELS.kubernetesGetState, async () => getKubernetesRuntime().getState());
   ipcMain.handle(IPC_CHANNELS.kubernetesSelectContext, async (_event, name: unknown) =>
     getKubernetesRuntime().selectContext(validateKubernetesText(name, 'Context name'))

@@ -1,3 +1,4 @@
+import { kubernetesPodStatus } from '../kubernetesPodStatus.js';
 import type { KubernetesPortForwardState } from '../../shared/types';
 
 export interface KubernetesDeclaredPortSource {
@@ -168,7 +169,7 @@ export function buildKubernetesOverviewFields(
   const fields: Array<[KubernetesOverviewLabel, string | undefined]> = [
     ['Kind', kind],
     ['Namespace', nonEmptyString(metadata?.namespace) ?? fallback.namespace],
-    ['Status', nonEmptyString(status?.phase) ?? fallback.status],
+    ['Status', (kind.toLowerCase() === 'pod' ? kubernetesPodStatus(detail) : nonEmptyString(status?.phase)) ?? fallback.status],
     ['Name', nonEmptyString(metadata?.name) ?? fallback.name],
   ];
   if (kind.toLowerCase() === 'pod') {

@@ -2,6 +2,15 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.89] - 2026-09-25
+
+### Added
+- Added a Kubernetes Overview with cluster-wide resource counts, per-node CPU/memory/GPU allocation and usage, and node filesystem and persistent-volume capacity. Missing metrics and permissions are clearly indicated.
+
+### Fixed
+- Fixed missing Pod CPU and memory usage when the cluster Metrics API provides data; restored live refresh in Workloads → Pods.
+- Pod lists and details now show Terminating, initialization progress, readiness, image-pull and container failures, and completion instead of relying only on the API phase.
+
 ## [0.3.88] - 2026-09-25
 
 ### Added

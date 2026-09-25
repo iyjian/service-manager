@@ -278,6 +278,14 @@
             <input id="kubernetes-resource-search" class="input kubernetes-search-field" type="search" placeholder="Search resources" aria-label="Search loaded resources" spellcheck="false" />
           </div>
 
+          <section id="kubernetes-overview" class="kubernetes-overview hidden" aria-label="Cluster overview">
+            <header class="kubernetes-overview-header">
+              <div><strong>Overview</strong><span id="kubernetes-overview-status" aria-live="polite">All namespaces · cluster-wide</span></div>
+              <button id="kubernetes-overview-refresh" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+            </header>
+            <div id="kubernetes-overview-content"></div>
+          </section>
+
           <div id="kubernetes-table-shell" class="kubernetes-table-shell" role="table" aria-label="Kubernetes resource list" data-resource-kind="pods">
             <div id="kubernetes-table-header" class="kubernetes-table-header" role="row"></div>
             <div id="kubernetes-table-viewport" class="kubernetes-table-viewport" role="rowgroup">

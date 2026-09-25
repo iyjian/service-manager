@@ -1,3 +1,5 @@
+import { collectKubernetesOverview } from './overview';
+import type { KubernetesOverview } from '../../shared/types';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -139,6 +141,7 @@ export interface KubernetesVncHandle {
  */
 export interface KubernetesClient {
   /** Verifies API transport/TLS reachability without reading a cluster resource. */
+  getOverview?(signal: AbortSignal): Promise<KubernetesOverview>;
   probeConnection(): Promise<void>;
   list(query: KubernetesResourceQuery, continueToken?: string): Promise<KubernetesResourcePage>;
   /** Optional for compatibility with focused client fakes; production reads metrics.k8s.io. */
@@ -787,6 +790,7 @@ class KubernetesClientAdapter implements KubernetesClient {
   private readonly activeVncKeys = new Set<string>();
   private readonly pendingVncControllers = new Set<AbortController>();
   private closed = false;
+  private readonly overviewRead: import('./overview').OverviewRead;
 
   public constructor(kubernetes: KubernetesNodeModule, kubeConfig: KubeConfigLike) {
     this.runtimeKubeConfig = kubeConfig as unknown as KubernetesNode.KubeConfig;
@@ -803,6 +807,26 @@ class KubernetesClientAdapter implements KubernetesClient {
     this.logApi = new kubernetes.Log(this.runtimeKubeConfig);
     this.execApi = new kubernetes.Exec(this.runtimeKubeConfig);
     this.portForwardApi = new kubernetes.PortForward(this.runtimeKubeConfig);
+    const apis: Record<string, ReadOnlyApi> = {
+      core: this.core, apps: this.apps, networking: this.networking, extensions: this.extensions, custom: this.custom,
+      batch: kubeConfig.makeApiClient(kubernetes.BatchV1Api) as unknown as ReadOnlyApi,
+      storage: kubeConfig.makeApiClient(kubernetes.StorageV1Api) as unknown as ReadOnlyApi,
+    };
+    this.overviewRead = async (group, method, params, signal) => {
+      this.assertOpen(); signal.throwIfAborted();
+      const middleware = kubernetes.createConfiguration({ promiseMiddleware: [{
+        pre: async (request) => { request.setSignal(signal); return request; },
+        post: async (response) => response,
+      }] }).middleware;
+      const operation = apis[group]?.[method] as ((params: Record<string, unknown>, options: unknown) => Promise<unknown>) | undefined;
+      if (!operation) throw new Error('Overview API is unavailable.');
+      return operation.call(apis[group], params, { middleware, middlewareMergeStrategy: 'append' });
+    };
+  }
+
+  public getOverview(signal: AbortSignal): Promise<KubernetesOverview> {
+    this.assertOpen();
+    return collectKubernetesOverview(this.overviewRead, signal);
   }
 
   public async probeConnection(): Promise<void> {

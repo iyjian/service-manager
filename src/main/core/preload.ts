@@ -343,6 +343,8 @@ const sqlApi: SqlApi = {
 };
 
 const kubernetesApi: KubernetesApi = {
+  getOverview: () => ipcRenderer.invoke('kubernetes:get-overview'),
+  cancelOverview: () => ipcRenderer.invoke('kubernetes:cancel-overview'),
   getState: () => ipcRenderer.invoke('kubernetes:get-state'),
   selectContext: (name: string) => ipcRenderer.invoke('kubernetes:select-context', name),
   reconnect: () => ipcRenderer.invoke('kubernetes:reconnect'),
