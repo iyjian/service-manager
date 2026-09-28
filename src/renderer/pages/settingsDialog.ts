@@ -1,3 +1,4 @@
+import { registerNotesServerSettings, refreshNotesServerSettings } from './notesServerSettings.js';
 import type {
   LlmSettingsDraft,
   LlmSettingsView,
@@ -1054,6 +1055,7 @@ async function syncNow(): Promise<void> {
 }
 
 async function openSettings(): Promise<void> {
+  void refreshNotesServerSettings().catch(error => setStatus(toErrorMessage(error), 'error'));
   const openGeneration = ++settingsOpenGeneration;
   llmTokenEdited = false;
   llmSavedTokenHydrated = false;
@@ -1132,6 +1134,7 @@ async function openSettings(): Promise<void> {
 }
 
 export function registerSettingsDialog(): void {
+  registerNotesServerSettings();
   openButton.parentElement?.append(openButton);
   activateTab(activeTab);
   updateControls();

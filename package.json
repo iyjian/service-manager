@@ -6,20 +6,22 @@
   "packageManager": "pnpm@9.1.2",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm run clean && pnpm run build:main && pnpm run build:renderer && pnpm run copy:renderer && pnpm run build:css",
+    "build": "pnpm run clean && pnpm run build:main && pnpm run build:notes-server && pnpm run build:renderer && pnpm run copy:renderer && pnpm run build:css",
     "build:main": "tsc -p tsconfig.main.json && node scripts/copy-main-runtime.cjs",
     "build:renderer": "tsc -p tsconfig.renderer.json",
     "copy:renderer": "node scripts/copy-renderer.cjs",
     "build:css": "node scripts/build-tailwind.cjs",
     "benchmark:sql-results": "pnpm run build && electron scripts/benchmark-sql-results.cjs",
     "prepare:electron": "node scripts/prepare-electron-native.cjs",
-    "test": "pnpm run build && pnpm run prepare:electron && node scripts/run-electron-tests.cjs",
+    "test": "pnpm run build && pnpm run prepare:electron && node scripts/run-electron-tests.cjs && pnpm run test:notes-server",
     "start": "pnpm run build && pnpm run prepare:electron && electron .",
     "dev": "pnpm run build && pnpm run prepare:electron && electron .",
     "package:mac": "pnpm run build && electron-builder --mac dmg zip --arm64 --x64 --publish never",
     "package:mac:intel": "pnpm run build && electron-builder --mac dmg zip --x64 --publish never",
     "package:win": "pnpm run build && electron-builder --win nsis --publish never",
-    "package:linux": "pnpm run build && electron-builder --linux AppImage --x64 --publish never"
+    "package:linux": "pnpm run build && electron-builder --linux AppImage --x64 --publish never",
+    "build:notes-server": "tsc -p tsconfig.notes-server.json && node scripts/prepare-notes-runtime.cjs",
+    "test:notes-server": "node --test tests/notesServer.integration.cjs"
   },
   "keywords": [
     "electron",
@@ -38,7 +40,9 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/node-pty/**/*"
+      "node_modules/node-pty/**/*",
+      "dist/notes-runtime/**/*",
+      "dist/notes-server/**/*"
     ],
     "beforePack": "./scripts/prepare-local-terminal.cjs",
     "directories": {

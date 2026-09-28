@@ -1,0 +1,11 @@
+# Private key Vault
+
+The **Vault** panel stores reusable SSH private keys. Select **Add Private Key**, enter a name, paste the key or choose **Import**, and provide its passphrase if needed. Import opens `~/.ssh` by default, or the user home directory if that directory is unavailable, matching Add Host. New keys and passphrases are validated before saving. Host targets, jump hosts, and Notes Server select keys by name. The panel supports the same detach/merge workflow as other panels. The Notes startup setup can also add a key without opening the main workspace.
+
+On startup, existing inline Host keys, imported key files, and jump-host keys migrate automatically. Names are assigned as `privateKey1`, `privateKey2`, and so on; identical key contents with the same passphrase reuse an existing entry. Existing Notes Server keys also migrate. The encrypted Vault is written first, then host configuration is atomically replaced with key references. Interrupted migration can be retried without duplicate entries. Original imported key files are not deleted.
+
+Vault contents are encrypted using the operating system's secure storage in the active application profile. Development and packaged profiles remain separate. Renderers receive only key IDs, names, and creation dates; importing a file keeps its contents in the main process. Key deletion and replacement are not exposed, so existing references remain stable.
+
+Plain JSON configuration exports contain Vault references, not private keys or passphrases. A reference exported to another device requires the corresponding key to be added and selected there. The existing encrypted S3 Host synchronization continues to transfer credentials within its encrypted payload; receiving clients migrate these credentials into their own Vault. Unused Vault keys and Notes-only keys are not added to cloud synchronization.
+
+Keep the original private key files securely backed up: the local Vault depends on this device's secure-storage credentials and is not a portable key backup.

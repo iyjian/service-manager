@@ -30,6 +30,7 @@ export interface JumpHostConfig {
   username: string;
   authType: AuthType;
   password?: string;
+  privateKeyId?: string;
   privateKey?: string;
   passphrase?: string;
 }
@@ -51,6 +52,7 @@ export interface HostConfig {
   username: string;
   authType: AuthType;
   password?: string;
+  privateKeyId?: string;
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
@@ -95,6 +97,7 @@ export interface HostDraft {
   username: string;
   authType: AuthType;
   password?: string;
+  privateKeyId?: string;
   privateKey?: string;
   passphrase?: string;
   privateKeyPath?: string;
@@ -1335,7 +1338,7 @@ export interface StartupS3SyncState {
 
 export interface PersistentDataReloaded {
   generation: number;
-  source: 's3' | 'trilium';
+  source: 's3' | 'trilium' | 'notes-server';
   /** Present when the matching Notes delta owns release of a renderer freeze. */
   persistentApplyId?: string;
   hostsChanged?: boolean;
@@ -1466,4 +1469,39 @@ export interface PanelWindowApi {
   merge(panel?: string): Promise<void>;
   focus(panel: string): Promise<void>;
   onStateChanged(listener: (state: PanelWindowState) => void): () => void;
+}
+
+export interface NotesServerHostOption { id: string; name: string; sshHost: string; sshPort: number; username: string; unavailableReason?: string; }
+export interface NotesServerSettingsDraft {
+  sourceHostId?: string; createHost?: boolean;
+  name: string; sshHost: string; sshPort: number; username: string; authType: AuthType;
+  privateKeyId?: string; password?: string; privateKey?: string; passphrase?: string;
+}
+export interface NotesServerSettingsView extends Omit<NotesServerSettingsDraft, 'password' | 'privateKey' | 'passphrase'> {
+  setupComplete: boolean; configured: boolean; enabled: boolean; hasPassword: boolean; hasPrivateKey: boolean; hasPassphrase: boolean; instanceId?: string;
+}
+export interface NotesServerStatus {
+  enabled: boolean; connected: boolean; version?: string; instanceId?: string; revision?: number; pendingDrafts: number; message: string;
+}
+export interface NotesServerApi {
+  listHosts(): Promise<NotesServerHostOption[]>;
+  saveFromHost(id: string): Promise<NotesServerSettingsView>;
+  onProgress(listener: (message: string) => void): () => void;
+  importPrivateKey(): Promise<boolean>;
+  getSettings(): Promise<NotesServerSettingsView>;
+  saveSettings(input: NotesServerSettingsDraft): Promise<NotesServerSettingsView>;
+  action(action: 'test' | 'deploy' | 'start' | 'stop' | 'restart' | 'logs' | 'migrate' | 'use-server' | 'backup' | 'recover-drafts'): Promise<string>;
+  cancel(): Promise<void>;
+  status(): Promise<NotesServerStatus>;
+  preserveDraft(id: string, expectedNote: Note, draft: NoteDraft): Promise<boolean>;
+  getDraft(id: string): Promise<{ expectedNote: Note; draft: NoteDraft } | undefined>;
+  poll(): Promise<NotesServerStatus>;
+  onStatus(listener: (status: NotesServerStatus) => void): () => void;
+}
+
+export interface VaultKeyView { id: string; name: string; createdAt: string; }
+export interface VaultApi {
+  list(): Promise<VaultKeyView[]>;
+  importPrivateKey(): Promise<boolean>;
+  add(input: { name: string; useImportedKey?: boolean; privateKey?: string; passphrase?: string }): Promise<VaultKeyView>;
 }

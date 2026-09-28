@@ -648,6 +648,7 @@ class NotesPage {
   private syncActionPending = false;
   private hasRemoteNotes = false;
   private cloudSyncState?: S3SyncState;
+  private notesServerState?: import('../../shared/types').NotesServerStatus;
   private readonly cloudStatus = requireElement<HTMLElement>('#notes-cloud-status');
   private readonly syncBanner = requireElement<HTMLElement>('#notes-sync-banner');
   private readonly syncMessage = requireElement<HTMLElement>('#notes-sync-message');
@@ -661,6 +662,8 @@ class NotesPage {
   private editorReleaseGeneration = 0;
 
   constructor() {
+    window.notesServerApi?.onStatus(state => { this.notesServerState = state; this.updateCloudStatus(); });
+    void window.notesServerApi?.status().then(state => { this.notesServerState = state; this.updateCloudStatus(); }).catch(() => undefined);
     window.settingsApi.onNotesSyncGuardChanged((state) => this.applySyncGuard(state));
     window.settingsApi.onS3SyncStateChanged((state) => {
       this.cloudSyncState = state;
@@ -671,6 +674,7 @@ class NotesPage {
       this.updateCloudStatus();
     }).catch(() => undefined);
     this.syncButton.addEventListener('click', () => void this.runSyncAction(false));
+    window.addEventListener('focus', () => { if (window.notesServerApi) void window.notesServerApi.status().then(state => { if (state.enabled) void this.checkRemoteNotes(); }); });
     this.offlineEditButton.addEventListener('click', () => void this.runSyncAction(true));
     this.contentHost.dataset.theme = this.editorTheme;
     this.setSidebarWidth(this.sidebarWidth);
@@ -823,6 +827,7 @@ class NotesPage {
   }
 
   private applySyncGuard(state: NotesSyncGuardState): void {
+    if (this.notesServerState?.enabled) state = { status: 'ready', editable: true };
     this.syncGuard = state;
     if (state.status !== 'checking') this.hasRemoteNotes = state.status !== 'not-configured';
     const messages: Record<NotesSyncGuardState['status'], string> = {
@@ -851,6 +856,13 @@ class NotesPage {
   }
 
   private updateCloudStatus(): void {
+    if (this.notesServerState?.enabled) {
+      const state = this.notesServerState;
+      this.cloudStatus.classList.remove('hidden');
+      this.cloudStatus.textContent = `Notes Server · ${state.connected ? 'Connected' : 'Disconnected'}${state.pendingDrafts ? ` · ${state.pendingDrafts} local draft(s)` : ''}`;
+      this.cloudStatus.title = state.message;
+      return;
+    }
     const cloud = this.cloudSyncState;
     this.cloudStatus.classList.toggle('hidden', !this.hasRemoteNotes);
     if (!this.hasRemoteNotes) return;
@@ -865,10 +877,29 @@ class NotesPage {
       + (cloud?.lastSyncedAt ? `\nLast sync: ${new Date(cloud.lastSyncedAt).toLocaleString()}` : '');
   }
 
+  private serverRevision: number | undefined;
+
   private async checkRemoteNotes(): Promise<void> {
     if (!this.active || this.syncCheckPending || this.syncActionPending) return;
     this.syncCheckPending = true;
     try {
+      this.notesServerState = await window.notesServerApi?.status();
+      if (this.notesServerState?.enabled) {
+        const state = await window.notesServerApi.poll();
+        this.notesServerState = state;
+        this.applySyncGuard({ status: 'ready', editable: true });
+        this.updateCloudStatus();
+        this.syncMessage.textContent = state.connected ? (state.pendingDrafts ? 'Local drafts are pending. Resolve save conflicts before switching storage.' : '') : 'Disconnected · edits are saved as local drafts.';
+        this.syncBanner.classList.toggle('hidden', !this.syncMessage.textContent);
+        this.newButton.disabled = !state.connected || this.creating;
+        if (state.connected) {
+          const changed = this.serverRevision !== undefined && this.serverRevision !== state.revision;
+          this.serverRevision = state.revision;
+          if (this.notes.some(note => this.isDirty(note.id))) await this.flushAllPendingSaves();
+          else if (changed && !state.pendingDrafts) await this.reload();
+        }
+        return;
+      }
       // Flush drafts while still permitted, so hash comparisons include recent typing.
       if (this.syncGuard.editable) await this.flush();
       this.applySyncGuard(await window.settingsApi.checkNotesSync());
@@ -2268,7 +2299,8 @@ class NotesPage {
     const pending = this.noteBodyRequests.get(id);
     if (pending) return pending;
     const generation = this.noteBodyGeneration;
-    const request = window.notesApi.getNote(id).then((loaded) => {
+    const request = window.notesApi.getNote(id).then(async (loaded) => {
+      const recoveredDraft = await window.notesServerApi?.getDraft(id);
       if (generation !== this.noteBodyGeneration
         || !this.active
         || this.selectedId !== id
@@ -2277,12 +2309,16 @@ class NotesPage {
       if (!note) return;
       Object.assign(note, loaded, { tags: [...loaded.tags] });
       this.loadedNoteIds.add(id);
-      this.persistedNotes.set(id, cloneNote(loaded));
+      this.persistedNotes.set(id, cloneNote(recoveredDraft?.expectedNote ?? loaded));
+      if (recoveredDraft) {
+        Object.assign(note, recoveredDraft.draft, { tags: [...recoveredDraft.draft.tags] });
+        this.editVersions.set(id, (this.persistedVersions.get(id) ?? 0) + 1);
+      }
       this.noteBodyErrors.delete(id);
       this.breadcrumbCache.clear();
       this.updateListNoteName(note);
       this.renderEditor();
-      this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
+      this.setSaveStatus(recoveredDraft ? 'Draft saved locally' : this.isDirty(id) ? 'Saving…' : 'Saved', recoveredDraft ? 'saving' : this.isDirty(id) ? 'saving' : 'saved');
     }).catch((error) => {
       if (generation !== this.noteBodyGeneration || !this.active || this.selectedId !== id) return;
       this.noteBodyErrors.set(id, `Unable to load Note: ${toErrorMessage(error)}`);
@@ -3314,7 +3350,12 @@ class NotesPage {
       if (this.selectedId === id) {
         this.setSaveStatus(this.isDirty(id) ? 'Saving…' : 'Saved', this.isDirty(id) ? 'saving' : 'saved');
       }
-    }).catch((error) => {
+    }).catch(async (error) => {
+      let preserved = false;
+      const expected = this.persistedNotes.get(id);
+      if (expected && window.notesServerApi) {
+        try { preserved = await window.notesServerApi.preserveDraft(id, cloneNote(expected), draft); } catch { /* Report save failure below. */ }
+      }
       if (saveGeneration !== this.saveGeneration) return;
       if ((this.queuedVersions.get(id) ?? 0) === version) {
         this.queuedVersions.set(id, this.persistedVersions.get(id) ?? 0);
@@ -3323,7 +3364,7 @@ class NotesPage {
         this.saveErrorNoteIds.add(id);
         this.updateListSaveIndicator(id);
         if (this.selectedId === id) {
-          this.setSaveStatus(`Save failed: ${toErrorMessage(error)}`, 'error');
+          this.setSaveStatus(preserved ? 'Draft saved locally · server save pending' : `Save failed: ${toErrorMessage(error)}`, 'error');
         }
       }
     });
@@ -3335,6 +3376,15 @@ class NotesPage {
     const ids = new Set([...this.saveTimers.keys(), ...this.notes.filter((note) => this.isDirty(note.id)).map((note) => note.id)]);
     await Promise.all([...ids].map((id) => this.flushNote(id)));
     if (this.notes.some((note) => !this.deletedIds.has(note.id) && this.isDirty(note.id))) {
+      if (window.notesServerApi && (await window.notesServerApi.status()).enabled) {
+        for (const note of this.notes.filter(note => !this.deletedIds.has(note.id) && this.isDirty(note.id))) {
+          const expected = this.persistedNotes.get(note.id);
+          if (!expected || !await window.notesServerApi.preserveDraft(note.id, cloneNote(expected), {
+            name: note.name, content: note.content, language: note.language, tags: [...note.tags],
+          })) throw new Error('The local draft could not be saved.');
+        }
+        return;
+      }
       throw new Error('Some notes could not be saved. Fix the save error before syncing.');
     }
   }

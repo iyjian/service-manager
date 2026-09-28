@@ -73,6 +73,10 @@
       </div>
     </main>
 
+    <main class="app-shell hidden" data-page="vault">
+      <header class="page-head"><div class="page-head-main"><h1 class="page-title">Vault</h1><button id="vault-add-key" type="button" class="btn btn-primary">Add Private Key</button></div></header>
+      <div class="vault-content"><p>Private keys are encrypted on this device. Reuse them with Hosts and Notes Server.</p><div id="vault-key-list"></div></div>
+    </main>
     <main class="app-shell hidden" data-page="proxy">
       <header class="page-head">
         <div class="page-head-main">
@@ -872,6 +876,40 @@
         </section>
 
         <section id="settings-notes-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-notes-tab" data-settings-panel="notes" hidden>
+          <section id="notes-server-settings" class="notes-server-settings" aria-label="Notes Server">
+            <h3>Notes Server</h3><p data-server-mode>Current storage: Local</p>
+            <label class="field">Server Host<select class="input" data-notes-host><option value="">Select an existing Host…</option><option value="__new__">Add New Host…</option></select></label>
+            <p class="settings-help" data-notes-host-detail>Select a saved Host to reuse its SSH connection and authentication.</p>
+            <div class="notes-server-fields">
+              <label>Name<input class="input" name="name" autocomplete="off" /></label>
+              <label>Host<input class="input" name="sshHost" autocomplete="off" /></label>
+              <label>SSH Port<input class="input" name="sshPort" type="text" inputmode="numeric" pattern="[0-9]*" value="22" /></label>
+              <label>Username<input class="input" name="username" autocomplete="off" /></label>
+              <label>Authentication<select class="input" name="authType"><option value="privateKey">Private Key</option><option value="password">Password</option></select></label>
+              <label data-server-auth="password" hidden>Password<input class="input" name="password" type="password" autocomplete="new-password" /></label>
+              <label data-server-auth="privateKey">Vault private key<select class="input" name="privateKeyId" data-vault-select></select><button type="button" class="btn btn-secondary" data-server-add-key>Add Private Key</button></label><label data-server-auth="privateKey" class="notes-legacy-key">Key passphrase<input class="input" name="passphrase" type="password" autocomplete="new-password" /></label>
+              <label data-server-auth="privateKey" class="notes-server-key notes-legacy-key">Private key<textarea class="input" name="privateKey" rows="3" spellcheck="false" autocomplete="off"></textarea></label>
+            </div>
+            <div class="notes-server-actions">
+              <button type="button" class="btn btn-secondary" data-server-import-key>Import Private Key</button>
+              <button type="button" class="btn btn-secondary" data-server-action="save">Save Server</button>
+              <button type="button" class="btn btn-secondary" data-server-action="test">Test Connection</button>
+              <button type="button" class="btn btn-primary" data-server-action="deploy">Deploy &amp; Start</button>
+              <button type="button" class="btn btn-secondary" data-server-action="start">Start</button>
+              <button type="button" class="btn btn-secondary" data-server-action="stop">Stop</button>
+              <button type="button" class="btn btn-secondary" data-server-action="restart">Restart</button>
+              <button type="button" class="btn btn-secondary" data-server-action="logs">Logs</button>
+              <button type="button" class="btn btn-secondary" data-server-cancel>Cancel operation</button>
+            </div>
+            <div class="notes-server-actions">
+              <button type="button" class="btn btn-primary" data-server-action="migrate">Migrate Local Notes &amp; Use Server</button>
+              <button type="button" class="btn btn-secondary" data-server-action="use-server">Use Existing Server Notes</button>
+              <button type="button" class="btn btn-secondary" data-server-action="backup">Download Backup</button>
+              <button type="button" class="btn btn-secondary" data-server-action="recover-drafts">Recover Drafts as Notes</button>
+            </div>
+            <p class="settings-help">Linux x64/ARM64 · systemd user service with lingering · API over SSH. Images and attachments remain in S3.</p>
+            <pre data-server-status role="status" class="notes-server-status"></pre>
+          </section>
           <div class="settings-notes-card">
             <label class="settings-notes-title" for="notes-font-size">Editor font size</label>
             <div class="settings-number-control">
@@ -1246,6 +1284,7 @@
                             </label>
                           </div>
                           <div class="he-cred-key" id="private-key-row">
+                            <label class="field">Vault private key<select class="input" id="host-vault-key" data-vault-select></select></label><button type="button" class="btn btn-secondary" id="host-add-vault-key">Add Private Key</button>
                             <div class="he-key-editor">
                               <div class="he-key-summary">
                                 <button

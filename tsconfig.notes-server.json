@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.main.json",
+  "compilerOptions": { "outDir": "dist/notes-server" },
+  "include": ["src/notes-server/**/*.ts"]
+}

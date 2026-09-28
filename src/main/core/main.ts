@@ -1,3 +1,10 @@
+import { createNotesServerHost } from '../notesServer/hostSelection';
+import { PrivateKeyVault } from '../vault/privateKeyVault';
+import { registerVaultIpc } from '../vault/ipc';
+import { RemoteNotesBackend, LocalNotesBackend } from '../notesServer/backend';
+import { NotesServerSettings } from '../notesServer/settings';
+import { NotesServerDeployment } from '../notesServer/deployment';
+import { registerNotesServerIpc } from '../notesServer/ipc';
 import { PanelWindowManager, type RendererSurface } from './panelWindows';
 import { flushSentry } from './sentry';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from 'electron';
@@ -169,7 +176,11 @@ import {
 
 const forwardOwners = new Map<string, string>();
 let store: ServiceStore | null = null;
+let privateKeyVault: PrivateKeyVault;
 let notesStore: SqliteNotesStore | null = null;
+let notesServerSettings: NotesServerSettings | undefined;
+let remoteNotes: RemoteNotesBackend | undefined;
+const localNotes = new LocalNotesBackend();
 let notesTreeStore: NotesTreeStore | null = null;
 let notesTreeViewStore: NotesTreeViewStore | null = null;
 let notesWorkspaceApplyCoordinator: NotesWorkspaceApplyCoordinator | null = null;
@@ -417,6 +428,7 @@ async function renderNotePdf(documentHtml: string): Promise<Buffer> {
 }
 
 function getNotesStore(): SqliteNotesStore {
+  if (remoteNotes?.enabled) return remoteNotes.store;
   if (!notesStore) {
     throw new Error('Notes store is not initialized.');
   }
@@ -424,16 +436,19 @@ function getNotesStore(): SqliteNotesStore {
 }
 
 function getNotesTreeStore(): NotesTreeStore {
+  if (remoteNotes?.enabled) return remoteNotes.tree;
   if (!notesTreeStore) throw new Error('Notes tree is not initialized.');
   return notesTreeStore;
 }
 
 function getNotesTreeViewStore(): NotesTreeViewStore {
+  if (remoteNotes?.enabled) return remoteNotes.view;
   if (!notesTreeViewStore) throw new Error('Notes tree view is not initialized.');
   return notesTreeViewStore;
 }
 
 function getNotesWorkspaceApplyCoordinator(): NotesWorkspaceApplyCoordinator {
+  if (remoteNotes?.enabled) return remoteNotes.coordinator;
   if (!notesWorkspaceApplyCoordinator) throw new Error('Notes workspace apply is not initialized.');
   return notesWorkspaceApplyCoordinator;
 }
@@ -515,9 +530,9 @@ function mutateNotesSharedData<T>(
 ): Promise<T> {
   return runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
-    s3SyncRuntime?.assertNotesEditable();
+    if (!remoteNotes?.enabled) s3SyncRuntime?.assertNotesEditable();
     const result = await operation();
-    s3SyncRuntime?.markLocalChange(typeof change === 'function' ? change(result) : change);
+    if (!remoteNotes?.enabled) s3SyncRuntime?.markLocalChange(typeof change === 'function' ? change(result) : change);
     return result;
   });
 }
@@ -1125,12 +1140,12 @@ async function prepareRendererNotesPersistentApply(): Promise<RendererNotesPersi
 }
 
 function publishPersistentDataReload(
-  source: 's3' | 'trilium',
+  source: 's3' | 'trilium' | 'notes-server',
   apply: RendererNotesPersistentApply,
   options: { hostsChanged?: boolean; notesDelta?: NotesWorkspaceDelta } = {},
 ): boolean {
   persistentDataGeneration += 1;
-  const notesOwnRelease = Boolean(options.notesDelta);
+  const notesOwnRelease = Boolean(options.notesDelta) || source === 'notes-server';
   if (!notesOwnRelease) releaseRendererNotesPersistentApply(apply);
   broadcast(IPC_CHANNELS.persistentDataReloaded, {
     generation: persistentDataGeneration,
@@ -1224,6 +1239,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function createWindow(): BrowserWindow {
   if (panelWindows && !panelWindows.mainWindow.isDestroyed()) { panelWindows.show(); return panelWindows.mainWindow; }
   panelWindows = new PanelWindowManager({
+    canOpenPanels: () => notesServerSettings?.setupComplete === true,
     rendererWindows,
     onSurfaceCreated: (surface) => {
       const owner = surface.webContents.id;
@@ -1250,7 +1266,7 @@ function createWindow(): BrowserWindow {
 }
 
 function toView(hosts: HostConfig[]) {
-  return runtimeRegistry.toView(hosts, (forwardId) => tunnelManager.getStatus(forwardId));
+  return runtimeRegistry.toView(hosts, (forwardId) => tunnelManager.getStatus(forwardId)).map(host => ({ ...host, privateKey: undefined, passphrase: undefined, privateKeyPath: undefined, jumpHosts: host.jumpHosts.map(hop => ({ ...hop, privateKey: undefined, passphrase: undefined })) }));
 }
 
 function emitStatus(
@@ -1442,6 +1458,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
   for (const controller of activeLlmModelRequests) controller.abort();
 
   const shutdownResults = await Promise.allSettled([
+    Promise.resolve().then(() => remoteNotes?.close()),
     Promise.resolve().then(() => notesStore?.flush()),
     Promise.resolve().then(() => notesTreeStore?.flush()),
     Promise.resolve().then(() => notesTreeViewStore?.flush()),
@@ -1476,6 +1493,13 @@ async function prepareNotesForQuit(): Promise<boolean> {
   const apply = notesStore ? await prepareRendererNotesPersistentApply() : undefined;
   let quitting = false;
   try {
+    if (remoteNotes?.enabled) {
+      const state = remoteNotes.status();
+      const result = await dialog.showMessageBox({ type: state.pendingDrafts ? 'warning' : 'question', title: 'Quit Service Manager', message: 'Quit Service Manager?',
+        detail: state.pendingDrafts ? `${state.pendingDrafts} Notes draft(s) are saved locally and have not been saved to the server. They will be available when you reopen the app.` : 'Notes Server changes have been saved. The server will keep running.',
+        buttons: ['Cancel', state.pendingDrafts ? 'Quit with local drafts' : 'Quit'], defaultId: 0, cancelId: 0 });
+      quitting = result.response === 1; return quitting;
+    }
     quitting = await confirmApplicationQuit({
       state: async () => s3SyncRuntime ? s3SyncRuntime.getNotesQuitState() : { status: 'not-configured', pending: false },
       choose: async (options) => {
@@ -1666,6 +1690,7 @@ function localSharedNotes(): SharedNotes {
 }
 
 async function captureNotesDatabase(): Promise<{ bytes: Buffer; hash: string }> {
+  if (remoteNotes?.enabled) throw new Error('Server Notes do not synchronize through S3.');
   await flushRendererNotes();
   return runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
@@ -1681,11 +1706,13 @@ async function decodeNotesDatabase(bytes: Buffer): Promise<SharedNotes> {
 }
 
 async function applyNotesDatabase(next: SharedNotes, expectedHash: string): Promise<boolean> {
+  if (remoteNotes?.enabled) return false;
   const rendererApply = await prepareRendererNotesPersistentApply();
   let releasedByReload = false;
   try {
     const delta = await runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
+      if (remoteNotes?.enabled) return undefined;
       const previous = localSharedNotes();
       if (hashNotesDatabaseState(previous) !== expectedHash) return undefined;
       const previousView = getNotesTreeViewStore().snapshot().expandedNoteIds;
@@ -1714,6 +1741,7 @@ function validateS3AppliedHosts(hosts: HostConfig[], currentHosts: HostConfig[])
     let validated: HostConfig;
     try {
       validated = validateHostDraft(candidate);
+      validated = { ...privateKeyVault.reuseReference(validated), jumpHosts: validated.jumpHosts.map(hop => privateKeyVault.reuseReference(hop)) };
     } catch (error) {
       throw new Error(`Synced Host ${index + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1757,7 +1785,7 @@ async function applyS3SharedAppData(
   let appliedHostsChanged = false;
   let notesDelta: NotesWorkspaceDelta | undefined;
   try {
-    const applied = await runS3SharedDataMutation(async () => {
+    const applied = await runNotesMutation(async () => {
       if (expectedLocal) {
         const currentShared = await collectS3SharedAppDataUnlocked(!preserveNotes);
         if (!isDeepStrictEqual(currentShared, expectedLocal)) return false;
@@ -1845,6 +1873,22 @@ async function applyS3SharedAppData(
   }
 }
 
+function handleNotes(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => Promise<any>): void {
+  const mutations = new Set<string>([IPC_CHANNELS.notesCreate, IPC_CHANNELS.notesUpdate, IPC_CHANNELS.notesMove, IPC_CHANNELS.notesDelete, IPC_CHANNELS.notesRecoverDrafts]);
+  ipcMain.handle(channel, async (event, ...args) => {
+    const backend = remoteNotes?.enabled ? remoteNotes : localNotes;
+    if (backend === remoteNotes && channel === IPC_CHANNELS.notesUpdate) {
+      const input = args[0]; await remoteNotes!.preserve(input.id, input.expectedNote, input.draft);
+    }
+    const result = await backend.run(() => handler(event, ...args), mutations.has(channel));
+    if (backend === remoteNotes && channel === IPC_CHANNELS.notesUpdate) await remoteNotes!.clearDraft(args[0].id);
+    return result;
+  });
+}
+function runNotesMutation<T>(operation: () => Promise<T>): Promise<T> {
+  return (remoteNotes?.enabled ? remoteNotes : localNotes).run(() => runS3SharedDataMutation(operation), true);
+}
+
 function registerIpcHandlers(): void {
   ipcMain.on(IPC_CHANNELS.appCloseShortcutResult, (event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload.requestId !== 'string' || typeof payload.handled !== 'boolean') return;
@@ -1861,14 +1905,14 @@ function registerIpcHandlers(): void {
     return toView(hosts);
   });
 
-  ipcMain.handle(IPC_CHANNELS.notesList, async () => runS3SharedDataMutation(async () => {
+  handleNotes(IPC_CHANNELS.notesList, async () => runS3SharedDataMutation(async () => {
     assertNotesWorkspaceSafe();
     return getNotesStore().list().map(noteSummary);
   }));
-  ipcMain.handle(IPC_CHANNELS.notesWorkspace, async () => (
+  handleNotes(IPC_CHANNELS.notesWorkspace, async () => (
     runS3SharedDataMutation(async () => notesWorkspaceSnapshot())
   ));
-  ipcMain.handle(IPC_CHANNELS.notesGet, async (_event, idValue: unknown) => (
+  handleNotes(IPC_CHANNELS.notesGet, async (_event, idValue: unknown) => (
     runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
       const note = getNotesStore().get(validateNoteId(idValue));
@@ -1876,7 +1920,7 @@ function registerIpcHandlers(): void {
       return note;
     })
   ));
-  ipcMain.handle(IPC_CHANNELS.notesSearch, async (_event, inputValue: unknown) => (
+  handleNotes(IPC_CHANNELS.notesSearch, async (_event, inputValue: unknown) => (
     runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
       if (!isRecord(inputValue)
@@ -1895,7 +1939,7 @@ function registerIpcHandlers(): void {
       return rankNoteIdsForSearch(notes, inputValue.query);
     })
   ));
-  ipcMain.handle(IPC_CHANNELS.notesCreate, async (_event, placementValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesCreate, async (_event, placementValue: unknown) => {
     const placement = validateNotePlacement(placementValue, true);
     let createdNoteId: string | undefined;
     return mutateNotesSharedData(async () => {
@@ -1924,7 +1968,7 @@ function registerIpcHandlers(): void {
       return { kind: 'notes', upsertIds: [createdNoteId], treeChanged: true };
     });
   });
-  ipcMain.handle(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
+  handleNotes(IPC_CHANNELS.notesUpdate, async (_event, payload: unknown) => {
     if (!isRecord(payload)) {
       throw new Error('Note update is invalid.');
     }
@@ -1933,10 +1977,12 @@ function registerIpcHandlers(): void {
     const expectedNote = normalizeNoteSnapshot(payload.expectedNote);
     if (expectedNote.id !== id) throw new Error('Note update base is invalid.');
     return mutateNotesSharedData(async () => {
+      const current = remoteNotes?.enabled ? getNotesStore().get(id) : undefined;
+      if (current && isDeepStrictEqual(normalizeNoteDraft(current), draft)) return current;
       return getNotesStore().compareAndUpdate(id, expectedNote, draft);
     }, { kind: 'notes', upsertIds: [id] });
   });
-  ipcMain.handle(IPC_CHANNELS.notesMove, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesMove, async (_event, inputValue: unknown) => {
     const input = validateNoteMove(inputValue);
     return mutateNotesSharedData(async () => {
       const previousNotes = getNotesStore().exportSnapshot();
@@ -1956,7 +2002,7 @@ function registerIpcHandlers(): void {
       }
     }, { kind: 'notes', treeChanged: true });
   });
-  ipcMain.handle(IPC_CHANNELS.notesTreeExpanded, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesTreeExpanded, async (_event, inputValue: unknown) => {
     const input = validateNoteTreeExpansion(inputValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
@@ -1973,18 +2019,18 @@ function registerIpcHandlers(): void {
       )).expandedNoteIds;
     });
   });
-  ipcMain.handle(IPC_CHANNELS.notesDeletePreview, async (_event, idValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesDeletePreview, async (_event, idValue: unknown) => {
     const id = validateNoteId(idValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
       return noteDeletePreview(id);
     });
   });
-  ipcMain.handle(IPC_CHANNELS.notesDelete, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesDelete, async (_event, inputValue: unknown) => {
     const input = validateNoteDelete(inputValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
-      s3SyncRuntime?.assertNotesEditable();
+      if (!remoteNotes?.enabled) s3SyncRuntime?.assertNotesEditable();
       const deletedIds = noteSubtreeIds(input.id);
       if (!sameNoteIds(deletedIds, input.expectedIds)) {
         return { status: 'changed' as const, preview: noteDeletePreview(input.id) };
@@ -2010,7 +2056,7 @@ function registerIpcHandlers(): void {
         const expanded = await getNotesTreeViewStore().replaceActiveIds(
           getNotesStore().list().map((note) => note.id),
         );
-        s3SyncRuntime?.markLocalChange({
+        if (!remoteNotes?.enabled) s3SyncRuntime?.markLocalChange({
           kind: 'notes',
           deleteIds: deletedIds,
           treeChanged: true,
@@ -2027,7 +2073,7 @@ function registerIpcHandlers(): void {
       }
     });
   });
-  ipcMain.handle(IPC_CHANNELS.notesRecoverDrafts, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesRecoverDrafts, async (_event, inputValue: unknown) => {
     const recoveries = validateNoteDraftRecoveries(inputValue);
     return mutateNotesSharedData(async () => {
       const previousNotes = getNotesStore().exportSnapshot();
@@ -2157,13 +2203,13 @@ function registerIpcHandlers(): void {
     if (openError) throw new Error('Unable to open the exported Note file.');
     return { status: 'opened' as const };
   });
-  ipcMain.handle(IPC_CHANNELS.notesSharesList, async (_event, noteIdValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesSharesList, async (_event, noteIdValue: unknown) => {
     const noteId = validateNoteId(noteIdValue);
     assertNotesWorkspaceSafe();
     if (!getNotesStore().get(noteId)) throw new Error('Note not found.');
     return shortenNoteShareViews(await getS3SyncRuntime().listNoteShares(noteId));
   });
-  ipcMain.handle(IPC_CHANNELS.notesSharesCreate, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesSharesCreate, async (_event, inputValue: unknown) => {
     const input = validateNoteShareCreateInput(inputValue);
     assertNotesWorkspaceSafe();
     const note = getNotesStore().get(input.noteId);
@@ -2171,14 +2217,14 @@ function registerIpcHandlers(): void {
     const share = await getS3SyncRuntime().createNoteShare(note, input.expiresInHours);
     return (await shortenNoteShareViews([share]))[0];
   });
-  ipcMain.handle(IPC_CHANNELS.notesSharesResign, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesSharesResign, async (_event, inputValue: unknown) => {
     const input = validateNoteShareResignInput(inputValue);
     assertNotesWorkspaceSafe();
     if (!getNotesStore().get(input.noteId)) throw new Error('Note not found.');
     const share = await getS3SyncRuntime().resignNoteShare(input.noteId, input.shareId, input.expiresInHours);
     return (await shortenNoteShareViews([share]))[0];
   });
-  ipcMain.handle(IPC_CHANNELS.notesSharesDelete, async (_event, inputValue: unknown) => {
+  handleNotes(IPC_CHANNELS.notesSharesDelete, async (_event, inputValue: unknown) => {
     const input = validateNoteShareDeleteInput(inputValue);
     assertNotesWorkspaceSafe();
     if (!getNotesStore().get(input.noteId)) throw new Error('Note not found.');
@@ -2390,9 +2436,9 @@ function registerIpcHandlers(): void {
             throw new Error('S3 settings changed after the Trilium images were imported. Start the import again.');
           }
         }
-        const applied = await runS3SharedDataMutation(async () => {
+        const applied = await runNotesMutation(async () => {
           assertNotesWorkspaceSafe();
-          s3SyncRuntime?.assertNotesEditable();
+          if (!remoteNotes?.enabled) s3SyncRuntime?.assertNotesEditable();
           const previousNotes = getNotesStore().exportSnapshot();
           const previousTombstones = getNotesStore().exportTombstones();
           const previousTree = getNotesTreeStore().snapshot();
@@ -2420,7 +2466,7 @@ function registerIpcHandlers(): void {
               await restoreNotesWorkspace(previousNotes, previousTombstones, previousTree, previousExpanded);
               throw error;
             }
-            s3SyncRuntime?.markLocalChange({
+            if (!remoteNotes?.enabled) s3SyncRuntime?.markLocalChange({
               kind: 'notes',
               upsertIds: notesDelta.upsertedNotes.map((note) => note.id),
               deleteIds: notesDelta.removedNoteIds,
@@ -2591,9 +2637,9 @@ function registerIpcHandlers(): void {
     getS3SyncRuntime().revealS3SyncCredentials()
   );
   ipcMain.handle(IPC_CHANNELS.s3Sync, async () => getS3SyncRuntime().syncAllDataToS3());
-  ipcMain.handle(IPC_CHANNELS.notesSyncCheck, async () => getS3SyncRuntime().checkNotesSync());
-  ipcMain.handle(IPC_CHANNELS.notesUploadOnLeave, async () => getS3SyncRuntime().uploadPendingNotes());
-  ipcMain.handle(IPC_CHANNELS.notesSyncAllowOffline, async () => getS3SyncRuntime().allowOfflineNotesEditing());
+  ipcMain.handle(IPC_CHANNELS.notesSyncCheck, async () => remoteNotes?.enabled ? { status: 'ready', editable: true } : getS3SyncRuntime().checkNotesSync());
+  ipcMain.handle(IPC_CHANNELS.notesUploadOnLeave, async () => remoteNotes?.enabled ? undefined : getS3SyncRuntime().uploadPendingNotes());
+  ipcMain.handle(IPC_CHANNELS.notesSyncAllowOffline, async () => remoteNotes?.enabled ? { status: 'ready', editable: true } : getS3SyncRuntime().allowOfflineNotesEditing());
 
   ipcMain.handle(IPC_CHANNELS.exportConfig, async (): Promise<ConfigTransferResult | null> => {
     const hosts = getStore().listHosts();
@@ -2612,7 +2658,7 @@ function registerIpcHandlers(): void {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       app: 'service-manager',
-      hosts,
+      hosts: hosts.map(host => ({ ...privateKeyVault.reference(host), jumpHosts: host.jumpHosts.map(hop => privateKeyVault.reference(hop)) })),
     };
     await fs.writeFile(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
     return {
@@ -2650,7 +2696,7 @@ function registerIpcHandlers(): void {
     const validatedHosts = ensureUniqueImportedIds(
       importedDrafts.map((draft, index) => {
         try {
-          return validateHostDraft(draft);
+          return validateHostDraft({ ...privateKeyVault.resolve(draft), jumpHosts: (draft.jumpHosts ?? (draft.jumpHost ? [draft.jumpHost] : [])).map(hop => privateKeyVault.resolve(hop)) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(`Host ${index + 1}: ${message}`);
@@ -2699,7 +2745,8 @@ function registerIpcHandlers(): void {
         }
       }
 
-      const validated = validateHostDraft(hostDraft);
+      const resolvedDraft = { ...privateKeyVault.resolve(hostDraft), jumpHosts: (hostDraft.jumpHosts ?? (hostDraft.jumpHost ? [hostDraft.jumpHost] : [])).map(hop => privateKeyVault.resolve(hop)) };
+      const validated = validateHostDraft(resolvedDraft);
       const host = preserveServiceRuntimeFields(previous, validated);
 
       if (previous) {
@@ -3271,6 +3318,10 @@ app.whenReady()
         ? safeStorage.getSelectedStorageBackend()
         : 'unknown',
     };
+    privateKeyVault = new PrivateKeyVault(path.join(app.getPath('userData'), 'vault.json'), credentialProtector);
+    await privateKeyVault.load();
+    await store.attachVault(privateKeyVault);
+    registerVaultIpc(privateKeyVault);
     llmSettingsStore = new LlmSettingsStore({
       filePath: path.join(app.getPath('userData'), 'llm-settings.json'),
       credentialProtector,
@@ -3282,6 +3333,24 @@ app.whenReady()
       credentialProtector,
     });
     await notesShareSettingsStore.load();
+    notesServerSettings = new NotesServerSettings(path.join(app.getPath('userData'), 'notes-server.json'), credentialProtector, privateKeyVault);
+    await notesServerSettings.load();
+    const notesBundle = path.join(app.getAppPath(), 'dist').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+    const notesDeployment = new NotesServerDeployment(notesServerSettings, notesBundle, app.getVersion(), !app.isPackaged);
+    remoteNotes = new RemoteNotesBackend(notesDeployment, app.getPath('userData'), state => broadcast('notes-server:status', state));
+    await remoteNotes.initialize();
+    registerNotesServerIpc({ settings: notesServerSettings, deployment: notesDeployment, backend: remoteNotes, userData: app.getPath('userData'),
+      hosts: () => getStore().listHosts(),
+      createHost: draft => mutateS3SharedData(() => createNotesServerHost(getStore(), privateKeyVault, draft)),
+      snapshot: () => ({ notes: notesStore!.list(), tombstones: notesStore!.exportTombstones(), tree: notesTreeStore!.snapshot() }),
+      backup: () => notesStore!.snapshotBytes(),
+      freeze: async () => {
+        const apply = await prepareRendererNotesPersistentApply();
+        let reloaded = false;
+        return { release: () => { if (!reloaded) releaseRendererNotesPersistentApply(apply); }, reload: () => { reloaded = publishPersistentDataReload('notes-server', apply); } };
+      },
+    });
+
 
     const sqlCredentialsStore = new SqlCredentialsStore({
       filePath: path.join(app.getPath('userData'), 'sql-login.json'),
@@ -3326,6 +3395,7 @@ app.whenReady()
       snapshotProvider: () => runS3SharedDataMutation(() => collectS3SharedAppDataUnlocked(false)),
       snapshotApplier: (data, expected) => applyS3SharedAppData(data, expected, true),
       notesDatabase,
+      notesDatabaseEnabled: () => !notesServerSettings?.enabled,
       onNotesSyncGuardChanged: (state) => broadcast(IPC_CHANNELS.notesSyncGuardState, state),
       freezeNotesForGuard: async () => {
         const apply = await prepareRendererNotesPersistentApply();
@@ -3344,7 +3414,7 @@ app.whenReady()
     applyAppMenu(() => {
       void updater.checkForUpdates('manual');
     });
-    for (const host of hosts) {
+    for (const host of getStore().listHosts()) {
       await autoStartHostRules(host);
     }
     updater.start();

@@ -4,11 +4,19 @@ All notable changes to Service Manager are documented in this file. The newest r
 
 ## [0.3.89] - 2026-09-25
 
+- Removed the option to switch back to local Notes after migration; the original database is retained only for recovery.
+
+- Require Notes Server setup on first launch, show migration progress, and unlock the app only after the server workspace is ready.
+
 ### Added
+- Notes Server setup now prioritizes existing Hosts and reuses their authentication. New Hosts created during setup also appear in the Hosts panel.
+- Added a Vault panel for reusable SSH private keys, automatic migration of existing Host keys, and key selection in Hosts, jump hosts, and Notes Server. Plain configuration exports now contain key references instead of private keys.
+- Added Notes Server settings, SSH deployment with a bundled Linux runtime, systemd lifecycle controls, verified migration, API-backed Notes, persistent offline drafts, conflict recovery, and downloadable server backups.
 - All registered main panels (including Hosts, Proxy, Kubernetes, SQL, and Notes) can open in separate windows and merge back without losing terminal sessions, logs, or unsaved editor content. Closing a detached window merges it back.
 - Added a Kubernetes Overview with cluster-wide resource counts, per-node CPU/memory/GPU allocation and usage, and node filesystem and persistent-volume capacity. Missing metrics and permissions are clearly indicated.
 
 ### Fixed
+- Vault private key imports now open the default SSH key directory (`~/.ssh`), falling back to the home directory when unavailable.
 - Fixed clipped and misaligned main-window navigation after detaching a panel; the sidebar now retains its original icons and spacing.
 - Fixed missing Pod CPU and memory usage when the cluster Metrics API provides data; restored live refresh in Workloads → Pods.
 - Pod lists and details now show Terminating, initialization progress, readiness, image-pull and container failures, and completion instead of relying only on the API phase.

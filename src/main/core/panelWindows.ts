@@ -19,6 +19,7 @@ interface PanelEntry {
 }
 interface Options {
   registry?: PanelRegistry;
+  canOpenPanels?(): boolean;
   rendererWindows: Set<RendererSurface>;
   onSurfaceCreated(surface: RendererSurface): void;
   onSurfaceClosed(surface: RendererSurface): void;
@@ -133,6 +134,7 @@ export class PanelWindowManager {
     return entry;
   }
   activate(id: PanelId): void {
+    if (this.options.canOpenPanels?.() === false) throw new Error('Complete Notes Server setup first.');
     if (this.disposed) return;
     this.active = id;
     const entry = this.ensure(id);
@@ -145,6 +147,7 @@ export class PanelWindowManager {
     this.publish();
   }
   detach(id: PanelId): void {
+    if (this.options.canOpenPanels?.() === false) throw new Error('Complete Notes Server setup first.');
     const entry = this.ensure(id);
     if (entry.detached) { this.focus(id); return; }
     const detached = this.newWindow(`${this.registry.title(id)} — Service Manager`);

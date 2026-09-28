@@ -6,6 +6,7 @@ export const PANEL_DEFINITIONS: readonly PanelDefinition[] = Object.freeze([
   { id: 'proxy', title: 'Proxy', icon: 'globe' },
   { id: 'kubernetes', title: 'Kubernetes', icon: 'boxes' },
   { id: 'sql', title: 'SQL', icon: 'database' },
+  { id: 'vault', title: 'Vault', icon: 'key-round' },
   { id: 'notes', title: 'Notes', icon: 'notebook-pen' },
 ]);
 

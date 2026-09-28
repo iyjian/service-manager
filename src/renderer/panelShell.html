@@ -1,3 +1,25 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Service Manager</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="tailwind.css"></head>
-<body><div class="panel-shell"><nav id="panel-shell-nav" class="nav-rail" aria-label="Primary"><img class="nav-logo" src="../../assets/icon-64.png" alt="Service Manager"><button id="panel-shell-rail-merge" type="button" class="nav-item panel-window-toggle" title="Move this panel back without reloading" aria-label="Merge into main window">⇤</button></nav><main class="panel-shell-placeholder"><h1 id="panel-shell-title">Service Manager</h1><p id="panel-shell-message">Opening panel…</p><div><button id="panel-shell-focus" class="btn btn-secondary">Show window</button><button id="panel-shell-merge" class="btn btn-primary">Merge into main window</button></div><p id="panel-shell-error" role="status"></p></main></div><script type="module" src="panelShell.js"></script></body></html>
+<body><main id="notes-onboarding" hidden>          <section id="notes-server-settings" class="notes-server-settings" aria-label="Notes Server">
+            <h2>Set up Notes Server</h2><p>Notes now requires a server. Choose a server to host your notes. All clients connected to the same server share one Notes workspace. We will back up and migrate your local notes before opening Service Manager.</p><p data-server-mode>Current storage: Local</p>
+            <label class="field">Server Host<select class="input" data-notes-host><option value="">Select an existing Host…</option><option value="__new__">Add New Host…</option></select></label>
+            <p class="settings-help" data-notes-host-detail>Select a saved Host to reuse its SSH connection and authentication.</p>
+            <div class="notes-server-fields">
+              <label>Name<input class="input" name="name" autocomplete="off" /></label>
+              <label>Host<input class="input" name="sshHost" autocomplete="off" /></label>
+              <label>SSH Port<input class="input" name="sshPort" type="text" inputmode="numeric" pattern="[0-9]*" value="22" /></label>
+              <label>Username<input class="input" name="username" autocomplete="off" /></label>
+              <label>Authentication<select class="input" name="authType"><option value="privateKey">Private Key</option><option value="password">Password</option></select></label>
+              <label data-server-auth="password" hidden>Password<input class="input" name="password" type="password" autocomplete="new-password" /></label>
+              <label data-server-auth="privateKey">Vault private key<select class="input" name="privateKeyId" data-vault-select></select><button type="button" class="btn btn-secondary" data-server-add-key>Add Private Key</button></label><label data-server-auth="privateKey" class="notes-legacy-key">Key passphrase<input class="input" name="passphrase" type="password" autocomplete="new-password" /></label>
+              <label data-server-auth="privateKey" class="notes-server-key notes-legacy-key">Private key<textarea class="input" name="privateKey" rows="3" spellcheck="false" autocomplete="off"></textarea></label>
+            </div>
+            <div class="notes-server-actions">
+              <button type="button" class="btn btn-secondary" data-server-import-key>Import Private Key</button>
+              <button type="button" class="btn btn-secondary" data-server-action="test">Test Connection</button>
+              <button type="button" class="btn btn-secondary" data-server-cancel>Cancel operation</button>
+            </div>
+
+            <p class="settings-help">Linux x64/ARM64 · systemd user service with lingering · API over SSH. Images and attachments remain in S3.</p>
+            <pre data-server-status role="status" class="notes-server-status"></pre>
+          <button type="button" class="btn btn-primary" data-server-action="setup">Save, Deploy &amp; Migrate</button></section></main><div class="panel-shell"><nav id="panel-shell-nav" class="nav-rail" aria-label="Primary"><img class="nav-logo" src="../../assets/icon-64.png" alt="Service Manager"><button id="panel-shell-rail-merge" type="button" class="nav-item panel-window-toggle" title="Move this panel back without reloading" aria-label="Merge into main window">⇤</button></nav><main class="panel-shell-placeholder"><h1 id="panel-shell-title">Service Manager</h1><p id="panel-shell-message">Opening panel…</p><div><button id="panel-shell-focus" class="btn btn-secondary">Show window</button><button id="panel-shell-merge" class="btn btn-primary">Merge into main window</button></div><p id="panel-shell-error" role="status"></p></main></div><script type="module" src="panelShell.js"></script></body></html>

@@ -5987,3 +5987,36 @@
 .panel-shell-placeholder { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-size: 13px; color: #71717a; }
 .panel-shell-placeholder h1 { color: #27272a; font-size: 20px; font-weight: 600; }
 .panel-shell-placeholder button { margin: 0 4px; }
+
+.notes-server-settings { padding: 12px 0; border-bottom: 1px solid #e4e4e7; font-size: 12px; }
+.notes-server-settings h3 { margin: 0 0 6px; font-size: 14px; }
+.notes-server-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.notes-server-fields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.notes-server-fields label[hidden] { display: none; }
+.notes-server-key { grid-column: 1 / -1; }
+.notes-server-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.notes-server-status { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; font-size: 11px; }
+
+.notes-server-key textarea { min-height: 64px; resize: vertical; }
+
+#notes-onboarding { max-width: 680px; margin: 32px auto; padding: 24px; }
+#notes-onboarding > section > p { line-height: 1.6; }
+#notes-onboarding [data-server-status] { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.panel-shell[hidden], #notes-onboarding[hidden] { display: none; }
+#notes-onboarding { max-height: calc(100vh - 64px); overflow-y: auto; }
+
+#private-key-row > .he-key-editor, .jump-key-row > .he-key-editor { display: none; }
+.vault-content { padding: 16px; }
+.vault-key-row { display: flex; justify-content: space-between; padding: 12px 4px; border-bottom: 1px solid #e4e4e7; }
+.vault-key-row span { color: #71717a; font-size: 12px; }
+.vault-key-dialog { width: min(560px, 90vw); padding: 20px; border: 1px solid #d4d4d8; border-radius: 8px; }
+.vault-key-dialog::backdrop { background: #0006; }
+.vault-key-dialog form { display: grid; gap: 12px; }
+.vault-key-dialog textarea { font-family: monospace; }
+
+.notes-server-fields .notes-legacy-key, [data-server-import-key] { display: none; }
+
+.vault-key-dialog textarea.input { height: 140px; min-height: 100px; resize: vertical; }
+
+.notes-server-fields[hidden] { display: none; }

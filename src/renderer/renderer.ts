@@ -1,3 +1,4 @@
+import { registerVaultPage, refreshVaultKeys, openAddPrivateKey } from './pages/vaultPage.js';
 import { captureRendererException } from './utils/sentry.js';
 import { basicSetup, EditorView } from 'codemirror';
 import { defaultHighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language';
@@ -53,6 +54,7 @@ const sshHostInput = requireElement<HTMLInputElement>('#ssh-host');
 const sshPortInput = requireElement<HTMLInputElement>('#ssh-port');
 const usernameInput = requireElement<HTMLInputElement>('#username');
 const passwordInput = requireElement<HTMLInputElement>('#password');
+const hostVaultKey = requireElement<HTMLSelectElement>('#host-vault-key');
 const privateKeyInput = requireElement<HTMLTextAreaElement>('#private-key');
 const passphraseInput = requireElement<HTMLInputElement>('#passphrase');
 const passwordRow = requireElement<HTMLElement>('#password-row');
@@ -733,6 +735,7 @@ function normalizeClipboardJumpHost(input: unknown): JumpHostConfig | null {
     username,
     authType: input.authType === 'password' ? 'password' : 'privateKey',
     password: readString(input.password),
+    privateKeyId: typeof input.privateKeyId === 'string' ? input.privateKeyId : undefined,
     privateKey: typeof input.privateKey === 'string' ? input.privateKey : undefined,
     passphrase: readString(input.passphrase),
   };
@@ -833,6 +836,7 @@ function parseHostDraftFromClipboard(raw: string): ClipboardHostDraft {
     username: readString(source.username),
     authType: source.authType === 'password' ? 'password' : 'privateKey',
     password: readString(source.password),
+    privateKeyId: typeof source.privateKeyId === 'string' ? source.privateKeyId : undefined,
     privateKey: typeof source.privateKey === 'string' ? source.privateKey : undefined,
     passphrase: readString(source.passphrase),
     privateKeyPath: readString(source.privateKeyPath),
@@ -863,6 +867,8 @@ function applyHostDraftToForm(draft: ClipboardHostDraft): void {
   usernameInput.value = draft.username ?? '';
   targetNodeCard.dataset.nodeAuth = draft.authType === 'password' ? 'password' : 'privateKey';
   passwordInput.value = draft.password ?? '';
+  hostVaultKey.dataset.selected = draft.privateKeyId ?? '';
+  void refreshVaultKeys();
   privateKeyInput.value = draft.privateKey ?? '';
   passphraseInput.value = draft.passphrase ?? '';
   editingPrivateKeyPath = draft.privateKeyPath;
@@ -904,6 +910,7 @@ function buildCopyableHostPayload(host: HostView): Record<string, unknown> {
     username: host.username,
     authType: host.authType,
     password: host.password,
+    privateKeyId: host.privateKeyId,
     privateKey: host.privateKey,
     privateKeyPath: host.privateKeyPath,
     forwardAgent: host.forwardAgent !== false,
@@ -1109,6 +1116,7 @@ function readJumpDraftFromRow(row: HTMLElement): JumpHostConfig {
     username: getEditorValue(row, 'username'),
     authType: card?.dataset.nodeAuth === 'password' ? 'password' : 'privateKey',
     password: getEditorValue(row, 'password') || undefined,
+    privateKeyId: getEditorValue(row, 'privateKeyId') || undefined,
     privateKey: row.querySelector<HTMLTextAreaElement>('[data-field="privateKey"]')?.value || undefined,
     passphrase: getEditorValue(row, 'passphrase') || undefined,
   };
@@ -1191,7 +1199,7 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
                   </span>
                 </label>
               </div>
-              <div class="jump-key-row hidden">
+              <div class="jump-key-row hidden"><label class="field">Vault private key<select class="input" data-field="privateKeyId" data-vault-select data-selected="${safeValue(draft?.privateKeyId)}"></select></label>
                 <div class="he-key-editor">
                   <div class="he-key-summary">
                     <button type="button" class="he-key-toggle jump-key-toggle" aria-expanded="false">
@@ -1284,6 +1292,7 @@ function createJumpHostEditorRow(draft?: JumpHostConfig): HTMLElement {
   bindNumericPortInputs(row);
   toggleJumpHostEditorAuthFields(row);
   updateNodeSummary(card);
+  queueMicrotask(() => { void refreshVaultKeys(); });
   return row;
 }
 
@@ -1753,6 +1762,7 @@ function collectJumpHostsDraft(): JumpHostConfig[] {
     const username = get('username');
     const authType = row.querySelector<HTMLElement>('.he-card')?.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
     const password = get('password');
+    const privateKeyId = get('privateKeyId');
     const privateKey = get('privateKey');
     const passphrase = get('passphrase');
     const isBlank = !sshHost && !username && !password && !privateKey && !passphrase;
@@ -1770,6 +1780,7 @@ function collectJumpHostsDraft(): JumpHostConfig[] {
       username,
       authType,
       password: password || undefined,
+      privateKeyId: privateKeyId || undefined,
       privateKey: privateKey || undefined,
       passphrase: passphrase || undefined,
     };
@@ -1777,7 +1788,7 @@ function collectJumpHostsDraft(): JumpHostConfig[] {
     if (authType === 'password' && !jumpHost.password) {
       throw new Error(`Jump server ${index + 1}: Password is required for password auth`);
     }
-    if (authType === 'privateKey' && !jumpHost.privateKey?.trim()) {
+    if (authType === 'privateKey' && !jumpHost.privateKeyId && !jumpHost.privateKey?.trim()) {
       throw new Error(`Jump server ${index + 1}: Private Key is required for private key auth`);
     }
 
@@ -1827,6 +1838,7 @@ function resetForm(): void {
   jumpHostEditorList.innerHTML = '';
   forwardEditorList.innerHTML = '';
   clearServiceEditorRows();
+  hostVaultKey.value = '';
   targetNodeCard.dataset.nodeAuth = 'privateKey';
   setPrivateKeyExpanded(false);
   updatePrivateKeySourceStatus();
@@ -1841,6 +1853,8 @@ function resetForm(): void {
 
 function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
   hostDialogMode = mode;
+  hostVaultKey.dataset.selected = host?.privateKeyId ?? '';
+  void refreshVaultKeys();
   clearHostDialogMessage();
   setActiveHostEditSection('path');
   if (mode === 'edit' && host) {
@@ -2817,6 +2831,7 @@ function render(): void {
   hostTableBody.replaceChildren(fragment);
 }
 
+requireElement<HTMLButtonElement>('#host-add-vault-key').addEventListener('click', () => openAddPrivateKey(key => { hostVaultKey.value = key.id; }));
 const HOSTS_NAV_ICON = renderIcon('server');
 
 
@@ -2853,6 +2868,7 @@ registerPage({
 registerProxyPage();
 registerKubernetesPage();
 registerSqlPage();
+registerVaultPage();
 registerNotesPage();
 registerSettingsDialog();
 
@@ -3123,6 +3139,7 @@ form.addEventListener('submit', async (event) => {
       username: usernameInput.value.trim(),
       authType,
       password: authType === 'password' ? passwordInput.value.trim() || undefined : undefined,
+      privateKeyId: authType === 'privateKey' ? hostVaultKey.value || undefined : undefined,
       privateKey: authType === 'privateKey' ? privateKeyInput.value || undefined : undefined,
       passphrase: authType === 'privateKey' ? passphraseInput.value.trim() || undefined : undefined,
       privateKeyPath: authType === 'privateKey' ? editingPrivateKeyPath : undefined,
@@ -3228,7 +3245,9 @@ window.serviceApi.onUpdateStateChanged((state) => {
 });
 
 window.settingsApi.onPersistentDataReloaded((event) => {
-  const notesUpdate = event.notesDelta
+  const notesUpdate = event.source === 'notes-server'
+    ? reloadNotesPage(event.persistentApplyId)
+    : event.notesDelta
     ? applyNotesPageDelta(event.notesDelta, event.persistentApplyId)
     : event.persistentApplyId
       ? reloadNotesPage(event.persistentApplyId)

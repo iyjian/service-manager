@@ -176,6 +176,7 @@ async function createRuntime(t, options) {
       return clone(state.data);
     },
     ...(options.notesDatabase ? { notesDatabase: options.notesDatabase } : {}),
+    notesDatabaseEnabled: options.notesDatabaseEnabled,
     freezeNotesForGuard: options.freezeNotesForGuard,
     onNotesSyncGuardChanged: options.onNotesSyncGuardChanged,
     ...(options.notesIncrementalProvider ? {
@@ -2786,4 +2787,16 @@ test('database settings fail closed on a wrong key, missing base, or missing leg
       assert.ok(settings.encryptedPreviousSyncEncryptionKey);
     }
   }
+});
+
+ test('server Notes mode disables database sync while preserving the settings-only protocol', async t => {
+  const s3 = new MemoryS3();
+  const remote = await createRuntime(t, { clientId: 'server-notes-mode', data: sharedData([]), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async () => { throw new Error('Database sync must not run'); }, hasPendingChanges: async () => { throw new Error('Database must not be inspected'); } },
+    notesDatabaseEnabled: () => false,
+  });
+  assert.equal(await remote.runtime.hasPendingNotesUpload(), false);
+  await remote.runtime.syncAllDataToS3();
+  assert.ok(s3.calls.length > 0);
+  assert.equal(remote.runtime.getSyncState().status, 'synced');
 });

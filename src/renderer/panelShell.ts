@@ -1,3 +1,4 @@
+import { registerNotesServerSettings, refreshNotesServerSettings } from './pages/notesServerSettings.js';
 import { createIcon, isLucideIconName } from './components/icon.js';
 
 const titles = new Map<string, string>();
@@ -29,6 +30,14 @@ focus.addEventListener('click', () => run(window.panelWindowApi.focus(active)));
 merge.addEventListener('click', () => run(window.panelWindowApi.merge(active)));
 railMerge.addEventListener('click', () => run(window.panelWindowApi.merge(active)));
 run((async () => {
+  const settings = await window.notesServerApi.getSettings();
+  if (!settings.setupComplete) {
+    document.querySelector<HTMLElement>('.panel-shell')!.hidden = true;
+    document.getElementById('notes-onboarding')!.hidden = false;
+    registerNotesServerSettings();
+    await refreshNotesServerSettings();
+    return;
+  }
   const definitions = await window.panelWindowApi.list();
   for (const definition of definitions) titles.set(definition.id, definition.title);
   for (const { id, title: label, icon } of definitions) {

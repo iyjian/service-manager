@@ -135,7 +135,7 @@ test('preload exposes only the bounded Trilium prepare, image resolve, apply, ca
   assert.match(settingsApi, /onTriliumImportProgress:[\s\S]*?ipcRenderer\.on\('settings:notes:trilium-import:progress', wrapped\)[\s\S]*?removeListener\('settings:notes:trilium-import:progress', wrapped\)/);
   assert.match(preload, /contextBridge\.exposeInMainWorld\('settingsApi', settingsApi\)/);
   assert.match(types, /interface SettingsApi \{[\s\S]*?prepareTriliumImport:[\s\S]*?resolveTriliumImportImages:[\s\S]*?applyTriliumImport:[\s\S]*?cancelTriliumImport:[\s\S]*?onTriliumImportProgress:/);
-  assert.match(types, /interface PersistentDataReloaded \{\s*generation: number;\s*source: 's3' \| 'trilium';[\s\S]*?persistentApplyId\?: string;[\s\S]*?hostsChanged\?: boolean;[\s\S]*?notesDelta\?: NotesWorkspaceDelta;\s*\}/);
+  assert.match(types, /interface PersistentDataReloaded \{\s*generation: number;\s*source: 's3' \| 'trilium' \| 'notes-server';[\s\S]*?persistentApplyId\?: string;[\s\S]*?hostsChanged\?: boolean;[\s\S]*?notesDelta\?: NotesWorkspaceDelta;\s*\}/);
 });
 
 test('main process owns Trilium preparation sessions and applies each import atomically before one sync marker and reload', async () => {
@@ -232,7 +232,7 @@ test('main process owns Trilium preparation sessions and applies each import ato
   assert.match(applyHandler, /validateConvertedTriliumImages\(session\.plan, session\.resolvedImages, input\.convertedNotes\)/);
   assert.match(applyHandler, /removePreparedTriliumImport\(input\.sessionId\)/);
   const applyFlush = applyHandler.indexOf('await prepareRendererNotesPersistentApply();');
-  const sharedMutation = applyHandler.indexOf('await runS3SharedDataMutation(async () => {');
+  const sharedMutation = applyHandler.indexOf('await runNotesMutation(async () => {');
   assert.ok(applyFlush >= 0 && applyFlush < sharedMutation);
   assert.match(applyHandler.slice(applyFlush, sharedMutation), /if \(session\.s3ImageTarget\)[\s\S]*?notesImageTarget\(settings\) !== session\.s3ImageTarget[\s\S]*?S3 settings changed after the Trilium images were imported/);
   assert.match(applyHandler, /const previousNotes = getNotesStore\(\)\.exportSnapshot\(\);[\s\S]*?const previousTombstones = getNotesStore\(\)\.exportTombstones\(\);[\s\S]*?const previousTree = getNotesTreeStore\(\)\.snapshot\(\);[\s\S]*?const previousExpanded = getNotesTreeViewStore\(\)\.snapshot\(\)\.expandedNoteIds/);
@@ -272,7 +272,7 @@ test('persistent-data reload applies precise Notes deltas and reloads Hosts only
   assert.match(reloadHandler, /event\.notesDelta\s*\? applyNotesPageDelta\(event\.notesDelta, event\.persistentApplyId\)/);
   assert.match(reloadHandler, /event\.persistentApplyId\s*\? reloadNotesPage\(event\.persistentApplyId\)/);
   assert.match(reloadHandler, /event\.hostsChanged\s*\? Promise\.all\(\[loadHosts\(\), notesUpdate\]\)/);
-  assert.doesNotMatch(reloadHandler, /event\.source ===/);
+  assert.match(reloadHandler, /event\.source === 'notes-server'[\s\S]*?reloadNotesPage/);
   assert.match(main, /function publishPersistentDataReload\([\s\S]*?source: 's3' \| 'trilium'[\s\S]*?hostsChanged\?: boolean; notesDelta\?: NotesWorkspaceDelta[\s\S]*?persistentApplyId: apply\.id/);
   assert.match(main, /publishPersistentDataReload\('s3', rendererApply, \{[\s\S]*?hostsChanged[\s\S]*?notesDelta/);
   assert.doesNotMatch(main, /onDataApplied:/);

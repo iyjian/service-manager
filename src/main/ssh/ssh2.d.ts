@@ -1,6 +1,6 @@
 declare module 'ssh2' {
   import { EventEmitter } from 'node:events';
-  import { Duplex } from 'node:stream';
+  import { Duplex, Readable, Writable } from 'node:stream';
 
   export interface ConnectConfig {
     host?: string;
@@ -39,13 +39,22 @@ declare module 'ssh2' {
   }
 
   export interface ClientChannel extends Duplex {
+    close(): void;
+    on(event: 'error', listener: (error: Error) => void): this;
     stderr: Duplex;
     setWindow(rows: number, cols: number, height: number, width: number): void;
     on(event: 'close', listener: (code?: number, signal?: string) => void): this;
     on(event: 'data', listener: (data: Buffer | string) => void): this;
   }
 
+  export interface SFTPWrapper {
+    createReadStream(path: string): Readable;
+    createWriteStream(path: string, options?: { mode?: number }): Writable;
+    end(): void;
+  }
+
   export class Client extends EventEmitter {
+    sftp(callback: (error: Error | undefined, sftp: SFTPWrapper) => void): void;
     connect(config: ConnectConfig): this;
     end(): void;
     destroy(): void;

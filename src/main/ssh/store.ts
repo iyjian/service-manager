@@ -1,3 +1,4 @@
+import type { PrivateKeyVault } from '../vault/privateKeyVault';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,12 @@ import type {
 
 export class ServiceStore {
   private hosts: HostConfig[] = [];
+  private vault?: PrivateKeyVault;
+  async attachVault(vault: PrivateKeyVault): Promise<void> {
+    this.vault = vault;
+    await this.persist();
+  }
+
 
   constructor(private readonly filePath: string) {}
 
@@ -118,6 +125,7 @@ export class ServiceStore {
       username: input.username.trim(),
       authType: input.authType === 'password' ? 'password' : 'privateKey',
       password: input.password,
+      privateKeyId: input.privateKeyId,
       privateKey: input.privateKey,
       passphrase: input.passphrase,
       privateKeyPath: input.privateKeyPath,
@@ -149,6 +157,7 @@ export class ServiceStore {
       username: input.username.trim(),
       authType: input.authType === 'password' ? 'password' : 'privateKey',
       password: input.password,
+      privateKeyId: input.privateKeyId,
       privateKey: input.privateKey,
       passphrase: input.passphrase,
     };
@@ -211,16 +220,26 @@ export class ServiceStore {
   }
 
   private cloneHost(host: HostConfig): HostConfig {
+    const resolved = this.vault ? this.vault.resolveHost(host) : host;
     return {
-      ...host,
-      jumpHosts: host.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
+      ...resolved,
+      jumpHosts: resolved.jumpHosts.map((jumpHost) => ({ ...jumpHost })),
       forwards: host.forwards.map((forward) => ({ ...forward })),
       services: host.services.map((service) => ({ ...service })),
     };
   }
 
   private async persist(): Promise<void> {
+    const hosts: HostConfig[] = [];
+    for (const host of this.hosts) {
+      if (!this.vault) { hosts.push(host); continue; }
+      const migrated = await this.vault.migrate(host);
+      migrated.jumpHosts = await Promise.all(host.jumpHosts.map(hop => this.vault!.migrate(hop)));
+      hosts.push(migrated);
+    }
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(this.hosts, null, 2), 'utf8');
+    const temporary = `${this.filePath}.${randomUUID()}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(hosts, null, 2), { mode: 0o600 });
+    await fs.rename(temporary, this.filePath); this.hosts = hosts;
   }
 }

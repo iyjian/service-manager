@@ -21,6 +21,10 @@ Hosts, Proxy, Kubernetes, SQL, and Notes each support **Open panel in window** a
 
 For new panels, see [the panel-window extension guide](docs/panel-windows.md).
 
+## Notes Server
+
+Notes supports an optional Linux server deployed over SSH with a bundled runtime and managed by systemd. Configure it under Settings → Notes; migrate local Notes or connect to an existing server workspace. See [deployment, drafts, backups and recovery](docs/notes-server.md). Development and server tests require Node.js 24 LTS.
+
 ## Core Features
 
 1. Host list with SSH connection settings.
@@ -547,3 +551,7 @@ Per project rule, every important change must update both:
 
 - `README.md`
 - `AGENTS.md`
+
+On first launch, complete Notes Server setup and migration before using the application. The same connection is available under Settings → Notes. See [Notes Server setup and recovery](docs/notes-server.md).
+
+The **Vault** panel stores encrypted reusable SSH private keys for Hosts, jump hosts, and Notes Server. Existing Host keys migrate automatically. See [Vault](docs/vault.md).

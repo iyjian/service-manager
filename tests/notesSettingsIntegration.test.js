@@ -149,7 +149,7 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
     'notesImageUpload',
     'notesImageLoad',
   ]) {
-    assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
+    assert.match(main, new RegExp(`(?:ipcMain\\.handle|handleNotes)\\(IPC_CHANNELS\\.${handler}`));
   }
   const instanceLockProbe = main.indexOf('assertUserDataInstanceLockAvailable');
   const singleInstanceLock = main.indexOf('requestSingleInstanceLock()');
@@ -207,8 +207,8 @@ test('compiled Notes page and bridge expose the hierarchical local workspace flo
   assert.match(main, /status: 'changed'[\s\S]*?preview: noteDeletePreview\(input\.id\)/);
   assert.match(main, /getNotesStore\(\)\.deleteMany\(deletedIds\)/);
   assert.match(main, /const requestedIds = 'noteIds' in input \? input\.noteIds : \[input\.noteId\];[\s\S]*?const expandableIds = requestedIds\.filter\(\(noteId\) => activeIds\.includes\(noteId\)\);[\s\S]*?getNotesTreeViewStore\(\)\.setMany\(/);
-  const deleteHandlerStart = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesDelete,');
-  const deleteHandlerEnd = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesRecoverDrafts,', deleteHandlerStart);
+  const deleteHandlerStart = main.indexOf('handleNotes(IPC_CHANNELS.notesDelete,');
+  const deleteHandlerEnd = main.indexOf('handleNotes(IPC_CHANNELS.notesRecoverDrafts,', deleteHandlerStart);
   assert.ok(deleteHandlerStart >= 0 && deleteHandlerEnd > deleteHandlerStart);
   const deleteHandler = main.slice(deleteHandlerStart, deleteHandlerEnd);
   assert.doesNotMatch(deleteHandler, /getNotesStore\(\)\.replaceSnapshot\(/);
@@ -298,7 +298,7 @@ test('compiled Notes exposes file cards, the six-dot command handle, and PDF or 
   assert.match(preload, /exportNote:\s*\(input\)\s*=>[^\n]*invoke\('notes:export', input\)/);
   assert.match(preload, /openLastExport:\s*\(\)\s*=>[^\n]*invoke\('notes:export:open-last'\)/);
   for (const handler of ['notesAttachmentUpload', 'notesAttachmentView', 'notesAttachmentDownload', 'notesExport', 'notesExportOpenLast']) {
-    assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
+    assert.match(main, new RegExp(`(?:ipcMain\\.handle|handleNotes)\\(IPC_CHANNELS\\.${handler}`));
   }
   const previewHandlerStart = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesAttachmentView');
   const previewHandlerEnd = main.indexOf('ipcMain.handle(IPC_CHANNELS.notesAttachmentDownload', previewHandlerStart);
@@ -666,7 +666,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
     'llmSettingsReveal',
     'llmModelsList',
   ]) {
-    assert.match(main, new RegExp(`ipcMain\\.handle\\(IPC_CHANNELS\\.${handler}`));
+    assert.match(main, new RegExp(`(?:ipcMain\\.handle|handleNotes)\\(IPC_CHANNELS\\.${handler}`));
   }
   assert.match(renderer, /registerSettingsDialog\(\)/);
   const persistentReloadStart = renderer.indexOf('window.settingsApi.onPersistentDataReloaded((event) => {');

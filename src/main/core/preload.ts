@@ -411,3 +411,21 @@ contextBridge.exposeInMainWorld('panelWindowApi', {
   focus: (panel: string) => ipcRenderer.invoke('panels:focus', panel),
   onStateChanged: (listener: (state: import('../../shared/types').PanelWindowState) => void) => subscribe('panels:state', listener),
 });
+
+contextBridge.exposeInMainWorld('notesServerApi', {
+  listHosts: () => ipcRenderer.invoke('notes-server:hosts'),
+  saveFromHost: (id: string) => ipcRenderer.invoke('notes-server:save-host', id),
+  onProgress: (listener: (message: string) => void) => subscribe('notes-server:progress', listener),
+  importPrivateKey: () => ipcRenderer.invoke('notes-server:import-key'),
+  getSettings: () => ipcRenderer.invoke('notes-server:settings'),
+  saveSettings: (input: import('../../shared/types').NotesServerSettingsDraft) => ipcRenderer.invoke('notes-server:save', input),
+  action: (action: string) => ipcRenderer.invoke('notes-server:action', action),
+  cancel: () => ipcRenderer.invoke('notes-server:cancel'),
+  status: () => ipcRenderer.invoke('notes-server:status'),
+  preserveDraft: (id: string, expected: unknown, draft: unknown) => ipcRenderer.invoke('notes-server:draft', id, expected, draft),
+  getDraft: (id: string) => ipcRenderer.invoke('notes-server:get-draft', id),
+  poll: () => ipcRenderer.invoke('notes-server:poll'),
+  onStatus: (listener: (state: import('../../shared/types').NotesServerStatus) => void) => subscribe('notes-server:status', listener),
+});
+
+contextBridge.exposeInMainWorld('vaultApi', { list: () => ipcRenderer.invoke('vault:list'), importPrivateKey: () => ipcRenderer.invoke('vault:import'), add: (input: unknown) => ipcRenderer.invoke('vault:add', input) });

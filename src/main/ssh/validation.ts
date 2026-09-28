@@ -16,6 +16,7 @@ export interface SshEndpointDraft {
   username: string;
   authType: AuthType;
   password?: string;
+  privateKeyId?: string;
   privateKey?: string;
   passphrase?: string;
 }
@@ -83,6 +84,7 @@ export function validateSshEndpoint(
     username: input.username.trim(),
     authType: input.authType,
     password: input.password,
+    privateKeyId: input.privateKeyId,
     privateKey: input.privateKey,
     passphrase: input.passphrase,
   };
@@ -95,6 +97,7 @@ export function validateSshEndpoint(
 
   if (endpoint.authType === 'password') {
     if (!endpoint.password) throw new Error(`${label} password is required for password auth.`);
+    endpoint.privateKeyId = undefined;
     endpoint.privateKey = undefined;
     endpoint.passphrase = undefined;
   } else {
@@ -116,6 +119,7 @@ export function validateHostDraft(input: HostDraft): HostConfig {
       username: input.username,
       authType: input.authType,
       password: input.password,
+      privateKeyId: input.privateKeyId,
       privateKey: input.privateKey,
       passphrase: input.passphrase,
     },
@@ -137,6 +141,7 @@ export function validateHostDraft(input: HostDraft): HostConfig {
     username: target.username,
     authType: target.authType,
     password: target.password,
+    privateKeyId: target.privateKeyId,
     privateKey: target.privateKey,
     passphrase: target.passphrase,
     privateKeyPath: input.privateKeyPath?.trim() || undefined,

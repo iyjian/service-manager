@@ -2,6 +2,8 @@ import type { KubernetesApi, NotesApi, ProxyApi, ServiceApi, SettingsApi, SqlApi
 
 declare global {
   interface Window {
+    vaultApi: import('../shared/types').VaultApi;
+    notesServerApi: import('../shared/types').NotesServerApi;
     panelWindowApi: import('../shared/types').PanelWindowApi;
     serviceApi: ServiceApi;
     notesApi: NotesApi;
