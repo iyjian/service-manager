@@ -2,6 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.89] - 2026-09-28
+
+### Added
+- Notes sharing now supports permanent links with publicly readable pages and assets under `notes/public/`. Deleting a share removes its public files.
+
 ## [0.3.87] - 2026-09-21
 
 ### Fixed

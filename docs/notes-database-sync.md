@@ -2,6 +2,14 @@
 
 Notes are local-first records in `<userData>/notes.sqlite3`. The database contains Note content, metadata, deletion records, and hierarchy/sibling order. The main process owns SQLite and all S3 credentials. The renderer continues to use the existing validated Notes IPC. Tree expansion, tabs, fonts, theme, credentials, and other device preferences are not in the synchronized database. Images, attachments, and shared HTML remain separate S3 objects.
 
+## Permanent Note sharing
+
+The share expiry selector supports **Never expires** alongside the existing 24-hour, 3-day, and 7-day signed links. Permanent pages and their copied image/attachment assets use unsigned object URLs under the bucket's `notes/public/` prefix (S3 keys have no leading slash). Share manifests and source snapshots remain under the private `service-manager/v4/shares/` prefix.
+
+When publishing a permanent share, the main process reads the bucket policy and adds an anonymous `s3:GetObject` grant scoped to `arn:aws:s3:::<bucket>/notes/public/*`, preserving existing statements. It does not grant anonymous listing or writes. The configured credentials need `s3:GetBucketPolicy` and `s3:PutBucketPolicy` in addition to the existing object permissions. Public-access restrictions must permit this policy; policy errors fail sharing without falling back to a signed link. Existing objects anywhere in `notes/public/` also become anonymously readable. Reserve that prefix for public content.
+
+Deleting a share removes its public files as well as its private share objects. Changing a share back to a timed expiry removes its public copies. The prefix policy remains in place for other permanent shares. As with any public content, copies already downloaded by recipients cannot be revoked. Permanent expiry is represented by `expiresInHours: null` in IPC and an empty `expiresAt` in share records; existing timed manifests remain compatible.
+
 ## Migration
 
 The first launch recovers any interrupted legacy workspace apply, reads `notes-v4` and `notes-tree.json`, builds and checks a temporary database, and atomically installs it. Existing databases are validated and never replaced with an empty database after an error. Migration retains the original local files. The packaged and development profiles remain separate; migration reads only the active profile.

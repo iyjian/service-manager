@@ -149,6 +149,7 @@ export const NOTE_LANGUAGE_OPTIONS: readonly NoteLanguageOption[] = Object.freez
 ]);
 
 export function parseNoteShareDuration(value: string): NoteShareDurationHours {
+  if (value === 'null') return null;
   const hours = Number(value);
   if (hours === 24 || hours === 72 || hours === 168) return hours;
   return 24;
@@ -3724,7 +3725,7 @@ class NotesPage {
 
       const expiry = document.createElement('span');
       expiry.className = 'note-share-history-expiry';
-      expiry.textContent = share.status === 'active'
+      expiry.textContent = share.expiresAt === '' ? 'Never expires' : share.status === 'active'
         ? `Expires ${formatNoteShareExpiry(share.expiresAt)}`
         : `Expired ${formatNoteShareExpiry(share.expiresAt)}`;
 

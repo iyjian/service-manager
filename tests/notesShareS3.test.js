@@ -82,6 +82,7 @@ function bodyBuffer(body) {
 
 function createMockS3(options = {}) {
   const objects = new Map();
+  let policy = options.policy;
   const calls = [];
   const keyFromUrl = (rawUrl) => {
     const url = new URL(rawUrl);
@@ -113,6 +114,14 @@ function createMockS3(options = {}) {
     const method = init.method ?? 'GET';
     const url = new URL(rawUrl);
     calls.push({ url: rawUrl, init });
+    if (url.searchParams.has('policy')) {
+      if (options.denyPolicy) return new Response('', { status: 403 });
+      if (method === 'GET') return policy
+        ? new Response(JSON.stringify(policy), { status: 200 })
+        : new Response('<Error><Code>NoSuchBucketPolicy</Code></Error>', { status: 404 });
+      policy = JSON.parse(bodyBuffer(init.body).toString('utf8'));
+      return new Response(null, { status: 204 });
+    }
     if (method === 'GET' && url.searchParams.get('list-type') === '2') {
       return new Response(listXml(
         url.searchParams.get('prefix') ?? '',
@@ -159,6 +168,81 @@ function storeOptions(mock, nowRef) {
     createRandomBytes: deterministicRandom(),
   };
 }
+
+test('Permanent shares preserve bucket policy, publish unsigned media, survive expiry and revoke on deletion', async () => {
+  const existing = { Sid: 'KeepMe', Effect: 'Deny', Principal: '*', Action: 's3:DeleteObject', Resource: '*' };
+  const mock = createMockS3({ policy: { Version: '2012-10-17', Statement: [existing] } });
+  const nowRef = { value: new Date('2026-09-28T00:00:00Z') };
+  const store = new NotesShareS3Store(storeOptions(mock, nowRef));
+  const note = richTextNote();
+  const share = await store.create(note, null, {
+    loadImage: async () => Buffer.from('imag'), loadAttachment: async () => Buffer.from('pdfdata'),
+  });
+  assert.equal(share.expiresAt, '');
+  assert.match(share.url, /\/notes\/public\//);
+  assert.equal(new URL(share.url).search, '');
+  const policyPut = mock.calls.find(({ url, init }) => new URL(url).searchParams.has('policy') && init.method === 'PUT');
+  const policy = JSON.parse(bodyBuffer(policyPut.init.body).toString());
+  assert.deepEqual(policy.Statement[0], existing);
+  assert.deepEqual(policy.Statement[1], {
+    Sid: 'ServiceManagerNotesPublicRead', Effect: 'Allow', Principal: '*',
+    Action: 's3:GetObject', Resource: `arn:aws:s3:::${BUCKET}/notes/public/*`,
+  });
+  const publicKeys = [...mock.objects.keys()].filter((key) => key.startsWith('notes/public/'));
+  assert.equal(publicKeys.length, 3);
+  assert.ok(publicKeys.every((key) => !key.endsWith('manifest.json')));
+  const page = mock.objects.get(publicKeys.find((key) => key.endsWith('index.html'))).toString();
+  assert.match(page, /notes\/public\/.*assets\/images/);
+  assert.match(page, /notes\/public\/.*assets\/attachments/);
+  assert.doesNotMatch(page, /X-Amz-|assetKey|test-secret-key/);
+  nowRef.value = new Date('2036-09-28T00:00:00Z');
+  assert.equal((await store.list(note.id))[0].url, share.url);
+  await store.delete(note.id, share.shareId);
+  assert.equal(mock.objects.size, 0);
+});
+
+test('Shares can switch between timed and permanent access without leaving public files behind', async () => {
+  const mock = createMockS3();
+  const nowRef = { value: new Date('2026-09-28T00:00:00Z') };
+  const store = new NotesShareS3Store(storeOptions(mock, nowRef));
+  const note = richTextNote();
+  const share = await store.create(note, 24, {
+    loadImage: async () => Buffer.from('imag'), loadAttachment: async () => Buffer.from('pdfdata'),
+  });
+  assert.match((await store.resign(note.id, share.shareId, null)).url, /\/notes\/public\//);
+  await store.resign(note.id, share.shareId, null);
+  assert.equal(mock.calls.filter(({ url, init }) => new URL(url).searchParams.has('policy') && init.method === 'PUT').length, 1);
+  const timed = await store.resign(note.id, share.shareId, 72);
+  assert.match(timed.url, /X-Amz-Expires=259200/);
+  assert.ok([...mock.objects.keys()].every((key) => !key.startsWith('notes/public/')));
+});
+
+test('Permanent share failures do not leave public content behind', async () => {
+  for (const options of [{ denyPolicy: true }, { failManifestPut: true }]) {
+    const mock = createMockS3(options);
+    const store = new NotesShareS3Store(storeOptions(mock, { value: new Date('2026-09-28T00:00:00Z') }));
+    await assert.rejects(store.create(richTextNote(), null, {
+      loadImage: async () => Buffer.from('imag'), loadAttachment: async () => Buffer.from('pdfdata'),
+    }));
+    assert.equal(mock.objects.size, 0);
+  }
+});
+
+test('Permanent sharing recognizes normalized policy grants and rejects conflicting managed statements', async () => {
+  const grant = {
+    Resource: [`arn:aws:s3:::${BUCKET}/notes/public/*`], Action: ['s3:GetObject'],
+    Principal: { AWS: ['*'] }, Effect: 'Allow', Sid: 'ServiceManagerNotesPublicRead',
+  };
+  const mock = createMockS3({ policy: { Version: '2012-10-17', Statement: [grant] } });
+  const store = new NotesShareS3Store(storeOptions(mock, { value: new Date('2026-09-28T00:00:00Z') }));
+  const loader = { loadImage: async () => Buffer.from('imag'), loadAttachment: async () => Buffer.from('pdfdata') };
+  await store.create(richTextNote(), null, loader);
+  assert.ok(!mock.calls.some(({ url, init }) => new URL(url).searchParams.has('policy') && init.method === 'PUT'));
+  const conflicting = createMockS3({ policy: { Statement: [{ ...grant, Resource: '*' }] } });
+  const otherStore = new NotesShareS3Store(storeOptions(conflicting, { value: new Date('2026-09-28T00:00:00Z') }));
+  await assert.rejects(otherStore.create(richTextNote(), null, loader), /conflicts/);
+  assert.equal(conflicting.objects.size, 0);
+});
 
 test('Notes share S3 store creates static snapshots, signs media, lists history, re-signs, and deletes', async () => {
   const mock = createMockS3();
@@ -270,7 +354,9 @@ test('Notes share deletion paginates share-prefix object listing', async () => {
   await store.delete(noteId, shareId);
 
   assert.equal([...mock.objects.keys()].some((key) => key.startsWith(`${root}/`)), false);
-  const listCalls = mock.calls.filter((call) => call.init.method === 'GET' && new URL(call.url).searchParams.get('list-type') === '2');
+  const listCalls = mock.calls.filter((call) => call.init.method === 'GET'
+    && new URL(call.url).searchParams.get('list-type') === '2'
+    && new URL(call.url).searchParams.get('prefix') === `${root}/`);
   assert.equal(listCalls.length, 2);
   assert.equal(new URL(listCalls[1].url).searchParams.get('continuation-token'), '1000');
 });
