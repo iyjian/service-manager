@@ -48,3 +48,7 @@ Notes Server reuses the device-local [Private key Vault](vault.md). Existing inl
 The startup setup and Settings → Notes offer existing Hosts first. Selecting a Host copies its current direct SSH connection and authentication into the device-local Notes configuration without returning secrets to the renderer. Vault keys remain shared references. Hosts with jump servers are marked unavailable because Notes deployment requires direct SSH.
 
 Choose **Add New Host…** to enter a new connection. Saving, testing, or beginning setup registers this Host in the same persistent store used by the Hosts panel; retries reuse an identical Host. It starts with no tunnels or services. The saved Host selection is shown in Settings → Notes. Later Host edits do not silently redirect an existing Notes service to another server.
+
+## Permanent sharing
+
+Notes stored on the server use the same S3 sharing flow as local Notes. Choose **Never expires** to publish a permanent snapshot; pages and copied assets are served from `notes/public/`, while the Notes Server API remains accessible only over SSH. Sharing still requires the client’s S3 configuration and public-prefix policy permissions. See [permanent Note sharing](notes-database-sync.md#permanent-note-sharing) for permissions, expiry changes, and deletion behavior.

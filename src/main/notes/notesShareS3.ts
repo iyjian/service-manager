@@ -27,6 +27,7 @@ import {
 import { highlightSafeNoteCodeBlocks } from './noteCodeHighlight';
 
 const SHARE_PREFIX = 'service-manager/v4/shares';
+const PUBLIC_PREFIX = 'notes/public';
 const SHARE_SCHEMA_VERSION = 1 as const;
 const MAX_HISTORY = 100;
 const MAX_LIST_BODY_BYTES = 512 * 1024;
@@ -35,7 +36,7 @@ const MAX_ERROR_BYTES = 8 * 1024;
 const MAX_DELETE_OBJECTS = 2_000;
 const LIST_PAGE_LIMIT = 1_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const SHARE_HOURS = new Set<NoteShareDurationHours>([24, 72, 168]);
+const SHARE_HOURS = new Set<NoteShareDurationHours>([24, 72, 168, null]);
 const NOTE_LANGUAGES = new Set<Note['language']>([
   'markdown', 'richtext', 'bash', 'javascript', 'typescript', 'sql', 'json', 'yaml', 'text',
 ]);
@@ -92,7 +93,7 @@ function escapedHtml(value: string): string {
 
 function validDuration(value: unknown): NoteShareDurationHours {
   if (!SHARE_HOURS.has(value as NoteShareDurationHours)) {
-    throw new Error('The Note share expiry must be 24 hours, 3 days, or 7 days.');
+    throw new Error('The Note share expiry must be 24 hours, 3 days, 7 days, or never.');
   }
   return value as NoteShareDurationHours;
 }
@@ -124,6 +125,10 @@ function shareRoot(noteId: string, shareId: string): string {
 
 function shareManifestKey(noteId: string, shareId: string): string {
   return `${shareRoot(noteId, shareId)}/manifest.json`;
+}
+
+function publicRoot(noteId: string, shareId: string): string {
+  return `${PUBLIC_PREFIX}/${notePathId(noteId)}/${validShareId(shareId)}`;
 }
 
 function objectUrl(endpoint: string, bucket: string, key: string): string {
@@ -188,7 +193,7 @@ function parseShareManifest(value: unknown): NoteShareManifest {
     shareId: validShareId(value.shareId),
     createdAt: validTimestamp(value.createdAt),
     signedAt: validTimestamp(value.signedAt),
-    expiresAt: validTimestamp(value.expiresAt),
+    expiresAt: value.expiresAt === '' ? '' : validTimestamp(value.expiresAt),
     indexKey: value.indexKey,
     snapshot: {
       name: value.snapshot.name,
@@ -198,8 +203,12 @@ function parseShareManifest(value: unknown): NoteShareManifest {
     images: value.images.map((asset) => parseShareAsset(asset, 'image:')),
     attachments: value.attachments.map((asset) => parseShareAsset(asset, 'attachment:')),
   };
-  if (Date.parse(manifest.expiresAt) <= Date.parse(manifest.signedAt)
-    || Date.parse(manifest.expiresAt) - Date.parse(manifest.signedAt) > 7 * 24 * 60 * 60 * 1_000) {
+  const root = shareRoot(manifest.noteId, manifest.shareId);
+  const indexRoot = manifest.expiresAt === '' ? publicRoot(manifest.noteId, manifest.shareId) : root;
+  if (!manifest.indexKey.startsWith(`${indexRoot}/versions/`) || manifest.indexKey.includes('..')
+    || [...manifest.images, ...manifest.attachments].some((asset) => !asset.key.startsWith(`${root}/assets/`) || asset.key.includes('..'))
+    || (manifest.expiresAt !== '' && (Date.parse(manifest.expiresAt) <= Date.parse(manifest.signedAt)
+    || Date.parse(manifest.expiresAt) - Date.parse(manifest.signedAt) > 7 * 24 * 60 * 60 * 1_000))) {
     throw new Error('The Note share manifest is invalid.');
   }
   return manifest;
@@ -345,6 +354,7 @@ export class NotesShareS3Store {
       await this.put(shareManifestKey(note.id, shareId), Buffer.from(JSON.stringify(manifest), 'utf8'), 'application/json');
       return this.toView(manifest);
     } catch (error) {
+      await this.deletePrefix(`${publicRoot(note.id, shareId)}/`).catch(() => undefined);
       await this.deletePrefix(`${root}/`).catch(() => undefined);
       throw error;
     }
@@ -354,25 +364,48 @@ export class NotesShareS3Store {
     const hours = validDuration(expiresInHours);
     const shareId = validShareId(shareIdValue);
     const current = await this.readManifest(noteId, shareId);
-    const next = await this.writeSignedIndex(current, hours);
-    await this.put(shareManifestKey(noteId, shareId), Buffer.from(JSON.stringify(next), 'utf8'), 'application/json');
+    let next: NoteShareManifest;
+    try {
+      next = await this.writeSignedIndex(current, hours);
+      await this.put(shareManifestKey(noteId, shareId), Buffer.from(JSON.stringify(next), 'utf8'), 'application/json');
+    } catch (error) {
+      if (hours === null && current.expiresAt !== '') {
+        await this.deletePrefix(`${publicRoot(noteId, shareId)}/`).catch(() => undefined);
+      }
+      throw error;
+    }
+    if (hours !== null) await this.deletePrefix(`${publicRoot(noteId, shareId)}/`);
     return this.toView(next);
   }
 
   public async delete(noteId: string, shareIdValue: string): Promise<void> {
     const shareId = validShareId(shareIdValue);
+    await this.deletePrefix(`${publicRoot(noteId, shareId)}/`);
     await this.deletePrefix(`${shareRoot(noteId, shareId)}/`);
   }
 
   private async writeSignedIndex(manifest: NoteShareManifest, expiresInHours: NoteShareDurationHours): Promise<NoteShareManifest> {
     const signedAt = this.now();
-    const expiresInSeconds = expiresInHours * 60 * 60;
-    const expiresAt = new Date(signedAt.getTime() + expiresInSeconds * 1_000).toISOString();
-    const root = shareRoot(manifest.noteId, manifest.shareId);
+    const permanent = expiresInHours === null;
+    const expiresInSeconds = (expiresInHours ?? 0) * 60 * 60;
+    const expiresAt = permanent ? '' : new Date(signedAt.getTime() + expiresInSeconds * 1_000).toISOString();
+    const privateRoot = shareRoot(manifest.noteId, manifest.shareId);
+    const root = permanent ? publicRoot(manifest.noteId, manifest.shareId) : privateRoot;
+    if (permanent) {
+      await this.ensurePublicReadPolicy();
+      for (const asset of [...manifest.images, ...manifest.attachments]) {
+        const result = await this.request('GET', objectUrl(this.endpoint, this.bucket, asset.key), undefined, undefined, undefined, 36 * 1024 * 1024);
+        if (result.status !== 200) throw new Error('A shared Note asset is unavailable.');
+        await this.put(`${root}${asset.key.slice(privateRoot.length)}`, result.body, asset.mimeType);
+      }
+    }
     const version = `${signedAt.getTime()}-${randomId(this.createRandomBytes, 8)}`;
     const indexKey = `${root}/versions/${version}/index.html`;
-    const imageUrls = new Map(manifest.images.map((asset) => [asset.identity, this.presign(asset.key, signedAt, expiresInSeconds)]));
-    const attachmentUrls = new Map(manifest.attachments.map((asset) => [asset.identity, this.presign(asset.key, signedAt, expiresInSeconds)]));
+    const assetUrl = (asset: ShareAsset): string => permanent
+      ? objectUrl(this.endpoint, this.bucket, `${root}${asset.key.slice(privateRoot.length)}`)
+      : this.presign(asset.key, signedAt, expiresInSeconds);
+    const imageUrls = new Map(manifest.images.map((asset) => [asset.identity, assetUrl(asset)]));
+    const attachmentUrls = new Map(manifest.attachments.map((asset) => [asset.identity, assetUrl(asset)]));
     const bodyHtml = highlightSafeNoteCodeBlocks(staticBody(manifest.snapshot, imageUrls, attachmentUrls));
     const page = buildNoteShareDocument(manifest.snapshot.name || 'Untitled', bodyHtml);
     await this.put(indexKey, Buffer.from(page, 'utf8'), 'text/html; charset=utf-8');
@@ -403,14 +436,15 @@ export class NotesShareS3Store {
     const signedAt = Date.parse(manifest.signedAt);
     const expiresAt = Date.parse(manifest.expiresAt);
     const expiresInSeconds = Math.round((expiresAt - signedAt) / 1_000);
-    const active = this.now().getTime() < expiresAt;
+    const permanent = manifest.expiresAt === '';
+    const active = permanent || this.now().getTime() < expiresAt;
     return {
       shareId: manifest.shareId,
       title: manifest.snapshot.name || 'Untitled',
       createdAt: manifest.createdAt,
       expiresAt: manifest.expiresAt,
       status: active ? 'active' : 'expired',
-      ...(active ? { url: this.presign(manifest.indexKey, new Date(signedAt), expiresInSeconds) } : {}),
+      ...(active ? { url: permanent ? objectUrl(this.endpoint, this.bucket, manifest.indexKey) : this.presign(manifest.indexKey, new Date(signedAt), expiresInSeconds) } : {}),
     };
   }
 
@@ -423,6 +457,38 @@ export class NotesShareS3Store {
       now,
       expiresInSeconds,
     });
+  }
+
+  private async ensurePublicReadPolicy(): Promise<void> {
+    const url = buildS3BucketUrl(this.endpoint, this.bucket);
+    const result = await this.request('GET', url, undefined, undefined, { policy: '' }, MAX_LIST_BODY_BYTES);
+    let policy: Record<string, unknown> = { Version: '2012-10-17', Statement: [] };
+    if (result.status === 200) {
+      const parsed: unknown = JSON.parse(result.body.toString('utf8'));
+      if (!isRecord(parsed) || !Array.isArray(parsed.Statement)) throw new Error('The S3 bucket policy is invalid.');
+      policy = parsed;
+    } else if (result.status !== 404 || !result.body.toString('utf8').includes('<Code>NoSuchBucketPolicy</Code>')) {
+      throw new Error('Unable to read the S3 bucket policy for permanent Note sharing.');
+    }
+    const statement = {
+      Sid: 'ServiceManagerNotesPublicRead', Effect: 'Allow', Principal: '*',
+      Action: 's3:GetObject', Resource: `arn:aws:s3:::${this.bucket}/${PUBLIC_PREFIX}/*`,
+    };
+    const statements = policy.Statement as unknown[];
+    // S3 providers may normalize scalar policy values into single-element arrays.
+    const matches = (value: unknown, expected: string): boolean => value === expected
+      || (Array.isArray(value) && value.length === 1 && value[0] === expected);
+    if (statements.some((item) => isRecord(item)
+      && Object.keys(item).every((key) => ['Sid', 'Effect', 'Principal', 'Action', 'Resource'].includes(key))
+      && item.Effect === 'Allow'
+      && (item.Principal === '*' || (isRecord(item.Principal)
+        && Object.keys(item.Principal).length === 1 && matches(item.Principal.AWS, '*')))
+      && matches(item.Action, statement.Action) && matches(item.Resource, statement.Resource))) return;
+    if (statements.some((item) => isRecord(item) && item.Sid === statement.Sid)) {
+      throw new Error('The permanent Note share policy conflicts with an existing bucket policy statement.');
+    }
+    const updated = await this.request('PUT', url, Buffer.from(JSON.stringify({ ...policy, Statement: [...statements, statement] })), 'application/json', { policy: '' }, MAX_ERROR_BYTES);
+    if (updated.status < 200 || updated.status >= 300) throw new Error('Unable to enable anonymous reads for notes/public/. Check S3 bucket policy permissions and public access restrictions.');
   }
 
   private async put(key: string, body: Buffer, contentType: string): Promise<void> {

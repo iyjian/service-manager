@@ -929,15 +929,16 @@ export type NoteExportOpenResult =
   | { status: 'opened' }
   | { status: 'unavailable' };
 
-export type NoteShareDurationHours = 24 | 72 | 168;
+export type NoteShareDurationHours = 24 | 72 | 168 | null;
 
 export interface NoteShareView {
   shareId: string;
   title: string;
   createdAt: string;
+  /** Empty for permanent public links. */
   expiresAt: string;
   status: 'active' | 'expired';
-  /** Present only while the last signed URL remains valid. */
+  /** Present while the share is active, including permanent public links. */
   url?: string;
 }
 

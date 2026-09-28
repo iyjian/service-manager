@@ -2,7 +2,7 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
-## [0.3.89] - 2026-09-25
+## [0.3.90] - 2026-09-28
 
 - Removed the option to switch back to local Notes after migration; the original database is retained only for recovery.
 
@@ -20,6 +20,11 @@ All notable changes to Service Manager are documented in this file. The newest r
 - Fixed clipped and misaligned main-window navigation after detaching a panel; the sidebar now retains its original icons and spacing.
 - Fixed missing Pod CPU and memory usage when the cluster Metrics API provides data; restored live refresh in Workloads → Pods.
 - Pod lists and details now show Terminating, initialization progress, readiness, image-pull and container failures, and completion instead of relying only on the API phase.
+
+## [0.3.89] - 2026-09-28
+
+### Added
+- Notes sharing now supports permanent links with publicly readable pages and assets under `notes/public/`. Deleting a share removes its public files.
 
 ## [0.3.88] - 2026-09-25
 

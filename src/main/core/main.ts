@@ -298,8 +298,8 @@ function validateNoteExportInput(value: unknown): NoteExportInput {
 }
 
 function validateNoteShareDuration(value: unknown): NoteShareDurationHours {
-  if (value !== 24 && value !== 72 && value !== 168) {
-    throw new Error('The Note share expiry must be 24 hours, 3 days, or 7 days.');
+  if (value !== null && value !== 24 && value !== 72 && value !== 168) {
+    throw new Error('The Note share expiry must be 24 hours, 3 days, 7 days, or never.');
   }
   return value;
 }
