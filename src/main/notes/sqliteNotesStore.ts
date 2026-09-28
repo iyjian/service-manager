@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
-import { EMPTY_RICH_TEXT_CONTENT } from '../../shared/noteRichText';
+import { EMPTY_RICH_TEXT_CONTENT, extractRichTextPlainText } from '../../shared/noteRichText';
 import type { Note, NoteDraft } from '../../shared/types';
 import {
   NOTE_LIMITS,
@@ -11,6 +11,7 @@ import {
   NotesStore,
   normalizeNoteDraft,
   normalizeNoteSnapshot,
+  rankNoteIdsForSearch,
   type NotesSnapshot,
   type NoteTombstone,
 } from './notesStore';
@@ -211,6 +212,10 @@ export class SqliteNotesStore extends NotesStore {
   private database: Database.Database | undefined;
   private sqlQueue: Promise<void> = Promise.resolve();
   private treeStore: NotesTreeStore | undefined;
+  private listCache: Note[] | undefined;
+  private cacheDataVersion: number | undefined;
+  private readonly parsedRows = new Map<string, { data: string; note: Note }>();
+  private readonly searchContents = new Map<string, { content: string; language: Note['language']; text: string }>();
 
   constructor(private readonly userDataPath: string) {
     super(path.join(userDataPath, 'notes-v4'));
@@ -249,7 +254,42 @@ export class SqliteNotesStore extends NotesStore {
   }
 
   override list(): Note[] {
-    return this.connection().prepare('SELECT id, data FROM notes').all().map(readNote).sort(compareIds);
+    const db = this.connection();
+    const version = db.pragma('data_version', { simple: true }) as number;
+    if (!this.listCache || version !== this.cacheDataVersion) {
+      const rows = db.prepare('SELECT id, data FROM notes').all() as { id: string; data: string }[];
+      this.listCache = rows.map(row => {
+        const cached = this.parsedRows.get(row.id);
+        if (cached?.data === row.data) return cached.note;
+        const note = readNote(row);
+        this.parsedRows.set(row.id, { data: row.data, note });
+        return note;
+      }).sort(compareIds);
+      const ids = new Set(this.listCache.map(note => note.id));
+      for (const id of this.parsedRows.keys()) if (!ids.has(id)) this.parsedRows.delete(id);
+      for (const id of this.searchContents.keys()) if (!ids.has(id)) this.searchContents.delete(id);
+      this.cacheDataVersion = version;
+    }
+    return this.listCache.map(note => ({ ...note, tags: [...note.tags] }));
+  }
+
+  listIds(): string[] {
+    return (this.connection().prepare('SELECT id FROM notes ORDER BY id').all() as { id: string }[]).map(row => row.id);
+  }
+
+  search(query: string, activeNote?: Note): string[] {
+    const notes = this.list();
+    if (activeNote) {
+      const index = notes.findIndex(note => note.id === activeNote.id);
+      if (index >= 0 && notes[index].updatedAt === activeNote.updatedAt) notes[index] = activeNote;
+    }
+    return rankNoteIdsForSearch(notes, query, note => {
+      const cached = this.searchContents.get(note.id);
+      if (cached?.content === note.content && cached.language === note.language) return cached.text;
+      const text = (note.language === 'richtext' ? extractRichTextPlainText(note.content) : note.content).toLocaleLowerCase();
+      this.searchContents.set(note.id, { content: note.content, language: note.language, text });
+      return text;
+    });
   }
 
   override get(id: string): Note | undefined {
@@ -273,6 +313,7 @@ export class SqliteNotesStore extends NotesStore {
           tags: [], createdAt: timestamp, updatedAt: timestamp,
         };
         db.prepare('INSERT INTO notes (id, data) VALUES (?, ?)').run(id, JSON.stringify(note));
+        this.listCache = undefined;
         return note;
       }).immediate();
     });
@@ -320,6 +361,7 @@ export class SqliteNotesStore extends NotesStore {
       const remove = db.prepare('DELETE FROM notes WHERE id = ?');
       const insert = db.prepare('INSERT INTO tombstones (id, deleted_at) VALUES (?, ?)');
       for (const id of deleted) { remove.run(id); insert.run(id, deletedAt); }
+      this.listCache = undefined;
       return deleted;
     }).immediate());
   }
@@ -347,6 +389,7 @@ export class SqliteNotesStore extends NotesStore {
     return this.serialize(() => {
       const db = this.connection();
       db.transaction(() => writeReplacement(db, state)).immediate();
+      this.listCache = undefined;
     });
   }
 
@@ -417,6 +460,9 @@ export class SqliteNotesStore extends NotesStore {
       try { db.pragma('wal_checkpoint(TRUNCATE)'); } finally {
         db.close();
         this.database = undefined;
+        this.listCache = undefined;
+        this.parsedRows.clear();
+        this.searchContents.clear();
       }
     });
   }
@@ -435,6 +481,7 @@ export class SqliteNotesStore extends NotesStore {
   private writeUpdatedNote(current: Note, draft: NoteDraft): Note {
     const next = { ...current, ...draft, tags: [...draft.tags], updatedAt: new Date().toISOString() };
     this.connection().prepare('UPDATE notes SET data = ? WHERE id = ?').run(JSON.stringify(next), current.id);
+    this.listCache = undefined;
     return next;
   }
 

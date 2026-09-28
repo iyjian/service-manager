@@ -41,6 +41,39 @@ async function legacyWorkspace(directory) {
   return { notes, tree, view, coordinator: new NotesWorkspaceApplyCoordinator(directory, notes, tree, view) };
 }
 
+test('cached lists and search remain correct across edits, deletion, replacement and external commits', async t => {
+  const { store } = await workspace(t);
+  const { rankNoteIdsForSearch } = require('../dist/main/notes/notesStore');
+  const rich = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '中文 needle body' }] }] });
+  await store.replaceSnapshot(snapshot([note('a', { content: rich, language: 'richtext' }), note('b', { name: 'needle', tags: ['tag'] })]));
+  for (const query of ['needle', '中文', 'tag', 'richtext', 'missing', '']) {
+    assert.deepEqual(store.search(query), rankNoteIdsForSearch(store.list(), query));
+    assert.deepEqual(store.search(query), rankNoteIdsForSearch(store.list(), query));
+  }
+  const exposed = store.list(); exposed[0].content = 'mutated'; exposed[0].tags.push('mutated'); exposed.pop();
+  assert.equal(store.list().length, 2);
+  assert.ok(!store.list()[0].tags.includes('mutated'));
+  assert.notEqual(store.list()[0].content, 'mutated');
+  const active = { ...store.get('a'), content: JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'unsaved' }] }] }) };
+  assert.deepEqual(store.search('unsaved', active), ['a']);
+  assert.deepEqual(store.search('unsaved'), []);
+  assert.deepEqual(store.search('unsaved', { ...active, updatedAt: '2000-01-01T00:00:00.000Z' }), []);
+  await store.update('a', draft({ content: 'updated needle' }));
+  assert.deepEqual(store.search('updated'), ['a']);
+  await store.delete('a');
+  assert.deepEqual(store.search('updated'), []);
+  assert.deepEqual(store.listIds(), ['b']);
+  await store.replaceSnapshot(snapshot([note('c', { content: 'replacement' })]));
+  assert.deepEqual(store.search('replacement'), ['c']);
+  const db = new Database(store.databasePath);
+  try { db.prepare('UPDATE notes SET data=? WHERE id=?').run(JSON.stringify(note('c', { content: 'external' })), 'c'); } finally { db.close(); }
+  assert.deepEqual(store.search('replacement'), []);
+  assert.deepEqual(store.search('external'), ['c']);
+  const created = await store.create();
+  assert.ok(store.listIds().includes(created.id));
+  assert.ok(store.list().some(item => item.id === created.id));
+});
+
 async function mutatedSnapshot(directory, bytes, mutation) {
   const temporaryDirectory = await fs.mkdtemp(path.join(directory, 'test-database-'));
   const file = path.join(temporaryDirectory, 'notes.sqlite3');

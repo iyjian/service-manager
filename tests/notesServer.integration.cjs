@@ -71,3 +71,29 @@ test('backup download is a valid SQLite database and rejects traversal', async t
   try { assert.equal(JSON.parse(db.prepare('SELECT data FROM workspace').get().data).notes[0].id, 'one'); } finally { db.close(); }
   assert.equal((await f.call('/v1/backups/%2e%2e%2fserver.json')).status, 400);
 });
+
+test('upgrading an existing v1 database preserves content, hierarchy, identity and request deduplication', async t => {
+  const { DatabaseSync } = require('node:sqlite');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'notes-server-upgrade-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const token = randomBytes(32).toString('hex');
+  const existing = { instanceId: 'existing-instance', revision: 8, notes: [note('parent'), note('child')],
+    tombstones: [], tree: { schemaVersion: 1, nodes: [{ noteId: 'parent', parentId: null, order: 0 }, { noteId: 'child', parentId: 'parent', order: 0 }] } };
+  const payload = { requestId: 'already-committed', expectedRevision: 7, upserts: [], deletedIds: [] };
+  const db = new DatabaseSync(path.join(directory, 'notes.sqlite3'));
+  db.exec('PRAGMA user_version=1; CREATE TABLE workspace (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE requests (id TEXT PRIMARY KEY, hash TEXT NOT NULL, revision INTEGER NOT NULL);');
+  db.prepare('INSERT INTO workspace VALUES(1,?)').run(JSON.stringify(existing));
+  db.prepare('INSERT INTO requests VALUES(?,?,?)').run(payload.requestId, require('node:crypto').createHash('sha256').update(JSON.stringify(payload)).digest('hex'), 8);
+  db.close();
+  for (let restart = 0; restart < 2; restart++) {
+    const instance = await startNotesServer({ directory, token, port: 0, version: '0.3.91' });
+    try {
+      const base = `http://127.0.0.1:${instance.server.address().port}`;
+      const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      assert.deepEqual(await (await fetch(`${base}/v1/workspace`, { headers })).json(), existing);
+      const result = await fetch(`${base}/v1/transactions`, { method: 'POST', headers, body: JSON.stringify(payload) });
+      assert.equal(result.status, 200); assert.equal((await result.json()).revision, 8);
+      assert.equal((await (await fetch(`${base}/v1/health`, { headers })).json()).revision, 8);
+    } finally { await instance.close(); }
+  }
+});

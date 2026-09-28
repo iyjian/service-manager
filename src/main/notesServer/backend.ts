@@ -79,11 +79,13 @@ export class RemoteNotesBackend implements NotesDataBackend {
     } else this.current = health;
     this.connected = true; this.message = this.drafts.size ? 'Connected · local drafts pending' : 'Connected'; this.publish();
   }
-  run<T>(operation: () => Promise<T>, mutation = false): Promise<T> {
+  run<T>(operation: () => Promise<T>, mutation = false, refresh = false): Promise<T> {
     const work = this.queue.then(async () => {
       await this.initialize();
-      try { await this.refresh(); }
+      try { if (mutation || refresh || !this.current) await this.refresh(); }
       catch (error) { this.connected = false; this.message = 'Disconnected · local drafts are preserved'; this.publish(); if (mutation) throw error; }
+      // Reads and device-local expansion state cannot change the server workspace.
+      if (!mutation) return operation();
       const before = this.snapshot();
       try {
         const result = await operation(); const after = this.snapshot();

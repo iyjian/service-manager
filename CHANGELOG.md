@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.91] - 2026-09-28
+
+### Improved
+- Notes search, folder expansion and opening notes respond faster in large server workspaces while preserving background refresh and conflict protection.
+- App updates automatically upgrade an older connected Notes Server, with a backup, identity checks and rollback on failure. Existing notes and drafts are preserved.
+
 ## [0.3.90] - 2026-09-28
 
 - When connecting to an existing Notes workspace, you can keep a local backup and use server notes without merging or overwriting either copy.

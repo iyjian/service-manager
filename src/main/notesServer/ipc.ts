@@ -31,7 +31,7 @@ export function registerNotesServerIpc(options: {
   ipcMain.handle('notes-server:settings', () => settings.view());
   ipcMain.handle('notes-server:status', () => backend.status());
   ipcMain.handle('notes-server:poll', async () => {
-    if (!busy && backend.enabled) await backend.run(async () => undefined);
+    if (!busy && backend.enabled) await backend.run(async () => undefined, false, true);
     return backend.status();
   });
   ipcMain.handle('notes-server:import-key', async () => {

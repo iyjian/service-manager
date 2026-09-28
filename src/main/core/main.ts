@@ -117,7 +117,6 @@ import {
   classifyNoteDraftRecovery,
   normalizeNoteDraft,
   normalizeNoteSnapshot,
-  rankNoteIdsForSearch,
   type NoteTombstone,
   type NotesSnapshot,
 } from '../notes/notesStore';
@@ -1928,15 +1927,8 @@ function registerIpcHandlers(): void {
         || inputValue.query.length > 512) {
         throw new Error('Note search is invalid.');
       }
-      const notes = getNotesStore().list();
-      if (inputValue.activeNote !== undefined) {
-        const activeNote = normalizeNoteSnapshot(inputValue.activeNote);
-        const index = notes.findIndex((note) => note.id === activeNote.id);
-        if (index >= 0 && notes[index]?.updatedAt === activeNote.updatedAt) {
-          notes[index] = activeNote;
-        }
-      }
-      return rankNoteIdsForSearch(notes, inputValue.query);
+      const activeNote = inputValue.activeNote === undefined ? undefined : normalizeNoteSnapshot(inputValue.activeNote);
+      return getNotesStore().search(inputValue.query, activeNote);
     })
   ));
   handleNotes(IPC_CHANNELS.notesCreate, async (_event, placementValue: unknown) => {
@@ -2006,9 +1998,10 @@ function registerIpcHandlers(): void {
     const input = validateNoteTreeExpansion(inputValue);
     return runS3SharedDataMutation(async () => {
       assertNotesWorkspaceSafe();
-      const activeIds = getNotesStore().list().map((candidate) => candidate.id);
+      const activeIds = getNotesStore().listIds();
+      const activeIdSet = new Set(activeIds);
       const requestedIds = 'noteIds' in input ? input.noteIds : [input.noteId];
-      const expandableIds = requestedIds.filter((noteId) => activeIds.includes(noteId));
+      const expandableIds = requestedIds.filter((noteId) => activeIdSet.has(noteId));
       if (expandableIds.length === 0) {
         return getNotesTreeViewStore().snapshot().expandedNoteIds;
       }

@@ -30,8 +30,9 @@ export async function startNotesServer(options: { directory: string; token: stri
     instanceId: randomUUID(), revision: 0, notes: [], tombstones: [], tree: { schemaVersion: 1, nodes: [] },
   }));
   await fs.chmod(databasePath, 0o600);
-  const read = (): ServerWorkspace => JSON.parse(String(db.prepare('SELECT data FROM workspace WHERE id=1').get()!.data));
-  await validateWorkspace(read());
+  let state: ServerWorkspace = JSON.parse(String(db.prepare('SELECT data FROM workspace WHERE id=1').get()!.data));
+  await validateWorkspace(state);
+  let notesById = new Map(state.notes.map(note => [note.id, note]));
   const backups = path.join(options.directory, 'backups'); await fs.mkdir(backups, { recursive: true, mode: 0o700 });
   let backupQueue = Promise.resolve('');
   const makeBackup = (upgrade = false): Promise<string> => {
@@ -52,13 +53,13 @@ export async function startNotesServer(options: { directory: string; token: stri
       const supplied = Buffer.from(req.headers.authorization ?? ''); const expected = Buffer.from(`Bearer ${options.token}`);
       if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return fail(401, 'Unauthorized.');
       const url = new URL(req.url ?? '/', 'http://localhost');
-      const state = read(); const method = req.method;
+      const method = req.method;
       if (method === 'GET' && url.pathname === '/v1/health') return send(res, { version: options.version, protocol: 1, instanceId: state.instanceId, revision: state.revision });
       if (method === 'GET' && url.pathname === '/v1/workspace') return send(res, state);
       if (method === 'GET' && url.pathname === '/v1/search') return send(res, rankNoteIdsForSearch(state.notes, (url.searchParams.get('q') ?? '').slice(0, 512)));
       if (method === 'GET' && url.pathname === '/v1/notes') return send(res, state.notes.map(({ content, ...summary }) => summary));
       if (method === 'GET' && url.pathname.startsWith('/v1/notes/')) {
-        const note = state.notes.find(n => n.id === decodeURIComponent(url.pathname.slice(10)));
+        const note = notesById.get(decodeURIComponent(url.pathname.slice(10)));
         return note ? send(res, note) : fail(404, 'Note not found.');
       }
       if (method === 'POST' && url.pathname === '/v1/backups') return send(res, { name: await makeBackup(true) });
@@ -104,6 +105,9 @@ export async function startNotesServer(options: { directory: string; token: stri
         db.prepare('DELETE FROM requests WHERE revision < ?').run(updated.revision - 10000);
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
+      // Publish only committed state; health and single-note reads never parse the full database.
+      state = updated;
+      notesById = new Map(state.notes.map(note => [note.id, note]));
       send(res, { revision: updated.revision, instanceId: state.instanceId });
     };
     // Serialize reads and writes with async validation so revisions cannot race.

@@ -6,13 +6,17 @@ import { connectSshChain, closeSshClients, type SshEndpointConfig } from '../ssh
 
 export const quote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 export class NotesServerConnection {
-  constructor(readonly client: Client, readonly signal: AbortSignal) {}
+  private closed = false;
+  constructor(readonly client: Client, readonly signal: AbortSignal) {
+    client.once('close', () => { this.closed = true; });
+  }
+  get usable(): boolean { return !this.closed && !this.signal.aborted; }
   static async open(endpoint: SshEndpointConfig, signal: AbortSignal): Promise<NotesServerConnection> {
     const chain = await connectSshChain(endpoint, [], { signal, readyTimeout: 15_000, keepaliveInterval: 5_000, keepaliveCountMax: 2 });
     const result = new NotesServerConnection(chain.targetClient, signal);
     signal.addEventListener('abort', () => result.close(), { once: true }); return result;
   }
-  close(): void { closeSshClients([this.client]); }
+  close(): void { this.closed = true; closeSshClients([this.client]); }
   exec(command: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.close(); reject(new Error('Server command timed out.')); }, 90_000);
@@ -52,8 +56,21 @@ export class NotesServerConnection {
   }
   async api<T>(port: number, token: string, route: string, payload?: unknown, binary = false): Promise<T> {
     if (this.signal.aborted) throw new Error('Operation cancelled.');
-    const socket = await new Promise<any>((resolve, reject) => this.client.forwardOut('127.0.0.1', 0, '127.0.0.1', port,
-      (error, stream) => error ? reject(new Error('Notes server is disconnected.')) : resolve(stream)));
+    const socket = await new Promise<any>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error, stream?: unknown): void => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); this.signal.removeEventListener('abort', abort);
+        if (error) reject(error); else resolve(stream);
+      };
+      const abort = (): void => finish(new Error('Operation cancelled.'));
+      const timer = setTimeout(() => finish(new Error('Notes server channel timed out.')), 15_000);
+      this.signal.addEventListener('abort', abort, { once: true });
+      this.client.forwardOut('127.0.0.1', 0, '127.0.0.1', port, (error, stream) => {
+        if (settled) { stream?.destroy(); return; }
+        finish(error ? new Error('Notes server is disconnected.') : undefined, stream);
+      });
+    });
     return new Promise<T>((resolve, reject) => {
       const agent = new Agent({ keepAlive: false });
       agent.createConnection = () => socket;

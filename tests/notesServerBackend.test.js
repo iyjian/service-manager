@@ -72,7 +72,7 @@ test('HTTP transport uses the SSH channel rather than a local TCP connection', a
  t.after(() => new Promise(resolve => server.close(resolve)));
  let forwarded = false;
  const client = { forwardOut: (_a,_b,host,port,callback) => { forwarded = true; assert.equal(port, 65001); const socket = net.connect(server.address().port, '127.0.0.1'); const { Duplex } = require('node:stream'); const channel = new Duplex({ read() {}, write(chunk, enc, cb) { socket.write(chunk, enc, cb); }, destroy(error, cb) { socket.destroy(); cb(error); } }); socket.on('data', chunk => channel.push(chunk)); socket.on('end', () => channel.push(null)); socket.on('error', error => channel.destroy(error)); socket.on('connect', () => callback(undefined, channel)); }, end() {} };
- const connection = new NotesServerConnection(client, new AbortController().signal);
+ const connection = new NotesServerConnection(Object.assign(new (require('node:events').EventEmitter)(), client), new AbortController().signal);
  assert.deepEqual(await connection.api(65001, 'test', '/v1/health'), { ok: true }); assert.equal(forwarded, true);
 });
 
@@ -80,6 +80,32 @@ test('server identity changes block writes and preserve the previous cache', asy
  const f = await fixture(t); await f.backend.run(async () => undefined);
  f.deployment.health = async () => ({ protocol: 1, version: 'test', instanceId: 'other-instance', revision: 0 });
  await assert.rejects(f.backend.run(async () => f.backend.store.create(), true), /identity changed/);
+ assert.equal(f.backend.store.get('one').content, 'original');
+});
+
+test('cached reads and expansion do not contact the server or snapshot the workspace; polling still refreshes', async t => {
+ const f = await fixture(t); await f.backend.run(async () => undefined);
+ let checks = 0;
+ const health = f.deployment.health;
+ f.deployment.health = async () => { checks++; return health(); };
+ f.backend.snapshot = () => { throw new Error('Read unexpectedly snapshots all notes'); };
+ assert.equal(await f.backend.run(async () => f.backend.store.get('one').content), 'original');
+ assert.deepEqual(await f.backend.run(async () => f.backend.store.search('original')), ['one']);
+ await f.backend.run(() => f.backend.view.set('one', true, f.backend.store.listIds()));
+ assert.equal(checks, 0);
+ await f.deployment.api('/v1/transactions', { requestId: 'external', expectedRevision: 1, upserts: [{ ...note, content: 'external edit' }], deletedIds: [] });
+ await f.backend.run(async () => undefined, false, true);
+ assert.equal(checks, 1);
+ assert.equal(f.backend.store.get('one').content, 'external edit');
+ assert.equal(f.backend.status().revision, 2);
+});
+
+test('read failures do not restore or invalidate the workspace', async t => {
+ const f = await fixture(t); await f.backend.run(async () => undefined);
+ const before = f.backend.status();
+ await assert.rejects(f.backend.run(async () => { throw new Error('Invalid search'); }), /Invalid search/);
+ assert.equal(f.backend.status().connected, before.connected);
+ assert.equal(f.backend.status().revision, before.revision);
  assert.equal(f.backend.store.get('one').content, 'original');
 });
 

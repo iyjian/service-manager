@@ -5,17 +5,34 @@ import { NotesServerConnection, quote } from './connection';
 import { NotesServerSettings } from './settings';
 
 export interface ServerHealth { protocol: number; version: string; instanceId: string; revision: number; }
+function olderVersion(remote: string, local: string): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(remote) || !/^\d+\.\d+\.\d+$/.test(local)) return false;
+  const left = remote.split('.').map(Number), right = local.split('.').map(Number);
+  for (let index = 0; index < 3; index++) if (left[index] !== right[index]) return left[index] < right[index];
+  return false;
+}
 export class NotesServerDeployment {
   readonly unit: string;
   readonly directoryName: string;
   private controller?: AbortController;
+  private apiController?: AbortController;
+  private apiConnection?: Promise<{ connection: NotesServerConnection; port: number; token: string }>;
+  private apiIdleTimer?: ReturnType<typeof setTimeout>;
+  private apiIdentity?: string;
+  private upgradeAttempted = false;
   constructor(readonly settings: NotesServerSettings, private readonly bundle: string, private readonly version: string, development: boolean) {
     this.directoryName = development ? 'service-manager-dev-notes' : 'service-manager-notes';
     this.unit = `${this.directoryName}.service`;
   }
-  cancel(): void { this.controller?.abort(); }
+  cancel(): void { this.controller?.abort(); this.closeApi(); }
+  private closeApi(): void {
+    clearTimeout(this.apiIdleTimer); this.apiIdleTimer = undefined;
+    this.apiController?.abort(); this.apiController = undefined; this.apiConnection = undefined;
+    this.apiIdentity = undefined;
+  }
   async session<T>(work: (connection: NotesServerConnection, base: string) => Promise<T>): Promise<T> {
     if (this.controller) throw new Error('A Notes Server operation is already running.');
+    this.closeApi();
     const controller = new AbortController(); this.controller = controller;
     const timeout = setTimeout(() => controller.abort(), 300_000); let connection: NotesServerConnection | undefined;
     try {
@@ -31,14 +48,59 @@ export class NotesServerDeployment {
     return { port: raw.port, token: raw.token };
   }
   async api<T>(route: string, payload?: unknown, binary = false): Promise<T> {
-    return this.session(async (connection, base) => {
-      const config = await this.config(connection, base);
-      return connection.api<T>(config.port, config.token, route, payload, binary);
-    });
+    if (this.controller) throw new Error('A Notes Server operation is already running.');
+    if (this.apiIdentity !== this.settings.identity) this.closeApi();
+    clearTimeout(this.apiIdleTimer);
+    if (!this.apiConnection) {
+      this.apiIdentity = this.settings.identity;
+      const controller = new AbortController(); this.apiController = controller;
+      this.apiConnection = (async () => {
+        const timeout = setTimeout(() => controller.abort(), 30_000);
+        let connection: NotesServerConnection | undefined;
+        try {
+          connection = await NotesServerConnection.open(this.settings.endpoint(), controller.signal);
+          const home = await connection.exec('printf %s "$HOME"');
+          if (!home.startsWith('/') || /[\r\n\0%]/.test(home)) throw new Error('Unsupported server home directory.');
+          const config = await this.config(connection, `${home}/.local/share/${this.directoryName}`);
+          return { connection, ...config };
+        } catch (error) { connection?.close(); throw error; }
+        finally { clearTimeout(timeout); }
+      })();
+    }
+    const pending = this.apiConnection;
+    try {
+      const { connection, port, token } = await pending;
+      if (this.apiConnection !== pending) throw new Error('Operation cancelled.');
+      if (!connection.usable) {
+        this.closeApi();
+        throw new Error('Notes server is disconnected.');
+      }
+      return await connection.api<T>(port, token, route, payload, binary);
+    } catch (error) {
+      if (this.apiConnection === pending) this.closeApi();
+      throw error;
+    } finally {
+      if (this.apiConnection === pending) {
+        clearTimeout(this.apiIdleTimer);
+        this.apiIdleTimer = setTimeout(() => this.closeApi(), 60_000);
+        this.apiIdleTimer.unref();
+      }
+    }
   }
   async health(): Promise<ServerHealth> {
-    const health = await this.api<ServerHealth>('/v1/health');
+    let health = await this.api<ServerHealth>('/v1/health');
     if (health.protocol !== 1 || typeof health.instanceId !== 'string' || !Number.isSafeInteger(health.revision)) throw new Error('Unsupported Notes Server protocol.');
+    if (this.settings.enabled && this.settings.instanceId === health.instanceId
+      && !this.upgradeAttempted && olderVersion(health.version, this.version)) {
+      this.upgradeAttempted = true;
+      await this.deploy();
+      const updated = await this.api<ServerHealth>('/v1/health');
+      if (updated.protocol !== 1 || updated.instanceId !== health.instanceId
+        || !Number.isSafeInteger(updated.revision) || updated.revision < health.revision || updated.version !== this.version) {
+        throw new Error('Notes Server upgrade verification failed.');
+      }
+      health = updated;
+    }
     return health;
   }
   async test(): Promise<string> {
@@ -73,7 +135,11 @@ export class NotesServerDeployment {
       || typeof recovery.config !== 'string' || typeof recovery.unit !== 'string') throw new Error('Invalid upgrade recovery journal.');
     const unitPath = `${base.split('/.local/share/')[0]}/.config/systemd/user/${this.unit}`;
     await c.exec(`systemctl --user stop ${quote(this.unit)}`);
-    await c.exec(`cp -- ${quote(recovery.backup)} ${quote(`${base}/data/notes.sqlite3`)} && rm -f -- ${quote(`${base}/data/notes.sqlite3-wal`)} ${quote(`${base}/data/notes.sqlite3-shm`)} && ln -sfn -- ${quote(recovery.previous)} ${quote(`${base}/current`)}`);
+    // Schema-compatible releases retain all commits made since the upgrade backup.
+    if (recovery.preserveDatabase !== true) {
+      await c.exec(`cp -- ${quote(recovery.backup)} ${quote(`${base}/data/notes.sqlite3`)} && rm -f -- ${quote(`${base}/data/notes.sqlite3-wal`)} ${quote(`${base}/data/notes.sqlite3-shm`)}`);
+    }
+    await c.exec(`ln -sfn -- ${quote(recovery.previous)} ${quote(`${base}/current`)}`);
     await c.write(`${base}/server.json`, Buffer.from(recovery.config)); await c.write(unitPath, Buffer.from(recovery.unit));
     await c.exec(`systemctl --user daemon-reload && systemctl --user start ${quote(this.unit)} && rm -- ${quote(`${base}/upgrade-recovery.json`)}`);
   }
@@ -87,9 +153,14 @@ export class NotesServerDeployment {
       await c.exec(`mkdir -p -- ${quote(release)} ${quote(`${base}/data`)} ${quote(unitDirectory)} && chmod 700 -- ${quote(base)} ${quote(`${base}/data`)}`);
       const existing = await c.exec(`if test -f ${quote(`${base}/server.json`)}; then printf yes; fi`);
       let previous = ''; let savedBackup = ''; let configuration: any;
+      let previousHealth: ServerHealth | undefined;
       if (existing === 'yes') {
         configuration = JSON.parse((await c.read(`${base}/server.json`)).toString());
         const validated = await this.config(c, base);
+        previousHealth = await c.api<ServerHealth>(validated.port, validated.token, '/v1/health');
+        if (previousHealth.protocol !== 1 || (this.settings.instanceId && previousHealth.instanceId !== this.settings.instanceId)) {
+          throw new Error('The server database identity or protocol changed.');
+        }
         // Refuse to upgrade an unhealthy server: the existing database must first be backed up consistently.
         const result = await c.api<{ name: string }>(validated.port, validated.token, '/v1/backups', {});
         if (!/^upgrade-[\dTZ-]+\.sqlite3$/.test(result.name)) throw new Error('Invalid backup response.');
@@ -108,7 +179,7 @@ export class NotesServerDeployment {
       const unitPath = `${unitDirectory}/${this.unit}`;
       const previousUnit = existing === 'yes' ? await c.read(unitPath) : undefined;
       if (existing === 'yes' && previousUnit) {
-        await c.write(`${base}/upgrade-recovery.json`, Buffer.from(JSON.stringify({ previous, backup: savedBackup, config: oldConfig, unit: previousUnit.toString('utf8') })));
+        await c.write(`${base}/upgrade-recovery.json`, Buffer.from(JSON.stringify({ previous, backup: savedBackup, config: oldConfig, unit: previousUnit.toString('utf8'), preserveDatabase: true })));
         upgradeStarted = true;
       }
       try {
@@ -119,7 +190,13 @@ export class NotesServerDeployment {
         let healthy = false;
         for (let attempt = 0; attempt < 15; attempt++) {
           if (c.signal.aborted) throw new Error('Deployment cancelled.');
-          try { const health = await c.api<ServerHealth>(configuration.port, configuration.token, '/v1/health'); if (health.protocol === 1 && health.version === this.version) { healthy = true; break; } } catch { /* bounded startup retry */ }
+          try {
+            const health = await c.api<ServerHealth>(configuration.port, configuration.token, '/v1/health');
+            if (health.protocol === 1 && health.version === this.version
+              && (!previousHealth || (health.instanceId === previousHealth.instanceId && health.revision >= previousHealth.revision))) {
+              healthy = true; break;
+            }
+          } catch { /* bounded startup retry */ }
           await new Promise(resolve => setTimeout(resolve, 500));
         }
         if (!healthy) throw new Error('Notes Server did not become healthy.');

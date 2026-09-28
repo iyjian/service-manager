@@ -107,7 +107,10 @@ function searchableNoteContent(note: Note): string {
 }
 
 /** Preserves renderer search ranking without sending every Note body over IPC. */
-export function rankNoteIdsForSearch(notes: readonly Note[], query: string): string[] {
+export function rankNoteIdsForSearch(
+  notes: readonly Note[], query: string,
+  contentForSearch: (note: Note) => string = searchableNoteContent,
+): string[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   if (!normalizedQuery) return [];
   const ranked: RankedNoteSearchResult[] = [];
@@ -129,7 +132,7 @@ export function rankNoteIdsForSearch(notes: readonly Note[], query: string): str
                 ? 400
                 : language.includes(normalizedQuery)
                   ? 350
-                  : searchableNoteContent(note).toLocaleLowerCase().includes(normalizedQuery)
+                  : contentForSearch(note).toLocaleLowerCase().includes(normalizedQuery)
                     ? 200
                     : 0;
     if (score <= 0) return;
