@@ -92,6 +92,7 @@ export function registerNotesServerIpc(options: {
         progress('Connecting to Notes Server…');
         const health = await deployment.health();
         if (!settings.setupComplete && action === 'use-server' && options.snapshot().notes.length) throw new Error('Migrate local Notes before continuing. Existing server content will not be overwritten.');
+        let usedExistingWorkspace = false;
         if (action === 'migrate') {
           progress('1 / 4 · Backing up local Notes…');
           const state = options.snapshot();
@@ -100,9 +101,21 @@ export function registerNotesServerIpc(options: {
           const requestId = createHash('sha256').update(JSON.stringify(state)).digest('hex');
           progress(`2 / 4 · Migrating ${state.notes.length} notes and folders…`);
           const existing = await deployment.api<RemoteWorkspace>('/v1/workspace');
-          const connectExisting = state.notes.length === 0 && state.tombstones.length === 0 && existing.notes.length > 0;
+          const populated = existing.revision !== 0 || existing.notes.length > 0 || existing.tombstones.length > 0;
+          let connectExisting = state.notes.length === 0 && state.tombstones.length === 0 && populated;
+          if (populated && !connectExisting) {
+            const choice = await dialog.showMessageBox({
+              type: 'question', title: 'Use existing server notes?',
+              message: 'This server already has a Notes workspace.',
+              detail: `Your local notes have been backed up to ${directory}. Use the server workspace to continue. Local notes will not be merged or uploaded, and server notes will not be overwritten. The original local database will be retained for recovery.`,
+              buttons: ['Cancel', 'Use Server Notes'], defaultId: 0, cancelId: 0, noLink: true,
+            });
+            if (choice.response !== 1) throw new Error('Setup cancelled. Local notes and server notes are unchanged.');
+            connectExisting = true;
+          }
           if (!connectExisting) await deployment.api('/v1/import', { requestId, expectedRevision: 0, workspace: state });
-          progress('3 / 4 · Verifying migrated content…');
+          usedExistingWorkspace = connectExisting;
+          progress(connectExisting ? '3 / 4 · Verifying server workspace…' : '3 / 4 · Verifying migrated content…');
           const imported = await deployment.api<RemoteWorkspace>('/v1/workspace');
           const canonical = (value: typeof state) => JSON.stringify({ notes: [...value.notes].sort((a,b) => a.id.localeCompare(b.id)), tombstones: [...value.tombstones].sort((a,b) => a.id.localeCompare(b.id)), tree: value.tree });
           if (!connectExisting && canonical(state) !== canonical(imported)) throw new Error('Migration verification failed. Local Notes remain active.');
@@ -111,7 +124,7 @@ export function registerNotesServerIpc(options: {
         await settings.setMode(true, health.instanceId);
         try { await backend.initialize(); await backend.run(async () => undefined, true); await settings.completeSetup(); }
         catch (error) { await settings.setMode(false); throw error; }
-        frozen.reload(); return action === 'migrate' ? 'Notes migrated and verified. Using Notes Server.' : 'Connected to the server Notes workspace.';
+        frozen.reload(); return action === 'migrate' && !usedExistingWorkspace ? 'Notes migrated and verified. Using Notes Server.' : 'Connected to the server Notes workspace.';
       } finally { frozen.release(); }
     } finally { busy = false; }
   });

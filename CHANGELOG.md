@@ -4,11 +4,16 @@ All notable changes to Service Manager are documented in this file. The newest r
 
 ## [0.3.90] - 2026-09-28
 
+- When connecting to an existing Notes workspace, you can keep a local backup and use server notes without merging or overwriting either copy.
+
+- Simplified Notes Server settings to the current Server Host and a Restart button.
+
 - Removed the option to switch back to local Notes after migration; the original database is retained only for recovery.
 
 - Require Notes Server setup on first launch, show migration progress, and unlock the app only after the server workspace is ready.
 
 ### Added
+- Vault now supports renaming and replacing private keys without changing Host or Notes references, with a redesigned searchable list, action icons, and clearer editing dialogs.
 - Notes Server setup now prioritizes existing Hosts and reuses their authentication. New Hosts created during setup also appear in the Hosts panel.
 - Added a Vault panel for reusable SSH private keys, automatic migration of existing Host keys, and key selection in Hosts, jump hosts, and Notes Server. Plain configuration exports now contain key references instead of private keys.
 - Added Notes Server settings, SSH deployment with a bundled Linux runtime, systemd lifecycle controls, verified migration, API-backed Notes, persistent offline drafts, conflict recovery, and downloadable server backups.

@@ -1500,8 +1500,12 @@ export interface NotesServerApi {
   onStatus(listener: (status: NotesServerStatus) => void): () => void;
 }
 
-export interface VaultKeyView { id: string; name: string; createdAt: string; }
+export interface VaultKeyView { id: string; name: string; createdAt: string; updatedAt?: string; revision?: number; }
+export interface VaultKeyReplacement { id: string; revision: number; useImportedKey?: boolean; privateKey?: string; passphrase?: string; }
 export interface VaultApi {
+  rename(id: string, name: string, revision: number): Promise<VaultKeyView>;
+  replace(input: VaultKeyReplacement): Promise<VaultKeyView>;
+  onChanged(listener: () => void): () => void;
   list(): Promise<VaultKeyView[]>;
   importPrivateKey(): Promise<boolean>;
   add(input: { name: string; useImportedKey?: boolean; privateKey?: string; passphrase?: string }): Promise<VaultKeyView>;

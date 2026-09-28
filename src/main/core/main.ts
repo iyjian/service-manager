@@ -3321,7 +3321,18 @@ app.whenReady()
     privateKeyVault = new PrivateKeyVault(path.join(app.getPath('userData'), 'vault.json'), credentialProtector);
     await privateKeyVault.load();
     await store.attachVault(privateKeyVault);
-    registerVaultIpc(privateKeyVault);
+    registerVaultIpc(privateKeyVault, {
+      mutate: mutateS3SharedData,
+      changed: async (id, replaced) => {
+        if (replaced) {
+          for (const host of getStore().listHosts()) {
+            if (host.privateKeyId !== id && !host.jumpHosts.some(hop => hop.privateKeyId === id)) continue;
+            for (const forward of host.forwards) tunnelManager.updateCredentials(await forwardToRuntimeConfig(host, forward));
+          }
+        }
+        broadcast('vault:changed', undefined);
+      },
+    });
     llmSettingsStore = new LlmSettingsStore({
       filePath: path.join(app.getPath('userData'), 'llm-settings.json'),
       credentialProtector,

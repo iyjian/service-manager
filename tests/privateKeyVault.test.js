@@ -68,3 +68,35 @@ test('encrypted sync restores device-local references without treating unchanged
  assert.equal(restored.privateKey, current.privateKey);
  assert.equal(vault.reuseReference({ privateKey: 'changed' }).privateKeyId, undefined);
 });
+
+test('rename and replacement keep references stable across Host, Notes and restart', async t => {
+ const { vault, root } = await fixture(t);
+ const store = new ServiceStore(path.join(root, 'hosts.json')); await store.load(); await store.upsertHost(host()); await store.attachVault(vault);
+ const saved = vault.list()[0]; const settings = new NotesServerSettings(path.join(root, 'notes.json'), protector, vault);
+ await settings.save({ name: 'notes', sshHost: 'host', sshPort: 22, username: 'user', authType: 'privateKey', privateKeyId: saved.id });
+ const renamed = await vault.rename(saved.id, 'Production deploy key', 0);
+ assert.equal(renamed.id, saved.id); assert.equal(renamed.revision, 1); assert.equal(vault.resolve({ privateKeyId: saved.id }).privateKey, key);
+ const replacement = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem', cipher: 'aes-256-cbc', passphrase: 'new-passphrase' }, publicKeyEncoding: { type: 'pkcs1', format: 'pem' } }).privateKey;
+ const replaced = await vault.replace(saved.id, replacement, 'new-passphrase', 1);
+ assert.equal(replaced.id, saved.id); assert.equal(replaced.name, renamed.name); assert.equal(replaced.createdAt, saved.createdAt); assert.equal(replaced.revision, 2);
+ assert.equal(store.listHosts()[0].privateKey, replacement); assert.equal(store.listHosts()[0].jumpHosts[0].passphrase, 'new-passphrase');
+ assert.equal(settings.endpoint().privateKey, replacement); assert.equal(settings.endpoint().passphrase, 'new-passphrase');
+ const restored = new PrivateKeyVault(path.join(root, 'vault.json'), protector); await restored.load();
+ assert.equal(restored.resolve({ privateKeyId: saved.id }).privateKey, replacement);
+ assert.equal(restored.list()[0].name, renamed.name); assert.equal(restored.list().length, 1);
+ assert.ok(!JSON.stringify(restored.list()).includes('passphrase')); assert.ok(!JSON.stringify(restored.list()).includes('PRIVATE KEY'));
+});
+test('invalid, stale and failed updates leave the original key and passphrase intact', async t => {
+ const { vault, root } = await fixture(t); const saved = await vault.add('original', key);
+ await assert.rejects(vault.rename(saved.id, ' ', 0), /name is required/);
+ await assert.rejects(vault.replace(saved.id, 'not-a-key', undefined, 0), /Invalid private key/);
+ const encrypted = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem', cipher: 'aes-256-cbc', passphrase: 'correct' }, publicKeyEncoding: { type: 'pkcs1', format: 'pem' } }).privateKey;
+ await assert.rejects(vault.replace(saved.id, encrypted, 'wrong', 0), /Invalid private key/);
+ const results = await Promise.allSettled([vault.rename(saved.id, 'first', 0), vault.rename(saved.id, 'second', 0)]);
+ assert.equal(results.filter(result => result.status === 'fulfilled').length, 1); assert.equal(vault.list()[0].name, 'first');
+ await assert.rejects(vault.replace(saved.id, key, undefined, 0), /another window/);
+ const broken = new PrivateKeyVault(path.join(root, 'vault.json'), { ...protector, encryptString() { throw new Error('secure storage failed'); } }); await broken.load();
+ await assert.rejects(broken.rename(saved.id, 'lost', 1), /secure storage failed/);
+ assert.equal(broken.list()[0].name, 'first'); assert.equal(broken.resolve({ privateKeyId: saved.id }).privateKey, key);
+ const disk = new PrivateKeyVault(path.join(root, 'vault.json'), protector); await disk.load(); assert.equal(disk.list()[0].name, 'first');
+});

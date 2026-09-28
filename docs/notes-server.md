@@ -52,3 +52,7 @@ Choose **Add New Host…** to enter a new connection. Saving, testing, or beginn
 ## Permanent sharing
 
 Notes stored on the server use the same S3 sharing flow as local Notes. Choose **Never expires** to publish a permanent snapshot; pages and copied assets are served from `notes/public/`, while the Notes Server API remains accessible only over SSH. Sharing still requires the client’s S3 configuration and public-prefix policy permissions. See [permanent Note sharing](notes-database-sync.md#permanent-note-sharing) for permissions, expiry changes, and deletion behavior.
+
+Settings → Notes shows only the current Server Host and Restart control in the Notes Server section. Connection setup and migration remain in the required startup setup flow.
+
+When startup setup finds an existing server workspace and local Notes, it first creates a local SQLite backup under `notes-server-migration-backups`, then asks whether to use the server workspace. Cancel leaves both workspaces unchanged and setup incomplete. Continuing preserves the original local database and backup, performs no import or merge, and opens server Notes after connection verification. A failed backup prevents switching.

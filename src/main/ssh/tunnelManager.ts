@@ -56,6 +56,13 @@ export class TunnelManager extends EventEmitter {
     }
   }
 
+  updateCredentials(config: ForwardRuntimeConfig): void {
+    const current = this.configs.get(config.id);
+    if (!current) return;
+    this.configs.set(config.id, { ...current, privateKey: config.privateKey, passphrase: config.passphrase,
+      jumpHosts: config.jumpHosts.map(hop => ({ ...hop })) });
+  }
+
   clearTunnel(id: string): void {
     this.clearReconnectTimer(id);
     this.configs.delete(id);
@@ -492,7 +499,9 @@ export class TunnelManager extends EventEmitter {
       if (current?.status === 'stopped' || current?.status === 'stopping') {
         return;
       }
-      void this.start(config).catch(() => {
+      const latest = this.configs.get(id);
+      if (!latest) return;
+      void this.start(latest).catch(() => {
         // state updates are emitted by manager
       });
     }, delay);

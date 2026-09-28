@@ -428,4 +428,8 @@ contextBridge.exposeInMainWorld('notesServerApi', {
   onStatus: (listener: (state: import('../../shared/types').NotesServerStatus) => void) => subscribe('notes-server:status', listener),
 });
 
-contextBridge.exposeInMainWorld('vaultApi', { list: () => ipcRenderer.invoke('vault:list'), importPrivateKey: () => ipcRenderer.invoke('vault:import'), add: (input: unknown) => ipcRenderer.invoke('vault:add', input) });
+contextBridge.exposeInMainWorld('vaultApi', {
+  rename: (id: string, name: string, revision: number) => ipcRenderer.invoke('vault:rename', id, name, revision),
+  replace: (input: unknown) => ipcRenderer.invoke('vault:replace', input),
+  onChanged: (listener: () => void) => subscribe('vault:changed', listener),
+ list: () => ipcRenderer.invoke('vault:list'), importPrivateKey: () => ipcRenderer.invoke('vault:import'), add: (input: unknown) => ipcRenderer.invoke('vault:add', input) });

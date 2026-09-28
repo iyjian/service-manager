@@ -22,6 +22,14 @@ const serverError = (error: unknown): string => toErrorMessage(error).replace(/^
 export async function refreshNotesServerSettings(): Promise<void> {
   const section = requireElement<HTMLElement>('#notes-server-settings');
   const [state, hosts] = await Promise.all([window.notesServerApi.getSettings(), window.notesServerApi.listHosts()]);
+  if (section.hasAttribute('data-server-compact')) {
+    const host = hosts.find(host => host.id === state.sourceHostId);
+    const label = host ? `${host.name} · ${host.username}@${host.sshHost}:${host.sshPort}`
+      : state.configured ? `${state.username}@${state.sshHost}:${state.sshPort}` : 'Not configured';
+    section.querySelector<HTMLSelectElement>('[data-notes-host]')!.replaceChildren(new Option(label, state.sourceHostId ?? ''));
+    section.querySelector<HTMLButtonElement>('[data-server-action="restart"]')!.disabled = working || !state.configured;
+    return;
+  }
   hostOptions = hosts; serverEnabled = state.enabled;
   const hostSelect = section.querySelector<HTMLSelectElement>('[data-notes-host]')!;
   hostSelect.replaceChildren(new Option('Select an existing Host…', ''));
@@ -57,6 +65,17 @@ export function registerNotesServerSettings(): void {
   if (initialized) return; initialized = true;
   const section = requireElement<HTMLElement>('#notes-server-settings');
   const status = section.querySelector<HTMLElement>('[data-server-status]')!;
+  if (section.hasAttribute('data-server-compact')) {
+    const restart = section.querySelector<HTMLButtonElement>('[data-server-action="restart"]')!;
+    restart.addEventListener('click', () => { void (async () => {
+      if (working) return;
+      working = true; restart.disabled = true; status.textContent = 'Restarting…';
+      try { status.textContent = await window.notesServerApi.action('restart'); }
+      catch (error) { status.textContent = serverError(error); }
+      finally { working = false; restart.disabled = false; }
+    })(); });
+    return;
+  }
   section.querySelector('[data-notes-host]')!.addEventListener('change', () => {
     status.textContent = '';
     if (section.querySelector<HTMLSelectElement>('[data-notes-host]')!.value === '__new__') {
