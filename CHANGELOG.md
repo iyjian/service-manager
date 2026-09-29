@@ -2,6 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.92] - 2026-09-29
+
+### Fixed
+- Fixed long Notes flickering, losing focus, and jumping to the top after server saves; sync messages now appear in a compact, fixed bottom status bar without shifting the editor.
+
 ## [0.3.91] - 2026-09-28
 
 ### Improved

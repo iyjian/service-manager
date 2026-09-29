@@ -8,13 +8,17 @@ const rendererRoot = path.join(distRoot, 'renderer');
 const mainRoot = path.join(distRoot, 'main');
 const projectRoot = path.join(__dirname, '..');
 
-test('Notes cloud status occupies one truncated sidebar header line instead of editor space', async () => {
+test('Notes connection and sync messages share a reserved bottom status bar', async () => {
   const { html, styles, notesPage } = await readIntegrationFiles();
   const sidebar = html.match(/<aside id="notes-sidebar"[\s\S]*?<\/aside>/)?.[0] ?? '';
-  assert.match(sidebar, /id="notes-cloud-status"[^>]*class="[^"]*truncate/);
-  assert.ok(sidebar.indexOf('notes-cloud-status') < sidebar.indexOf('notes-sidebar-tools'));
+  const footer = html.match(/<footer class="notes-status-bar"[\s\S]*?<\/footer>/)?.[0] ?? '';
+  assert.doesNotMatch(sidebar, /notes-cloud-status|notes-sync-banner/);
+  assert.match(footer, /id="notes-cloud-status"/);
+  assert.match(footer, /id="notes-sync-banner"/);
+  assert.ok(html.indexOf('<footer class="notes-status-bar"') > html.indexOf('id="note-richtext-content"'));
   assert.equal((html.match(/id="notes-cloud-status"/g) ?? []).length, 1);
-  assert.match(styles, /\.truncate\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);
+  assert.match(styles, /\.notes-page\{[^}]*grid-template-rows:minmax\(0,1fr\) 22px/);
+  assert.match(styles, /\.notes-cloud-status\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);
   assert.match(notesPage, /this\.cloudStatus\.title = this\.cloudStatus\.textContent/);
 });
 

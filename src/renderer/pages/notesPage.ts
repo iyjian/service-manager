@@ -465,6 +465,12 @@ function rendererNote(summary: NoteSummary): Note {
   return { ...summary, tags: [...summary.tags], content: '' };
 }
 
+function sameNoteSummary(left: NoteSummary | undefined, right: NoteSummary): boolean {
+  return Boolean(left && left.id === right.id && left.name === right.name
+    && left.language === right.language && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt && JSON.stringify(left.tags) === JSON.stringify(right.tags));
+}
+
 export function reconcileOpenNoteIds(
   openNoteIds: readonly string[],
   activeNoteIds: ReadonlySet<string>,
@@ -499,7 +505,7 @@ export function noteTabFallbackAfterRemoval(
   return undefined;
 }
 
-class NotesPage {
+export class NotesPage {
   private readonly pageRoot = requireElement<HTMLElement>('.notes-page');
   private readonly sidebarResizeHandle = requireElement<HTMLElement>('#notes-sidebar-resizer');
   private readonly newButton = requireElement<HTMLButtonElement>('#notes-new-root-btn');
@@ -840,6 +846,7 @@ class NotesPage {
       diverged: 'Cannot sync: local and remote Notes have both changed. Both copies are preserved. Editing is locked.',
     };
     this.syncMessage.textContent = messages[state.status];
+    this.syncMessage.title = this.syncMessage.textContent;
     this.syncBanner.classList.toggle('hidden', !messages[state.status]);
     this.syncButton.classList.toggle('hidden', state.status !== 'remote-updated' && state.status !== 'offline');
     this.syncButton.textContent = state.status === 'offline' ? 'Retry check' : 'Sync';
@@ -891,13 +898,15 @@ class NotesPage {
         this.applySyncGuard({ status: 'ready', editable: true });
         this.updateCloudStatus();
         this.syncMessage.textContent = state.connected ? (state.pendingDrafts ? 'Local drafts are pending. Resolve save conflicts before switching storage.' : '') : 'Disconnected · edits are saved as local drafts.';
+        this.syncMessage.title = this.syncMessage.textContent;
         this.syncBanner.classList.toggle('hidden', !this.syncMessage.textContent);
         this.newButton.disabled = !state.connected || this.creating;
         if (state.connected) {
-          const changed = this.serverRevision !== undefined && this.serverRevision !== state.revision;
-          this.serverRevision = state.revision;
+          const changed = this.serverRevision !== state.revision;
           if (this.notes.some(note => this.isDirty(note.id))) await this.flushAllPendingSaves();
-          else if (changed && !state.pendingDrafts) await this.reload();
+          else if (changed && !state.pendingDrafts && await this.refreshServerWorkspace()) {
+            this.serverRevision = state.revision;
+          }
         }
         return;
       }
@@ -907,8 +916,77 @@ class NotesPage {
     } catch (error) {
       // A failed IPC/save is not evidence that S3 is offline: never offer a bypass.
       this.syncMessage.textContent = error instanceof Error ? error.message : 'Unable to check Notes. Retry by reopening Notes.';
+      this.syncMessage.title = this.syncMessage.textContent;
       this.syncBanner.classList.remove('hidden');
     } finally { this.syncCheckPending = false; }
+  }
+
+  private async refreshServerWorkspace(): Promise<boolean> {
+    if (!this.loaded) return false;
+    const notesBefore = this.notes;
+    const treeBefore = this.treeNodes;
+    const selectedBefore = this.selectedId;
+    const generation = this.noteBodyGeneration;
+    const selectionVersion = this.selectionVersion;
+    const versions = new Map(this.editVersions);
+    // Reads cross IPC/SSH boundaries. Even an edit that finishes saving during
+    // the request must invalidate this snapshot, along with tab/tree changes.
+    const canApply = (): boolean => this.active && this.loaded
+      && this.persistentApplyIds.size === 0
+      && this.notes === notesBefore && this.treeNodes === treeBefore
+      && this.selectedId === selectedBefore && this.noteBodyGeneration === generation
+      && this.selectionVersion === selectionVersion
+      && this.notes.every(note => !this.isDirty(note.id)
+        && this.editVersions.get(note.id) === versions.get(note.id));
+    const workspace = await window.notesApi.getWorkspace();
+    if (!canApply()) return false;
+    const changed = new Set(workspace.notes
+      .filter(summary => !sameNoteSummary(this.notesById.get(summary.id), summary))
+      .map(summary => summary.id));
+    const remoteIds = new Set(workspace.notes.map(summary => summary.id));
+    const removed = this.notes.some(note => !remoteIds.has(note.id));
+    const treeChanged = JSON.stringify(workspace.tree.nodes) !== JSON.stringify(this.treeNodes)
+      || JSON.stringify([...workspace.expandedNoteIds].sort()) !== JSON.stringify([...this.expandedNoteIds].sort());
+    // A server revision also advances on our own saves. Do not clear/reload an
+    // unchanged document: that loses selection, undo history, focus and scroll.
+    if (!changed.size && !removed && !treeChanged) return true;
+    const selected = selectedBefore && changed.has(selectedBefore)
+      ? await window.notesApi.getNote(selectedBefore) : undefined;
+    if (!canApply()) return false;
+    if (selected) {
+      workspace.notes = workspace.notes.map(summary => summary.id === selected.id ? selected : summary);
+    }
+    this.applyWorkspace(workspace);
+    if (selectedBefore && !this.selectedId) {
+      this.selectedId = this.openNoteIds[0] ?? this.treeNodes[0]?.noteId;
+      this.reconcileOpenNoteTabs();
+    }
+    for (const id of changed) {
+      this.loadedNoteIds.delete(id);
+      this.persistedNotes.delete(id);
+      this.noteBodyErrors.delete(id);
+      const note = this.notesById.get(id);
+      if (note) note.content = '';
+    }
+    if (selected) {
+      Object.assign(this.notesById.get(selected.id)!, cloneNote(selected));
+      this.loadedNoteIds.add(selected.id);
+      this.persistedNotes.set(selected.id, cloneNote(selected));
+    }
+    this.renderList();
+    if (this.selectedId !== selectedBefore || selected) {
+      this.renderEditor();
+      this.updateSelectedSaveStatus();
+    } else if (removed) {
+      this.renderTabs();
+    } else {
+      for (const id of changed) {
+        const note = this.notesById.get(id);
+        if (note) this.updateTabNoteName(note);
+      }
+    }
+    if (this.searchInput.value.trim()) this.queueSearchRender();
+    return true;
   }
 
   private async runSyncAction(offline: boolean): Promise<void> {

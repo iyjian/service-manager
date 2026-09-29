@@ -541,7 +541,6 @@
         <span id="note-save-status" class="notes-save-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
         <aside id="notes-sidebar" class="notes-sidebar">
           <div class="min-w-0">
-            <div id="notes-cloud-status" class="hidden min-w-0 truncate px-2 pt-1 text-xs text-zinc-500" role="status" aria-live="polite"></div>
             <div class="notes-sidebar-tools">
               <label class="notes-search-wrap">
                 <span data-lucide-icon="search" aria-hidden="true"></span>
@@ -569,11 +568,6 @@
         ></div>
 
         <section id="notes-workspace" class="notes-workspace" aria-label="Note editor">
-          <div id="notes-sync-banner" class="notes-sync-banner hidden" role="status" aria-live="polite">
-            <span id="notes-sync-message"></span>
-            <button id="notes-sync-button" type="button" class="btn btn-secondary btn-sm hidden">Sync</button>
-            <button id="notes-offline-edit-button" type="button" class="btn btn-secondary btn-sm hidden">Edit anyway</button>
-          </div>
           <div id="notes-empty" class="notes-empty">Create or select a note.</div>
           <div id="notes-editor" class="notes-editor hidden">
             <div id="notes-tabs" class="notes-tabs" role="tablist" aria-label="Open Notes"></div>
@@ -710,6 +704,14 @@
             </div>
           </div>
         </section>
+        <footer class="notes-status-bar" aria-label="Notes status">
+          <div id="notes-cloud-status" class="notes-cloud-status hidden" role="status" aria-live="polite"></div>
+          <div id="notes-sync-banner" class="notes-sync-banner hidden" role="status" aria-live="polite">
+            <span id="notes-sync-message"></span>
+            <button id="notes-sync-button" type="button" class="btn btn-secondary btn-sm hidden">Sync</button>
+            <button id="notes-offline-edit-button" type="button" class="btn btn-secondary btn-sm hidden">Edit anyway</button>
+          </div>
+        </footer>
       </section>
     </main>
       </div>
