@@ -28,6 +28,7 @@ Notes supports an optional Linux server deployed over SSH with a bundled runtime
 ## Core Features
 
 1. Host list with SSH connection settings.
+   - `Save Host` saves locally without waiting for SSH. Only changed connections are reconciled in the background; adding or renaming services preserves existing forwards. The dialog prevents duplicate submissions while saving and keeps the draft available if saving fails.
    - `Local`, before `Add Host`, opens an independent local shell tab (`Local #1`, `Local #2`, and so on) in the same panel (the user's login shell on macOS/Linux, Windows PowerShell on Windows). Sessions start in the user's home directory, survive page changes, and close when the shell exits; shell exit, closing a tab, reloading/closing its window, or quitting releases its PTY, including the WinPTY helper and output worker on older Windows versions
    - Windows omits the native top menu bar and shows the app name, version, and live memory usage in its native window title bar, without a duplicate Hosts heading; macOS retains its existing header and application menu
    - Windows uses bundled Inter for English and Source Han Sans for Chinese, with JetBrains Mono for addresses, ports, and default code views. Small controls use slightly larger text and consistent 400/500/600 weights; macOS keeps its existing typography. SQL Comic mode and saved editor/terminal sizes are preserved. Fonts work offline; see [bundled fonts](assets/fonts/README.md) for sources and licenses

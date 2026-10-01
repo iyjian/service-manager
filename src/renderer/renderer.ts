@@ -152,6 +152,7 @@ const hostEditTabItems = hostEditTabButtons.flatMap((button) => {
 
 let hosts: HostView[] = [];
 let hostDialogMode: 'create' | 'edit' = 'create';
+let hostSavePending = false;
 let editingPrivateKeyPath: string | undefined;
 let activeLogTarget: { hostId: string; serviceId: string } | null = null;
 let logAutoRefreshTimer: number | null = null;
@@ -1910,9 +1911,23 @@ function openHostDialog(mode: 'create' | 'edit', host?: HostView): void {
 }
 
 function closeHostDialog(): void {
+  if (hostSavePending) return;
   closeDialog(hostDialog, 'host');
   clearHostDialogMessage();
 }
+
+function setHostSavePending(pending: boolean): void {
+  hostSavePending = pending;
+  form.inert = pending;
+  form.setAttribute('aria-busy', String(pending));
+  saveHostButton.disabled = pending;
+  saveHostButton.textContent = pending ? 'Saving...' : 'Save Host';
+  closeHostDialogButton.disabled = pending;
+}
+
+hostDialog.addEventListener('cancel', (event) => {
+  if (hostSavePending) event.preventDefault();
+});
 
 async function loadHosts(): Promise<void> {
   hosts = await window.serviceApi.listHosts();
@@ -3128,6 +3143,7 @@ form.addEventListener('invalid', (event) => {
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (hostSavePending) return;
 
   try {
     const authType = targetNodeCard.dataset.nodeAuth === 'password' ? 'password' : 'privateKey';
@@ -3149,8 +3165,11 @@ form.addEventListener('submit', async (event) => {
       services: collectServicesFromEditor(),
     };
 
+    setHostSavePending(true);
+    clearHostDialogMessage();
     await window.serviceApi.saveHost(draft);
     await loadHosts();
+    setHostSavePending(false);
     closeHostDialog();
     setMessage(hostDialogMode === 'create' ? `Host "${draft.name}" created.` : `Host "${draft.name}" updated.`, 'success');
   } catch (error) {
@@ -3163,6 +3182,8 @@ form.addEventListener('submit', async (event) => {
       setActiveHostEditSection('path');
     }
     setHostDialogMessage(message, 'error');
+  } finally {
+    setHostSavePending(false);
   }
 });
 

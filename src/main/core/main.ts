@@ -78,7 +78,6 @@ import { highlightSafeNoteCodeBlocks } from '../notes/noteCodeHighlight';
 import { ServiceStore } from '../ssh/store';
 import {
   checkHostServicesStatus,
-  checkServiceStatus,
   getServiceLogs,
   setServiceRuntimeDiagnostics,
   startService,
@@ -87,6 +86,7 @@ import {
 } from '../ssh/serviceRuntime';
 import { RuntimeLogWriter } from './runtimeLog';
 import { PortForwardManager } from '../ssh/portForwardManager';
+import { HostRuntimeReconciler, planHostRuntimeChanges, sameServiceRuntime } from '../ssh/hostRuntimeReconcile';
 import { TunnelManager } from '../ssh/tunnelManager';
 import { AppUpdater } from './updater';
 import { forwardToRuntimeConfig } from '../ssh/hostConnection';
@@ -261,6 +261,8 @@ const runtimeRegistry = new RuntimeRegistry();
 const serviceOperationQueue = new KeyedOperationQueue();
 const portForwardManager = new PortForwardManager();
 const tunnelManager = new TunnelManager();
+const hostRuntimeReconciler = new HostRuntimeReconciler(reconcileSavedHostRuntime,
+  (hostId, error) => logRuntimeError('host:runtime-reconcile', error, { hostId }));
 let updater: AppUpdater;
 let quitCoordinator: AppQuitCoordinator;
 const FINAL_PROCESS_EXIT_DELAY_MS = 1_500;
@@ -1299,7 +1301,10 @@ async function refreshHostServicesRuntime(
   hostId: string,
   requestedServiceIds: readonly string[],
   silent: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
+  const active = () => !signal?.aborted && !autoStartAbortController.signal.aborted;
+  if (!active()) return;
   const initialHost = getStore().findHostById(hostId);
   if (!initialHost) throw new Error('Host not found.');
   const requested = new Set(requestedServiceIds);
@@ -1312,6 +1317,7 @@ async function refreshHostServicesRuntime(
     initialServiceIds.map((serviceId) => serviceKey(hostId, serviceId)),
     async () => {
       try {
+        if (!active()) return;
         const queryHost = getStore().findHostById(hostId);
         if (!queryHost) return;
         const queryServices = queryHost.services.filter((service) => requested.has(service.id));
@@ -1319,84 +1325,86 @@ async function refreshHostServicesRuntime(
 
         const results = await checkHostServicesStatus(queryHost, queryServices);
         const resultByServiceId = new Map(results.map((result) => [result.serviceId, result]));
-        await runS3SharedDataMutation(async () => {
-          const currentHost = getStore().findHostById(hostId);
-          if (!currentHost || !hasSameServiceStatusEndpoint(queryHost, currentHost)) return;
-          const currentServices = new Map(currentHost.services.map((service) => [service.id, service]));
-          const entries: HostServiceRefreshEntry[] = [];
-          for (const queriedService of queryServices) {
-            const service = currentServices.get(queriedService.id);
-            const result = resultByServiceId.get(queriedService.id);
-            if (!service || !result
-              || service.startCommand !== queriedService.startCommand
-              || service.port !== queriedService.port) {
-              continue;
-            }
-            entries.push({ service, result });
+        const currentHost = getStore().findHostById(hostId);
+        if (!active() || !currentHost || !hasSameServiceStatusEndpoint(queryHost, currentHost)) return;
+        const currentServices = new Map(currentHost.services.map((service) => [service.id, service]));
+        const entries: HostServiceRefreshEntry[] = [];
+        for (const queriedService of queryServices) {
+          const service = currentServices.get(queriedService.id);
+          const result = resultByServiceId.get(queriedService.id);
+          if (!service || !result
+            || !sameServiceRuntime(service, queriedService)) {
+            continue;
           }
-          if (entries.length === 0) return;
+          entries.push({ service, result });
+        }
+        if (entries.length === 0) return;
 
-          let hasPidSets = false;
-          for (const { service, result } of entries) {
-            if (result.pid && result.pid !== service.pid) {
-              service.pid = result.pid;
-              hasPidSets = true;
-            }
-          }
-          if (hasPidSets) await getStore().upsertHost(currentHost);
-
-          const completed: HostServiceRefreshEntry[] = [];
-          for (const entry of entries) {
-            const { service, result } = entry;
-            try {
-              const hasForward = Boolean(service.forwardLocalPort) && service.port > 0;
-              if (result.status === 'stopped') {
-                await portForwardManager.stop(serviceForwardKey(hostId, service.id));
-                runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'none');
-              } else if (result.status === 'running' && hasForward) {
-                try {
-                  await portForwardManager.start(serviceForwardKey(hostId, service.id), currentHost, service);
-                  runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'ok');
-                } catch (error) {
-                  logRuntimeError('port-forward:start', error, {
-                    hostId,
-                    serviceId: service.id,
-                    localPort: service.forwardLocalPort,
-                    remotePort: service.port,
-                  });
-                  runtimeRegistry.setServiceForwardStatus(
-                    hostId,
-                    service.id,
-                    'error',
-                    error instanceof Error ? error.message : String(error)
-                  );
+        const isCurrent = (service: ServiceConfig): boolean => {
+          const latest = getStore().findHostById(hostId);
+          const item = latest?.services.find(item => item.id === service.id);
+          return active() && Boolean(latest && item && hasSameServiceStatusEndpoint(currentHost, latest)
+            && sameServiceRuntime(service, item));
+        };
+        const completed: Array<HostServiceRefreshEntry & { forwardState?: ForwardState; forwardError?: string }> = [];
+        // SSH forwards may take seconds to connect. Never hold the shared data queue here.
+        for (const entry of entries) {
+          const { service, result } = entry;
+          if (!isCurrent(service)) continue;
+          let forwardState: ForwardState | undefined;
+          let forwardError: string | undefined;
+          try {
+            const hasForward = Boolean(service.forwardLocalPort) && service.port > 0;
+            if (result.status === 'stopped') {
+              await portForwardManager.stop(serviceForwardKey(hostId, service.id));
+              forwardState = 'none';
+            } else if (result.status === 'running' && hasForward) {
+              try {
+                await portForwardManager.start(serviceForwardKey(hostId, service.id), currentHost, service);
+                if (!isCurrent(service)) {
+                  await portForwardManager.stop(serviceForwardKey(hostId, service.id));
+                  continue;
                 }
-              } else if (!hasForward) {
-                runtimeRegistry.setServiceForwardStatus(hostId, service.id, 'none');
+                forwardState = 'ok';
+              } catch (error) {
+                logRuntimeError('port-forward:start', error, {
+                  hostId,
+                  serviceId: service.id,
+                  localPort: service.forwardLocalPort,
+                  remotePort: service.port,
+                });
+                forwardState = 'error';
+                forwardError = error instanceof Error ? error.message : String(error);
               }
-              completed.push(entry);
-            } catch (error) {
-              logRuntimeError('service:refresh-host-item', error, {
-                hostId,
-                serviceId: service.id,
-                silent,
-              });
+            } else if (!hasForward) {
+              forwardState = 'none';
             }
+            completed.push({ ...entry, forwardState, forwardError });
+          } catch (error) {
+            logRuntimeError('service:refresh-host-item', error, {
+              hostId,
+              serviceId: service.id,
+              silent,
+            });
           }
+        }
 
-          let hasPidClears = false;
-          for (const { service, result } of completed) {
-            if (result.status === 'stopped' && service.pid !== undefined) {
-              service.pid = undefined;
-              hasPidClears = true;
-            }
+        await runS3SharedDataMutation(async () => {
+          const latest = getStore().findHostById(hostId);
+          if (!active() || !latest || !hasSameServiceStatusEndpoint(currentHost, latest)) return;
+          let changed = false;
+          const changes: ServiceStatusChange[] = [];
+          for (const entry of completed) {
+            const service = latest.services.find(item => item.id === entry.service.id);
+            if (!service || !sameServiceRuntime(service, entry.service)) continue;
+            const { result, forwardState, forwardError } = entry;
+            const pid = result.status === 'stopped' ? undefined : result.pid ?? service.pid;
+            if (pid !== service.pid) { service.pid = pid; changed = true; }
+            if (forwardState !== undefined) runtimeRegistry.setServiceForwardStatus(hostId, service.id, forwardState, forwardError);
+            changes.push(serviceStatusChangeWithSilent(
+              runtimeRegistry.setServiceStatus(hostId, service.id, result.status, service.pid, result.error), silent));
           }
-          if (hasPidClears) await getStore().upsertHost(currentHost);
-
-          const changes = completed.map(({ service, result }) => serviceStatusChangeWithSilent(
-            runtimeRegistry.setServiceStatus(hostId, service.id, result.status, service.pid, result.error),
-            silent
-          ));
+          if (changed) await getStore().upsertHost(latest);
           if (changes.length > 0) {
             broadcast(IPC_CHANNELS.serviceStatusBatchChanged, { changes });
           }
@@ -1458,6 +1466,7 @@ async function shutdownRuntimesForQuit(): Promise<void> {
   for (const controller of activeLlmModelRequests) controller.abort();
 
   const shutdownResults = await Promise.allSettled([
+    hostRuntimeReconciler.shutdown(),
     Promise.resolve().then(() => remoteNotes?.close()),
     Promise.resolve().then(() => notesStore?.flush()),
     Promise.resolve().then(() => notesTreeStore?.flush()),
@@ -1612,16 +1621,6 @@ async function stopAllHostRules(host: HostConfig): Promise<void> {
   await Promise.all(host.forwards.map((forward) => tunnelManager.stop(forward.id)));
 }
 
-async function clearRemovedRules(previous: HostConfig, next: HostConfig): Promise<void> {
-  const nextIds = new Set(next.forwards.map((item) => item.id));
-  const removed = previous.forwards.filter((item) => !nextIds.has(item.id));
-  for (const forward of removed) {
-    await tunnelManager.stop(forward.id);
-    tunnelManager.clearTunnel(forward.id);
-    forwardOwners.delete(forward.id);
-  }
-}
-
 async function autoStartHostRules(host: HostConfig): Promise<void> {
   for (const forward of host.forwards) {
     if (!forward.autoStart) continue;
@@ -1631,6 +1630,43 @@ async function autoStartHostRules(host: HostConfig): Promise<void> {
     } catch (error) {
       logRuntimeError('forward:auto-start', error, { hostId: host.id, forwardId: forward.id });
     }
+  }
+}
+
+async function reconcileSavedHostRuntime(previous: HostConfig | undefined, host: HostConfig, signal: AbortSignal): Promise<void> {
+  const plan = planHostRuntimeChanges(previous, host);
+  const active = () => !signal.aborted && Boolean(getStore().findHostById(host.id));
+  if (!active()) return;
+  for (const id of plan.stopForwardIds) {
+    await tunnelManager.stop(id);
+    if (!active()) return;
+    if (!getStore().findHostById(host.id)?.forwards.some(rule => rule.id === id)) {
+      tunnelManager.clearTunnel(id);
+      forwardOwners.delete(id);
+    }
+  }
+  await serviceOperationQueue.runMany(plan.stopServiceIds.map(id => serviceKey(host.id, id)), async () => {
+    if (!active()) return;
+    await portForwardManager.stopMany(plan.stopServiceIds.map(id => serviceForwardKey(host.id, id)));
+    if (!active()) return;
+    for (const id of plan.stopServiceIds) emitForwardStatus(host.id, id, 'none');
+  });
+  for (const rule of plan.startForwards) {
+    if (!active()) return;
+    try {
+      const config = await forwardToRuntimeConfig(host, rule);
+      if (!active()) return;
+      await tunnelManager.start(config);
+      if (!active()) { await tunnelManager.stop(rule.id); return; }
+    } catch (error) {
+      if (!active()) { await tunnelManager.stop(rule.id); return; }
+      logRuntimeError('forward:auto-start', error, { hostId: host.id, forwardId: rule.id });
+    }
+  }
+  if (active() && plan.refreshServiceIds.length) {
+    const current = getStore().findHostById(host.id);
+    const ids = plan.refreshServiceIds.filter(id => current?.services.some(service => service.id === id));
+    if (ids.length) await refreshHostServicesRuntime(host.id, ids, true, signal);
   }
 }
 
@@ -1775,6 +1811,8 @@ async function applyS3SharedAppData(
   expectedLocal?: S3SharedAppData,
   preserveNotes = false,
 ): Promise<boolean> {
+  // Drain outside the shared-data queue: a refresh may be waiting to persist its result.
+  await hostRuntimeReconciler.drain();
   // Freeze before flushing so a keystroke cannot land between the final
   // expected-local check and the whole-workspace replacement.
   const rendererApply = preserveNotes
@@ -2698,6 +2736,7 @@ function registerIpcHandlers(): void {
       })
     );
 
+    await hostRuntimeReconciler.cancelAll();
     await mutateS3SharedData(async () => {
       const existingHosts = getStore().listHosts();
       await portForwardManager.stopAll();
@@ -2731,64 +2770,22 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.saveHost, async (_event, hostDraft: HostDraft) => {
     return mutateS3SharedData(async () => {
       const previous = hostDraft.id ? getStore().findHostById(hostDraft.id) : undefined;
-      if (previous) {
-        await portForwardManager.stopMany(previous.services.map((service) => serviceForwardKey(previous.id, service.id)));
-        await stopAllHostRules(previous);
-        for (const service of previous.services) {
-          emitForwardStatus(previous.id, service.id, 'none');
-        }
-      }
-
       const resolvedDraft = { ...privateKeyVault.resolve(hostDraft), jumpHosts: (hostDraft.jumpHosts ?? (hostDraft.jumpHost ? [hostDraft.jumpHost] : [])).map(hop => privateKeyVault.resolve(hop)) };
       const validated = validateHostDraft(resolvedDraft);
       const host = preserveServiceRuntimeFields(previous, validated);
-
-      if (previous) {
-        await clearRemovedRules(previous, host);
-      }
-
+      await getStore().upsertHost(host);
       for (const forward of host.forwards) {
         tunnelManager.setKnownTunnel(forward.id);
         forwardOwners.set(forward.id, host.id);
       }
-
-      await getStore().upsertHost(host);
       sshTerminalRuntime.reconcileHosts(getStore().listHosts());
-      await autoStartHostRules(host);
-
-      for (const service of host.services) {
-        if (!service.pid || !service.forwardLocalPort || service.port === 0) {
-          emitForwardStatus(host.id, service.id, 'none');
-          continue;
-        }
-        const status = await checkServiceStatus(host, service);
-        if (status.status === 'running') {
-          if (status.pid) {
-            service.pid = status.pid;
-          }
-          try {
-            await portForwardManager.start(serviceForwardKey(host.id, service.id), host, service);
-            emitForwardStatus(host.id, service.id, 'ok');
-          } catch (error) {
-            logRuntimeError('port-forward:start', error, {
-              hostId: host.id,
-              serviceId: service.id,
-              localPort: service.forwardLocalPort,
-              remotePort: service.port,
-            });
-            emitForwardStatus(host.id, service.id, 'error', error instanceof Error ? error.message : String(error));
-          }
-        } else {
-          emitForwardStatus(host.id, service.id, 'none');
-        }
-      }
-
-      await getStore().upsertHost(host);
+      hostRuntimeReconciler.schedule(previous, host);
       return toView([host])[0];
     });
   });
 
   ipcMain.handle(IPC_CHANNELS.deleteHost, async (_event, hostId: string) => {
+    await hostRuntimeReconciler.cancel(hostId);
     await mutateS3SharedData(async () => {
       const host = getStore().findHostById(hostId);
       if (!host) return;

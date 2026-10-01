@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.94] - 2026-10-01
+
+### Fixed
+- Fixed Save Host appearing stuck when adding services while remote SSH checks or port forwards respond slowly. Unchanged connections now remain active when saving host edits.
+- Added a saving indicator and duplicate-submit protection to the host editor; failed saves keep the draft available for retry.
+
 ## [0.3.93] - 2026-10-01
 
 ### Added
