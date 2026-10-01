@@ -1346,7 +1346,17 @@ export interface PersistentDataReloaded {
   notesDelta?: NotesWorkspaceDelta;
 }
 
+export interface ShortcutSettings {
+  supported: boolean;
+  accelerator: string;
+  enabled: boolean;
+  registered: boolean;
+  error: string;
+}
+
 export interface SettingsApi {
+  getShortcuts: () => Promise<ShortcutSettings>;
+  saveShortcuts: (draft: { accelerator: string; enabled: boolean }) => Promise<ShortcutSettings>;
   getUiPreferences: () => Promise<UiPreferences>;
   saveUiPreferences: (draft: UiPreferencesDraft) => Promise<UiPreferences>;
   saveNotesSidebarWidth: (width: number) => Promise<UiPreferences>;

@@ -15,6 +15,7 @@ import type {
   UiPreferences,
   UiPreferencesDraft,
   TerminalPreferences,
+  ShortcutSettings,
 } from '../../shared/types';
 import {
   applyNotesEditorTheme,
@@ -89,7 +90,7 @@ const syncProgressValue = requireElement<HTMLElement>('#s3-sync-progress-value')
 const saveStatusElement = requireElement<HTMLElement>('#settings-save-status');
 const navSyncIndicator = requireElement<HTMLElement>('#nav-sync-indicator');
 
-type SettingsTab = 's3' | 'notes' | 'terminal' | 'llm';
+type SettingsTab = 's3' | 'notes' | 'terminal' | 'llm' | 'shortcuts';
 type BusyAction = 'save' | 'test' | 'sync' | 'load-models' | 'trilium-import';
 
 interface SettingsTabElements {
@@ -98,6 +99,10 @@ interface SettingsTabElements {
 }
 
 const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
+  shortcuts: {
+    button: requireElement<HTMLButtonElement>('#settings-shortcuts-tab'),
+    panel: requireElement<HTMLElement>('#settings-shortcuts-panel'),
+  },
   s3: {
     button: requireElement<HTMLButtonElement>('#settings-s3-tab'),
     panel: requireElement<HTMLElement>('#settings-s3-panel'),
@@ -115,7 +120,21 @@ const settingsTabs: Record<SettingsTab, SettingsTabElements> = {
     panel: requireElement<HTMLElement>('#settings-terminal-panel'),
   },
 };
-const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'terminal', 'llm'];
+const settingsTabOrder: SettingsTab[] = ['s3', 'notes', 'terminal', 'llm', 'shortcuts'];
+const clipboardEnabled = requireElement<HTMLInputElement>('#clipboard-history-enabled');
+const clipboardShortcut = requireElement<HTMLInputElement>('#clipboard-history-shortcut');
+const clipboardReset = requireElement<HTMLButtonElement>('#clipboard-history-shortcut-reset');
+const clipboardStatus = requireElement<HTMLElement>('#clipboard-history-shortcut-status');
+let shortcutSettings: ShortcutSettings | undefined;
+let shortcutDraft = 'Control+Alt+V';
+function renderShortcuts(settings: ShortcutSettings): void {
+  shortcutSettings = settings;
+  shortcutDraft = settings.accelerator;
+  clipboardEnabled.checked = settings.enabled;
+  clipboardShortcut.value = shortcutDraft.replace('Alt', /Mac/.test(navigator.platform) ? 'Option' : 'Alt');
+  clipboardStatus.textContent = settings.supported ? settings.error : 'Windows provides clipboard history with Win + V.';
+  updateControls();
+}
 const settingsTabItems = settingsTabOrder.map((id) => ({ id, ...settingsTabs[id] }));
 const syncPhaseLabels: Record<S3SyncProgressPhase, string> = {
   checking: 'Checking cloud',
@@ -300,6 +319,7 @@ function updateTriliumHttpWarning(): void {
 
 function updateControls(): void {
   const locked = busy || credentialRevealPending || settingsLoading;
+  clipboardEnabled.disabled = clipboardShortcut.disabled = clipboardReset.disabled = locked || !shortcutSettings?.supported;
   const importingTrilium = busy && busyAction === 'trilium-import';
   const settingsReady = s3SettingsLoaded && uiPreferencesLoaded && noteShareSettingsLoaded && llmSettingsLoaded;
   saveButton.disabled = locked || !settingsReady;
@@ -761,6 +781,11 @@ async function saveAllSettings(): Promise<void> {
   let savedS3Settings: S3SyncSettingsView | undefined;
   setBusy(true, 'save');
   try {
+    if (shortcutSettings?.supported && (shortcutDraft !== shortcutSettings.accelerator || clipboardEnabled.checked !== shortcutSettings.enabled)) {
+      stage = 'shortcuts';
+      renderShortcuts(await window.settingsApi.saveShortcuts({ accelerator: shortcutDraft, enabled: clipboardEnabled.checked }));
+    }
+    stage = saveS3 ? 's3' : 'notes';
     if (saveS3) savedS3Settings = await window.settingsApi.saveS3SyncSettings(s3Draft);
     stage = 'notes';
     renderUiPreferences(await window.settingsApi.saveUiPreferences(preferences));
@@ -1057,6 +1082,11 @@ async function syncNow(): Promise<void> {
 async function openSettings(): Promise<void> {
   void refreshNotesServerSettings().catch(error => setStatus(toErrorMessage(error), 'error'));
   const openGeneration = ++settingsOpenGeneration;
+  shortcutSettings = undefined;
+  clipboardEnabled.disabled = clipboardShortcut.disabled = clipboardReset.disabled = true;
+  void window.settingsApi.getShortcuts().then(settings => {
+    if (openGeneration === settingsOpenGeneration && dialog.open) renderShortcuts(settings);
+  }).catch(() => { clipboardStatus.textContent = 'Shortcut settings could not be loaded.'; });
   llmTokenEdited = false;
   llmSavedTokenHydrated = false;
   llmTokenClearRequested = false;
@@ -1130,10 +1160,25 @@ async function openSettings(): Promise<void> {
   if (activeTab === 'notes') notesFontSizeInput.focus();
   else if (activeTab === 'terminal') terminalFontInput.focus();
   else if (activeTab === 'llm') llmEndpointInput.focus();
+  else if (activeTab === 'shortcuts') clipboardShortcut.focus();
   else endpointInput.focus();
 }
 
 export function registerSettingsDialog(): void {
+  clipboardShortcut.addEventListener('keydown', event => {
+    if (event.key === 'Tab' || event.key === 'Escape') return;
+    event.preventDefault();
+    const key = event.code.match(/^(?:Key|Digit)([A-Z0-9])$/)?.[1];
+    if (!(event.metaKey || event.ctrlKey || event.altKey) || !key) return;
+    shortcutDraft = [event.metaKey ? (/Mac/.test(navigator.platform) ? 'Command' : 'Super') : '',
+      event.ctrlKey ? 'Control' : '', event.altKey ? 'Alt' : '', event.shiftKey ? 'Shift' : '',
+      key].filter(Boolean).join('+');
+    clipboardShortcut.value = shortcutDraft.replace('Alt', /Mac/.test(navigator.platform) ? 'Option' : 'Alt');
+  });
+  clipboardReset.addEventListener('click', () => {
+    shortcutDraft = 'Control+Alt+V';
+    clipboardShortcut.value = /Mac/.test(navigator.platform) ? 'Control+Option+V' : shortcutDraft;
+  });
   registerNotesServerSettings();
   openButton.parentElement?.append(openButton);
   activateTab(activeTab);

@@ -2,6 +2,15 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.93] - 2026-10-01
+
+### Added
+- Added local-only clipboard history on macOS and Linux for the latest 20 text and image entries, with a compact picker, deletion and clearing.
+- Added Settings > Shortcuts to customize or disable clipboard history, defaulting to Control + Option + V on macOS and Ctrl + Alt + V on Linux.
+
+### Fixed
+- On macOS, clipboard history now opens beside the text caret and pastes a selected entry directly into the original input, preserving the selection and returning typing focus with the caret after the pasted content.
+
 ## [0.3.92] - 2026-09-29
 
 ### Fixed

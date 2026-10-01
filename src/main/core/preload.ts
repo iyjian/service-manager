@@ -221,6 +221,8 @@ const notesApi: NotesApi = {
 };
 
 const settingsApi: SettingsApi = {
+  getShortcuts: () => ipcRenderer.invoke('settings:shortcuts:get'),
+  saveShortcuts: draft => ipcRenderer.invoke('settings:shortcuts:save', draft),
   getUiPreferences: () => ipcRenderer.invoke('settings:ui:get'),
   saveUiPreferences: (draft: UiPreferencesDraft) => ipcRenderer.invoke('settings:ui:save', draft),
   saveNotesSidebarWidth: (width: number) =>

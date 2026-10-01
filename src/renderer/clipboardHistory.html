@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
+  <title>Clipboard history</title>
+  <link rel="stylesheet" href="clipboardHistory.css">
+</head>
+<body>
+  <header><h1>Clipboard</h1><button id="clear" type="button">Clear all</button><button id="close" type="button" aria-label="Close" title="Close">&#215;</button></header>
+  <main id="entries" aria-label="Clipboard history"></main>
+  <p id="status" role="status"></p>
+  <script type="module" src="clipboardHistory.js"></script>
+</body>
+</html>

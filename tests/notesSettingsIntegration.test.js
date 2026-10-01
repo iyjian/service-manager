@@ -583,7 +583,7 @@ test('Notes file-type icons are packaged locally with their upstream licenses', 
   assert.ok(packageJson.build.files.includes('assets/**/*'));
 });
 
-test('Settings is fixed-height and shares Save across S3, Notes, and local LLM tabs', async () => {
+test('Settings is fixed-height and shares Save across S3, Notes, LLM and Shortcuts tabs', async () => {
   const { html, styles, renderer, notesPage, settingsDialog, preload, main } = await readIntegrationFiles();
 
   assert.match(html, /<nav id="nav-rail"[\s\S]*?id="nav-settings-btn"[\s\S]*?<\/nav>/);
@@ -600,6 +600,8 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(html, /id="settings-s3-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-s3-tab"/);
   assert.match(html, /id="settings-notes-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-notes-tab"[^>]*hidden/);
   assert.match(html, /id="settings-llm-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-llm-tab"[^>]*hidden/);
+  assert.match(html, /id="settings-shortcuts-panel"[^>]*role="tabpanel"[^>]*aria-labelledby="settings-shortcuts-tab"[^>]*hidden/);
+  assert.match(settingsDialog, /window.settingsApi.saveShortcuts/);
   assert.match(styles, /\.settings-tab-panel\[hidden\]\{display:none\}/);
   assert.match(html, /id="s3-endpoint"[^>]*placeholder="https:\/\/s3\.example\.com"/);
   assert.match(html, /id="s3-bucket"[^>]*placeholder="service-manager"/);
@@ -695,7 +697,7 @@ test('Settings is fixed-height and shares Save across S3, Notes, and local LLM t
   assert.match(settingsDialog, /await flushNotesPage\(\);[\s\S]*?saveS3SyncSettings\(currentDraft\(\)\)[\s\S]*?syncAllDataToS3\(\)/);
   assert.match(settingsDialog, /const saveS3 = shouldSaveS3Draft\(s3Draft\)[\s\S]*?if \(saveS3\)[\s\S]*?saveS3SyncSettings\(s3Draft\)[\s\S]*?saveUiPreferences\(preferences\)[\s\S]*?saveLlmSettings\(llmDraft\)[\s\S]*?closeSettingsDialog\(\)/);
   assert.match(settingsDialog, /function shouldSaveS3Draft\(draft\)[\s\S]*?draft\.endpoint[\s\S]*?hasCredentials[\s\S]*?hasSyncEncryptionKey/);
-  assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'terminal', 'llm'\]/);
+  assert.match(settingsDialog, /const settingsTabOrder = \['s3', 'notes', 'terminal', 'llm', 'shortcuts'\]/);
   assert.match(settingsDialog, /import \{ activateTabSet, bindTabButtons \} from '\.\.\/components\/tabs\.js'/);
   assert.match(settingsDialog, /const settingsTabItems = settingsTabOrder\.map\(\(id\) => \(\{ id, \.\.\.settingsTabs\[id\] \}\)\)/);
   assert.match(settingsDialog, /function activateTab\(tab, focus = false\)[\s\S]*?activateTabSet\(settingsTabItems, tab, \{ focus \}\)/);

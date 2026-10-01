@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: light-dark(#202124, #f3f3f3); background: light-dark(#f5f6f8, #202124); }
+* { box-sizing: border-box; letter-spacing: 0; }
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; border: 1px solid light-dark(#d9dce2, #45474c); }
+header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; flex: none; }
+h1 { margin: 0; font-size: 16px; font-weight: 600; flex: 1; }
+button { font: inherit; color: inherit; cursor: pointer; border: 0; border-radius: 5px; background: transparent; }
+button:hover { background: light-dark(#e5e8ed, #3b3e44); }
+button:focus-visible { outline: 2px solid #3680df; outline-offset: -2px; }
+#close { width: 28px; height: 28px; font-size: 22px; }
+#clear { color: light-dark(#2367b7, #92bfff); padding: 6px; }
+main { overflow-y: auto; flex: 1; min-height: 0; padding: 0 12px 8px; }
+.entry { position: relative; margin-bottom: 8px; border: 1px solid light-dark(#dfe2e7, #45474c); border-radius: 6px; background: light-dark(#fff, #2b2d31); }
+.paste { display: block; width: 100%; min-height: 84px; padding: 12px 38px 12px 12px; text-align: left; }
+.preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; }
+.paste img { display: block; max-width: 100%; height: 96px; object-fit: contain; }
+.delete { position: absolute; right: 5px; top: 5px; width: 26px; height: 26px; font-size: 18px; }
+time { display: block; margin-top: 8px; font-size: 11px; color: light-dark(#737780, #b3b6bf); }
+#status { margin: 0; padding: 4px 14px 10px; font-size: 12px; color: light-dark(#737780, #b3b6bf); }
+.empty { padding: 60px 12px; text-align: center; color: light-dark(#737780, #b3b6bf); }

@@ -2,6 +2,7 @@ const { copyFileSync, existsSync, mkdirSync } = require('node:fs');
 const { join } = require('node:path');
 
 const root = join(__dirname, '..');
+require('./build-clipboard-helper.cjs');
 mkdirSync(join(root, 'dist', 'main'), { recursive: true });
 for (const runtime of [
   { shared: 'kubernetesPodStatus.js', main: 'kubernetesPodStatus.cjs', label: 'Kubernetes Pod status' },

@@ -814,8 +814,15 @@
           <button id="settings-notes-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-notes-panel" tabindex="-1" data-settings-tab="notes">Notes</button>
           <button id="settings-terminal-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-terminal-panel" tabindex="-1" data-settings-tab="terminal">Terminal</button>
           <button id="settings-llm-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-llm-panel" tabindex="-1" data-settings-tab="llm">LLM</button>
+          <button id="settings-shortcuts-tab" type="button" class="settings-tab" role="tab" aria-selected="false" aria-controls="settings-shortcuts-panel" tabindex="-1" data-settings-tab="shortcuts">Shortcuts</button>
         </div>
 
+        <section id="settings-shortcuts-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-shortcuts-tab" data-settings-panel="shortcuts" hidden>
+          <label><input id="clipboard-history-enabled" type="checkbox"> Clipboard history</label>
+          <label class="field field-xs"><span>Open clipboard history</span><input id="clipboard-history-shortcut" class="input" type="text" autocomplete="off" spellcheck="false" aria-label="Open clipboard history shortcut" readonly></label>
+          <button id="clipboard-history-shortcut-reset" type="button" class="btn btn-secondary btn-sm">Reset to Defaults</button>
+          <p id="clipboard-history-shortcut-status" role="status"></p>
+        </section>
         <section id="settings-s3-panel" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-s3-tab" data-settings-panel="s3">
           <label class="field field-xs">
             S3 Endpoint

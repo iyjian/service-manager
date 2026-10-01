@@ -1,4 +1,5 @@
 import { createNotesServerHost } from '../notesServer/hostSelection';
+import { registerClipboardHistory } from './clipboardHistory';
 import { PrivateKeyVault } from '../vault/privateKeyVault';
 import { registerVaultIpc } from '../vault/ipc';
 import { RemoteNotesBackend, LocalNotesBackend } from '../notesServer/backend';
@@ -3411,6 +3412,7 @@ app.whenReady()
 
     applyAppIcon();
     registerIpcHandlers();
+    registerClipboardHistory(id => Boolean(rendererWindowForSender(id)));
     wireForwardStatusBroadcast();
     wireUpdaterBroadcast();
     wireProxyStateBroadcast();
