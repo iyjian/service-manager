@@ -170,6 +170,7 @@ async function createRuntime(t, options) {
   const runtime = new S3SyncRuntime({
     userDataPath,
     appVersion: '0.3.19',
+    onDiagnostic: options.onDiagnostic,
     credentialProtector: fakeProtector(),
     snapshotProvider: async () => {
       options.onSnapshotProvider?.();
@@ -2393,7 +2394,7 @@ test('page departure respects retry backoff while an explicit quit-sync can retr
   assert.equal(attempts, 2);
 });
 
-test('automatic S3 polling is limited to database mode, without focus or resume triggers', async () => {
+test('automatic settings polling is installed for the database-capable runtime, without focus or resume triggers', async () => {
   const [runtimeSource, mainSource] = await Promise.all([
     readFile(path.join(__dirname, '..', 'src', 'main', 's3', 's3Sync.ts'), 'utf8'),
     readFile(path.join(__dirname, '..', 'src', 'main', 'core', 'main.ts'), 'utf8'),
@@ -2426,6 +2427,18 @@ test('S3SyncRuntime returns bounded safe errors without leaking endpoint, data, 
   assert.equal(state.status, 'error');
   assert.equal(state.message, 'S3 sync failed (403 AccessDenied).');
   assert.doesNotMatch(JSON.stringify(state), /wJalr|host-password|private-note|s3\.example/);
+});
+
+test('sync runtime reports request failures and the failing phase through its local diagnostics callback', async t => {
+  const events = [];
+  const client = await createRuntime(t, {
+    clientId: 'diagnostics', data: sharedData(), onDiagnostic: event => events.push(event),
+    fetchImpl: async () => new Response('<Error><Code>AccessDenied</Code><Message>private-body</Message></Error>', { status: 403 }),
+  });
+  await assert.rejects(client.runtime.syncAllDataToS3(), /403/);
+  assert.ok(events.some(event => event.kind === 'http-failure' && event.objectType === 'head' && event.code === 'AccessDenied'));
+  assert.ok(events.some(event => event.kind === 'sync-failure' && event.phase === 'checking'));
+  assert.doesNotMatch(JSON.stringify(events), /private-body/);
 });
 
 async function databaseModeManifest(s3, syncEncryptionKey = SYNC_KEY) {
@@ -2799,4 +2812,63 @@ test('database settings fail closed on a wrong key, missing base, or missing leg
   await remote.runtime.syncAllDataToS3();
   assert.ok(s3.calls.length > 0);
   assert.equal(remote.runtime.getSyncState().status, 'synced');
+});
+
+test('settings polling pulls new services with server Notes enabled and after a Notes mode change', async t => {
+  let poll;
+  t.mock.method(global, 'setInterval', (callback, delay) => {
+    assert.equal(delay, 60_000);
+    poll = callback;
+    return { unref() {} };
+  });
+  const s3 = new MemoryS3();
+  const source = await createRuntime(t, { clientId: 'host-source', data: sharedData([], [host('h', 'Host')]), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async () => 'up-to-date' }, notesDatabaseEnabled: () => false });
+  await source.runtime.syncAllDataToS3();
+  let databaseEnabled = false;
+  let notesChecks = 0;
+  const receiver = await createRuntime(t, { clientId: 'host-receiver', data: sharedData(), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async () => { notesChecks++; throw new Error('Notes unavailable'); } },
+    notesDatabaseEnabled: () => databaseEnabled });
+  await receiver.runtime.startAutoSync();
+  for (const name of ['people-management', 'another-service']) {
+    source.state.data.hosts.items[0].services.push({ id: name, name, startCommand: 'sleep 60', port: 8081 });
+    await source.runtime.syncAllDataToS3();
+    poll();
+    await waitFor(() => receiver.state.data.hosts.items[0].services.some(service => service.name === name), 'service pulled');
+    await receiver.runtime.operationQueue;
+    if (!databaseEnabled) {
+      assert.equal(notesChecks, 0);
+      assert.equal(receiver.runtime.getSyncState().status, 'synced');
+    } else {
+      assert.equal(notesChecks, 1, 'the separate Notes check can fail without failing settings sync');
+      assert.equal(receiver.runtime.getSyncState().status, 'synced');
+    }
+    databaseEnabled = true;
+  }
+});
+
+test('host edit debounce synchronizes settings without invoking the Notes database', async t => {
+  const s3 = new MemoryS3();
+  let notesChecks = 0;
+  const client = await createRuntime(t, { clientId: 'host-debounce', data: sharedData([], [host('h', 'Host')]), fetchImpl: s3.fetch,
+    notesDatabase: { sync: async () => { notesChecks++; throw new Error('Notes unavailable'); } } });
+  await client.runtime.performSync(true, false, true, true);
+  client.state.data.hosts.items[0].services.push({ id: 'new-service', name: 'New service', startCommand: 'sleep 60', port: 8081 });
+  let settingsTimer;
+  const nativeTimeout = global.setTimeout;
+  t.mock.method(global, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 5_000) { settingsTimer = callback; return { unref() {} }; }
+    return nativeTimeout(callback, delay, ...args);
+  });
+  client.runtime.markLocalChange();
+  await waitFor(() => settingsTimer, 'settings debounce');
+  settingsTimer();
+  await client.runtime.operationQueue;
+  assert.equal(notesChecks, 0);
+  const receiver = await createRuntime(t, { clientId: 'host-debounce-reader', data: sharedData(), fetchImpl: s3.fetch,
+    notesDatabase: {}, notesDatabaseEnabled: () => false });
+  await receiver.runtime.syncAllDataToS3();
+  assert.ok(receiver.state.data.hosts.items[0].services.some(service => service.id === 'new-service'));
+  assert.equal(client.runtime.getSyncState().pending, true, 'settings sync must not clear pending Notes');
 });

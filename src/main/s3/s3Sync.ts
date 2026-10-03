@@ -76,6 +76,7 @@ import { NotesShareS3Store } from '../notes/notesShareS3';
 import type { NotesDatabaseSync, LegacyNotesSource } from './notesDatabaseSync';
 import type { NotesDatabaseS3Options } from './notesDatabaseS3';
 import { NotesUploadSchedule } from './notesUploadSchedule';
+import { withS3Diagnostics, type S3DiagnosticReporter } from './s3Diagnostics';
 import type { NotesQuitState } from '../core/quitConfirmation';
 import type { NotesSyncGuardState } from '../../shared/types';
 
@@ -134,6 +135,7 @@ export type S3NotesIncrementalProvider = (
 ) => Promise<S3NotesIncrementalSnapshot>;
 
 export interface S3SyncRuntimeOptions {
+  onDiagnostic?: S3DiagnosticReporter;
   userDataPath: string;
   appVersion: string;
   credentialProtector: S3CredentialProtector;
@@ -1113,7 +1115,7 @@ export class S3SyncRuntime {
   public constructor(private readonly options: S3SyncRuntimeOptions) {
     this.settingsPath = path.join(options.userDataPath, 's3-sync.json');
     this.recoveryDirectory = path.join(options.userDataPath, 's3-sync-recovery');
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = withS3Diagnostics(options.fetchImpl ?? fetch, options.onDiagnostic);
     this.now = options.now ?? (() => new Date());
     this.createRevision = options.createRevision ?? randomUUID;
     this.createObjectId = options.createObjectId ?? (() => createS3V4ObjectId());
@@ -1147,8 +1149,10 @@ export class S3SyncRuntime {
     this.autoStarted = true;
     if (this.options.notesDatabase) {
       this.databasePollTimer = setInterval(() => {
-        if (!this.shuttingDown && this.notesDatabase && this.settings && isConfigured(this.settings)) {
-          void this.enqueue(() => this.performSync(true, false, true)).catch(() => undefined);
+        if (!this.shuttingDown && this.settings && isConfigured(this.settings)) {
+          void this.enqueue(() => this.performSync(true, false, Boolean(this.notesDatabase), true)).catch(() => undefined);
+          // Notes health is checked separately; its failure must not fail settings reconciliation.
+          if (this.notesDatabase) void this.checkNotesSync().catch(() => undefined);
         }
       }, 60_000);
       this.databasePollTimer.unref?.();
@@ -1205,14 +1209,14 @@ export class S3SyncRuntime {
       return true;
     }).then((configured) => {
       if (configured) {
-        if (this.notesDatabase) {
+        if (this.options.notesDatabase) {
           this.scheduleDatabaseUpload();
           if (change.kind === 'full' && !this.shuttingDown) {
             // Preserve the existing settings cadence without publishing pending Notes early.
             if (this.settingsDebounceTimer) clearTimeout(this.settingsDebounceTimer);
             this.settingsDebounceTimer = setTimeout(() => {
               this.settingsDebounceTimer = undefined;
-              if (!this.shuttingDown) void this.enqueue(() => this.performSync(true, false, true)).catch(() => undefined);
+              if (!this.shuttingDown) void this.enqueue(() => this.performSync(true, false, Boolean(this.notesDatabase), true)).catch(() => undefined);
             }, 5_000);
             this.settingsDebounceTimer.unref?.();
           }
@@ -3236,7 +3240,7 @@ export class S3SyncRuntime {
     throw new Error('S3 sync changed concurrently too many times. Try again.');
   }
 
-  private async performSync(forceFull: boolean, manual = false, checkOnly = false): Promise<S3SyncResult> {
+  private async performSync(forceFull: boolean, manual = false, checkOnly = false, settingsOnly = false): Promise<S3SyncResult> {
     if (this.shuttingDown) throw new Error('S3 sync was cancelled.');
     const settings = { ...(await this.ensureSettings()) };
     if (!isConfigured(settings)) {
@@ -3266,7 +3270,7 @@ export class S3SyncRuntime {
       const reportProgress = (phase: S3SyncProgressPhase, completedItems?: number, totalItems?: number): void =>
         this.reportSyncProgress(phase, completedItems, totalItems);
       let result: S3SyncResult;
-      if (this.options.notesDatabase && !this.notesDatabase) {
+      if (this.options.notesDatabase && (settingsOnly || !this.notesDatabase)) {
         // Server Notes disable only the database channel, never downgrade settings to legacy Notes sync.
         performedFull = true;
         result = await this.reconcileSettings(settings, controller.signal, reportProgress);
@@ -3372,6 +3376,10 @@ export class S3SyncRuntime {
       return result;
     } catch (error) {
       if (this.shuttingDown || controller.signal.aborted) throw new Error('S3 sync was cancelled.');
+      try {
+        this.options.onDiagnostic?.({ kind: 'sync-failure', phase: this.state.phase ?? 'unknown',
+          manual, checkOnly, settingsOnly, appVersion: this.options.appVersion });
+      } catch { /* Diagnostics must not affect synchronization. */ }
       if (this.notesDatabase && !checkOnly) {
         this.notesUploadSchedule.failed(this.now().getTime());
         if (this.notesGuard.status !== 'remote-updated' && this.notesGuard.status !== 'diverged') this.scheduleDatabaseUpload();

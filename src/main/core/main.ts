@@ -3391,6 +3391,11 @@ app.whenReady()
     });
     await notesDatabase.initialize();
     s3SyncRuntime = new S3SyncRuntime({
+      onDiagnostic: (event) => {
+        void runtimeLogWriter?.record('s3:diagnostic', 'S3 synchronization diagnostic', {
+          ...event, appVersion: app.getVersion(),
+        }).catch(() => undefined);
+      },
       userDataPath,
       appVersion: app.getVersion(),
       credentialProtector,

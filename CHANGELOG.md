@@ -2,6 +2,12 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.95] - 2026-10-03
+
+### Fixed
+- Added local diagnostics for failed cloud synchronization, including request type, HTTP status and safe S3 error codes, to make background failures traceable.
+- Restored automatic Host, service, and Proxy configuration sync when server Notes is enabled. Configuration checks and uploads no longer depend on Notes database checks succeeding.
+
 ## [0.3.94] - 2026-10-01
 
 ### Fixed
