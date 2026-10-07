@@ -555,4 +555,4 @@ Per project rule, every important change must update both:
 
 On first launch, complete Notes Server setup and migration before using the application. The same connection is available under Settings → Notes. See [Notes Server setup and recovery](docs/notes-server.md).
 
-The **Vault** panel stores encrypted reusable SSH private keys for Hosts, jump hosts, and Notes Server. Existing Host keys migrate automatically. See [Vault](docs/vault.md).
+The **Vault** panel stores website Logins and SSH Keys. Each website has one login URL and multiple accounts with individual notes, password generation, and protected copy/show actions. Chrome password CSV imports provide a selectable preview and skip duplicates or conflicts. Existing keys migrate automatically to the configured Notes Server database on startup; encrypted local backups preserve recovery and SSH connectivity. See [Vault](docs/vault.md) for migration and encryption-key backup requirements.

@@ -1,3 +1,4 @@
+import { remoteVault } from '../vault/remote';
 import { createNotesServerHost } from '../notesServer/hostSelection';
 import { registerClipboardHistory } from './clipboardHistory';
 import { PrivateKeyVault } from '../vault/privateKeyVault';
@@ -3313,6 +3314,7 @@ app.whenReady()
     await privateKeyVault.load();
     await store.attachVault(privateKeyVault);
     registerVaultIpc(privateKeyVault, {
+      trustedSender: id => Boolean(rendererWindowForSender(id)),
       mutate: mutateS3SharedData,
       changed: async (id, replaced) => {
         if (replaced) {
@@ -3339,8 +3341,27 @@ app.whenReady()
     await notesServerSettings.load();
     const notesBundle = path.join(app.getAppPath(), 'dist').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
     const notesDeployment = new NotesServerDeployment(notesServerSettings, notesBundle, app.getVersion(), !app.isPackaged);
-    remoteNotes = new RemoteNotesBackend(notesDeployment, app.getPath('userData'), state => broadcast('notes-server:status', state));
+    let vaultRefreshPending = false;
+    const refreshStartupVault = (): void => {
+      if (vaultRefreshPending || privateKeyVault.remoteReady) return;
+      vaultRefreshPending = true;
+      void privateKeyVault.refresh().then(() => broadcast('vault:changed', undefined)).finally(() => { vaultRefreshPending = false; });
+    };
+    remoteNotes = new RemoteNotesBackend(notesDeployment, app.getPath('userData'), state => {
+      broadcast('notes-server:status', state);
+      // Retry if the first Vault attempt overlapped a server upgrade or setup.
+      if (state.connected) refreshStartupVault();
+    });
     await remoteNotes.initialize();
+    privateKeyVault.attachRemote(remoteVault(notesDeployment), async () => {
+      for (const host of getStore().listHosts()) {
+        if (!host.privateKeyId && !host.jumpHosts.some(hop => hop.privateKeyId)) continue;
+        for (const forward of host.forwards) tunnelManager.updateCredentials(await forwardToRuntimeConfig(host, forward));
+      }
+      broadcast('vault:changed', undefined);
+    });
+    // A failed migration never prevents startup or removes the encrypted local keys.
+    refreshStartupVault();
     registerNotesServerIpc({ settings: notesServerSettings, deployment: notesDeployment, backend: remoteNotes, userData: app.getPath('userData'),
       hosts: () => getStore().listHosts(),
       createHost: draft => mutateS3SharedData(() => createNotesServerHost(getStore(), privateKeyVault, draft)),

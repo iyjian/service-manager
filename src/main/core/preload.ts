@@ -431,6 +431,19 @@ contextBridge.exposeInMainWorld('notesServerApi', {
 });
 
 contextBridge.exposeInMainWorld('vaultApi', {
+  previewChromeImport: () => ipcRenderer.invoke('vault:chrome-preview'),
+  confirmChromeImport: (token: string, rowIds: string[]) => ipcRenderer.invoke('vault:chrome-confirm', token, rowIds),
+  cancelChromeImport: (token: string) => ipcRenderer.invoke('vault:chrome-cancel', token),
+  entries: () => ipcRenderer.invoke('vault:entries'),
+  status: () => ipcRenderer.invoke('vault:status'),
+  refresh: () => ipcRenderer.invoke('vault:refresh'),
+  readPassword: (id: string, revision: number, accountId: string) => ipcRenderer.invoke('vault:read-password', id, revision, accountId),
+  editPasswords: (id: string, revision: number) => ipcRenderer.invoke('vault:edit-passwords', id, revision),
+  deleteLogin: (id: string, revision: number) => ipcRenderer.invoke('vault:delete-login', id, revision),
+  saveEntry: (input: unknown) => ipcRenderer.invoke('vault:save-entry', input),
+  copy: (id: string, field: string, accountId: string) => ipcRenderer.invoke('vault:copy', id, field, accountId),
+  reveal: (id: string, accountId: string) => ipcRenderer.invoke('vault:reveal', id, accountId),
+  openUrl: (id: string) => ipcRenderer.invoke('vault:open-url', id),
   rename: (id: string, name: string, revision: number) => ipcRenderer.invoke('vault:rename', id, name, revision),
   replace: (input: unknown) => ipcRenderer.invoke('vault:replace', input),
   onChanged: (listener: () => void) => subscribe('vault:changed', listener),

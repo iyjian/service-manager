@@ -1512,7 +1512,41 @@ export interface NotesServerApi {
 
 export interface VaultKeyView { id: string; name: string; createdAt: string; updatedAt?: string; revision?: number; }
 export interface VaultKeyReplacement { id: string; revision: number; useImportedKey?: boolean; privateKey?: string; passphrase?: string; }
+export type VaultEntryType = 'login' | 'sshKey';
+export interface VaultAccountView { id: string; username: string; notes: string; hasPassword: boolean; }
+export interface VaultAccountDraft { id?: string; username: string; password?: string; notes: string; generatePassword?: boolean; }
+export interface VaultEntryView extends VaultKeyView {
+  type: VaultEntryType;
+  loginUrl: string;
+  accounts: VaultAccountView[];
+}
+export interface VaultEntryDraft {
+  id?: string;
+  revision?: number;
+  type: 'login';
+  loginUrl: string;
+  accounts: VaultAccountDraft[];
+}
+export interface VaultImportRow {
+  id: string; loginUrl: string; username: string; notes: string; hasPassword: boolean;
+  status: 'ready' | 'duplicate' | 'conflict' | 'invalid'; message: string;
+}
+export interface VaultImportPreview { token: string; rows: VaultImportRow[]; }
 export interface VaultApi {
+  previewChromeImport(): Promise<VaultImportPreview | null>;
+  confirmChromeImport(token: string, rowIds: string[]): Promise<{ accounts: number; websites: number }>;
+  cancelChromeImport(token: string): Promise<void>;
+  entries(): Promise<VaultEntryView[]>;
+  status(): Promise<{ message: string }>;
+  readPassword(id: string, revision: number, accountId: string): Promise<string>;
+  editPasswords(id: string, revision: number): Promise<Array<{ id: string; password: string }>>;
+  deleteLogin(id: string, revision: number): Promise<boolean>;
+  saveEntry(input: VaultEntryDraft): Promise<VaultEntryView>;
+  copy(id: string, field: 'username' | 'password' | 'notes', accountId: string): Promise<void>;
+  reveal(id: string, accountId: string): Promise<void>;
+  openUrl(id: string): Promise<void>;
+  refresh(): Promise<{ message: string }>;
+
   rename(id: string, name: string, revision: number): Promise<VaultKeyView>;
   replace(input: VaultKeyReplacement): Promise<VaultKeyView>;
   onChanged(listener: () => void): () => void;

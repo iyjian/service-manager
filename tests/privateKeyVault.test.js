@@ -100,3 +100,131 @@ test('invalid, stale and failed updates leave the original key and passphrase in
  assert.equal(broken.list()[0].name, 'first'); assert.equal(broken.resolve({ privateKeyId: saved.id }).privateKey, key);
  const disk = new PrivateKeyVault(path.join(root, 'vault.json'), protector); await disk.load(); assert.equal(disk.list()[0].name, 'first');
 });
+
+test('login fields and notes persist encrypted without exposing passwords', async t => {
+ const { vault, root } = await fixture(t);
+ const draft = { type: 'login', loginUrl: 'https://github.com/login', accounts: [{ username: 'alice', password: 'sensitive-password', notes: 'Use work account' }] };
+ const saved = await vault.saveEntry(draft);
+ assert.equal(saved.accounts[0].hasPassword, true); assert.equal(saved.accounts[0].password, undefined);
+ assert.equal(vault.list().length, 0); assert.equal(vault.secret(saved.id, 'password'), draft.accounts[0].password);
+ assert.deepEqual(vault.reuseReference({ password: 'host-password' }), { password: 'host-password' });
+ const edited = await vault.saveEntry({ ...draft, id: saved.id, revision: 0, accounts: [{ ...saved.accounts[0], password: undefined }] });
+ assert.equal(vault.secret(saved.id, 'password'), draft.accounts[0].password);
+ await assert.rejects(vault.saveEntry({ ...draft, id: saved.id, revision: 0 }), /changed/);
+ await assert.rejects(vault.saveEntry({ ...draft, type: 'secureNote' }), /Invalid Vault entry type/);
+ const disk = await fs.readFile(path.join(root, 'vault.json'), 'utf8');
+ assert.ok(!disk.includes('sensitive-password'));
+ assert.equal(edited.accounts[0].notes, 'Use work account');
+ const restored = new PrivateKeyVault(path.join(root, 'vault.json'), protector); await restored.load();
+ assert.equal(restored.entries().length, 1); assert.equal(restored.secret(edited.id, 'password'), draft.accounts[0].password);
+});
+test('unsafe login URLs, oversized fields and wrong entry types are rejected', async t => {
+ const { vault } = await fixture(t);
+ const draft = { type: 'login', loginUrl: 'https://example.com/', accounts: [{ username: '', notes: '' }] };
+ for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'https://user:password@example.com', 'not a URL']) {
+   await assert.rejects(vault.saveEntry({ ...draft, loginUrl: url }));
+ }
+ await assert.rejects(vault.saveEntry({ ...draft, accounts: [{ username: 'x'.repeat(1001), notes: '' }] }));
+ const saved = await vault.saveEntry({ ...draft, accounts: [{ ...draft.accounts[0], generatePassword: true }] });
+ assert.equal(vault.secret(saved.id, 'password').length, 24);
+ await assert.rejects(vault.rename(saved.id, 'new', 0), /Not an SSH key/);
+ assert.throws(() => vault.resolve({ privateKeyId: saved.id }), /unavailable/);
+});
+test('remote migration retries safely, retains backup and rejects stale writes and changed identity', async t => {
+ const { vault, root } = await fixture(t); const saved = await vault.add('existing', key);
+ let state = { instanceId: 'server-a', revision: 0, records: [] };
+ let failImport = true;
+ const remote = {
+  enabled: () => true,
+  read: async () => structuredClone(state),
+  import: async records => {
+   for (const record of records) if (!state.records.some(item => item.id === record.id)) state.records.push(structuredClone(record));
+   if (failImport) { failImport = false; throw new Error('Lost response'); }
+  },
+  write: async (records, revision) => { if (revision !== state.revision) throw new Error('conflict'); state.records = structuredClone(records); state.revision++; }
+ };
+ vault.attachRemote(remote);
+ assert.match((await vault.refresh()).message, /unavailable/);
+ assert.equal(vault.resolve({ privateKeyId: saved.id }).privateKey, key);
+ assert.match((await vault.refresh()).message, /connected/);
+ assert.equal(state.records.length, 1);
+ assert.ok(await fs.stat(path.join(root, 'vault.json.migration-backup')));
+ await vault.rename(saved.id, 'remote name', 0);
+ assert.equal(state.records[0].name, 'remote name');
+ state.records[0].revision++; state.records[0].name = 'another client'; state.revision++;
+ await assert.rejects(vault.rename(saved.id, 'stale', 1), /changed/);
+ state.instanceId = 'other-server';
+ assert.match((await vault.refresh()).message, /unavailable/);
+ assert.equal(vault.list()[0].name, 'another client');
+});
+
+test('a restored older remote database cannot erase cached keys, including after restart', async t => {
+ const { vault, root } = await fixture(t); const keyView = await vault.add('existing', key);
+ let state = { instanceId: 'server', revision: 0, records: [] };
+ const remote = { enabled: () => true, read: async () => structuredClone(state), import: async records => { state.records = structuredClone(records); state.revision = 1; }, write: async () => {} };
+ vault.attachRemote(remote); await vault.refresh();
+ const restored = new PrivateKeyVault(path.join(root, 'vault.json'), protector); await restored.load(); restored.attachRemote(remote);
+ state = { instanceId: 'server', revision: 0, records: [] };
+ assert.match((await restored.refresh()).message, /unavailable/);
+ assert.equal(restored.resolve({ privateKeyId: keyView.id }).privateKey, key);
+});
+
+test('retired secure notes remain encrypted during saves but are not exposed in Vault', async t => {
+ const { root } = await fixture(t);
+ const file = path.join(root, 'vault.json');
+ const legacy = { id: 'legacy-note', type: 'secureNote', name: 'Old note', notes: 'preserve-me', application: '', username: '', urls: [], tags: [], createdAt: '2026-10-05T00:00:00Z' };
+ await fs.writeFile(file, JSON.stringify({ version: 1, encrypted: protector.encryptString(JSON.stringify([legacy])).toString('base64') }));
+ const vault = new PrivateKeyVault(file, protector); await vault.load();
+ assert.deepEqual(vault.entries(), []);
+ assert.throws(() => vault.secret(legacy.id, 'notes'), /unavailable/);
+ await vault.saveEntry({ type: 'login', loginUrl: 'https://example.com', accounts: [{ username: '', notes: 'Login notes' }] });
+ const decoded = JSON.parse(protector.decryptString(Buffer.from(JSON.parse(await fs.readFile(file, 'utf8')).encrypted, 'base64')));
+ assert.equal(decoded.records.find(record => record.id === legacy.id).notes, 'preserve-me');
+ assert.equal(vault.entries().length, 1);
+});
+
+test('website accounts keep separate passwords across edits, additions, removal and stale drafts', async t => {
+ const { vault } = await fixture(t);
+ const saved = await vault.saveEntry({ type: 'login', loginUrl: 'https://site.example/login', accounts: [{ username: 'alice', password: 'alice-secret', notes: 'Personal' }, { username: 'bob', password: 'bob-secret', notes: 'Work' }] });
+ assert.equal(saved.accounts.length, 2); assert.throws(() => vault.secret(saved.id, 'password'), /unavailable/);
+ assert.equal(vault.secret(saved.id, 'password', saved.accounts[1].id), 'bob-secret');
+ const edited = await vault.saveEntry({ id: saved.id, revision: 0, type: 'login', loginUrl: saved.loginUrl, accounts: [{ ...saved.accounts[1], username: 'robert' }, { username: 'charlie', password: 'new-secret', notes: 'New' }] });
+ assert.equal(vault.secret(saved.id, 'password', edited.accounts[0].id), 'bob-secret');
+ assert.throws(() => vault.secret(saved.id, 'password', saved.accounts[0].id), /unavailable/);
+ await assert.rejects(vault.saveEntry({ id: saved.id, revision: 0, type: 'login', loginUrl: saved.loginUrl, accounts: edited.accounts }), /changed/);
+ await assert.rejects(vault.saveEntry({ type: 'login', loginUrl: saved.loginUrl, accounts: [{ username: 'extra', notes: '' }] }), /already exists/);
+});
+test('Chrome imports are atomic, preview is secret-free and stale previews cannot write', async t => {
+ const { vault } = await fixture(t);
+ const { parseChromeCsv } = require('../dist/main/vault/chromeImport');
+ const rows = parseChromeCsv('url,username,password,note\nhttps://site.example/,alice,secret-one,First\nhttps://site.example/,bob,secret-two,Second');
+ const preview = await vault.previewImport(rows); assert.ok(!JSON.stringify(preview).includes('secret-one')); assert.equal(vault.entries().length, 0);
+ const result = await vault.importAccounts(rows, preview.fingerprint); assert.deepEqual(result, { accounts: 2, websites: 1 });
+ const view = vault.entries()[0]; assert.equal(view.accounts.length, 2); assert.equal(vault.secret(view.id, 'password', view.accounts[1].id), 'secret-two');
+ await assert.rejects(vault.importAccounts(rows, preview.fingerprint), /Vault changed/);
+ assert.equal(vault.entries().length, 1);
+ const duplicates = await vault.previewImport(rows); assert.ok(duplicates.rows.every(row => row.status === 'duplicate'));
+});
+
+test('Login deletion clears credentials, survives restart and rejects stale or SSH deletion', async t => {
+ const {root,vault}=await fixture(t);
+ const entry=await vault.saveEntry({type:'login',loginUrl:'https://delete.example',accounts:[{username:'alice',password:'secret-delete',notes:'private-note'}]});
+ await assert.rejects(vault.deleteLogin(entry.id,99),/changed/);
+ assert.equal(vault.entries().length,1);
+ await vault.deleteLogin(entry.id,entry.revision);
+ assert.equal(vault.entries().length,0);
+ const raw=JSON.parse(await fs.readFile(path.join(root,'vault.json'),'utf8'));
+ const clear=protector.decryptString(Buffer.from(raw.encrypted,'base64'));
+ assert.ok(!clear.includes('secret-delete')); assert.ok(!clear.includes('alice')); assert.ok(!clear.includes('private-note'));
+ const restored=new PrivateKeyVault(path.join(root,'vault.json'),protector); await restored.load(); assert.equal(restored.entries().length,0);
+ await assert.rejects(vault.saveEntry({...entry,type:'login',accounts:[{username:'alice',password:'restore',notes:''}]}),/changed/);
+ const ssh=await vault.add('key',key);
+ await assert.rejects(vault.deleteLogin(ssh.id,0),/changed/); assert.equal(vault.list().length,1);
+});
+
+test('editing a Login can explicitly clear its saved password', async t => {
+ const {vault}=await fixture(t);
+ const saved=await vault.saveEntry({type:'login',loginUrl:'https://clear.example',accounts:[{username:'test',password:'test-only',notes:''}]});
+ const edited=await vault.saveEntry({...saved,accounts:saved.accounts.map(account=>({...account,password:''}))});
+ assert.equal(edited.accounts[0].hasPassword,false); assert.equal(vault.secret(saved.id,'password',saved.accounts[0].id),'');
+});

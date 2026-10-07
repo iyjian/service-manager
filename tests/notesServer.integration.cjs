@@ -22,7 +22,7 @@ async function fixture(t) {
 }
 test('API requires authentication and exposes a stable identity', async t => {
   const f = await fixture(t); assert.equal((await f.call('/v1/health', undefined, 'bad')).status, 401);
-  const health = await f.call('/v1/health'); assert.equal(health.data.protocol, 1); assert.equal(health.data.revision, 0);
+  const health = await f.call('/v1/health'); assert.equal(health.data.protocol, 1); assert.equal(health.data.vaultSchema, 3); assert.equal(health.data.revision, 0);
   assert.equal((await f.call('/v1/workspace')).data.instanceId, health.data.instanceId);
 });
 test('migration preserves IDs and hierarchy and cannot overwrite a populated server', async t => {
@@ -96,4 +96,59 @@ test('upgrading an existing v1 database preserves content, hierarchy, identity a
       assert.equal((await (await fetch(`${base}/v1/health`, { headers })).json()).revision, 8);
     } finally { await instance.close(); }
   }
+});
+
+test('Vault authenticates, encrypts database contents, merges migration idempotently and rejects stale writes', async t => {
+ const f = await fixture(t);
+ const instanceId = (await f.call('/v1/health')).data.instanceId;
+ const record = { id: 'login-one', type: 'login', name: 'Account', application: 'Example', username: 'alice', password: 'never-plaintext-password', urls: ['https://example.com'], tags: ['work'], notes: 'private account note', createdAt: '2026-10-05T00:00:00.000Z', revision: 0 };
+ assert.equal((await f.call('/v1/vault', undefined, 'bad')).status, 401);
+ assert.equal((await f.call('/v1/vault/import', { instanceId: 'wrong', records: [record] })).status, 409);
+ const first = await f.call('/v1/vault/import', { instanceId, records: [record] }); assert.equal(first.status, 200);
+ assert.equal((await f.call('/v1/vault/import', { instanceId, records: [record] })).data.revision, first.data.revision);
+ assert.equal((await f.call('/v1/vault/import', { instanceId, records: [{ ...record, password: 'conflict' }] })).status, 409);
+ const snapshot = (await f.call('/v1/vault')).data; assert.equal(snapshot.records[0].accounts[0].password, record.password);
+ assert.equal((await f.call('/v1/vault/write', { instanceId, expectedRevision: 0, records: [record] })).status, 409);
+ assert.equal((await f.call('/v1/vault/write', { instanceId, expectedRevision: snapshot.revision, records: [] })).status, 409);
+ assert.equal((await f.call('/v1/vault/write', { instanceId, expectedRevision: snapshot.revision, records: [{ ...record, name: 'Updated', revision: 1 }] })).status, 200);
+ const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(f.directory, 'notes.sqlite3'));
+ const raw = db.prepare('SELECT encrypted FROM vault').get().encrypted; db.close();
+ assert.ok(!raw.includes(record.password)); assert.ok(!raw.includes(record.username)); assert.ok(!raw.includes(record.notes));
+ const backup = await f.call('/v1/backups', {});
+ const backupBytes = (await f.call('/v1/backups/' + backup.data.name)).data;
+ assert.ok(!backupBytes.includes(Buffer.from(record.password)));
+ assert.equal((await readFile(path.join(f.directory, 'vault-encryption.key'))).length, 32);
+ assert.equal((await f.call('/v1/workspace')).data.notes.length, 0);
+});
+
+test('Vault survives restart and refuses to replace a missing encryption key', async t => {
+ const directory = await mkdtemp(path.join(os.tmpdir(), 'vault-restart-')); const token = randomBytes(32).toString('hex');
+ t.after(() => rm(directory, { recursive: true, force: true }));
+ let server = await startNotesServer({ directory, token, port: 0, version: 'test' });
+ const call = async (route, payload) => {
+  const response = await fetch(`http://127.0.0.1:${server.server.address().port}` + route, { method: payload ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: payload ? JSON.stringify(payload) : undefined });
+  assert.equal(response.status, 200); return response.json();
+ };
+ try {
+  const { instanceId } = await call('/v1/health');
+  const record = { id: 'secure-note', type: 'secureNote', name: 'Recovery', application: '', username: '', urls: [], tags: [], notes: 'secret', createdAt: '2026-10-05T00:00:00.000Z' };
+  await call('/v1/vault/import', { instanceId, records: [record] });
+  await server.close(); server = await startNotesServer({ directory, token, port: 0, version: 'test' });
+  assert.equal((await call('/v1/vault')).records[0].notes, 'secret');
+ } finally { await server.close(); }
+ await rm(path.join(directory, 'vault-encryption.key'));
+ await assert.rejects(startNotesServer({ directory, token, port: 0, version: 'test' }), /encryption key is missing/);
+});
+
+test('deleted Logins cannot be resurrected by stale writes or migration', async t => {
+ const f=await fixture(t); const {instanceId}= (await f.call('/v1/health')).data;
+ const original={id:'delete-me',type:'login',name:'Website',loginUrl:'https://example.com/',accounts:[{id:'a',username:'alice',password:'secret',notes:'note'}],createdAt:'2026-10-06T00:00:00.000Z',revision:0};
+ await f.call('/v1/vault/import',{instanceId,records:[original]});
+ const before=(await f.call('/v1/vault')).data;
+ const marker={...original,deletedAt:'2026-10-06T01:00:00.000Z',revision:1};
+ assert.equal((await f.call('/v1/vault/write',{instanceId,expectedRevision:before.revision,records:[marker]})).status,200);
+ const after=(await f.call('/v1/vault')).data;
+ assert.equal(after.records[0].name,'Deleted login'); assert.equal(after.records[0].loginUrl,''); assert.deepEqual(after.records[0].accounts,[]);
+ assert.equal((await f.call('/v1/vault/write',{instanceId,expectedRevision:after.revision,records:[original]})).status,409);
+ assert.equal((await f.call('/v1/vault/import',{instanceId,records:[original]})).status,409);
 });

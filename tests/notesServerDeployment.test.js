@@ -89,3 +89,37 @@ test('schema-compatible rollback restores the program without overwriting newer 
   assert.ok(commands.some(command => command.includes('ln -sfn')));
   assert.ok(commands.every(command => !command.includes('cp --') && !command.includes('notes.sqlite3-wal')));
 });
+
+test('Vault upgrades an older format even when the server release version matches', async t => {
+  const deployment = new NotesServerDeployment(settings(), '/unused', '0.3.95', true);
+  let health = { version: '0.3.95', protocol: 1, instanceId: 'instance', revision: 12 };
+  let upgrades = 0;
+  t.mock.method(deployment, 'api', async () => health);
+  t.mock.method(deployment, 'deploy', async () => { upgrades++; health = { ...health, vaultSchema: 2 }; });
+  assert.equal((await deployment.health(2)).vaultSchema, 2);
+  await deployment.health(2);
+  assert.equal(upgrades, 1);
+});
+
+test('Vault capability checks fail closed without downgrading or replacing another database', async t => {
+  for (const remote of [
+    { version: '0.3.96', instanceId: 'instance' },
+    { version: '0.3.95', instanceId: 'other' },
+    { version: 'development', instanceId: 'instance' },
+  ]) {
+    const deployment = new NotesServerDeployment(settings(), '/unused', '0.3.95', true);
+    t.mock.method(deployment, 'api', async () => ({ protocol: 1, revision: 1, ...remote }));
+    t.mock.method(deployment, 'deploy', async () => assert.fail('Unexpected deployment'));
+    await assert.rejects(deployment.health(2), /remote Vault format is outdated/);
+  }
+});
+
+test('Vault refuses writes if a same-version upgrade still lacks the required format', async t => {
+  const deployment = new NotesServerDeployment(settings(), '/unused', '0.3.95', true);
+  let upgrades = 0;
+  t.mock.method(deployment, 'api', async () => ({ version: '0.3.95', protocol: 1, instanceId: 'instance', revision: 12 }));
+  t.mock.method(deployment, 'deploy', async () => { upgrades++; });
+  await assert.rejects(deployment.health(2), /remote Vault format is outdated/);
+  await assert.rejects(deployment.health(2), /remote Vault format is outdated/);
+  assert.equal(upgrades, 1);
+});

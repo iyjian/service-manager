@@ -4,7 +4,7 @@ import path from 'node:path';
 import { NotesServerConnection, quote } from './connection';
 import { NotesServerSettings } from './settings';
 
-export interface ServerHealth { protocol: number; version: string; instanceId: string; revision: number; }
+export interface ServerHealth { protocol: number; version: string; instanceId: string; revision: number; vaultSchema?: number; }
 function olderVersion(remote: string, local: string): boolean {
   if (!/^\d+\.\d+\.\d+$/.test(remote) || !/^\d+\.\d+\.\d+$/.test(local)) return false;
   const left = remote.split('.').map(Number), right = local.split('.').map(Number);
@@ -87,11 +87,12 @@ export class NotesServerDeployment {
       }
     }
   }
-  async health(): Promise<ServerHealth> {
+  async health(requiredVaultSchema = 0): Promise<ServerHealth> {
     let health = await this.api<ServerHealth>('/v1/health');
     if (health.protocol !== 1 || typeof health.instanceId !== 'string' || !Number.isSafeInteger(health.revision)) throw new Error('Unsupported Notes Server protocol.');
     if (this.settings.enabled && this.settings.instanceId === health.instanceId
-      && !this.upgradeAttempted && olderVersion(health.version, this.version)) {
+      && !this.upgradeAttempted && (olderVersion(health.version, this.version)
+        || (health.version === this.version && (health.vaultSchema ?? 0) < requiredVaultSchema))) {
       this.upgradeAttempted = true;
       await this.deploy();
       const updated = await this.api<ServerHealth>('/v1/health');
@@ -100,6 +101,9 @@ export class NotesServerDeployment {
         throw new Error('Notes Server upgrade verification failed.');
       }
       health = updated;
+    }
+    if (requiredVaultSchema > 0 && (!Number.isSafeInteger(health.vaultSchema) || health.vaultSchema! < requiredVaultSchema)) {
+      throw new Error('The remote Vault format is outdated. Deploy the current Notes Server in Settings, then retry.');
     }
     return health;
   }

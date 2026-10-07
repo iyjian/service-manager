@@ -2,6 +2,21 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.96] - 2026-10-06
+
+### Added
+- Redesigned Login details with larger, darker labels, aligned value columns, icon copy controls, and inline password visibility that resets when leaving the window or after 30 seconds.
+- Login editing now pre-fills saved passwords with an eye toggle; clearing a password explicitly removes it.
+- Added a delete button to each website Login with confirmation before removing all its accounts and notes.
+- Vault groups website credentials by login URL, with multiple accounts and individual notes, password generation, and protected copy/show actions.
+- Added Chrome password CSV import with selectable previews, duplicate detection, and conflict protection.
+- Simplified Vault navigation with category-level Add Login/Add SSH Key actions and a single status line.
+- Vault automatically migrates existing SSH keys to the configured Notes Server database on startup, with encrypted storage, local recovery backups and conflict protection.
+
+### Fixed
+- Fixed lingering text selections when switching Vault entries, made the active row clearer, placed username and password on separate rows with their corresponding actions inline, and automatically selected the first item when switching categories.
+- Fixed Chrome imports failing against an older remote Vault format; the app now upgrades compatible servers automatically and shows visible import progress and errors.
+
 ## [0.3.95] - 2026-10-03
 
 ### Fixed

@@ -1,3 +1,4 @@
+import { createVaultDatabase } from './vaultDatabase';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { timingSafeEqual, randomUUID, createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -10,10 +11,10 @@ import { EMPTY_RICH_TEXT_CONTENT } from '../shared/noteRichText';
 
 import { validateWorkspace, object, fail, type ServerWorkspace } from '../main/notesServer/workspace';
 const MAX_BYTES = 128 * 1024 * 1024;
-async function body(req: IncomingMessage): Promise<any> {
+async function body(req: IncomingMessage, limit = MAX_BYTES): Promise<any> {
   const chunks: Buffer[] = []; let length = 0;
   for await (const chunk of req) {
-    length += chunk.length; if (length > MAX_BYTES) return fail(413, 'Request too large.'); chunks.push(chunk);
+    length += chunk.length; if (length > limit) return fail(413, 'Request too large.'); chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return fail(400, 'Invalid JSON.'); }
 }
@@ -29,6 +30,7 @@ export async function startNotesServer(options: { directory: string; token: stri
   if (!db.prepare('SELECT id FROM workspace').get()) db.prepare('INSERT INTO workspace VALUES(1,?)').run(JSON.stringify({
     instanceId: randomUUID(), revision: 0, notes: [], tombstones: [], tree: { schemaVersion: 1, nodes: [] },
   }));
+  const vault = await createVaultDatabase(db, options.directory).catch(error => { db.close(); throw error; });
   await fs.chmod(databasePath, 0o600);
   let state: ServerWorkspace = JSON.parse(String(db.prepare('SELECT data FROM workspace WHERE id=1').get()!.data));
   await validateWorkspace(state);
@@ -54,7 +56,13 @@ export async function startNotesServer(options: { directory: string; token: stri
       if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return fail(401, 'Unauthorized.');
       const url = new URL(req.url ?? '/', 'http://localhost');
       const method = req.method;
-      if (method === 'GET' && url.pathname === '/v1/health') return send(res, { version: options.version, protocol: 1, instanceId: state.instanceId, revision: state.revision });
+      if (method === 'GET' && url.pathname === '/v1/health') return send(res, { version: options.version, protocol: 1, vaultSchema: 3, instanceId: state.instanceId, revision: state.revision });
+      if (method === 'GET' && url.pathname === '/v1/vault') return send(res, { instanceId: state.instanceId, ...vault.read() });
+      if (method === 'POST' && ['/v1/vault/import', '/v1/vault/write'].includes(url.pathname)) {
+        const input = object(await body(req, 16 * 1024 * 1024));
+        if (input.instanceId !== state.instanceId) return fail(409, 'Vault database identity changed.');
+        return send(res, { instanceId: state.instanceId, ...vault.write(input, url.pathname.endsWith('/import')) });
+      }
       if (method === 'GET' && url.pathname === '/v1/workspace') return send(res, state);
       if (method === 'GET' && url.pathname === '/v1/search') return send(res, rankNoteIdsForSearch(state.notes, (url.searchParams.get('q') ?? '').slice(0, 512)));
       if (method === 'GET' && url.pathname === '/v1/notes') return send(res, state.notes.map(({ content, ...summary }) => summary));
