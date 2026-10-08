@@ -14,7 +14,7 @@ The Vault list supports name search and shows creation/update dates. Key changes
 
 ## Website logins
 
-**Add Login** sits under **Logins** in the category sidebar; **Add SSH Key** sits under **SSH Keys**. Only **Refresh** remains in the page header. Search is in the list pane, and a single footer line reports connection, recovery cache and clipboard status.
+The category sidebar contains **Logins** (selected by default) and **SSH Keys**. **Add Login** and **Add SSH Key** sit before **Refresh** on the right of the page header. Login accounts appear without numbered headings and scroll within the details pane, keeping the website title and actions visible. Search is in the list pane, and a single footer line reports connection, recovery cache and clipboard status.
 
 A website Login contains one required HTTP/HTTPS **Login URL** and 1–200 accounts. Each account has its own **Username**, **Password**, and **Notes**. Use **Add Account** or **Remove** while editing. There are no Name, Application, or Tags inputs. URLs containing embedded credentials or non-web protocols are rejected. Adding a second entry for the same normalized URL is rejected; edit the existing website to add accounts.
 

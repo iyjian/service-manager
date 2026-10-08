@@ -5,7 +5,7 @@ let keys: VaultKeyView[] = [];
 let watching = false;
 let entries: VaultEntryView[] = [];
 let selectedId = '';
-let category = 'all';
+let category = 'login';
 let clearDetailSecrets = () => {};
 window.addEventListener('blur', () => clearDetailSecrets());
 document.addEventListener('visibilitychange', () => { if (document.hidden) clearDetailSecrets(); });
@@ -35,12 +35,12 @@ function action(label: string, run: () => void | Promise<unknown>): HTMLButtonEl
 function renderKeys(selectFirst = false): void {
   const list = document.getElementById('vault-key-list'); if (!list) return;
   const query = (document.querySelector<HTMLInputElement>('#vault-search')?.value ?? '').trim().toLocaleLowerCase();
-  const visible = entries.filter(item => (category === 'all' || item.type === category) && [item.type === 'sshKey' ? item.name : item.loginUrl, ...item.accounts.map(account => account.username)].join(' ').toLocaleLowerCase().includes(query));
+  const visible = entries.filter(item => item.type === category && [item.type === 'sshKey' ? item.name : item.loginUrl, ...item.accounts.map(account => account.username)].join(' ').toLocaleLowerCase().includes(query));
   document.getElementById('vault-key-count')!.textContent = `${entries.length} ${entries.length === 1 ? 'item' : 'items'}`;
   for (const button of Array.from(document.querySelectorAll<HTMLButtonElement>('#vault-groups [data-type]'))) {
     const type = button.dataset.type!; const active = type === category;
     button.classList.toggle('selected', active); button.setAttribute('aria-pressed', String(active));
-    button.querySelector('[data-count]')!.textContent = String(type === 'all' ? entries.length : entries.filter(item => item.type === type).length);
+    button.querySelector('[data-count]')!.textContent = String(entries.filter(item => item.type === type).length);
   }
   if (selectFirst || !visible.some(item => item.id === selectedId)) selectedId = visible[0]?.id ?? '';
   const scrollTop = selectFirst ? 0 : list.scrollTop;
@@ -84,16 +84,18 @@ function renderDetail(item?: VaultEntryView): void {
     const name = document.createElement('span'); name.textContent = label;
     const text = document.createElement('p'); text.textContent = value || '—'; block.append(name, text); parent.append(block); return block;
   };
+  const body = document.createElement('div'); body.className = 'vault-detail-body';
   if (item.type === 'sshKey') {
-    field(detail, 'Type', 'SSH Key'); detail.append(action('Rename', () => openKeyDialog('rename', item)), action('Replace Key', () => openKeyDialog('replace', item)));
+    const toolbar = document.createElement('div'); toolbar.className = 'vault-row-actions';
+    toolbar.append(action('Rename', () => openKeyDialog('rename', item)), action('Replace Key', () => openKeyDialog('replace', item)));
+    detail.append(toolbar); field(body, 'Type', 'SSH Key');
   } else {
     const toolbar = document.createElement('div'); toolbar.className = 'vault-row-actions';
     toolbar.append(action('Edit', () => openEntryDialog(item)));
     if (item.loginUrl) toolbar.append(action('Open Website', () => window.vaultApi.openUrl(item.id)));
     detail.append(toolbar);
-    item.accounts.forEach((account, index) => {
-      const section = document.createElement('section'); section.className = 'vault-account-detail'; section.setAttribute('aria-label', `Account ${index + 1}`);
-      const title = document.createElement('h3'); title.textContent = `Account ${index + 1}`; section.append(title);
+    item.accounts.forEach(account => {
+      const section = document.createElement('section'); section.className = 'vault-account-detail'; section.setAttribute('aria-label', account.username || 'Account');
       const credentials = document.createElement('div'); credentials.className = 'vault-account-credentials'; section.append(credentials);
       const credentialRow = (label: string, value: string) => {
         const row = document.createElement('div'); row.className = 'vault-credential-row';
@@ -130,10 +132,11 @@ function renderDetail(item?: VaultEntryView): void {
       });
       toggle.disabled = !account.hasPassword; toggle.setAttribute('aria-pressed', 'false'); secretCleanups.push(hide);
       password.controls.append(iconAction('Copy password', 'copy', () => window.vaultApi.copy(item.id, 'password', account.id).then(() => report('Password copied · Clears after 30s'))), toggle);
-      field(section, 'Notes', account.notes); detail.append(section);
+      field(section, 'Notes', account.notes); body.append(section);
     });
   }
-  field(detail, 'Updated', new Date(item.updatedAt ?? item.createdAt).toLocaleString());
+  detail.append(body);
+  field(body, 'Updated', new Date(item.updatedAt ?? item.createdAt).toLocaleString());
 }
 async function openEntryDialog(item?: VaultEntryView): Promise<void> {
   const passwords = item ? await window.vaultApi.editPasswords(item.id, item.revision ?? 0) : [];
