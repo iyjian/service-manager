@@ -35,7 +35,7 @@ function action(label: string, run: () => void | Promise<unknown>): HTMLButtonEl
 function renderKeys(selectFirst = false): void {
   const list = document.getElementById('vault-key-list'); if (!list) return;
   const query = (document.querySelector<HTMLInputElement>('#vault-search')?.value ?? '').trim().toLocaleLowerCase();
-  const visible = entries.filter(item => item.type === category && [item.type === 'sshKey' ? item.name : item.loginUrl, ...item.accounts.map(account => account.username)].join(' ').toLocaleLowerCase().includes(query));
+  const visible = entries.filter(item => item.type === category && [item.type === 'sshKey' ? item.name : item.loginUrl, ...item.accounts.flatMap(account => [account.username, account.notes])].join(' ').toLocaleLowerCase().includes(query));
   document.getElementById('vault-key-count')!.textContent = `${entries.length} ${entries.length === 1 ? 'item' : 'items'}`;
   for (const button of Array.from(document.querySelectorAll<HTMLButtonElement>('#vault-groups [data-type]'))) {
     const type = button.dataset.type!; const active = type === category;

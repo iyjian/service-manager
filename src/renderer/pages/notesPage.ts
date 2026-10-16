@@ -508,6 +508,7 @@ export function noteTabFallbackAfterRemoval(
 export class NotesPage {
   private readonly pageRoot = requireElement<HTMLElement>('.notes-page');
   private readonly sidebarResizeHandle = requireElement<HTMLElement>('#notes-sidebar-resizer');
+  private readonly createStatus = requireElement<HTMLElement>('#notes-create-status');
   private readonly newButton = requireElement<HTMLButtonElement>('#notes-new-root-btn');
   private readonly searchInput = requireElement<HTMLInputElement>('#notes-search');
   private readonly list = requireElement<HTMLElement>('#notes-list');
@@ -857,7 +858,7 @@ export class NotesPage {
     this.languageControl.inert = !state.editable;
     this.nameInput.readOnly = !state.editable;
     this.newButton.inert = !state.editable;
-    if (this.emptyCreateButton) this.emptyCreateButton.disabled = !state.editable;
+    if (this.emptyCreateButton) this.emptyCreateButton.disabled = this.creating || !state.editable;
     this.pageRoot.dataset.syncLocked = String(!state.editable);
     if (!state.editable) this.closeLanguageMenu();
     this.updateCloudStatus();
@@ -2184,6 +2185,7 @@ export class NotesPage {
       add.className = 'notes-tree-add';
       add.setAttribute('aria-label', `New child Note under ${note.name || 'Untitled'}`);
       add.title = 'New child Note';
+      add.disabled = this.creating;
       add.appendChild(createIcon('plus'));
       add.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -2317,8 +2319,8 @@ export class NotesPage {
         const create = document.createElement('button');
         create.type = 'button';
         create.className = 'btn btn-secondary btn-sm';
-        create.textContent = 'New note';
-        create.disabled = !this.syncGuard.editable;
+        create.textContent = this.creating ? 'Creating…' : 'New note';
+        create.disabled = this.creating || !this.syncGuard.editable;
         create.addEventListener('click', () => void this.createNote(null));
         this.emptyCreateButton = create;
         content.append(title, hint, create);
@@ -3504,17 +3506,37 @@ export class NotesPage {
     }
   }
 
+  private updateCreateFeedback(message = ''): void {
+    this.createStatus.textContent = message;
+    this.createStatus.classList.toggle('hidden', !this.creating);
+    this.newButton.disabled = this.creating || !this.loaded;
+    this.newButton.setAttribute('aria-busy', String(this.creating));
+    this.newButton.title = this.creating ? 'Creating Note…' : 'New root Note';
+    this.newButton.setAttribute('aria-label', this.newButton.title);
+    this.newButton.replaceChildren(createIcon(this.creating ? 'rotate-ccw' : 'plus'));
+    for (const button of Array.from(this.pageRoot.querySelectorAll<HTMLButtonElement>('.notes-tree-add'))) {
+      button.disabled = this.creating;
+    }
+    if (this.emptyCreateButton) {
+      this.emptyCreateButton.disabled = this.creating || !this.syncGuard.editable;
+      this.emptyCreateButton.textContent = this.creating ? 'Creating…' : 'New note';
+    }
+  }
+
   private async createNote(parentId: string | null): Promise<void> {
     if (!this.syncGuard.editable) return;
     if (this.creating) return;
-    await this.ensureLoaded();
-    if (!this.loaded) return;
     const selectionIntentVersion = this.selectionVersion;
     this.creating = true;
-    this.newButton.disabled = true;
+    this.updateCreateFeedback('Preparing new Note…');
     try {
+      await this.ensureLoaded();
+      if (!this.loaded || !this.syncGuard.editable) return;
+      this.updateCreateFeedback('Waiting for uploads…');
       await this.waitForEditorUploads();
+      this.updateCreateFeedback('Saving changes…');
       await this.flushAllPendingSaves();
+      this.updateCreateFeedback('Creating Note…');
       const editVersionBaseline = new Map(this.editVersions);
       const previousIds = new Set(this.notes.map((note) => note.id));
       const workspace = await window.notesApi.createNote({ parentId });
@@ -3545,7 +3567,7 @@ export class NotesPage {
       toast(`Unable to create Note: ${toErrorMessage(error)}`, 'error');
     } finally {
       this.creating = false;
-      this.newButton.disabled = false;
+      this.updateCreateFeedback();
     }
   }
 

@@ -2,9 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
-## [0.3.97] - 2026-10-08
+## [0.3.97] - 2026-10-16
 
 ### Changed
+- Vault search now also matches account Notes, alongside usernames, website URLs, and SSH key names.
+- New Notes now show progress while waiting for uploads, saving changes, and creating the note, with duplicate creation prevented across all entry points.
 - Simplified Vault navigation to Logins and SSH Keys, moved add actions before Refresh, and removed numbered account headings. Account details now scroll independently while the title and actions stay visible.
 
 ## [0.3.96] - 2026-10-06
