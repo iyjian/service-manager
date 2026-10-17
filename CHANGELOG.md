@@ -2,6 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.99] - 2026-10-17
+
+### Fixed
+- Fixed saved SQL query ordering changing after opening a query; refreshes and edits now use consistent name ordering across app languages.
+
 ## [0.3.97] - 2026-10-16
 
 ### Changed

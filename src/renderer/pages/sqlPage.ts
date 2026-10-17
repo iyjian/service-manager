@@ -27,6 +27,7 @@ import {
 import { common, createLowlight } from 'lowlight';
 import { CODE_HIGHLIGHT_LIMITS, findCodeHighlightLanguage } from '../codeHighlight.js';
 import { requireElement } from '../utils/dom.js';
+import { sortSqlQueryRecords, upsertSqlQueryRecord } from '../models/sqlQueryList.js';
 import { stripIpcErrorPrefix } from '../utils/error.js';
 import { registerPage } from './nav.js';
 import {
@@ -1779,7 +1780,7 @@ class SqlPage {
     try {
       const records = await window.sqlApi.listQueries(environment);
       if (loadVersion !== state.loadVersion) return;
-      state.records = records;
+      state.records = sortSqlQueryRecords(records);
       if (environment === this.environment) {
         this.renderRecordList();
         if (announce) toast('Saved queries refreshed.', 'success');
@@ -2253,8 +2254,7 @@ class SqlPage {
   }
 
   private upsertRecord(state: SqlEnvironmentState, record: SqlQueryRecord): void {
-    state.records = [...state.records.filter((item) => item.id !== record.id), record]
-      .sort((left, right) => right.name.localeCompare(left.name));
+    state.records = upsertSqlQueryRecord(state.records, record);
   }
 
   private async runCurrentStatement(): Promise<void> {
