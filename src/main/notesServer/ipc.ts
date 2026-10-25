@@ -64,6 +64,8 @@ export function registerNotesServerIpc(options: {
     const progress = (message: string) => { if (!_event.sender.isDestroyed()) _event.sender.send('notes-server:progress', message); };
     busy = true;
     try {
+      // Interrupt network waits before draining, but never bypass a pending write.
+      if (action === 'restart' || action === 'stop') deployment.cancel();
       await backend.idle();
       if (action === 'test') return await deployment.test();
       if (action === 'deploy') return await deployment.deploy();

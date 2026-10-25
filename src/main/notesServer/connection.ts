@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { Agent, request } from 'node:http';
 import type { Client, SFTPWrapper } from 'ssh2';
-import { connectSshChain, closeSshClients, type SshEndpointConfig } from '../ssh/sshChain';
+import { connectSshChain, type SshEndpointConfig } from '../ssh/sshChain';
 
 export const quote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 export class NotesServerConnection {
@@ -16,35 +16,73 @@ export class NotesServerConnection {
     const result = new NotesServerConnection(chain.targetClient, signal);
     signal.addEventListener('abort', () => result.close(), { once: true }); return result;
   }
-  close(): void { this.closed = true; closeSshClients([this.client]); }
-  exec(command: string): Promise<string> {
+  close(): void { this.closed = true; this.client.destroy(); }
+  /** Settle independently of SSH callbacks: a disconnected stream may never emit end/error. */
+  private bounded<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (!this.usable) { reject(new Error('Notes server connection is closed or cancelled.')); return; }
+      let settled = false;
+      const finish = (error?: Error, value?: T): void => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        this.signal.removeEventListener('abort', abort);
+        this.client.off('close', closed);
+        this.client.off('error', failed);
+        if (error) reject(error); else resolve(value as T);
+      };
+      const abort = (): void => { finish(new Error('Notes server operation cancelled.')); this.close(); };
+      const closed = (): void => finish(new Error('Notes server connection closed.'));
+      const failed = (): void => { finish(new Error('Notes server connection failed.')); this.close(); };
+      const timer = setTimeout(() => { finish(new Error('Notes server operation timed out.')); this.close(); }, timeoutMs);
+      this.signal.addEventListener('abort', abort, { once: true });
+      this.client.once('close', closed); this.client.once('error', failed);
+      Promise.resolve().then(() => {
+        if (!this.usable) throw new Error('Notes server operation cancelled.');
+        return operation();
+      }).then(value => finish(undefined, value), error => finish(error));
+    });
+  }
+  exec(command: string): Promise<string> { return this.bounded(() => this.execInternal(command), 90_000); }
+  private execInternal(command: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.close(); reject(new Error('Server command timed out.')); }, 90_000);
       this.client.exec(command, (error, stream) => {
-        if (error) { clearTimeout(timer); reject(new Error('Cannot execute server command.')); return; }
+        if (error) { reject(new Error('Cannot execute server command.')); return; }
         let out = ''; let overflow = false;
         stream.on('data', chunk => { out += chunk.toString(); if (out.length > 256_000) { overflow = true; stream.close(); } });
         stream.stderr.resume();
-        stream.on('error', () => { clearTimeout(timer); reject(new Error('Server command failed.')); });
-        stream.on('close', (code?: number) => { clearTimeout(timer); if (code !== 0 || overflow || this.signal.aborted) reject(new Error('Server command failed. Check systemd, permissions and runtime compatibility.')); else resolve(out.trim()); });
+        stream.on('error', () => { reject(new Error('Server command failed.')); });
+        stream.on('close', (code?: number) => { if (code !== 0 || overflow || this.signal.aborted) reject(new Error('Server command failed. Check systemd, permissions and runtime compatibility.')); else resolve(out.trim()); });
       });
     });
   }
-  async sftp(): Promise<SFTPWrapper> { return new Promise((resolve, reject) => this.client.sftp((e, s) => e ? reject(new Error('Cannot open file transfer.')) : resolve(s))); }
-  async write(remote: string, bytes: Buffer, mode = 0o600): Promise<void> {
+  async sftp(): Promise<SFTPWrapper> {
+    return this.bounded(() => new Promise<SFTPWrapper>((resolve, reject) => this.client.sftp((e, s) => {
+      if (e) reject(new Error('Cannot open file transfer.'));
+      else if (!this.usable) { s.end(); reject(new Error('File transfer cancelled.')); }
+      else resolve(s);
+    })), 15_000);
+  }
+  async write(remote: string, bytes: Buffer, mode = 0o600): Promise<void> { return this.bounded(() => this.writeInternal(remote, bytes, mode), 90_000); }
+  private async writeInternal(remote: string, bytes: Buffer, mode: number): Promise<void> {
     const sftp = await this.sftp();
     try { await new Promise<void>((resolve, reject) => {
       const stream = sftp.createWriteStream(remote, { mode });
-      stream.once('error', () => reject(new Error('File upload failed.'))); stream.once('close', resolve); stream.end(bytes);
+      let finished = false;
+      stream.once('finish', () => { finished = true; });
+      stream.once('error', () => reject(new Error('File upload failed.')));
+      stream.once('close', () => finished ? resolve() : reject(new Error('File upload closed before completion.')));
+      stream.end(bytes);
     }); } finally { sftp.end(); }
   }
-  async read(remote: string, max = 1024 * 1024): Promise<Buffer> {
+  async read(remote: string, max = 1024 * 1024): Promise<Buffer> { return this.bounded(() => this.readInternal(remote, max), 30_000); }
+  private async readInternal(remote: string, max: number): Promise<Buffer> {
     const sftp = await this.sftp();
     try { return await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = []; let size = 0; const stream = sftp.createReadStream(remote);
       stream.on('data', (chunk: Buffer) => { size += chunk.length; if (size > max) stream.destroy(new Error('File too large.')); else chunks.push(chunk); });
       stream.once('error', () => reject(new Error('Cannot read server configuration. Deploy the server first.')));
       stream.once('end', () => resolve(Buffer.concat(chunks)));
+      stream.once('close', () => reject(new Error('File transfer closed before completion.')));
     }); } finally { sftp.end(); }
   }
   async uploadDirectory(local: string, remote: string): Promise<void> {
@@ -55,6 +93,9 @@ export class NotesServerConnection {
     }
   }
   async api<T>(port: number, token: string, route: string, payload?: unknown, binary = false): Promise<T> {
+    return this.bounded(() => this.apiInternal<T>(port, token, route, payload, binary), 45_000);
+  }
+  private async apiInternal<T>(port: number, token: string, route: string, payload?: unknown, binary = false): Promise<T> {
     if (this.signal.aborted) throw new Error('Operation cancelled.');
     const socket = await new Promise<any>((resolve, reject) => {
       let settled = false;

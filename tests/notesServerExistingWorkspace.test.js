@@ -47,3 +47,24 @@ for (const scenario of ['accept', 'cancel', 'backup failure', 'connection failur
     assert.equal(JSON.stringify({ local, remote }), before);
   });
 }
+
+test('restart cancels network waits before draining and never bypasses unfinished writes', async () => {
+  for (const blocked of [false, true]) {
+    const order = [];
+    registerNotesServerIpc({ settings: {}, hosts: () => [],
+      deployment: { cancel() { order.push('cancel'); }, control: async () => { order.push('restart'); return 'done'; } },
+      backend: { idle: async () => { order.push('idle'); if (blocked) throw Error('still finishing'); } },
+    });
+    const event = { sender: { isDestroyed: () => false, send() {} } };
+    const action = handlers.get('notes-server:action')(event, 'restart');
+    if (blocked) {
+      await assert.rejects(action, /still finishing/);
+      // The busy flag is released after failure, so a retry remains possible.
+      await assert.rejects(handlers.get('notes-server:action')(event, 'restart'), /still finishing/);
+      assert.deepEqual(order, ['cancel', 'idle', 'cancel', 'idle']);
+    } else {
+      assert.equal(await action, 'done');
+      assert.deepEqual(order, ['cancel', 'idle', 'restart']);
+    }
+  }
+});

@@ -155,6 +155,13 @@ export class RemoteNotesBackend implements NotesDataBackend {
     try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); }
     await fs.rename(temp, file);
   }
-  async idle(): Promise<void> { await this.queue; }
+  async idle(timeoutMs = 15_000): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.queue, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Notes operations are still finishing. Retry shortly; local drafts are preserved.')), timeoutMs);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
   async close(): Promise<void> { this.deployment.cancel(); await this.queue; if (this.store) await this.store.close(); }
 }

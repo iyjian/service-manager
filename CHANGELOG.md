@@ -2,6 +2,11 @@
 
 All notable changes to Service Manager are documented in this file. The newest releases are listed first.
 
+## [0.3.100] - 2026-10-25
+
+### Fixed
+- Fixed Notes connection and Restart operations getting stuck after interrupted SSH connections; timed-out operations now report an error and can be retried while preserving local drafts.
+
 ## [0.3.99] - 2026-10-17
 
 ### Fixed
